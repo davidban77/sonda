@@ -202,3 +202,439 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use sonda_core::config::validate::validate_config;
+    use sonda_core::encoder::EncoderConfig;
+    use sonda_core::generator::GeneratorConfig;
+
+    use super::*;
+    use crate::cli::MetricsArgs;
+
+    /// Construct a minimal `MetricsArgs` with no flags set, suitable for
+    /// customising field-by-field in individual tests.
+    fn default_args() -> MetricsArgs {
+        MetricsArgs {
+            scenario: None,
+            name: None,
+            rate: None,
+            duration: None,
+            value_mode: None,
+            amplitude: None,
+            period_secs: None,
+            offset: None,
+            min: None,
+            max: None,
+            seed: None,
+            gap_every: None,
+            gap_for: None,
+            labels: vec![],
+            encoder: "prometheus_text".to_string(),
+        }
+    }
+
+    // ---- Config from flags only ----------------------------------------------
+
+    #[test]
+    fn config_from_flags_only_constant_mode() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(10.0),
+            duration: Some("5s".to_string()),
+            value_mode: Some("constant".to_string()),
+            offset: Some(1.0),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should build config from flags");
+        assert_eq!(config.name, "up");
+        assert_eq!(config.rate, 10.0);
+        assert_eq!(config.duration.as_deref(), Some("5s"));
+        match config.generator {
+            GeneratorConfig::Constant { value } => assert_eq!(value, 1.0),
+            other => panic!("expected Constant generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_from_flags_only_sine_mode_maps_all_fields() {
+        let args = MetricsArgs {
+            name: Some("cpu".to_string()),
+            rate: Some(100.0),
+            value_mode: Some("sine".to_string()),
+            amplitude: Some(5.0),
+            period_secs: Some(30.0),
+            offset: Some(10.0),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should build sine config from flags");
+        match config.generator {
+            GeneratorConfig::Sine {
+                amplitude,
+                period_secs,
+                offset,
+            } => {
+                assert_eq!(amplitude, 5.0);
+                assert_eq!(period_secs, 30.0);
+                assert_eq!(offset, 10.0);
+            }
+            other => panic!("expected Sine generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_from_flags_only_uniform_mode_maps_fields() {
+        let args = MetricsArgs {
+            name: Some("rng_metric".to_string()),
+            rate: Some(1.0),
+            value_mode: Some("uniform".to_string()),
+            min: Some(2.0),
+            max: Some(8.0),
+            seed: Some(42),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should build uniform config");
+        match config.generator {
+            GeneratorConfig::Uniform { min, max, seed } => {
+                assert_eq!(min, 2.0);
+                assert_eq!(max, 8.0);
+                assert_eq!(seed, Some(42));
+            }
+            other => panic!("expected Uniform generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_from_flags_only_sawtooth_mode_maps_fields() {
+        let args = MetricsArgs {
+            name: Some("ramp".to_string()),
+            rate: Some(1.0),
+            value_mode: Some("sawtooth".to_string()),
+            min: Some(0.0),
+            max: Some(100.0),
+            period_secs: Some(60.0),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should build sawtooth config");
+        match config.generator {
+            GeneratorConfig::Sawtooth {
+                min,
+                max,
+                period_secs,
+            } => {
+                assert_eq!(min, 0.0);
+                assert_eq!(max, 100.0);
+                assert_eq!(period_secs, 60.0);
+            }
+            other => panic!("expected Sawtooth generator, got {other:?}"),
+        }
+    }
+
+    // ---- Config from YAML file -----------------------------------------------
+
+    #[test]
+    fn config_from_yaml_file_basic() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should load YAML scenario");
+        assert_eq!(config.name, "test_metric");
+        assert_eq!(config.rate, 100.0);
+        assert_eq!(config.duration.as_deref(), Some("10s"));
+        validate_config(&config).expect("loaded config should be valid");
+    }
+
+    #[test]
+    fn config_from_yaml_file_with_labels_and_gaps() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/with-labels.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("should load YAML with labels and gaps");
+        assert_eq!(config.name, "interface_oper_state");
+        let labels = config.labels.as_ref().expect("labels should be present");
+        assert_eq!(labels.get("hostname").map(|s| s.as_str()), Some("t0-a1"));
+        assert_eq!(labels.get("zone").map(|s| s.as_str()), Some("eu1"));
+        assert!(config.gaps.is_some(), "gaps should be present");
+    }
+
+    #[test]
+    fn config_from_yaml_missing_file_returns_error() {
+        let args = MetricsArgs {
+            scenario: Some(PathBuf::from("/nonexistent/path/scenario.yaml")),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("missing file should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("scenario") || msg.contains("nonexistent"),
+            "error should mention file path, got: {msg}"
+        );
+    }
+
+    // ---- Config merge: CLI overrides YAML ------------------------------------
+
+    #[test]
+    fn cli_rate_overrides_yaml_rate() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        // YAML has rate: 100; CLI provides --rate 500.
+        let args = MetricsArgs {
+            scenario: Some(path),
+            rate: Some(500.0),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("override should succeed");
+        assert_eq!(config.rate, 500.0, "CLI rate must override YAML rate");
+    }
+
+    #[test]
+    fn cli_name_overrides_yaml_name() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            name: Some("overridden".to_string()),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("name override should succeed");
+        assert_eq!(config.name, "overridden");
+    }
+
+    #[test]
+    fn cli_duration_overrides_yaml_duration() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            duration: Some("99s".to_string()),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("duration override should succeed");
+        assert_eq!(config.duration.as_deref(), Some("99s"));
+    }
+
+    #[test]
+    fn cli_labels_are_merged_onto_yaml_labels() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/with-labels.yaml");
+        // YAML has hostname and zone; add a new label from CLI.
+        let args = MetricsArgs {
+            scenario: Some(path),
+            labels: vec![("env".to_string(), "prod".to_string())],
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("label merge should succeed");
+        let labels = config.labels.as_ref().expect("labels should exist");
+        // Both the original YAML labels and the CLI label must be present.
+        assert_eq!(labels.get("hostname").map(|s| s.as_str()), Some("t0-a1"));
+        assert_eq!(labels.get("zone").map(|s| s.as_str()), Some("eu1"));
+        assert_eq!(labels.get("env").map(|s| s.as_str()), Some("prod"));
+    }
+
+    #[test]
+    fn cli_label_overrides_same_key_in_yaml() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/with-labels.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            labels: vec![("hostname".to_string(), "new-host".to_string())],
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("label override should succeed");
+        let labels = config.labels.as_ref().expect("labels should exist");
+        assert_eq!(
+            labels.get("hostname").map(|s| s.as_str()),
+            Some("new-host"),
+            "CLI label must override YAML label with same key"
+        );
+    }
+
+    // ---- Missing required fields --------------------------------------------
+
+    #[test]
+    fn missing_name_without_scenario_returns_error() {
+        let args = MetricsArgs {
+            rate: Some(10.0),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("missing --name should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("name") || msg.contains("required"),
+            "error should mention 'name' or 'required', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_rate_without_scenario_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("missing --rate should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("rate") || msg.contains("required"),
+            "error should mention 'rate' or 'required', got: {msg}"
+        );
+    }
+
+    // ---- Unknown values return errors ----------------------------------------
+
+    #[test]
+    fn unknown_value_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value_mode: Some("bogus_mode".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("unknown value mode should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bogus_mode"),
+            "error should mention the bad mode, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_encoder_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: "nope_encoder".to_string(),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("unknown encoder should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nope_encoder"),
+            "error should mention the bad encoder, got: {msg}"
+        );
+    }
+
+    // ---- Gap config: both flags required together ----------------------------
+
+    #[test]
+    fn gap_every_without_gap_for_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            gap_every: Some("2m".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--gap-every alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gap-for") || msg.contains("gap_for"),
+            "error should mention gap-for, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn gap_for_without_gap_every_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            gap_for: Some("20s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--gap-for alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gap-every") || msg.contains("gap_every"),
+            "error should mention gap-every, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn both_gap_flags_together_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            gap_every: Some("2m".to_string()),
+            gap_for: Some("20s".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("both gap flags should succeed");
+        let gaps = config.gaps.as_ref().expect("gaps should be set");
+        assert_eq!(gaps.every, "2m");
+        assert_eq!(gaps.r#for, "20s");
+    }
+
+    // ---- Encoder config parsing -----------------------------------------------
+
+    #[test]
+    fn prometheus_text_encoder_parsed_correctly() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: "prometheus_text".to_string(),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("prometheus_text encoder should parse");
+        assert!(
+            matches!(config.encoder, EncoderConfig::PrometheusText),
+            "encoder should be PrometheusText"
+        );
+    }
+
+    // ---- Default generator when no value-mode given --------------------------
+
+    #[test]
+    fn default_value_mode_is_constant_at_zero() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("default config should succeed");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(value, 0.0, "default constant value should be 0.0");
+            }
+            other => panic!("expected Constant generator by default, got {other:?}"),
+        }
+    }
+
+    // ---- Round-trip: deserialize → validate → factories succeed ---------------
+
+    #[test]
+    fn round_trip_flags_to_valid_runnable_config() {
+        use sonda_core::encoder::create_encoder;
+        use sonda_core::generator::create_generator;
+        use sonda_core::sink::create_sink;
+
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(100.0),
+            duration: Some("1s".to_string()),
+            value_mode: Some("sine".to_string()),
+            amplitude: Some(5.0),
+            period_secs: Some(30.0),
+            offset: Some(10.0),
+            ..default_args()
+        };
+
+        let config = load_config(&args).expect("round-trip config should load");
+        validate_config(&config).expect("round-trip config should validate");
+        let _gen = create_generator(&config.generator, config.rate);
+        let _enc = create_encoder(&config.encoder);
+        let _sink = create_sink(&config.sink).expect("sink factory should succeed");
+    }
+}

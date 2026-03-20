@@ -152,3 +152,65 @@ pub fn parse_label(s: &str) -> Result<(String, String), String> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- parse_label happy path -----------------------------------------------
+
+    #[test]
+    fn parse_label_simple_key_value() {
+        let result = parse_label("hostname=t0-a1").expect("should parse");
+        assert_eq!(result, ("hostname".to_string(), "t0-a1".to_string()));
+    }
+
+    #[test]
+    fn parse_label_value_with_equals_sign() {
+        // Only the first '=' splits the key — remainder goes into the value.
+        let result = parse_label("key=a=b").expect("should parse");
+        assert_eq!(result, ("key".to_string(), "a=b".to_string()));
+    }
+
+    #[test]
+    fn parse_label_empty_value_is_allowed() {
+        let result = parse_label("key=").expect("should parse empty value");
+        assert_eq!(result, ("key".to_string(), String::new()));
+    }
+
+    #[test]
+    fn parse_label_zone_label() {
+        let result = parse_label("zone=eu1").expect("should parse zone label");
+        assert_eq!(result, ("zone".to_string(), "eu1".to_string()));
+    }
+
+    // ---- parse_label error cases ----------------------------------------------
+
+    #[test]
+    fn parse_label_no_equals_sign_returns_error() {
+        let err = parse_label("bad").expect_err("should fail without '='");
+        assert!(
+            err.contains("key=value"),
+            "error should mention key=value format, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_label_empty_string_returns_error() {
+        let err = parse_label("").expect_err("empty string should fail");
+        // No '=' present — should get the no-equals error.
+        assert!(
+            err.contains("key=value") || err.contains("'='"),
+            "error should mention format, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_label_empty_key_returns_error() {
+        let err = parse_label("=value").expect_err("empty key should fail");
+        assert!(
+            err.contains("empty"),
+            "error should mention empty key, got: {err}"
+        );
+    }
+}
