@@ -42,3 +42,44 @@ impl Sink for StdoutSink {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdout_sink_constructs_without_panicking() {
+        let _sink = StdoutSink::new();
+    }
+
+    #[test]
+    fn stdout_sink_default_constructs_without_panicking() {
+        let _sink = StdoutSink::default();
+    }
+
+    #[test]
+    fn write_and_flush_do_not_error() {
+        let mut sink = StdoutSink::new();
+        // Writing empty bytes is a valid no-op that still exercises the code path.
+        let write_result = sink.write(b"");
+        assert!(write_result.is_ok());
+        let flush_result = sink.flush();
+        assert!(flush_result.is_ok());
+    }
+
+    #[test]
+    fn write_non_empty_data_does_not_error() {
+        let mut sink = StdoutSink::new();
+        let result = sink.write(b"up{} 1 1700000000000\n");
+        assert!(result.is_ok());
+        // Flush to ensure buffered data is pushed through
+        assert!(sink.flush().is_ok());
+    }
+
+    /// Compile-time proof that StdoutSink satisfies Send + Sync.
+    #[test]
+    fn stdout_sink_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<StdoutSink>();
+    }
+}

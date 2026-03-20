@@ -34,3 +34,44 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_sink_stdout_returns_ok() {
+        let result = create_sink(&SinkConfig::Stdout);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_sink_stdout_write_and_flush_succeed() {
+        let mut sink = create_sink(&SinkConfig::Stdout).unwrap();
+        assert!(sink.write(b"").is_ok());
+        assert!(sink.flush().is_ok());
+    }
+
+    #[test]
+    fn sink_config_stdout_deserializes_from_yaml() {
+        let yaml = "stdout";
+        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        matches!(config, SinkConfig::Stdout);
+    }
+
+    #[test]
+    fn sink_config_is_cloneable() {
+        let config = SinkConfig::Stdout;
+        let cloned = config.clone();
+        // Both variants should produce valid sinks
+        assert!(create_sink(&config).is_ok());
+        assert!(create_sink(&cloned).is_ok());
+    }
+
+    #[test]
+    fn sink_config_is_debuggable() {
+        let config = SinkConfig::Stdout;
+        let s = format!("{config:?}");
+        assert!(s.contains("Stdout"));
+    }
+}
