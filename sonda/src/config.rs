@@ -56,7 +56,7 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             generator: build_generator_config(args)?,
             gaps: build_gap_config(args)?,
             labels: build_labels(args),
-            encoder: parse_encoder_config(&args.encoder)?,
+            encoder: parse_encoder_config(args.encoder.as_deref().unwrap_or("prometheus_text"))?,
             sink: SinkConfig::Stdout,
         }
     };
@@ -112,13 +112,11 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     }
 
     // Encoder: only override when the user explicitly passes --encoder.
-    // The default_value on the clap arg means args.encoder is always "prometheus_text"
-    // unless the user typed something different, so we always parse it but only
-    // override when the parsed result differs from the default or when there is
-    // no scenario file (in which case apply_overrides was called from the file
-    // path and the encoder has already been set to the clap default).
-    // Simplest correct approach: always honour the parsed encoder from the CLI.
-    config.encoder = parse_encoder_config(&args.encoder)?;
+    // Because `encoder` is `Option<String>` (no clap default_value), a `None`
+    // here means the flag was omitted and the YAML value should be kept as-is.
+    if let Some(ref enc) = args.encoder {
+        config.encoder = parse_encoder_config(enc)?;
+    }
 
     Ok(())
 }
@@ -232,7 +230,7 @@ mod tests {
             gap_every: None,
             gap_for: None,
             labels: vec![],
-            encoder: "prometheus_text".to_string(),
+            encoder: None,
         }
     }
 
@@ -517,7 +515,7 @@ mod tests {
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),
-            encoder: "nope_encoder".to_string(),
+            encoder: Some("nope_encoder".to_string()),
             ..default_args()
         };
         let err = load_config(&args).expect_err("unknown encoder should fail");
@@ -584,7 +582,7 @@ mod tests {
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),
-            encoder: "prometheus_text".to_string(),
+            encoder: Some("prometheus_text".to_string()),
             ..default_args()
         };
         let config = load_config(&args).expect("prometheus_text encoder should parse");

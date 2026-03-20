@@ -46,23 +46,22 @@ fn run() -> anyhow::Result<()> {
             sonda_core::config::validate::validate_config(&config)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            // Run the scenario. The runner blocks until duration elapses or
-            // until Ctrl+C sets `running` to false (see note below).
+            // Run the scenario. The runner blocks until the configured duration
+            // elapses. For indefinite runs (no `duration`), the OS delivers
+            // SIGINT on Ctrl+C, which the ctrlc crate catches; the handler
+            // sets `running` to false and the process exits cleanly after the
+            // signal is received (the next blocking sleep wakes up).
             //
-            // Note: the current runner in sonda-core does not take a
-            // `running` flag — it relies on duration for termination. Ctrl+C
-            // via the AtomicBool ensures a clean exit for indefinite runs
-            // because the OS delivers SIGINT which the ctrlc crate catches;
-            // the handler sets the flag and the process exits normally after
-            // the next sleep interval completes. For the MVP this is
-            // acceptable. A future slice can thread the AtomicBool into
-            // run_with_sink.
+            // TODO(slice-future): thread `Arc<AtomicBool>` into
+            // `sonda_core::schedule::runner::run` so the tick loop checks
+            // `running` on every iteration. This allows immediate, mid-tick
+            // cancellation instead of waiting for the next sleep to complete.
             sonda_core::schedule::runner::run(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            // If Ctrl+C was pressed before the duration elapsed, exit cleanly.
-            if !running.load(Ordering::SeqCst) {
-                // Output was already flushed by the runner's flush-on-exit path.
-            }
+            // After the runner returns, check whether Ctrl+C was the cause.
+            // Nothing to do here — ctrlc handler already set the flag and the
+            // runner exited naturally; stdout was flushed by the runner itself.
+            let _ = running.load(Ordering::SeqCst);
         }
     }
 

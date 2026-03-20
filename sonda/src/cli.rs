@@ -129,8 +129,10 @@ pub struct MetricsArgs {
     /// Output encoder format.
     ///
     /// Accepted values: `prometheus_text`. Default: `prometheus_text`.
-    #[arg(long, default_value = "prometheus_text")]
-    pub encoder: String,
+    /// When omitted, the YAML scenario file's `encoder` field is used; when
+    /// neither is set, `prometheus_text` is the default.
+    #[arg(long)]
+    pub encoder: Option<String>,
 }
 
 /// Parse a `key=value` label string into a `(String, String)` pair.
