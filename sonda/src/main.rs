@@ -46,22 +46,17 @@ fn run() -> anyhow::Result<()> {
             sonda_core::config::validate::validate_config(&config)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            // Run the scenario. The runner blocks until the configured duration
-            // elapses. For indefinite runs (no `duration`), the OS delivers
-            // SIGINT on Ctrl+C, which the ctrlc crate catches; the handler
-            // sets `running` to false and the process exits cleanly after the
-            // signal is received (the next blocking sleep wakes up).
-            //
-            // TODO(slice-future): thread `Arc<AtomicBool>` into
-            // `sonda_core::schedule::runner::run` so the tick loop checks
-            // `running` on every iteration. This allows immediate, mid-tick
-            // cancellation instead of waiting for the next sleep to complete.
-            sonda_core::schedule::runner::run(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            // After the runner returns, check whether Ctrl+C was the cause.
-            // Nothing to do here — ctrlc handler already set the flag and the
-            // runner exited naturally; stdout was flushed by the runner itself.
-            let _ = running.load(Ordering::SeqCst);
+            // Build a sink from the config so we can pass it and the shutdown
+            // flag directly to run_with_sink. This allows Ctrl+C to be checked
+            // on every tick rather than waiting for a blocking sleep to wake up.
+            let mut sink = sonda_core::sink::create_sink(&config.sink)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            sonda_core::schedule::runner::run_with_sink(
+                &config,
+                sink.as_mut(),
+                Some(running.as_ref()),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
     }
 
