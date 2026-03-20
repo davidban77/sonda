@@ -1,0 +1,20 @@
+[package]
+name = "sonda-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HTTP control plane for Sonda synthetic telemetry generator"
+
+[[bin]]
+name = "sonda-server"
+path = "src/main.rs"
+
+[dependencies]
+sonda-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+# axum and tokio added when Phase 3 begins
+# axum = "0.7"
+# tokio = { version = "1", features = ["full"] }

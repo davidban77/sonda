@@ -1,0 +1,18 @@
+[package]
+name = "sonda"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI for Sonda synthetic telemetry generator"
+
+[[bin]]
+name = "sonda"
+path = "src/main.rs"
+
+[dependencies]
+sonda-core = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
