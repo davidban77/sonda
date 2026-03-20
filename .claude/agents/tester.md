@@ -53,9 +53,7 @@ You are testing **Slice $ARGUMENTS**. This is the only slice you work on.
    cargo fmt --all -- --check
    ```
 
-8. **Commit**:
-   - Stage only test files.
-   - Commit message: `test(slice-$ARGUMENTS): <short description>`
+8. **Commit**: Use the `/commit` skill. Commit message: `test(slice-$ARGUMENTS): <short description>`
 
 9. **Report**: Provide a summary of tests written, pass/fail counts, coverage assessment,
    and any code bugs discovered (file + line + description).

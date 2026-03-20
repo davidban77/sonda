@@ -56,9 +56,7 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    cargo fmt --all -- --check
    ```
 
-8. **Commit**:
-   - Stage only the files you created or modified.
-   - Commit message: `feat(slice-$ARGUMENTS): <short description>`
+8. **Commit**: Use the `/commit` skill. Commit message: `feat(slice-$ARGUMENTS): <short description>`
 
 ## Rules
 
