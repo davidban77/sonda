@@ -4,15 +4,15 @@
 //! schedulers, encoders, and sinks. The CLI and HTTP server are thin layers
 //! that call into this library.
 
-pub mod model;
-pub mod generator;
-pub mod schedule;
-pub mod encoder;
-pub mod sink;
 pub mod config;
+pub mod encoder;
+pub mod generator;
+pub mod model;
+pub mod schedule;
+pub mod sink;
 
-pub use model::metric::MetricEvent;
 pub use model::metric::Labels;
+pub use model::metric::MetricEvent;
 
 /// Top-level error type for sonda-core.
 #[derive(Debug, thiserror::Error)]
