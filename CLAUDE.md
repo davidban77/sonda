@@ -25,11 +25,15 @@ sonda/                       ← workspace root (you are here)
 │   ├── phase-2-logs-concurrency.md
 │   └── phase-3-server.md
 └── .claude/
-    └── commands/            ← agent role commands (see Agent Workflow below)
-        ├── implement.md
-        ├── test.md
-        ├── review.md
-        └── uat.md
+    ├── agents/              ← subagent definitions (see Agent Workflow below)
+    │   ├── implementer.md   ← writes production code in isolated worktree
+    │   ├── tester.md        ← writes and runs tests
+    │   ├── reviewer.md      ← audits code (read-only)
+    │   └── uat.md           ← validates from a real user's perspective
+    └── skills/              ← reusable workflow patterns
+        ├── add-generator/   ← how to add a new ValueGenerator
+        ├── add-encoder/     ← how to add a new Encoder
+        └── add-sink/        ← how to add a new Sink
 ```
 
 **sonda-core** owns: telemetry models, schedules, value generators, encoders, sinks.
@@ -47,28 +51,42 @@ proceeds slice-by-slice, with a human approval gate between slices.
 
 ### Roles
 
-| Role | Command | Responsibility |
-|------|---------|---------------|
-| **Implementer** | `/implement` | Reads the slice spec, writes production code. Does not write tests. |
-| **Tester** | `/test` | Reads the slice spec and implemented code, writes unit + integration tests, runs them. |
-| **Reviewer** | `/review` | Audits code against architecture doc and coding conventions. Checks consistency, naming, patterns, error handling. Reports issues. |
-| **UAT** | `/uat` | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
+| Role | Subagent | Model | Responsibility |
+|------|----------|-------|---------------|
+| **Implementer** | `@implementer` | sonnet | Reads the slice spec, writes production code in an isolated worktree. Does not write tests. |
+| **Tester** | `@tester` | sonnet | Reads the slice spec and implemented code, writes unit + integration tests, runs them. |
+| **Reviewer** | `@reviewer` | opus | Audits code against architecture doc and coding conventions. Read-only — reports issues. |
+| **UAT** | `@uat` | opus | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
 
 ### Workflow per Slice
 
+Each slice follows this sequence. The human orchestrator spawns each subagent with the slice ID:
+
 ```
-1. Human sets the current slice:  export SONDA_SLICE="0.2"
-2. /implement   → agent reads slice spec, writes code, commits
-3. /test        → agent reads spec + code, writes tests, runs them, commits
-4. /review      → agent audits everything, files issues or approves
-5. /uat         → agent builds binary, runs user scenarios, validates output
-6. Human reviews results and approves → move to next slice
+1. @implementer 0.2   → reads slice spec, writes code in worktree, commits
+2. @tester 0.2        → reads spec + code, writes tests, runs them, commits
+3. @reviewer 0.2      → audits everything, reports PASS/FAIL/PASS WITH NOTES
+4. @uat 0.2           → builds binary, runs user scenarios, validates output
+5. Human reviews results and approves → move to next slice
 ```
+
+If any role reports a BLOCKER, the implementer re-runs to fix it before retrying.
+
+### Subagent Details
+
+Subagent definitions live in `.claude/agents/`. Each has YAML frontmatter controlling:
+
+- **tools**: which tools the agent can use (e.g., reviewer has no Write/Edit)
+- **model**: sonnet for implementation speed, opus for deep analysis
+- **permissionMode**: `acceptEdits` for code writers, `plan` (read-only) for reviewer
+- **isolation**: `worktree` for implementer (isolated git worktree)
+
+The slice ID is passed via `$ARGUMENTS` — e.g., `@implementer 0.2` sets `$ARGUMENTS=0.2`.
 
 ### Rules for All Agents
 
 - **Read the slice spec first.** Every agent starts by reading the current slice from the phase plan
-  in `docs/`. The slice ID is passed as an argument (e.g., `/implement 0.2`).
+  in `docs/`. The slice ID is passed as `$ARGUMENTS` (e.g., `@implementer 0.2`).
 - **Read architecture.md.** Every agent must check `docs/architecture.md` for design decisions before
   writing or reviewing code.
 - **Read the crate CLAUDE.md.** Before modifying a crate, read its `CLAUDE.md` for crate-specific
@@ -79,6 +97,15 @@ proceeds slice-by-slice, with a human approval gate between slices.
   do not commit — they report.
 - **Exit gates are hard.** A slice is not done until all four roles have passed. Failures get fixed
   by re-running the failing role.
+
+### Skills
+
+Reusable workflow patterns live in `.claude/skills/`. Agents reference these when performing common
+tasks:
+
+- **add-generator** — step-by-step guide to adding a new `ValueGenerator` implementation
+- **add-encoder** — step-by-step guide to adding a new `Encoder` implementation
+- **add-sink** — step-by-step guide to adding a new `Sink` implementation
 
 ---
 
