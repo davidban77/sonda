@@ -27,7 +27,7 @@ fn is_valid_label_key(s: &str) -> bool {
 /// Returns `true` if `s` is a valid Prometheus metric name.
 ///
 /// Valid metric names match `[a-zA-Z_:][a-zA-Z0-9_:]*` and must not be empty.
-fn is_valid_metric_name(s: &str) -> bool {
+pub(crate) fn is_valid_metric_name(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }

@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::model::metric::is_valid_metric_name;
 use crate::SondaError;
 
 use super::ScenarioConfig;
@@ -81,8 +82,8 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
 /// Returns [`SondaError::Config`] with a descriptive message naming the field
 /// and the invalid value.
 pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
-    // Rate must be strictly positive.
-    if config.rate <= 0.0 {
+    // Rate must be strictly positive. Explicit NaN check ensures NaN is also rejected.
+    if config.rate.is_nan() || config.rate <= 0.0 {
         return Err(SondaError::Config(format!(
             "rate must be positive, got {}",
             config.rate
@@ -91,17 +92,15 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
 
     // Duration must be parseable if provided.
     if let Some(ref dur_str) = config.duration {
-        parse_duration(dur_str)
-            .map_err(|e| SondaError::Config(format!("invalid duration {:?}: {}", dur_str, e)))?;
+        parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
     }
 
     // Gap consistency: gap_for < gap_every.
     if let Some(ref gap) = config.gaps {
-        let every = parse_duration(&gap.every).map_err(|e| {
-            SondaError::Config(format!("invalid gaps.every {:?}: {}", gap.every, e))
-        })?;
+        let every = parse_duration(&gap.every)
+            .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
         let for_dur = parse_duration(&gap.r#for)
-            .map_err(|e| SondaError::Config(format!("invalid gaps.for {:?}: {}", gap.r#for, e)))?;
+            .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
         if for_dur >= every {
             return Err(SondaError::Config(format!(
                 "gaps.for ({:?}) must be less than gaps.every ({:?})",
@@ -121,19 +120,16 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     Ok(())
 }
 
-/// Returns `true` if `s` is a valid Prometheus metric name.
+/// Wrap a `SondaError::Config` from `parse_duration` with additional field context.
 ///
-/// Valid metric names match `[a-zA-Z_:][a-zA-Z0-9_:]*` and must not be empty.
-fn is_valid_metric_name(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == ':' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+/// Extracts the inner message string from the error so the final error reads
+/// `"<label> <value_quoted>: <original message>"` without double-prefixing.
+fn prepend_context(label: &str, value: &str, err: SondaError) -> SondaError {
+    let inner_msg = match err {
+        SondaError::Config(ref msg) => msg.clone(),
+        _ => err.to_string(),
+    };
+    SondaError::Config(format!("{} {:?}: {}", label, value, inner_msg))
 }
 
 #[cfg(test)]

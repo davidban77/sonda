@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::encoder::{EncoderConfig, EncoderConfig as DefaultEncoder};
+use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
 use crate::sink::SinkConfig;
 
@@ -23,7 +23,7 @@ pub struct GapConfig {
 }
 
 fn default_encoder() -> EncoderConfig {
-    DefaultEncoder::PrometheusText
+    EncoderConfig::PrometheusText
 }
 
 fn default_sink() -> SinkConfig {
