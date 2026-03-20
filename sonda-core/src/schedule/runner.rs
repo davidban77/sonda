@@ -13,29 +13,48 @@ use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent};
 use crate::schedule::{is_in_gap, time_until_gap_end, GapWindow};
-use crate::sink::create_sink;
+use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
 ///
+/// This is the primary entry point. It constructs a sink from the config and then
+/// delegates to [`run_with_sink`].
+///
 /// This function blocks the calling thread until the scenario duration has
 /// elapsed. If no duration is specified in the config it runs indefinitely.
 ///
+/// # Errors
+///
+/// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
+pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
+    let mut sink = create_sink(&config.sink)?;
+    run_with_sink(config, sink.as_mut())
+}
+
+/// Run a scenario to completion, writing encoded events into the provided sink.
+///
+/// This function is the core event loop implementation. It accepts any [`Sink`]
+/// implementation, which makes it usable in tests with a [`MemorySink`](crate::sink::memory::MemorySink)
+/// instead of the config-specified sink.
+///
 /// # Steps
 ///
-/// 1. Parses the config and builds the generator, encoder, and sink.
+/// 1. Parses the config and builds the generator and encoder.
 /// 2. Builds the [`Labels`] set from the config label map.
 /// 3. Enters a tight rate-control loop:
 ///    - Checks duration — exits if exceeded.
 ///    - Checks gap window — sleeps until gap ends if currently in one.
 ///    - Generates a value, builds a [`MetricEvent`], encodes it, writes to sink.
 ///    - Sleeps for the remaining inter-event interval (accounting for elapsed work).
-/// 4. Flushes the sink before returning.
+/// 4. Flushes the sink before returning, even if the loop exited via an error.
 ///
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
+/// If an error occurs during the loop and flushing also fails, the loop error
+/// is returned (the flush error is discarded to preserve the original cause).
+pub fn run_with_sink(config: &ScenarioConfig, sink: &mut dyn Sink) -> Result<(), SondaError> {
     // Parse the optional total duration.
     let total_duration: Option<Duration> =
         config.duration.as_deref().map(parse_duration).transpose()?;
@@ -52,10 +71,9 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
         })
         .transpose()?;
 
-    // Build generator, encoder, and sink from config.
+    // Build generator and encoder from config.
     let generator = create_generator(&config.generator, config.rate);
     let encoder = create_encoder(&config.encoder);
-    let mut sink = create_sink(&config.sink)?;
 
     // Build the label set from the config's optional HashMap.
     let labels: Labels = if let Some(ref label_map) = config.labels {
@@ -68,6 +86,10 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
         Labels::from_pairs(&[])?
     };
 
+    // Clone the metric name once before the hot loop.
+    // The name is invariant for the lifetime of a scenario.
+    let name = config.name.clone();
+
     // The target inter-event interval.
     let interval = Duration::from_secs_f64(1.0 / config.rate);
 
@@ -77,67 +99,75 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
     let start = Instant::now();
     let mut tick: u64 = 0;
 
-    loop {
-        let elapsed = start.elapsed();
+    // Run the event loop, capturing any error so we can still flush before returning.
+    let loop_result = (|| -> Result<(), SondaError> {
+        loop {
+            let elapsed = start.elapsed();
 
-        // Check duration limit.
-        if let Some(total) = total_duration {
-            if elapsed >= total {
-                break;
-            }
-        }
-
-        // Check gap window — sleep through it rather than busy-wait.
-        if let Some(ref gap) = gap_window {
-            if is_in_gap(elapsed, gap) {
-                let sleep_for = time_until_gap_end(elapsed, gap);
-                if sleep_for > Duration::ZERO {
-                    thread::sleep(sleep_for);
+            // Check duration limit.
+            if let Some(total) = total_duration {
+                if elapsed >= total {
+                    break;
                 }
-                // After sleeping, re-check duration before emitting.
-                continue;
+            }
+
+            // Check gap window — sleep through it rather than busy-wait.
+            if let Some(ref gap) = gap_window {
+                if is_in_gap(elapsed, gap) {
+                    let sleep_for = time_until_gap_end(elapsed, gap);
+                    if sleep_for > Duration::ZERO {
+                        thread::sleep(sleep_for);
+                    }
+                    // After sleeping, re-check duration before emitting.
+                    continue;
+                }
+            }
+
+            // Timestamp the event at the start of this iteration.
+            let now = std::time::SystemTime::now();
+
+            // Generate the value and build the metric event.
+            // MetricEvent::with_timestamp takes owned String and Labels, so we
+            // must clone both per tick. The `name` clone is cheap (heap copy of a
+            // short string); `labels` clone is proportional to label count, which
+            // is typically small and fixed. A zero-copy API is possible post-MVP
+            // if profiling shows this to be a bottleneck.
+            let value = generator.value(tick);
+            let event = MetricEvent::with_timestamp(name.clone(), value, labels.clone(), now)?;
+
+            // Encode and write.
+            buf.clear();
+            encoder.encode_metric(&event, &mut buf)?;
+            sink.write(&buf)?;
+
+            tick += 1;
+
+            // Rate control: sleep for whatever time remains in this interval.
+            let iteration_elapsed = start.elapsed() - elapsed;
+            if interval > iteration_elapsed {
+                thread::sleep(interval - iteration_elapsed);
             }
         }
+        Ok(())
+    })();
 
-        // Timestamp the event at the start of this iteration.
-        let now = std::time::SystemTime::now();
-
-        // Generate the value and build the metric event.
-        let value = generator.value(tick);
-        let event = MetricEvent::with_timestamp(config.name.clone(), value, labels.clone(), now)?;
-
-        // Encode and write.
-        buf.clear();
-        encoder.encode_metric(&event, &mut buf)?;
-        sink.write(&buf)?;
-
-        tick += 1;
-
-        // Rate control: sleep for whatever time remains in this interval.
-        let iteration_elapsed = start.elapsed() - elapsed;
-        if interval > iteration_elapsed {
-            thread::sleep(interval - iteration_elapsed);
-        }
+    // Always flush buffered data before returning, even on error paths.
+    // If the loop succeeded, propagate any flush error.
+    // If the loop failed, preserve the original error (discard flush error).
+    let flush_result = sink.flush();
+    match loop_result {
+        Ok(()) => flush_result,
+        Err(e) => Err(e),
     }
-
-    // Flush any buffered data before returning.
-    sink.flush()?;
-
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
-    use crate::config::validate::parse_duration;
     use crate::config::{GapConfig, ScenarioConfig};
-    use crate::encoder::{create_encoder, EncoderConfig};
-    use crate::generator::{create_generator, GeneratorConfig};
-    use crate::model::metric::{Labels, MetricEvent};
-    use crate::schedule::{is_in_gap, time_until_gap_end, GapWindow};
+    use crate::encoder::EncoderConfig;
+    use crate::generator::GeneratorConfig;
     use crate::sink::memory::MemorySink;
-    use crate::sink::{Sink, SinkConfig};
+    use crate::sink::SinkConfig;
 
     /// Build a minimal ScenarioConfig suitable for a short integration run.
     fn make_config(rate: f64, duration: &str, gaps: Option<GapConfig>) -> ScenarioConfig {
@@ -149,87 +179,8 @@ mod tests {
             gaps,
             labels: None,
             encoder: EncoderConfig::PrometheusText,
-            sink: SinkConfig::Stdout, // not used in the test helper below
+            sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
         }
-    }
-
-    /// Mirror of the `run` event loop that writes into a caller-provided `MemorySink`
-    /// instead of creating one from config. This lets integration tests inspect output
-    /// without real I/O.
-    fn run_with_memory_sink(
-        config: &ScenarioConfig,
-        sink: &mut MemorySink,
-    ) -> Result<(), crate::SondaError> {
-        let total_duration: Option<Duration> =
-            config.duration.as_deref().map(parse_duration).transpose()?;
-
-        let gap_window: Option<GapWindow> = config
-            .gaps
-            .as_ref()
-            .map(|g| -> Result<GapWindow, crate::SondaError> {
-                Ok(GapWindow {
-                    every: parse_duration(&g.every)?,
-                    duration: parse_duration(&g.r#for)?,
-                })
-            })
-            .transpose()?;
-
-        let generator = create_generator(&config.generator, config.rate);
-        let encoder = create_encoder(&config.encoder);
-
-        let labels: Labels = if let Some(ref label_map) = config.labels {
-            let pairs: Vec<(&str, &str)> = label_map
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            Labels::from_pairs(&pairs)?
-        } else {
-            Labels::from_pairs(&[])?
-        };
-
-        let interval = Duration::from_secs_f64(1.0 / config.rate);
-        let mut buf: Vec<u8> = Vec::with_capacity(256);
-        let start = Instant::now();
-        let mut tick: u64 = 0;
-
-        loop {
-            let elapsed = start.elapsed();
-
-            if let Some(total) = total_duration {
-                if elapsed >= total {
-                    break;
-                }
-            }
-
-            if let Some(ref gap) = gap_window {
-                if is_in_gap(elapsed, gap) {
-                    let sleep_for = time_until_gap_end(elapsed, gap);
-                    if sleep_for > Duration::ZERO {
-                        std::thread::sleep(sleep_for);
-                    }
-                    continue;
-                }
-            }
-
-            let now = std::time::SystemTime::now();
-            let value = generator.value(tick);
-            let event =
-                MetricEvent::with_timestamp(config.name.clone(), value, labels.clone(), now)?;
-
-            buf.clear();
-            encoder.encode_metric(&event, &mut buf)?;
-            sink.write(&buf)?;
-
-            tick += 1;
-
-            let iteration_elapsed = start.elapsed() - elapsed;
-            if interval > iteration_elapsed {
-                std::thread::sleep(interval - iteration_elapsed);
-            }
-        }
-
-        sink.flush()?;
-        Ok(())
     }
 
     // ---- run: basic correctness ----------------------------------------------
@@ -253,7 +204,7 @@ mod tests {
     fn integration_rate_100_duration_1s_emits_approximately_100_events() {
         let config = make_config(100.0, "1s", None);
         let mut sink = MemorySink::new();
-        run_with_memory_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -267,7 +218,7 @@ mod tests {
     fn integration_output_lines_start_with_metric_name() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        run_with_memory_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         for line in output.lines() {
@@ -283,7 +234,7 @@ mod tests {
     fn integration_output_ends_with_newline() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        run_with_memory_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink).expect("run must succeed");
 
         assert!(
             sink.buffer.ends_with(b"\n"),
@@ -308,7 +259,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        run_with_memory_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -357,7 +308,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let mut sink = MemorySink::new();
-        run_with_memory_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         assert!(

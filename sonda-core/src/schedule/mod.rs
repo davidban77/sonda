@@ -28,6 +28,12 @@ pub struct BurstWindow {
 }
 
 /// Schedule configuration for a scenario.
+///
+/// This struct is defined here for future use by the runner and any caller that
+/// needs to inspect or serialize the resolved schedule. It is not yet consumed
+/// by the runner (which reads directly from `ScenarioConfig`); the runner will
+/// be refactored to accept a `Schedule` in a later slice.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Schedule {
     /// Target events per second.
