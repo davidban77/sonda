@@ -56,7 +56,7 @@ mod tests {
     fn sink_config_stdout_deserializes_from_yaml() {
         let yaml = "stdout";
         let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
-        matches!(config, SinkConfig::Stdout);
+        assert!(matches!(config, SinkConfig::Stdout));
     }
 
     #[test]
