@@ -14,11 +14,22 @@ The **core library is the product**. The CLI and HTTP server are delivery mechan
 This is a Cargo workspace with three crates:
 
 ```
-sonda/                  ← workspace root (you are here)
-├── sonda-core/         ← library crate: the engine (all domain logic)
-├── sonda/              ← binary crate: the CLI (thin layer over core)
-├── sonda-server/       ← binary crate: HTTP API control plane (post-MVP)
-└── docs/               ← architecture doc, phase plans, ADRs
+sonda/                       ← workspace root (you are here)
+├── sonda-core/              ← library crate: the engine (all domain logic)
+├── sonda/                   ← binary crate: the CLI (thin layer over core)
+├── sonda-server/            ← binary crate: HTTP API control plane (post-MVP)
+├── docs/                    ← architecture doc, phase plans
+│   ├── architecture.md
+│   ├── phase-0-mvp.md
+│   ├── phase-1-encoders-sinks.md
+│   ├── phase-2-logs-concurrency.md
+│   └── phase-3-server.md
+└── .claude/
+    └── commands/            ← agent role commands (see Agent Workflow below)
+        ├── implement.md
+        ├── test.md
+        ├── review.md
+        └── uat.md
 ```
 
 **sonda-core** owns: telemetry models, schedules, value generators, encoders, sinks.
@@ -26,6 +37,50 @@ sonda/                  ← workspace root (you are here)
 **sonda-server** owns: REST API (axum), scenario lifecycle, stats endpoints.
 
 No business logic lives outside sonda-core. If the CLI or server needs new behavior, it goes in core.
+
+---
+
+## Agent Workflow
+
+This project is developed by a team of Claude Code agents, each with a specific role. Development
+proceeds slice-by-slice, with a human approval gate between slices.
+
+### Roles
+
+| Role | Command | Responsibility |
+|------|---------|---------------|
+| **Implementer** | `/implement` | Reads the slice spec, writes production code. Does not write tests. |
+| **Tester** | `/test` | Reads the slice spec and implemented code, writes unit + integration tests, runs them. |
+| **Reviewer** | `/review` | Audits code against architecture doc and coding conventions. Checks consistency, naming, patterns, error handling. Reports issues. |
+| **UAT** | `/uat` | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
+
+### Workflow per Slice
+
+```
+1. Human sets the current slice:  export SONDA_SLICE="0.2"
+2. /implement   → agent reads slice spec, writes code, commits
+3. /test        → agent reads spec + code, writes tests, runs them, commits
+4. /review      → agent audits everything, files issues or approves
+5. /uat         → agent builds binary, runs user scenarios, validates output
+6. Human reviews results and approves → move to next slice
+```
+
+### Rules for All Agents
+
+- **Read the slice spec first.** Every agent starts by reading the current slice from the phase plan
+  in `docs/`. The slice ID is passed as an argument (e.g., `/implement 0.2`).
+- **Read architecture.md.** Every agent must check `docs/architecture.md` for design decisions before
+  writing or reviewing code.
+- **Read the crate CLAUDE.md.** Before modifying a crate, read its `CLAUDE.md` for crate-specific
+  guidance.
+- **One slice at a time.** Never work ahead. Each slice builds on the verified output of the previous
+  slice.
+- **Commit after each role.** The implementer commits code, the tester commits tests. Reviewer and UAT
+  do not commit — they report.
+- **Exit gates are hard.** A slice is not done until all four roles have passed. Failures get fixed
+  by re-running the failing role.
+
+---
 
 ## Key Design Decisions
 
@@ -64,7 +119,7 @@ step-by-step guidance.
 - **Error handling**: use `thiserror` for library errors in sonda-core, `anyhow` in the CLI and server.
   Never `unwrap()` in library code. `expect()` only with a clear message for truly unrecoverable cases.
 - **Allocations**: minimize per-event allocations. Pre-build label prefixes, reuse buffers, write into
-  caller-provided `Vec<u8>`. See `docs/architecture.docx` Section 5.4 on encoder pre-building.
+  caller-provided `Vec<u8>`. See `docs/architecture.md` Section 5.4 on encoder pre-building.
 - **Testing**: every generator, encoder, and schedule function gets a unit test. Use deterministic seeds
   for any RNG-based generator. Tests live in `#[cfg(test)] mod tests` within the same file.
 - **Naming**: snake_case for modules and functions, PascalCase for types and traits. No abbreviations
@@ -72,6 +127,19 @@ step-by-step guidance.
 - **Formatting**: `cargo fmt` before every commit. `cargo clippy -- -D warnings` must pass.
 - **Documentation**: public items in sonda-core must have `///` doc comments. Internal items should have
   comments when the "why" is not obvious from the code.
+
+## Quality Gates (enforced by all agents)
+
+Every commit must pass:
+
+```bash
+cargo build --workspace                        # compiles
+cargo test --workspace                         # all tests pass
+cargo clippy --workspace -- -D warnings        # no lint warnings
+cargo fmt --all -- --check                     # formatting clean
+```
+
+The UAT agent additionally runs the binary and validates real output.
 
 ## How to Build and Test
 
@@ -105,7 +173,7 @@ Development is split into four phases. Each has a dedicated plan doc in `docs/`:
 ## Reference Documents
 
 - `docs/architecture.md` — full architecture design document
-- `docs/phase-0-mvp.md` — MVP implementation plan (to be created)
-- `docs/phase-1-encoders-sinks.md` — Phase 1 plan (to be created)
-- `docs/phase-2-logs-concurrency.md` — Phase 2 plan (to be created)
-- `docs/phase-3-server.md` — Phase 3 plan (to be created)
+- `docs/phase-0-mvp.md` — Phase 0 MVP implementation plan
+- `docs/phase-1-encoders-sinks.md` — Phase 1 plan
+- `docs/phase-2-logs-concurrency.md` — Phase 2 plan
+- `docs/phase-3-server.md` — Phase 3 plan
