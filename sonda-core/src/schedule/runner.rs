@@ -4,6 +4,7 @@
 //! [`ScenarioConfig`], builds the generator, encoder, and sink, then drives the
 //! tight rate-controlled loop that emits encoded metric events.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use crate::SondaError;
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
 ///
 /// This is the primary entry point. It constructs a sink from the config and then
-/// delegates to [`run_with_sink`].
+/// delegates to [`run_with_sink`] with no shutdown flag.
 ///
 /// This function blocks the calling thread until the scenario duration has
 /// elapsed. If no duration is specified in the config it runs indefinitely.
@@ -29,7 +30,7 @@ use crate::SondaError;
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink)?;
-    run_with_sink(config, sink.as_mut())
+    run_with_sink(config, sink.as_mut(), None)
 }
 
 /// Run a scenario to completion, writing encoded events into the provided sink.
@@ -38,11 +39,20 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
 /// implementation, which makes it usable in tests with a [`MemorySink`](crate::sink::memory::MemorySink)
 /// instead of the config-specified sink.
 ///
+/// # Parameters
+///
+/// * `config` — the scenario configuration.
+/// * `sink` — the destination for encoded metric events.
+/// * `shutdown` — an optional atomic flag; when set to `false` the loop exits
+///   cleanly after the current tick, flushes the sink, and returns `Ok(())`.
+///   Pass `None` if no external shutdown signal is needed (e.g., in tests).
+///
 /// # Steps
 ///
 /// 1. Parses the config and builds the generator and encoder.
 /// 2. Builds the [`Labels`] set from the config label map.
 /// 3. Enters a tight rate-control loop:
+///    - Checks shutdown flag — exits cleanly if cleared.
 ///    - Checks duration — exits if exceeded.
 ///    - Checks gap window — sleeps until gap ends if currently in one.
 ///    - Generates a value, builds a [`MetricEvent`], encodes it, writes to sink.
@@ -54,7 +64,11 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 /// If an error occurs during the loop and flushing also fails, the loop error
 /// is returned (the flush error is discarded to preserve the original cause).
-pub fn run_with_sink(config: &ScenarioConfig, sink: &mut dyn Sink) -> Result<(), SondaError> {
+pub fn run_with_sink(
+    config: &ScenarioConfig,
+    sink: &mut dyn Sink,
+    shutdown: Option<&AtomicBool>,
+) -> Result<(), SondaError> {
     // Parse the optional total duration.
     let total_duration: Option<Duration> =
         config.duration.as_deref().map(parse_duration).transpose()?;
@@ -102,6 +116,14 @@ pub fn run_with_sink(config: &ScenarioConfig, sink: &mut dyn Sink) -> Result<(),
     // Run the event loop, capturing any error so we can still flush before returning.
     let loop_result = (|| -> Result<(), SondaError> {
         loop {
+            // Check shutdown flag first — highest priority exit path.
+            // SeqCst ensures we see the store from the signal handler promptly.
+            if let Some(flag) = shutdown {
+                if !flag.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+
             let elapsed = start.elapsed();
 
             // Check duration limit.
@@ -204,7 +226,7 @@ mod tests {
     fn integration_rate_100_duration_1s_emits_approximately_100_events() {
         let config = make_config(100.0, "1s", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -218,7 +240,7 @@ mod tests {
     fn integration_output_lines_start_with_metric_name() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         for line in output.lines() {
@@ -234,7 +256,7 @@ mod tests {
     fn integration_output_ends_with_newline() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
 
         assert!(
             sink.buffer.ends_with(b"\n"),
@@ -259,7 +281,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -308,7 +330,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         assert!(

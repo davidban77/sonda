@@ -1,0 +1,16 @@
+name: interface_oper_state
+rate: 100
+duration: 5s
+generator:
+  type: sine
+  amplitude: 5.0
+  period_secs: 30
+  offset: 10.0
+gaps:
+  every: 2m
+  for: 20s
+labels:
+  hostname: t0-a1
+  zone: eu1
+encoder: prometheus_text
+sink: stdout

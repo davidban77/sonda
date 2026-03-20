@@ -1,7 +1,64 @@
-//! sonda CLI — thin layer over sonda-core.
+//! sonda — CLI entrypoint.
+//!
+//! Parses arguments, loads config, validates it, then delegates to the
+//! `sonda-core` scenario runner. All signal-generation logic lives in
+//! `sonda-core`; this file is pure orchestration.
+
+mod cli;
+mod config;
+
+use std::process;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use clap::Parser;
+
+use cli::{Cli, Commands};
 
 fn main() {
-    println!("sonda: synthetic telemetry generator");
-    println!("Run `sonda --help` for usage.");
-    // TODO: Phase 0 MVP — add clap parsing, config loading, scenario runner
+    if let Err(err) = run() {
+        eprintln!("error: {err:#}");
+        process::exit(1);
+    }
+}
+
+/// Top-level orchestration: parse → load → validate → run.
+///
+/// Separated from `main` so errors can be returned with `?` and printed
+/// uniformly.
+fn run() -> anyhow::Result<()> {
+    // Register Ctrl+C handler. The runner loop checks `running` each tick so
+    // it can exit gracefully instead of being killed mid-write.
+    let running = Arc::new(AtomicBool::new(true));
+    {
+        let r = Arc::clone(&running);
+        ctrlc::set_handler(move || {
+            r.store(false, Ordering::SeqCst);
+        })
+        .expect("failed to register Ctrl+C handler");
+    }
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Metrics(ref args) => {
+            let config = config::load_config(args)?;
+            sonda_core::config::validate::validate_config(&config)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            // Build a sink from the config so we can pass it and the shutdown
+            // flag directly to run_with_sink. This allows Ctrl+C to be checked
+            // on every tick rather than waiting for a blocking sleep to wake up.
+            let mut sink = sonda_core::sink::create_sink(&config.sink)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            sonda_core::schedule::runner::run_with_sink(
+                &config,
+                sink.as_mut(),
+                Some(running.as_ref()),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
+    }
+
+    Ok(())
 }
