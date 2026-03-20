@@ -13,5 +13,9 @@ use crate::model::metric::MetricEvent;
 /// metric name validation) at construction time.
 pub trait Encoder: Send + Sync {
     /// Encode a metric event into the provided buffer.
-    fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), crate::SondaError>;
+    fn encode_metric(
+        &self,
+        event: &MetricEvent,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), crate::SondaError>;
 }
