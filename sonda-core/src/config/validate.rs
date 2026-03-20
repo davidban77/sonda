@@ -293,6 +293,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_config_rate_nan_returns_err() {
+        let config = minimal_config_with_rate(f64::NAN);
+        let result = validate_config(&config);
+        assert!(result.is_err(), "rate=NaN must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("rate"),
+            "error must mention 'rate', got: {msg}"
+        );
+    }
+
     // ---- validate_config: duration -------------------------------------------
 
     #[test]
@@ -736,6 +748,63 @@ generator:
         assert_eq!(cloned.r#for, "20s");
         let debug_str = format!("{gap:?}");
         assert!(debug_str.contains("2m"));
+    }
+
+    // ---- Error messages: no double "configuration error:" prefix ------------
+
+    #[test]
+    fn validate_config_gap_invalid_every_error_has_no_double_prefix() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.gaps = Some(GapConfig {
+            every: "bad".to_string(),
+            r#for: "5s".to_string(),
+        });
+        let msg = err_msg(validate_config(&config));
+        // The message must start with "configuration error:" exactly once.
+        // If prepend_context was broken it would produce
+        // "configuration error: ... configuration error: ..." which contains
+        // the prefix a second time after the first colon.
+        let first_pos = msg
+            .find("configuration error:")
+            .expect("must contain prefix");
+        let second_pos = msg[first_pos + 1..].find("configuration error:");
+        assert!(
+            second_pos.is_none(),
+            "error message must not double-prefix 'configuration error:': {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_gap_invalid_for_error_has_no_double_prefix() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.gaps = Some(GapConfig {
+            every: "10s".to_string(),
+            r#for: "bad".to_string(),
+        });
+        let msg = err_msg(validate_config(&config));
+        let first_pos = msg
+            .find("configuration error:")
+            .expect("must contain prefix");
+        let second_pos = msg[first_pos + 1..].find("configuration error:");
+        assert!(
+            second_pos.is_none(),
+            "error message must not double-prefix 'configuration error:': {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_invalid_duration_error_has_no_double_prefix() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.duration = Some("bad".to_string());
+        let msg = err_msg(validate_config(&config));
+        let first_pos = msg
+            .find("configuration error:")
+            .expect("must contain prefix");
+        let second_pos = msg[first_pos + 1..].find("configuration error:");
+        assert!(
+            second_pos.is_none(),
+            "error message must not double-prefix 'configuration error:': {msg}"
+        );
     }
 
     // ---- Error messages contain field names ----------------------------------
