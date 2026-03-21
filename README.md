@@ -242,6 +242,7 @@ The `encoder` field selects the wire format. Use a mapping with a `type` key:
 | `prometheus_text` | _(none)_ | Prometheus text exposition format 0.0.4. |
 | `influx_lp` | `field_key: string` (optional, default `"value"`) | InfluxDB line protocol. |
 | `json_lines` | _(none)_ | JSON Lines (NDJSON), one object per line. |
+| `syslog` | `hostname: string` (optional), `app_name: string` (optional) | RFC 5424 syslog format. Log events only — not supported for metrics. |
 
 ```yaml
 encoder:
