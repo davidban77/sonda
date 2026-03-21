@@ -1,0 +1,42 @@
+# Prometheus text encoder → HTTP push sink
+#
+# POSTs Prometheus text exposition format in batches to a remote HTTP endpoint.
+# Compatible with VictoriaMetrics, vmagent, and the Prometheus HTTP API.
+#
+# Start a local receiver before running (netcat for quick testing):
+#
+#   nc -l 9090 &
+#   sonda metrics --scenario examples/prometheus-http-push.yaml
+#
+# For VictoriaMetrics:
+#   change url to: http://localhost:8428/api/v1/import/prometheus
+#
+# For Prometheus (with remote write receiver enabled):
+#   change url to: http://localhost:9090/api/v1/write
+name: node_cpu_seconds_total
+rate: 100
+duration: 30s
+
+generator:
+  type: sine
+  amplitude: 5.0
+  period_secs: 30
+  offset: 50.0
+
+gaps:
+  every: 15s
+  for: 3s
+
+labels:
+  instance: node-01
+  job: node-exporter
+  mode: user
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: http_push
+  url: "http://localhost:9090/api/v1/import/prometheus"
+  content_type: "text/plain; version=0.0.4"
+  batch_size: 65536

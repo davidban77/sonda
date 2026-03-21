@@ -353,7 +353,7 @@ handles gaps, CLI works end-to-end.
 **Files to create:**
 - `examples/influx-file.yaml` — Influx LP encoder → file sink.
 - `examples/json-tcp.yaml` — JSON Lines encoder → TCP sink.
-- `examples/prometheus-remote-write.yaml` — Prometheus text → HTTP push sink.
+- `examples/prometheus-http-push.yaml` — Prometheus text → HTTP push sink.
 
 **Files to modify:**
 - `README.md` — add encoder and sink reference tables, new examples.
@@ -363,7 +363,7 @@ handles gaps, CLI works end-to-end.
 |------|--------|
 | `examples/influx-file.yaml` | new |
 | `examples/json-tcp.yaml` | new |
-| `examples/prometheus-remote-write.yaml` | new |
+| `examples/prometheus-http-push.yaml` | new |
 | `README.md` | modified |
 
 ### Test criteria
