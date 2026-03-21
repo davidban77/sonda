@@ -1,0 +1,23 @@
+name: cpu_burst
+rate: 100
+duration: 60s
+
+generator:
+  type: sine
+  amplitude: 20.0
+  period_secs: 60
+  offset: 50.0
+
+bursts:
+  every: 10s
+  for: 2s
+  multiplier: 5.0
+
+labels:
+  host: web-01
+  zone: us-east-1
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

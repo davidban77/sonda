@@ -16,6 +16,7 @@ changes, and pattern-driven value sequences.
 
 - **Multiple value generators** — constant, uniform random (seeded for deterministic replay), sine wave, sawtooth ramp.
 - **Intentional gap windows** — recurring silent periods that test alert flap detection, gap-fill logic, and buffer sizing.
+- **Burst windows** — recurring high-rate periods that simulate micro-bursts and traffic spikes.
 - **Prometheus text exposition format** — output is valid `text/plain 0.0.4` ready for scraping or piping.
 - **Static binary** — statically linked for maximum portability: runs on bare metal, Docker, and CI without a runtime installation.
 - **YAML scenario files** — all runtime behavior is defined in YAML; CLI flags override any value.
@@ -168,6 +169,20 @@ Options:
           Gap duration within each cycle (e.g. "20s").
           Must be strictly less than --gap-every.
 
+      --burst-every <BURST_EVERY>
+          Burst recurrence interval (e.g. "10s").
+          Together with --burst-for and --burst-multiplier, defines a recurring
+          high-rate period. All three --burst-* flags must be provided together.
+
+      --burst-for <BURST_FOR>
+          Burst duration within each cycle (e.g. "2s").
+          Must be strictly less than --burst-every.
+
+      --burst-multiplier <BURST_MULTIPLIER>
+          Rate multiplier applied during each burst window (e.g. "5.0").
+          Effective rate during burst = base rate × multiplier.
+          Must be strictly positive.
+
       --label <key=value>
           Static label attached to every emitted event (repeatable).
           Format: key=value. Keys must match [a-zA-Z_][a-zA-Z0-9_]*.
@@ -201,6 +216,11 @@ generator:
 gaps:
   every: 2m
   for: 20s
+
+bursts:
+  every: 10s
+  for: 2s
+  multiplier: 5.0
 
 labels:
   hostname: t0-a1
@@ -305,6 +325,23 @@ gaps:
 
 `for` must be strictly less than `every`.
 
+### Burst windows
+
+A burst window defines a recurring high-rate period. During a burst the effective event rate is
+`rate × multiplier`, which increases the emission frequency for the burst duration. Bursts are useful
+for simulating traffic spikes, micro-burst patterns, and ingest pipeline stress.
+
+```yaml
+bursts:
+  every: 10s      # one burst every 10 seconds
+  for: 2s         # each burst lasts 2 seconds
+  multiplier: 5.0 # 5x the base rate during the burst
+```
+
+`for` must be strictly less than `every`. `multiplier` must be strictly positive.
+
+When a gap and a burst would overlap, the gap takes priority and no events are emitted.
+
 ---
 
 ## Example Scenarios
@@ -388,6 +425,20 @@ Output looks like:
 disk_io_bytes,device=sda,host=storage-01 bytes=0.0 1742500000000000000
 disk_io_bytes,device=sda,host=storage-01 bytes=20000.0 1742500000020000000
 ...
+```
+
+### `examples/burst-metrics.yaml`
+
+A sine wave at 100 events/sec that bursts to 500 events/sec for 2 seconds out of every 10 seconds:
+
+```bash
+sonda metrics --scenario examples/burst-metrics.yaml
+```
+
+Count lines during a burst second to see the rate spike:
+
+```bash
+sonda metrics --scenario examples/burst-metrics.yaml | pv -l > /dev/null
 ```
 
 ### `examples/json-tcp.yaml`
