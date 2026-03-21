@@ -150,7 +150,8 @@ query_kafka_count() {
     count=$(docker exec "${KAFKA_CONTAINER}" kafka-console-consumer.sh \
         --bootstrap-server 127.0.0.1:9092 \
         --topic "${topic}" \
-        --from-beginning \
+        --partition 0 \
+        --offset 0 \
         --timeout-ms 5000 2>/dev/null | wc -l)
     # wc -l may include leading whitespace on some platforms; strip it
     echo "${count}" | tr -d ' '
