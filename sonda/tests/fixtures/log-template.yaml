@@ -1,0 +1,20 @@
+name: test_log_template
+rate: 10
+duration: 5s
+generator:
+  type: template
+  templates:
+    - message: "Request from {ip} completed"
+      field_pools:
+        ip:
+          - "10.0.0.1"
+          - "10.0.0.2"
+          - "10.0.0.3"
+  severity_weights:
+    info: 0.8
+    error: 0.2
+  seed: 99
+encoder:
+  type: json_lines
+sink:
+  type: stdout

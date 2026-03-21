@@ -168,3 +168,330 @@ pub fn run_logs_with_sink(
         Err(e) => Err(e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::config::{GapConfig, LogScenarioConfig};
+    use crate::encoder::EncoderConfig;
+    use crate::generator::{LogGeneratorConfig, TemplateConfig};
+    use crate::sink::memory::MemorySink;
+    use crate::sink::SinkConfig;
+
+    /// Build a minimal valid `LogScenarioConfig` for use in tests.
+    ///
+    /// Uses the template generator with a static message (no placeholders),
+    /// the JSON Lines encoder, and a dummy stdout sink (replaced by tests that
+    /// call `run_logs_with_sink` directly).
+    fn make_config(rate: f64, duration: Option<&str>) -> LogScenarioConfig {
+        LogScenarioConfig {
+            name: "test_logs".to_string(),
+            rate,
+            duration: duration.map(|s| s.to_string()),
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "synthetic log event".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            gaps: None,
+            bursts: None,
+            encoder: EncoderConfig::JsonLines,
+            sink: SinkConfig::Stdout,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Integration: MemorySink, rate=10, duration=1s → ~10 encoded log lines
+    // -------------------------------------------------------------------------
+
+    /// The log runner must emit approximately `rate` events in `duration` seconds.
+    ///
+    /// At rate=10 and duration=1s we expect 10 events (within ±3 tolerance to
+    /// accommodate OS scheduling jitter without making the test fragile).
+    #[test]
+    fn run_logs_with_sink_rate_10_duration_1s_produces_approx_10_lines() {
+        let config = make_config(10.0, Some("1s"));
+        let mut sink = MemorySink::new();
+
+        run_logs_with_sink(&config, &mut sink, None).expect("log runner must not error");
+
+        // Count newline-terminated JSON lines.
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let line_count = output.lines().count();
+        assert!(
+            (7..=13).contains(&line_count),
+            "expected ~10 log lines, got {line_count}"
+        );
+    }
+
+    /// Every emitted line must be non-empty valid JSON with a `message` key.
+    #[test]
+    fn run_logs_with_sink_each_line_is_valid_json() {
+        let config = make_config(10.0, Some("1s"));
+        let mut sink = MemorySink::new();
+
+        run_logs_with_sink(&config, &mut sink, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert!(
+                parsed.get("message").is_some(),
+                "each JSON line must contain a 'message' key; line: {line}"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Shutdown flag: setting the flag stops the runner before duration expires
+    // -------------------------------------------------------------------------
+
+    /// If the shutdown flag is cleared (false) before the scenario would
+    /// naturally finish, the runner must exit cleanly without error.
+    #[test]
+    fn run_logs_with_sink_shutdown_flag_stops_runner() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let config = make_config(5.0, None); // runs indefinitely without shutdown
+        let mut sink = MemorySink::new();
+        let shutdown = Arc::new(AtomicBool::new(true));
+
+        let flag_clone = Arc::clone(&shutdown);
+        // Clear the shutdown flag after 300ms so the runner exits soon.
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            flag_clone.store(false, Ordering::SeqCst);
+        });
+
+        let result = run_logs_with_sink(&config, &mut sink, Some(shutdown.as_ref()));
+        assert!(
+            result.is_ok(),
+            "runner must return Ok when stopped via shutdown flag"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Gap window: events suppressed while in gap
+    // -------------------------------------------------------------------------
+
+    /// A gap that covers the entire run duration should produce no output.
+    ///
+    /// We set gap_every=1s and gap_for=999ms (gap starts at 1ms into the cycle)
+    /// and run for 500ms — the scenario starts in a non-gap period initially
+    /// but then immediately transitions into the gap for the rest of the run,
+    /// so zero or very few events are emitted.
+    #[test]
+    fn run_logs_with_sink_gap_suppresses_output() {
+        // gap: every=10s, for=9s → gap starts at 1s.
+        // duration=2s → after 1s of normal events, 1s is spent in a gap.
+        let mut config = make_config(100.0, Some("2s"));
+        config.gaps = Some(GapConfig {
+            every: "10s".to_string(),
+            r#for: "9s".to_string(), // gap from second 1 to second 10
+        });
+
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("valid UTF-8");
+        let line_count = output.lines().count();
+        // Only ~100 events from the first second (before the gap). The gap covers
+        // seconds 1–10, so the remaining 1s of the 2s run is silent.
+        assert!(
+            line_count < 150,
+            "gap should suppress events: expected < 150 lines, got {line_count}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Duration=None without shutdown produces no hang (sanity — see note)
+    // -------------------------------------------------------------------------
+
+    /// When a finite duration is set, the runner must exit at the right time.
+    /// Verify this is respected by running at low rate for 500ms.
+    #[test]
+    fn run_logs_with_sink_duration_500ms_exits_promptly() {
+        use std::time::Instant;
+
+        let config = make_config(5.0, Some("500ms"));
+        let mut sink = MemorySink::new();
+
+        let t0 = Instant::now();
+        run_logs_with_sink(&config, &mut sink, None).expect("must not error");
+        let elapsed = t0.elapsed();
+
+        // Should exit within 2 seconds of the 500ms duration.
+        assert!(
+            elapsed.as_secs() < 2,
+            "runner should have exited after ~500ms, elapsed={elapsed:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // LogScenarioConfig: YAML deserialization (slice spec test criterion)
+    // -------------------------------------------------------------------------
+
+    /// Config from YAML: log-template style YAML → valid `LogScenarioConfig`.
+    #[test]
+    fn log_scenario_config_deserializes_template_yaml() {
+        let yaml = r#"
+name: app_logs_template
+rate: 10
+duration: 60s
+generator:
+  type: template
+  templates:
+    - message: "Request from {ip} to {endpoint}"
+      field_pools:
+        ip:
+          - "10.0.0.1"
+          - "10.0.0.2"
+        endpoint:
+          - "/api/v1/health"
+          - "/api/v1/metrics"
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+  seed: 42
+encoder:
+  type: json_lines
+sink:
+  type: stdout
+"#;
+        let config: LogScenarioConfig =
+            serde_yaml::from_str(yaml).expect("log-template YAML must deserialize");
+        assert_eq!(config.name, "app_logs_template");
+        assert_eq!(config.rate, 10.0);
+        assert_eq!(config.duration.as_deref(), Some("60s"));
+        assert!(matches!(config.encoder, EncoderConfig::JsonLines));
+        assert!(matches!(config.sink, SinkConfig::Stdout));
+    }
+
+    /// Config from YAML: log-replay style YAML → valid `LogScenarioConfig`.
+    #[test]
+    fn log_scenario_config_deserializes_replay_yaml() {
+        let yaml = r#"
+name: app_logs_replay
+rate: 5
+duration: 30s
+generator:
+  type: replay
+  file: /var/log/app.log
+encoder:
+  type: json_lines
+sink:
+  type: stdout
+"#;
+        let config: LogScenarioConfig =
+            serde_yaml::from_str(yaml).expect("log-replay YAML must deserialize");
+        assert_eq!(config.name, "app_logs_replay");
+        assert_eq!(config.rate, 5.0);
+        assert!(matches!(
+            config.generator,
+            LogGeneratorConfig::Replay { .. }
+        ));
+    }
+
+    /// Default encoder for LogScenarioConfig is json_lines (not prometheus_text).
+    #[test]
+    fn log_scenario_config_default_encoder_is_json_lines() {
+        let yaml = r#"
+name: defaults_test
+rate: 1
+generator:
+  type: template
+  templates:
+    - message: "hello"
+      field_pools: {}
+"#;
+        let config: LogScenarioConfig =
+            serde_yaml::from_str(yaml).expect("minimal log YAML must deserialize");
+        assert!(
+            matches!(config.encoder, EncoderConfig::JsonLines),
+            "default encoder must be json_lines, got {:?}",
+            config.encoder
+        );
+    }
+
+    /// Default sink for LogScenarioConfig is stdout.
+    #[test]
+    fn log_scenario_config_default_sink_is_stdout() {
+        let yaml = r#"
+name: defaults_test
+rate: 1
+generator:
+  type: template
+  templates:
+    - message: "hello"
+      field_pools: {}
+"#;
+        let config: LogScenarioConfig =
+            serde_yaml::from_str(yaml).expect("minimal log YAML must deserialize");
+        assert!(
+            matches!(config.sink, SinkConfig::Stdout),
+            "default sink must be stdout, got {:?}",
+            config.sink
+        );
+    }
+
+    /// LogScenarioConfig with optional gaps and bursts deserializes correctly.
+    #[test]
+    fn log_scenario_config_with_gaps_and_bursts_deserializes() {
+        let yaml = r#"
+name: full_config
+rate: 20
+duration: 120s
+generator:
+  type: template
+  templates:
+    - message: "event"
+      field_pools: {}
+gaps:
+  every: 10s
+  for: 2s
+bursts:
+  every: 5s
+  for: 1s
+  multiplier: 10.0
+encoder:
+  type: syslog
+  hostname: myhost
+  app_name: myapp
+sink:
+  type: stdout
+"#;
+        let config: LogScenarioConfig =
+            serde_yaml::from_str(yaml).expect("full log YAML must deserialize");
+        let gaps = config.gaps.as_ref().expect("gaps must be present");
+        assert_eq!(gaps.every, "10s");
+        assert_eq!(gaps.r#for, "2s");
+        let bursts = config.bursts.as_ref().expect("bursts must be present");
+        assert_eq!(bursts.every, "5s");
+        assert_eq!(bursts.r#for, "1s");
+        assert_eq!(bursts.multiplier, 10.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Contract: LogScenarioConfig is Clone + Debug
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn log_scenario_config_is_clone_and_debug() {
+        let config = make_config(10.0, Some("1s"));
+        let cloned = config.clone();
+        assert_eq!(cloned.name, config.name);
+        assert_eq!(cloned.rate, config.rate);
+        let s = format!("{config:?}");
+        assert!(s.contains("LogScenarioConfig") || s.contains("test_logs"));
+    }
+}
