@@ -582,8 +582,10 @@ cargo fmt --all -- --check
   labels:
     hostname: t0-a1
     zone: eu1
-  encoder: prometheus_text
-  sink: stdout
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
   ```
 
 - `examples/simple-constant.yaml`:
@@ -594,8 +596,10 @@ cargo fmt --all -- --check
   generator:
     type: constant
     value: 1.0
-  encoder: prometheus_text
-  sink: stdout
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
   ```
 
 - `README.md` — project README with: what Sonda is, installation, quick start, CLI reference, example output.
