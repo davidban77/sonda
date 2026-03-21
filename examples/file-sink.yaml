@@ -1,0 +1,16 @@
+name: http_requests_total
+rate: 100
+duration: 10s
+generator:
+  type: sawtooth
+  min: 0.0
+  max: 1000.0
+  period_secs: 10
+labels:
+  method: GET
+  endpoint: /api/v1/health
+encoder:
+  type: influx_lp
+sink:
+  type: file
+  path: /tmp/sonda-output.txt

@@ -58,6 +58,15 @@ You are reviewing **Slice $ARGUMENTS**. Audit all code and tests for this slice.
 - [ ] New code follows same patterns as existing code.
 - [ ] New config variants follow same serde tagging.
 
+### Documentation
+- [ ] New features are documented in `README.md` (usage, YAML schema, CLI flags).
+- [ ] New CLI flags appear in `--help` text with descriptions.
+- [ ] New config variants (generators, encoders, sinks) are listed in README tables.
+- [ ] Example YAML files in `examples/` cover new features where appropriate.
+- [ ] `docs/architecture.md` is updated if the design changed.
+- [ ] Phase plan docs (`docs/phase-*.md`) use current YAML format (no stale syntax).
+- [ ] Crate `CLAUDE.md` module layout reflects new/renamed files.
+
 6. **Run the quality gate**:
    ```bash
    cargo build --workspace
@@ -83,6 +92,7 @@ You are reviewing **Slice $ARGUMENTS**. Audit all code and tests for this slice.
 ### Naming & Style: ✓ / ✗
 ### Test Quality: ✓ / ✗
 ### Consistency: ✓ / ✗
+### Documentation: ✓ / ✗
 ```
 
 ## Rules

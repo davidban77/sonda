@@ -294,7 +294,7 @@ gaps:
 
 ## Example Scenarios
 
-Two example scenario files are included in the `examples/` directory.
+Example scenario files are included in the `examples/` directory.
 
 ### `examples/basic-metrics.yaml`
 
@@ -310,6 +310,33 @@ A 10-second constant `up=1` metric at 10 events/sec:
 
 ```bash
 sonda metrics --scenario examples/simple-constant.yaml
+```
+
+### `examples/tcp-sink.yaml`
+
+Sine wave sent over TCP (start a listener first with `nc -l 9999`):
+
+```bash
+nc -l 9999 &
+sonda metrics --scenario examples/tcp-sink.yaml
+```
+
+### `examples/udp-sink.yaml`
+
+Constant metric sent as UDP datagrams in JSON Lines format (listen with `nc -u -l 9998`):
+
+```bash
+nc -u -l 9998 &
+sonda metrics --scenario examples/udp-sink.yaml
+```
+
+### `examples/file-sink.yaml`
+
+Sawtooth wave written to a file in InfluxDB line protocol:
+
+```bash
+sonda metrics --scenario examples/file-sink.yaml
+cat /tmp/sonda-output.txt
 ```
 
 ---
