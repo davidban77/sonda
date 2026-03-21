@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Variants map to the conventional log severity ladder. Serializes to and from
 /// lowercase strings (e.g., `"info"`, `"error"`) for YAML and JSON compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Extremely detailed diagnostic information.
