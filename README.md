@@ -101,6 +101,7 @@ sonda <COMMAND>
 Commands:
   metrics  Generate synthetic metrics and write them to the configured sink
   logs     Generate synthetic log events and write them to the configured sink
+  run      Run multiple scenarios concurrently from a multi-scenario YAML file
   help     Print help information
 
 Options:
@@ -274,6 +275,77 @@ Options:
   -h, --help
           Print help
 ```
+
+### `sonda run`
+
+```
+Usage: sonda run --scenario <SCENARIO>
+
+Options:
+      --scenario <SCENARIO>
+          Path to a multi-scenario YAML file.
+          Each entry in the `scenarios:` list specifies a `signal_type` key
+          (`metrics` or `logs`) and the full scenario configuration for that signal.
+          All scenarios start concurrently on separate threads and run independently
+          until they complete or until Ctrl+C is received.
+
+  -h, --help
+          Print help
+```
+
+Run multiple scenarios concurrently from a single YAML file:
+
+```bash
+sonda run --scenario examples/multi-scenario.yaml
+```
+
+The multi-scenario YAML uses a `scenarios:` list. Each entry specifies a `signal_type` of
+either `metrics` or `logs`, followed by the full scenario configuration:
+
+```yaml
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 100
+    duration: 30s
+    generator:
+      type: sine
+      amplitude: 50
+      period_secs: 60
+      offset: 50
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: logs
+    name: app_logs
+    rate: 10
+    duration: 30s
+    generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip:
+              - "10.0.0.1"
+              - "10.0.0.2"
+            endpoint:
+              - "/api/v1/health"
+              - "/api/v1/metrics"
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+      seed: 42
+    encoder:
+      type: json_lines
+    sink:
+      type: file
+      path: /tmp/sonda-logs.json
+```
+
+See `examples/multi-scenario.yaml` for a complete example.
 
 ---
 

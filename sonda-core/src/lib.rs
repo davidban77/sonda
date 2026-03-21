@@ -13,6 +13,8 @@ pub mod sink;
 
 pub use config::BurstConfig;
 pub use config::LogScenarioConfig;
+pub use config::MultiScenarioConfig;
+pub use config::ScenarioEntry;
 pub use model::log::LogEvent;
 pub use model::log::Severity;
 pub use model::metric::Labels;

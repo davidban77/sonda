@@ -107,6 +107,60 @@ pub struct ScenarioConfig {
     pub sink: SinkConfig,
 }
 
+/// A single entry in a multi-scenario configuration.
+///
+/// The `signal_type` tag selects whether this entry is a metrics or logs scenario.
+/// Deserialized from a YAML multi-scenario file where each element of the
+/// `scenarios` list carries a `signal_type: metrics` or `signal_type: logs` key.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "signal_type")]
+pub enum ScenarioEntry {
+    /// A metrics scenario entry.
+    #[serde(rename = "metrics")]
+    Metrics(ScenarioConfig),
+    /// A logs scenario entry.
+    #[serde(rename = "logs")]
+    Logs(LogScenarioConfig),
+}
+
+/// Full configuration for running multiple concurrent scenarios.
+///
+/// Deserialized from a multi-scenario YAML file that contains a top-level
+/// `scenarios:` list. Each entry specifies its `signal_type` (either `metrics`
+/// or `logs`) along with the scenario-specific fields.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// scenarios:
+///   - signal_type: metrics
+///     name: cpu_usage
+///     rate: 100
+///     duration: 30s
+///     generator: { type: sine, amplitude: 50, period_secs: 60, offset: 50 }
+///     encoder:
+///       type: prometheus_text
+///     sink:
+///       type: stdout
+///   - signal_type: logs
+///     name: app_logs
+///     rate: 10
+///     duration: 30s
+///     generator:
+///       type: template
+///       templates: [{ message: "event", field_pools: {} }]
+///     encoder:
+///       type: json_lines
+///     sink:
+///       type: file
+///       path: /tmp/logs.json
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultiScenarioConfig {
+    /// The list of scenarios to run concurrently.
+    pub scenarios: Vec<ScenarioEntry>,
+}
+
 /// Full configuration for a single log scenario run.
 ///
 /// Deserialized from a YAML scenario file. CLI flags can override any field.

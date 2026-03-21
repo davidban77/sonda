@@ -2,6 +2,7 @@
 //!
 //! All sinks implement the `Sink` trait.
 
+pub mod channel;
 pub mod file;
 pub mod http;
 #[cfg(feature = "kafka")]
