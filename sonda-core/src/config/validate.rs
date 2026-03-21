@@ -851,6 +851,229 @@ generator:
         );
     }
 
+    // ---- validate_burst_config: multiplier validation ------------------------
+
+    #[test]
+    fn validate_burst_config_multiplier_zero_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 0.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "multiplier=0 must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("multiplier"),
+            "error must mention 'multiplier', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_multiplier_negative_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: -1.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "multiplier=-1 must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("multiplier"),
+            "error must mention 'multiplier', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_multiplier_nan_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: f64::NAN,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "multiplier=NaN must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("multiplier"),
+            "error must mention 'multiplier', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_burst_for_equal_to_every_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "10s".to_string(),
+            multiplier: 5.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "burst.for == burst.every must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("bursts"),
+            "error must mention 'bursts', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_burst_for_greater_than_every_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "20s".to_string(),
+            multiplier: 5.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "burst.for > burst.every must be rejected");
+    }
+
+    #[test]
+    fn validate_burst_config_valid_values_pass() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 5.0,
+        };
+        assert!(
+            validate_burst_config(&burst).is_ok(),
+            "valid burst config must pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_fractional_multiplier_passes() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 0.5,
+        };
+        assert!(
+            validate_burst_config(&burst).is_ok(),
+            "fractional positive multiplier must be valid"
+        );
+    }
+
+    #[test]
+    fn validate_burst_config_invalid_every_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "bad".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 5.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "invalid bursts.every must be rejected");
+    }
+
+    #[test]
+    fn validate_burst_config_invalid_for_returns_err() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "bad".to_string(),
+            multiplier: 5.0,
+        };
+        let result = validate_burst_config(&burst);
+        assert!(result.is_err(), "invalid bursts.for must be rejected");
+    }
+
+    // ---- validate_config: burst config integration --------------------------
+
+    #[test]
+    fn validate_config_with_valid_burst_passes() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.bursts = Some(crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 5.0,
+        });
+        assert!(
+            validate_config(&config).is_ok(),
+            "config with valid burst must pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_config_burst_multiplier_zero_returns_err() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.bursts = Some(crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 0.0,
+        });
+        let result = validate_config(&config);
+        assert!(result.is_err(), "multiplier=0 in config must be rejected");
+    }
+
+    #[test]
+    fn validate_config_burst_for_greater_than_every_returns_err() {
+        let mut config = minimal_config_with_rate(100.0);
+        config.bursts = Some(crate::config::BurstConfig {
+            every: "5s".to_string(),
+            r#for: "10s".to_string(),
+            multiplier: 2.0,
+        });
+        let result = validate_config(&config);
+        assert!(
+            result.is_err(),
+            "burst.for > burst.every in config must be rejected"
+        );
+    }
+
+    // ---- ScenarioConfig: burst YAML deserialization -------------------------
+
+    #[test]
+    fn deserialize_config_with_burst() {
+        let yaml = r#"
+name: up
+rate: 100.0
+generator:
+  type: constant
+  value: 1.0
+bursts:
+  every: 10s
+  for: 2s
+  multiplier: 5.0
+"#;
+        let config: ScenarioConfig =
+            serde_yaml::from_str(yaml).expect("YAML with bursts must deserialize");
+        let burst = config.bursts.expect("bursts must be present");
+        assert_eq!(burst.every, "10s");
+        assert_eq!(burst.r#for, "2s");
+        assert_eq!(burst.multiplier, 5.0);
+    }
+
+    #[test]
+    fn deserialize_config_without_burst_has_none_bursts() {
+        let yaml = r#"
+name: up
+rate: 10.0
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig =
+            serde_yaml::from_str(yaml).expect("YAML without bursts must deserialize");
+        assert!(
+            config.bursts.is_none(),
+            "bursts field must be None when not provided"
+        );
+    }
+
+    #[test]
+    fn burst_config_is_cloneable_and_debuggable() {
+        let burst = crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 5.0,
+        };
+        let cloned = burst.clone();
+        assert_eq!(cloned.every, "10s");
+        assert_eq!(cloned.r#for, "2s");
+        assert_eq!(cloned.multiplier, 5.0);
+        let debug_str = format!("{burst:?}");
+        assert!(debug_str.contains("10s"));
+    }
+
     // ---- Error messages contain field names ----------------------------------
 
     #[test]

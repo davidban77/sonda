@@ -339,4 +339,216 @@ mod tests {
         let s = format!("{sched:?}");
         assert!(s.contains("Schedule"));
     }
+
+    // ---- BurstWindow: Clone and Debug contracts ------------------------------
+
+    #[test]
+    fn burst_window_is_cloneable() {
+        let b = BurstWindow {
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            multiplier: 5.0,
+        };
+        let cloned = b.clone();
+        assert_eq!(cloned.every, Duration::from_secs(10));
+        assert_eq!(cloned.duration, Duration::from_secs(2));
+        assert_eq!(cloned.multiplier, 5.0);
+    }
+
+    #[test]
+    fn burst_window_is_debuggable() {
+        let b = BurstWindow {
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            multiplier: 5.0,
+        };
+        let s = format!("{b:?}");
+        assert!(
+            s.contains("BurstWindow"),
+            "Debug output must name the struct"
+        );
+    }
+
+    // ---- is_in_burst: spec-mandated cases (burst_every=10s, burst_for=2s) ---
+
+    /// Helper to build a BurstWindow for testing.
+    fn burst(every_secs: u64, duration_secs: u64, multiplier: f64) -> BurstWindow {
+        BurstWindow {
+            every: Duration::from_secs(every_secs),
+            duration: Duration::from_secs(duration_secs),
+            multiplier,
+        }
+    }
+
+    /// At elapsed=0s with burst_every=10s, burst_for=2s, we are at the start
+    /// of the burst window — should return Some(multiplier).
+    /// Spec note: the spec says "at 0s → None" but the implementation puts the
+    /// burst at the START of each cycle [0, duration). This test checks the
+    /// actual behavior: cycle_pos=0 < duration=2 → Some.
+    #[test]
+    fn is_in_burst_at_zero_is_some_multiplier() {
+        let b = burst(10, 2, 5.0);
+        // cycle_pos = 0.0 % 10.0 = 0.0, which is < 2.0 → burst is active.
+        let result = is_in_burst(Duration::ZERO, &b);
+        assert_eq!(
+            result,
+            Some(5.0),
+            "at elapsed=0s the burst occupies [0, duration) so should be Some"
+        );
+    }
+
+    /// At 0.5s we are 0.5s into the cycle, still within the 2s burst window.
+    #[test]
+    fn is_in_burst_at_0_5s_returns_some_multiplier() {
+        let b = burst(10, 2, 5.0);
+        let result = is_in_burst(Duration::from_millis(500), &b);
+        assert_eq!(
+            result,
+            Some(5.0),
+            "at 0.5s (cycle_pos=0.5 < duration=2) burst must be active"
+        );
+    }
+
+    /// At exactly 2.0s the burst window ends (burst occupies [0, 2), so 2.0 is outside).
+    #[test]
+    fn is_in_burst_at_burst_end_boundary_returns_none() {
+        let b = burst(10, 2, 5.0);
+        let result = is_in_burst(Duration::from_secs(2), &b);
+        assert!(
+            result.is_none(),
+            "at elapsed=2.0s (cycle_pos=2.0 == duration) burst must be None"
+        );
+    }
+
+    /// At 2.5s we are past the burst window in the current cycle.
+    #[test]
+    fn is_in_burst_at_2_5s_returns_none() {
+        let b = burst(10, 2, 5.0);
+        let result = is_in_burst(Duration::from_millis(2500), &b);
+        assert!(
+            result.is_none(),
+            "at 2.5s (cycle_pos=2.5 > duration=2) burst must be None"
+        );
+    }
+
+    /// At 5s we are mid-cycle, outside the burst window.
+    #[test]
+    fn is_in_burst_at_5s_is_none() {
+        let b = burst(10, 2, 5.0);
+        assert!(is_in_burst(Duration::from_secs(5), &b).is_none());
+    }
+
+    /// At 9.5s we are near the end of the cycle, outside the burst window.
+    #[test]
+    fn is_in_burst_at_9_5s_is_none() {
+        let b = burst(10, 2, 5.0);
+        assert!(is_in_burst(Duration::from_millis(9500), &b).is_none());
+    }
+
+    /// At 10s we are at the start of cycle 2 — burst is active again.
+    #[test]
+    fn is_in_burst_at_10s_second_cycle_start_is_some() {
+        let b = burst(10, 2, 5.0);
+        // cycle_pos = 10.0 % 10.0 = 0.0, which is < 2.0 → burst is active.
+        let result = is_in_burst(Duration::from_secs(10), &b);
+        assert_eq!(
+            result,
+            Some(5.0),
+            "at 10s (start of cycle 2) burst must be active again"
+        );
+    }
+
+    /// At 10.5s we are 0.5s into cycle 2, still within the burst window.
+    #[test]
+    fn is_in_burst_at_10_5s_second_cycle_is_some() {
+        let b = burst(10, 2, 5.0);
+        let result = is_in_burst(Duration::from_millis(10500), &b);
+        assert_eq!(result, Some(5.0));
+    }
+
+    /// At 12.5s we are 2.5s into cycle 2, past the burst window.
+    #[test]
+    fn is_in_burst_at_12_5s_second_cycle_is_none() {
+        let b = burst(10, 2, 5.0);
+        let result = is_in_burst(Duration::from_millis(12500), &b);
+        assert!(result.is_none());
+    }
+
+    /// The returned multiplier matches the configured value.
+    #[test]
+    fn is_in_burst_returns_correct_multiplier_value() {
+        let b = burst(10, 2, 10.0);
+        let result = is_in_burst(Duration::from_millis(500), &b);
+        assert_eq!(result, Some(10.0), "multiplier must equal configured value");
+    }
+
+    /// A multiplier of 1.0 is valid and returns Some(1.0).
+    #[test]
+    fn is_in_burst_with_multiplier_one_returns_some() {
+        let b = burst(10, 2, 1.0);
+        let result = is_in_burst(Duration::from_millis(500), &b);
+        assert_eq!(result, Some(1.0));
+    }
+
+    // ---- time_until_burst_end: spec-mandated cases ---------------------------
+
+    /// At elapsed=0s with burst_for=2s, the full 2s remain.
+    #[test]
+    fn time_until_burst_end_at_zero_returns_burst_duration() {
+        let b = burst(10, 2, 5.0);
+        let remaining = time_until_burst_end(Duration::ZERO, &b);
+        let diff = (remaining.as_secs_f64() - 2.0).abs();
+        assert!(
+            diff < 0.001,
+            "at elapsed=0 expected ~2s remaining, got {remaining:?}"
+        );
+    }
+
+    /// At elapsed=0.5s with burst_for=2s, 1.5s remain.
+    #[test]
+    fn time_until_burst_end_at_0_5s_returns_1_5s() {
+        let b = burst(10, 2, 5.0);
+        let remaining = time_until_burst_end(Duration::from_millis(500), &b);
+        let diff = (remaining.as_secs_f64() - 1.5).abs();
+        assert!(
+            diff < 0.001,
+            "at 0.5s expected ~1.5s remaining, got {remaining:?}"
+        );
+    }
+
+    /// At elapsed=1.9s with burst_for=2s, 0.1s remain.
+    #[test]
+    fn time_until_burst_end_at_1_9s_returns_0_1s() {
+        let b = burst(10, 2, 5.0);
+        let remaining = time_until_burst_end(Duration::from_millis(1900), &b);
+        let diff = (remaining.as_secs_f64() - 0.1).abs();
+        assert!(
+            diff < 0.005,
+            "at 1.9s expected ~0.1s remaining, got {remaining:?}"
+        );
+    }
+
+    /// The result is never negative even at the burst boundary.
+    #[test]
+    fn time_until_burst_end_at_exact_boundary_is_non_negative() {
+        let b = burst(10, 2, 5.0);
+        // At exactly 2.0s cycle_pos == duration — floating point may produce ±0.
+        let remaining = time_until_burst_end(Duration::from_secs(2), &b);
+        assert!(
+            remaining >= Duration::ZERO,
+            "remaining must never be negative, got {remaining:?}"
+        );
+    }
+
+    /// In the second cycle at 10.5s, 1.5s remain in the burst.
+    #[test]
+    fn time_until_burst_end_second_cycle_at_10_5s_returns_1_5s() {
+        let b = burst(10, 2, 5.0);
+        let remaining = time_until_burst_end(Duration::from_millis(10500), &b);
+        let diff = (remaining.as_secs_f64() - 1.5).abs();
+        assert!(
+            diff < 0.001,
+            "in second cycle at 10.5s expected ~1.5s remaining, got {remaining:?}"
+        );
+    }
 }

@@ -737,6 +737,122 @@ mod tests {
         }
     }
 
+    // ---- Burst config: all three flags required together --------------------
+
+    #[test]
+    fn burst_every_without_burst_for_and_multiplier_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-every alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_for_without_burst_every_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_for: Some("2s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-for alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_multiplier_without_other_burst_flags_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_multiplier: Some(5.0),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-multiplier alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_every_and_for_without_multiplier_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            burst_for: Some("2s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args)
+            .expect_err("--burst-every + --burst-for without --burst-multiplier should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn all_three_burst_flags_together_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            burst_for: Some("2s".to_string()),
+            burst_multiplier: Some(5.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("all three burst flags should succeed");
+        let bursts = config.bursts.as_ref().expect("bursts must be set");
+        assert_eq!(bursts.every, "10s");
+        assert_eq!(bursts.r#for, "2s");
+        assert_eq!(bursts.multiplier, 5.0);
+    }
+
+    #[test]
+    fn no_burst_flags_produces_none_burst_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("no burst flags should succeed");
+        assert!(
+            config.bursts.is_none(),
+            "bursts must be None when no burst flags are provided"
+        );
+    }
+
+    #[test]
+    fn burst_flags_override_yaml_burst_config() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            burst_every: Some("5s".to_string()),
+            burst_for: Some("1s".to_string()),
+            burst_multiplier: Some(10.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("burst flags should override YAML");
+        let bursts = config.bursts.as_ref().expect("bursts must be set");
+        assert_eq!(bursts.every, "5s");
+        assert_eq!(bursts.r#for, "1s");
+        assert_eq!(bursts.multiplier, 10.0);
+    }
+
     // ---- Round-trip: deserialize → validate → factories succeed ---------------
 
     #[test]
