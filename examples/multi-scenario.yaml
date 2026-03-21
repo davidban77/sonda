@@ -1,0 +1,50 @@
+# Multi-scenario example: metrics and logs running concurrently.
+#
+# Run with:
+#   sonda run --scenario examples/multi-scenario.yaml
+#
+# Both scenarios start at the same time on separate threads and run for 30s.
+# Metrics are written to stdout; log events are written to /tmp/sonda-logs.json.
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 100
+    duration: 30s
+    generator:
+      type: sine
+      amplitude: 50
+      period_secs: 60
+      offset: 50
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: logs
+    name: app_logs
+    rate: 10
+    duration: 30s
+    generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip:
+              - "10.0.0.1"
+              - "10.0.0.2"
+              - "10.0.0.3"
+            endpoint:
+              - "/api/v1/health"
+              - "/api/v1/metrics"
+              - "/api/v1/logs"
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+      seed: 42
+    encoder:
+      type: json_lines
+    sink:
+      type: file
+      path: /tmp/sonda-logs.json

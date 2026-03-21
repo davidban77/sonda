@@ -74,6 +74,11 @@ fn run() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
+        Commands::Run(ref args) => {
+            let config = config::load_multi_config(args)?;
+            sonda_core::schedule::multi_runner::run_multi(config, Arc::clone(&running))
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
     }
 
     Ok(())

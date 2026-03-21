@@ -26,6 +26,12 @@ pub enum Commands {
     Metrics(MetricsArgs),
     /// Generate synthetic log events and write them to the configured sink.
     Logs(LogsArgs),
+    /// Run multiple scenarios concurrently from a multi-scenario YAML file.
+    ///
+    /// The scenario file must contain a top-level `scenarios:` list. Each
+    /// entry specifies a `signal_type` of either `metrics` or `logs`, plus
+    /// the scenario-specific configuration fields.
+    Run(RunArgs),
 }
 
 /// Arguments for the `metrics` subcommand.
@@ -254,6 +260,22 @@ pub struct LogsArgs {
     /// any sink configured in the scenario file.
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+/// Arguments for the `run` subcommand (multi-scenario).
+///
+/// Accepts a YAML file that defines multiple concurrent scenarios under a
+/// top-level `scenarios:` key. Each entry carries a `signal_type` field
+/// (`metrics` or `logs`) along with the full scenario configuration.
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Path to a multi-scenario YAML file.
+    ///
+    /// The file must have a top-level `scenarios:` list. Each list entry must
+    /// include a `signal_type: metrics` or `signal_type: logs` field, followed
+    /// by the scenario-specific configuration fields.
+    #[arg(long)]
+    pub scenario: PathBuf,
 }
 
 /// Parse a `key=value` label string into a `(String, String)` pair.

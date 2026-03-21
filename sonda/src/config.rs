@@ -12,12 +12,14 @@ use std::collections::HashMap;
 use std::fs;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::config::{BurstConfig, GapConfig, LogScenarioConfig, ScenarioConfig};
+use sonda_core::config::{
+    BurstConfig, GapConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
+};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::{LogsArgs, MetricsArgs};
+use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
 
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
 ///
@@ -394,6 +396,26 @@ fn build_log_burst_config(args: &LogsArgs) -> Result<Option<BurstConfig>> {
             "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
         ),
     }
+}
+
+/// Load and return a [`MultiScenarioConfig`] from the provided [`RunArgs`].
+///
+/// The scenario file is read and deserialized. The YAML must have a top-level
+/// `scenarios:` list where each entry carries a `signal_type` field of either
+/// `metrics` or `logs`.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The scenario file cannot be read.
+/// - The file is not valid YAML.
+/// - The YAML does not match the `MultiScenarioConfig` structure.
+pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
+    let path = &args.scenario;
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    serde_yaml::from_str::<MultiScenarioConfig>(&contents)
+        .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
 }
 
 #[cfg(test)]
