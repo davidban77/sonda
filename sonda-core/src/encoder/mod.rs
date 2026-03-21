@@ -9,6 +9,7 @@ pub mod prometheus;
 
 use serde::Deserialize;
 
+use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 
 /// Encodes telemetry events into a specific wire format.
@@ -22,6 +23,16 @@ pub trait Encoder: Send + Sync {
         event: &MetricEvent,
         buf: &mut Vec<u8>,
     ) -> Result<(), crate::SondaError>;
+
+    /// Encode a log event into the provided buffer.
+    ///
+    /// Returns an error by default. Encoders that support log encoding must
+    /// override this method.
+    fn encode_log(&self, _event: &LogEvent, _buf: &mut Vec<u8>) -> Result<(), crate::SondaError> {
+        Err(crate::SondaError::Encoder(
+            "log encoding not supported by this encoder".into(),
+        ))
+    }
 }
 
 /// Configuration selecting which encoder to use for a scenario.
@@ -210,5 +221,99 @@ mod tests {
         ));
         let s = format!("{config:?}");
         assert!(s.contains("InfluxLineProtocol"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Encoder trait: default encode_log() returns "not supported" error
+    // ---------------------------------------------------------------------------
+
+    fn make_log_event() -> crate::model::log::LogEvent {
+        use std::collections::BTreeMap;
+        crate::model::log::LogEvent::new(
+            crate::model::log::Severity::Info,
+            "test message".to_string(),
+            BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn prometheus_encoder_encode_log_returns_not_supported_error() {
+        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let event = make_log_event();
+        let mut buf = Vec::new();
+        let result = encoder.encode_log(&event, &mut buf);
+        assert!(
+            result.is_err(),
+            "prometheus encoder must return an error for encode_log"
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported"),
+            "error message should contain 'not supported', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn influx_encoder_encode_log_returns_not_supported_error() {
+        let encoder = create_encoder(&EncoderConfig::InfluxLineProtocol { field_key: None });
+        let event = make_log_event();
+        let mut buf = Vec::new();
+        let result = encoder.encode_log(&event, &mut buf);
+        assert!(
+            result.is_err(),
+            "influx encoder must return an error for encode_log"
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported"),
+            "error message should contain 'not supported', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn json_lines_encoder_encode_log_returns_not_supported_error() {
+        let encoder = create_encoder(&EncoderConfig::JsonLines);
+        let event = make_log_event();
+        let mut buf = Vec::new();
+        let result = encoder.encode_log(&event, &mut buf);
+        assert!(
+            result.is_err(),
+            "json_lines encoder must return an error for encode_log"
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported"),
+            "error message should contain 'not supported', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn encode_log_default_does_not_write_to_buffer() {
+        // The default implementation must not produce partial output in the buffer.
+        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let event = make_log_event();
+        let mut buf = Vec::new();
+        let _ = encoder.encode_log(&event, &mut buf);
+        assert!(
+            buf.is_empty(),
+            "buffer must remain empty when encode_log returns an error"
+        );
+    }
+
+    #[test]
+    fn encode_log_error_is_encoder_variant() {
+        // The error must come back as SondaError::Encoder, not some other variant.
+        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let event = make_log_event();
+        let mut buf = Vec::new();
+        let result = encoder.encode_log(&event, &mut buf);
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::SondaError::Encoder(_)),
+            "error must be SondaError::Encoder variant, got: {err:?}"
+        );
     }
 }
