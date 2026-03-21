@@ -60,6 +60,8 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
+            sonda_core::config::validate::validate_log_config(&config)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
 
             // Build a sink from the config so we can pass it and the shutdown
             // flag directly to run_logs_with_sink.

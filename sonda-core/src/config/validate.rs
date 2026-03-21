@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::model::metric::is_valid_metric_name;
 use crate::SondaError;
 
-use super::ScenarioConfig;
+use super::{LogScenarioConfig, ScenarioConfig};
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
@@ -115,6 +115,68 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
             "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
             config.name
         )));
+    }
+
+    Ok(())
+}
+
+/// Validate a [`LogScenarioConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `rate` is strictly positive and not NaN.
+/// - `duration`, if provided, is a parseable duration string.
+/// - If gaps are configured, `gap.for` is strictly less than `gap.every`.
+/// - If bursts are configured, `burst.for` is strictly less than `burst.every`
+///   and `burst.multiplier` is strictly positive.
+///
+/// Returns [`SondaError::Config`] with a descriptive message naming the field
+/// and the invalid value.
+pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
+    // Rate must be strictly positive. Explicit NaN check ensures NaN is also rejected.
+    if config.rate.is_nan() || config.rate <= 0.0 {
+        return Err(SondaError::Config(format!(
+            "rate must be positive, got {}",
+            config.rate
+        )));
+    }
+
+    // Duration must be parseable if provided.
+    if let Some(ref dur_str) = config.duration {
+        parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
+    }
+
+    // Gap consistency: gap_for < gap_every.
+    if let Some(ref gap) = config.gaps {
+        let every = parse_duration(&gap.every)
+            .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
+        let for_dur = parse_duration(&gap.r#for)
+            .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
+        if for_dur >= every {
+            return Err(SondaError::Config(format!(
+                "gaps.for ({:?}) must be less than gaps.every ({:?})",
+                gap.r#for, gap.every
+            )));
+        }
+    }
+
+    // Burst consistency: burst_for < burst_every and multiplier > 0.
+    if let Some(ref burst) = config.bursts {
+        if burst.multiplier.is_nan() || burst.multiplier <= 0.0 {
+            return Err(SondaError::Config(format!(
+                "bursts.multiplier must be positive, got {}",
+                burst.multiplier
+            )));
+        }
+        let every = parse_duration(&burst.every)
+            .map_err(|e| prepend_context("invalid bursts.every", &burst.every, e))?;
+        let for_dur = parse_duration(&burst.r#for)
+            .map_err(|e| prepend_context("invalid bursts.for", &burst.r#for, e))?;
+        if for_dur >= every {
+            return Err(SondaError::Config(format!(
+                "bursts.for ({:?}) must be less than bursts.every ({:?})",
+                burst.r#for, burst.every
+            )));
+        }
     }
 
     Ok(())

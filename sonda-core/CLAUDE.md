@@ -25,7 +25,8 @@ src/
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
-│   └── runner.rs       ← the main event loop
+│   ├── runner.rs       ← the main event loop (metrics)
+│   └── log_runner.rs   ← the log event loop (logs)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format
