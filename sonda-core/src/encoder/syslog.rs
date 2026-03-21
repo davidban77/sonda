@@ -177,3 +177,501 @@ impl Encoder for Syslog {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use crate::model::log::{LogEvent, Severity};
+
+    use super::*;
+
+    /// Build a LogEvent with a fixed timestamp for deterministic tests.
+    fn make_log_event(
+        severity: Severity,
+        message: &str,
+        fields: &[(&str, &str)],
+        ts: std::time::SystemTime,
+    ) -> LogEvent {
+        let mut map = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert(k.to_string(), v.to_string());
+        }
+        LogEvent::with_timestamp(ts, severity, message.to_string(), map)
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_metric: must return an error (syslog is log-only)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_metric_returns_not_supported_error() {
+        use crate::model::metric::{Labels, MetricEvent};
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event =
+            MetricEvent::with_timestamp("cpu".to_string(), 1.0, labels, UNIX_EPOCH).unwrap();
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        let result = encoder.encode_metric(&event, &mut buf);
+        assert!(
+            result.is_err(),
+            "syslog encoder must return error for encode_metric"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("metric encoding not supported"),
+            "error message must mention 'metric encoding not supported', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn encode_metric_does_not_write_to_buffer() {
+        use crate::model::metric::{Labels, MetricEvent};
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, UNIX_EPOCH).unwrap();
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        let _ = encoder.encode_metric(&event, &mut buf);
+        assert!(
+            buf.is_empty(),
+            "buffer must remain empty when encode_metric returns error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: happy path — valid RFC 5424 format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_log_produces_line_ending_with_newline() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        assert_eq!(
+            *buf.last().unwrap(),
+            b'\n',
+            "syslog line must end with newline"
+        );
+    }
+
+    #[test]
+    fn encode_log_starts_with_priority_marker() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.starts_with('<'),
+            "syslog line must start with '<': {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_contains_version_one() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "test", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // After the priority, the next token is the version number
+        let after_priority = line.find('>').unwrap();
+        let version_token: &str = line[after_priority + 1..]
+            .split_whitespace()
+            .next()
+            .unwrap();
+        assert_eq!(version_token, "1", "RFC 5424 version must be 1");
+    }
+
+    #[test]
+    fn encode_log_contains_hostname_in_output() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::new(Some("myhost".to_string()), None);
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("myhost"),
+            "syslog line must contain hostname 'myhost': {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_contains_app_name_in_output() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::new(None, Some("myapp".to_string()));
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("myapp"),
+            "syslog line must contain app-name 'myapp': {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_default_hostname_and_app_name_are_sonda() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // "sonda sonda" should appear as consecutive tokens (hostname app_name)
+        assert!(
+            line.contains("sonda sonda"),
+            "default hostname and app_name must both be 'sonda': {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_contains_message_in_output() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "request completed", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("request completed"),
+            "syslog line must contain the message: {line}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: priority calculation — (facility * 8) + syslog_severity
+    // Facility 1 (user-level). Facility bits = 1 * 8 = 8.
+    // -----------------------------------------------------------------------
+
+    fn extract_priority(buf: &[u8]) -> u8 {
+        let line = std::str::from_utf8(buf).unwrap();
+        let end = line.find('>').expect("syslog line must contain '>'");
+        line[1..end]
+            .parse::<u8>()
+            .expect("priority must be a number")
+    }
+
+    #[test]
+    fn priority_for_trace_is_facility_user_plus_debug_syslog_severity() {
+        // Trace maps to Debug (7) in syslog. Facility 1: 1*8 + 7 = 15
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Trace, "trace msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 15,
+            "Trace priority must be 15 (facility=1, severity=7)"
+        );
+    }
+
+    #[test]
+    fn priority_for_debug_is_facility_user_plus_debug_syslog_severity() {
+        // Debug maps to 7 in syslog. 1*8 + 7 = 15
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Debug, "debug msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 15,
+            "Debug priority must be 15 (facility=1, severity=7)"
+        );
+    }
+
+    #[test]
+    fn priority_for_info_is_facility_user_plus_informational_syslog_severity() {
+        // Info maps to 6 (Informational). 1*8 + 6 = 14
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "info msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 14,
+            "Info priority must be 14 (facility=1, severity=6)"
+        );
+    }
+
+    #[test]
+    fn priority_for_warn_is_facility_user_plus_warning_syslog_severity() {
+        // Warn maps to 4 (Warning). 1*8 + 4 = 12
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Warn, "warn msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 12,
+            "Warn priority must be 12 (facility=1, severity=4)"
+        );
+    }
+
+    #[test]
+    fn priority_for_error_is_facility_user_plus_error_syslog_severity() {
+        // Error maps to 3 (Error). 1*8 + 3 = 11
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Error, "error msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 11,
+            "Error priority must be 11 (facility=1, severity=3)"
+        );
+    }
+
+    #[test]
+    fn priority_for_fatal_is_facility_user_plus_emergency_syslog_severity() {
+        // Fatal maps to 0 (Emergency). 1*8 + 0 = 8
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Fatal, "fatal msg", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let priority = extract_priority(&buf);
+        assert_eq!(
+            priority, 8,
+            "Fatal priority must be 8 (facility=1, severity=0)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: RFC 5424 format structure — nil values for PROCID, MSGID, SD
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_log_contains_nil_values_for_procid_msgid_and_sd() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // After the header fields we expect three consecutive nil values (- - -)
+        assert!(
+            line.contains("- - -"),
+            "syslog line must contain '- - -' (PROCID MSGID SD): {line}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: timestamp format — RFC 3339 with millisecond precision
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_log_timestamp_is_rfc3339_with_millisecond_precision() {
+        // 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("2026-03-20T12:00:00.000Z"),
+            "syslog line must contain RFC 3339 timestamp: {line}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: message with special characters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encode_log_message_with_spaces_is_included_verbatim() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(
+            Severity::Info,
+            "Request from 10.0.0.1 to /api/v2/metrics",
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("Request from 10.0.0.1 to /api/v2/metrics"),
+            "message with spaces must be preserved: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_message_with_unicode_characters() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Warn, "Ошибка: сервер недоступен", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("Ошибка: сервер недоступен"),
+            "unicode message must be preserved: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_message_with_angle_brackets() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Error, "value <nil> detected", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("value <nil> detected"),
+            "message with angle brackets must be preserved: {line}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // encode_log: regression anchor — exact byte output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn regression_anchor_info_severity_exact_output() {
+        // Timestamp: 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
+        // Severity::Info -> syslog 6, priority = 1*8 + 6 = 14
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "Request from 10.0.0.1", &[], ts);
+        let encoder = Syslog::new(Some("sonda".to_string()), Some("sonda".to_string()));
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "<14>1 2026-03-20T12:00:00.000Z sonda sonda - - - Request from 10.0.0.1\n"
+        );
+    }
+
+    #[test]
+    fn regression_anchor_error_severity_exact_output() {
+        // Severity::Error -> syslog 3, priority = 1*8 + 3 = 11
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Error, "connection refused", &[], ts);
+        let encoder = Syslog::new(Some("web01".to_string()), Some("nginx".to_string()));
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "<11>1 2026-03-20T12:00:00.000Z web01 nginx - - - connection refused\n"
+        );
+    }
+
+    #[test]
+    fn regression_anchor_fatal_severity_exact_output() {
+        // Severity::Fatal -> syslog 0 (Emergency), priority = 1*8 + 0 = 8
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Fatal, "system crash", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "<8>1 2026-03-20T12:00:00.000Z sonda sonda - - - system crash\n"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Send + Sync contract
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn syslog_encoder_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Syslog>();
+    }
+
+    // -----------------------------------------------------------------------
+    // EncoderConfig::Syslog: deserialization and factory wiring
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encoder_config_syslog_deserializes_without_optional_fields() {
+        use crate::encoder::{create_encoder, EncoderConfig};
+        let yaml = "type: syslog";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            matches!(
+                config,
+                EncoderConfig::Syslog {
+                    hostname: None,
+                    app_name: None
+                }
+            ),
+            "syslog config without optional fields should have None for hostname and app_name"
+        );
+        // Also verify it can create an encoder
+        let _enc = create_encoder(&config);
+    }
+
+    #[test]
+    fn encoder_config_syslog_deserializes_with_hostname() {
+        use crate::encoder::EncoderConfig;
+        let yaml = "type: syslog\nhostname: myhost";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::Syslog {
+                hostname: Some(ref h),
+                app_name: None,
+            } if h == "myhost"
+        ));
+    }
+
+    #[test]
+    fn encoder_config_syslog_deserializes_with_both_hostname_and_app_name() {
+        use crate::encoder::EncoderConfig;
+        let yaml = "type: syslog\nhostname: prod-01\napp_name: api-server";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::Syslog {
+                hostname: Some(ref h),
+                app_name: Some(ref a),
+            } if h == "prod-01" && a == "api-server"
+        ));
+    }
+
+    #[test]
+    fn create_encoder_syslog_via_factory_encodes_log_event() {
+        use crate::encoder::{create_encoder, EncoderConfig};
+        let config = EncoderConfig::Syslog {
+            hostname: Some("testhost".to_string()),
+            app_name: Some("testapp".to_string()),
+        };
+        let encoder = create_encoder(&config);
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "factory test", &[], ts);
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("testhost"),
+            "factory-created encoder must use configured hostname"
+        );
+        assert!(
+            output.contains("testapp"),
+            "factory-created encoder must use configured app_name"
+        );
+        assert!(
+            output.contains("factory test"),
+            "factory-created encoder must include the message"
+        );
+    }
+}

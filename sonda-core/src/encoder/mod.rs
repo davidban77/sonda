@@ -287,21 +287,17 @@ mod tests {
     }
 
     #[test]
-    fn json_lines_encoder_encode_log_returns_not_supported_error() {
+    fn json_lines_encoder_encode_log_succeeds() {
+        // Slice 2.3: JsonLines now implements encode_log — it must succeed, not return an error.
         let encoder = create_encoder(&EncoderConfig::JsonLines);
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
         assert!(
-            result.is_err(),
-            "json_lines encoder must return an error for encode_log"
+            result.is_ok(),
+            "json_lines encoder must support encode_log after slice 2.3"
         );
-        let err = result.unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not supported"),
-            "error message should contain 'not supported', got: {msg}"
-        );
+        assert!(!buf.is_empty(), "buffer must contain encoded data");
     }
 
     #[test]

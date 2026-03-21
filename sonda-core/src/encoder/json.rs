@@ -584,4 +584,358 @@ mod tests {
         let result = format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "2023-12-31T23:59:59.999Z");
     }
+
+    // =========================================================================
+    // Slice 2.3: encode_log() tests
+    // =========================================================================
+
+    /// Build a LogEvent with a fixed timestamp for deterministic tests.
+    fn make_log_event(
+        severity: crate::model::log::Severity,
+        message: &str,
+        fields: &[(&str, &str)],
+        ts: std::time::SystemTime,
+    ) -> crate::model::log::LogEvent {
+        let mut map = std::collections::BTreeMap::new();
+        for (k, v) in fields {
+            map.insert(k.to_string(), v.to_string());
+        }
+        crate::model::log::LogEvent::with_timestamp(ts, severity, message.to_string(), map)
+    }
+
+    // --- encode_log: output is valid JSON ---
+
+    #[test]
+    fn encode_log_produces_valid_json() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "hello world", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        let line = line.trim_end_matches('\n');
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("encode_log output must be valid JSON");
+        assert!(parsed.is_object(), "output must be a JSON object");
+    }
+
+    // --- encode_log: all required fields are present ---
+
+    #[test]
+    fn encode_log_includes_timestamp_field() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            parsed.get("timestamp").is_some(),
+            "encode_log output must include 'timestamp' field"
+        );
+    }
+
+    #[test]
+    fn encode_log_includes_severity_field() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Warn, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            parsed.get("severity").is_some(),
+            "encode_log output must include 'severity' field"
+        );
+    }
+
+    #[test]
+    fn encode_log_includes_message_field() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "test message here", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            parsed.get("message").is_some(),
+            "encode_log output must include 'message' field"
+        );
+    }
+
+    #[test]
+    fn encode_log_includes_fields_field() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[("ip", "10.0.0.1")], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            parsed.get("fields").is_some(),
+            "encode_log output must include 'fields' field"
+        );
+    }
+
+    // --- encode_log: severity is lowercase ---
+
+    #[test]
+    fn encode_log_severity_info_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parsed["severity"], "info",
+            "severity must be lowercase 'info'"
+        );
+    }
+
+    #[test]
+    fn encode_log_severity_error_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Error, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["severity"], "error");
+    }
+
+    #[test]
+    fn encode_log_severity_warn_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Warn, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["severity"], "warn");
+    }
+
+    #[test]
+    fn encode_log_severity_trace_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Trace, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["severity"], "trace");
+    }
+
+    #[test]
+    fn encode_log_severity_debug_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Debug, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["severity"], "debug");
+    }
+
+    #[test]
+    fn encode_log_severity_fatal_is_lowercase() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Fatal, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["severity"], "fatal");
+    }
+
+    // --- encode_log: roundtrip — all fields survive encode → parse ---
+
+    #[test]
+    fn encode_log_roundtrip_message_matches_original() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "Request from 10.0.0.1", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["message"], "Request from 10.0.0.1");
+    }
+
+    #[test]
+    fn encode_log_roundtrip_fields_match_original() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(
+            Severity::Info,
+            "req",
+            &[("ip", "10.0.0.1"), ("endpoint", "/api")],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["fields"]["ip"], "10.0.0.1");
+        assert_eq!(parsed["fields"]["endpoint"], "/api");
+    }
+
+    #[test]
+    fn encode_log_roundtrip_timestamp_matches_original() {
+        use crate::model::log::Severity;
+        // 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parsed["timestamp"], "2026-03-20T12:00:00.000Z",
+            "roundtrip timestamp must match"
+        );
+    }
+
+    // --- encode_log: empty fields produces empty JSON object ---
+
+    #[test]
+    fn encode_log_empty_fields_produces_empty_json_object() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parsed["fields"],
+            serde_json::json!({}),
+            "empty fields must serialize as empty JSON object"
+        );
+    }
+
+    // --- encode_log: line ends with newline ---
+
+    #[test]
+    fn encode_log_line_ends_with_newline() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        assert_eq!(
+            *buf.last().unwrap(),
+            b'\n',
+            "encode_log line must end with newline"
+        );
+    }
+
+    // --- encode_log: field order — timestamp, severity, message, fields ---
+
+    #[test]
+    fn encode_log_fields_appear_in_spec_order() {
+        // Spec: timestamp, severity, message, fields
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "msg", &[("k", "v")], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let line = output.trim_end_matches('\n');
+        let ts_pos = line.find("\"timestamp\"").unwrap();
+        let sev_pos = line.find("\"severity\"").unwrap();
+        let msg_pos = line.find("\"message\"").unwrap();
+        let fields_pos = line.find("\"fields\"").unwrap();
+        assert!(ts_pos < sev_pos, "timestamp must come before severity");
+        assert!(sev_pos < msg_pos, "severity must come before message");
+        assert!(msg_pos < fields_pos, "message must come before fields");
+    }
+
+    // --- encode_log: regression anchor — exact byte output ---
+
+    #[test]
+    fn encode_log_regression_anchor_simple_info_event() {
+        use crate::model::log::Severity;
+        // 2026-03-20T12:00:00.000Z
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "Request from 10.0.0.1", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"fields\":{}}\n"
+        );
+    }
+
+    #[test]
+    fn encode_log_regression_anchor_with_fields() {
+        use crate::model::log::Severity;
+        // Fields must be sorted by key (BTreeMap)
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(
+            Severity::Error,
+            "db timeout",
+            &[("endpoint", "/api"), ("ip", "10.0.0.1")],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"error\",\"message\":\"db timeout\",\"fields\":{\"endpoint\":\"/api\",\"ip\":\"10.0.0.1\"}}\n"
+        );
+    }
+
+    // --- encode_log: prometheus encoder still returns "not supported" error ---
+
+    #[test]
+    fn prometheus_encoder_encode_log_still_returns_not_supported_after_slice_2_3() {
+        use crate::encoder::{create_encoder, EncoderConfig};
+        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(crate::model::log::Severity::Info, "should fail", &[], ts);
+        let mut buf = Vec::new();
+        let result = encoder.encode_log(&event, &mut buf);
+        assert!(
+            result.is_err(),
+            "prometheus encoder must still return error for encode_log"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not supported"),
+            "error must mention 'not supported', got: {msg}"
+        );
+        assert!(buf.is_empty(), "buffer must remain empty on error");
+    }
 }
