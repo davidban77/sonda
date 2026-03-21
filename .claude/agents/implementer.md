@@ -34,14 +34,20 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
 4. **Read the crate CLAUDE.md**: Before modifying any crate, read its `CLAUDE.md` for module layout,
    patterns, and conventions.
 
-5. **Verify input state**: Check prerequisites exist and prior slices compile:
+5. **Check for a matching skill**: Look in `.claude/skills/` for a skill that matches the work:
+   - Adding a generator → read `.claude/skills/add-generator/SKILL.md`
+   - Adding an encoder → read `.claude/skills/add-encoder/SKILL.md`
+   - Adding a sink → read `.claude/skills/add-sink/SKILL.md`
+   If a skill matches, follow its steps and quality checklist alongside the slice spec.
+
+6. **Verify input state**: Check prerequisites exist and prior slices compile:
    ```bash
    cargo build --workspace
    cargo test --workspace
    ```
    If these fail, STOP and report — a prior slice is broken.
 
-6. **Implement the code**:
+7. **Implement the code**:
    - Create only the files specified in the slice.
    - Follow exact type signatures, trait implementations, and module structure from the spec.
    - Follow all coding conventions from the root `CLAUDE.md`.
@@ -49,14 +55,14 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    - Do NOT write test code (`#[cfg(test)]` blocks).
    - Do NOT modify files outside the slice scope unless the spec explicitly says to.
 
-7. **Verify your work**:
+8. **Verify your work**:
    ```bash
    cargo build --workspace
    cargo clippy --workspace -- -D warnings
    cargo fmt --all -- --check
    ```
 
-8. **Commit**: Use the `/commit` skill. Commit message: `feat(slice-$ARGUMENTS): <short description>`
+9. **Commit**: Use the `/commit` skill. Commit message: `feat(slice-$ARGUMENTS): <short description>`
 
 ## Rules
 
