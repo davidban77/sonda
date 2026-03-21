@@ -34,7 +34,8 @@ src/
 │   ├── stdout.rs       ← BufWriter<Stdout>
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
-│   └── udp.rs          ← UDP socket (UdpSocket)
+│   ├── udp.rs          ← UDP socket (UdpSocket)
+│   └── http.rs         ← HTTP push sink (ureq)
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization
     └── validate.rs     ← config validation logic

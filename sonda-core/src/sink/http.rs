@@ -79,13 +79,19 @@ impl HttpPushSink {
     ///   metric generation).
     /// - 5xx responses are retried once. If the retry also returns 5xx or
     ///   fails, a [`SondaError::Sink`] is returned.
+    /// - Transport errors (connection refused, DNS failure, etc.) clear the
+    ///   batch to prevent unbounded buffer growth on repeated failures.
     fn send_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
         }
 
-        let body = self.batch.clone();
-        let result = self.do_post(&body);
+        // Split the borrow: extract the fields needed by `do_post` so we can
+        // pass `&self.batch` directly without cloning it.
+        let client = &self.client;
+        let url = &self.url;
+        let content_type = &self.content_type;
+        let result = Self::do_post(client, url, content_type, &self.batch);
 
         match result {
             Ok(status) if (200..300).contains(&status) => {
@@ -105,7 +111,10 @@ impl HttpPushSink {
             }
             Ok(status) => {
                 // 5xx or unexpected: retry once.
-                let retry_result = self.do_post(&body);
+                let client = &self.client;
+                let url = &self.url;
+                let content_type = &self.content_type;
+                let retry_result = Self::do_post(client, url, content_type, &self.batch);
                 match retry_result {
                     Ok(retry_status) if (200..300).contains(&retry_status) => {
                         self.batch.clear();
@@ -120,24 +129,36 @@ impl HttpPushSink {
                         .into())
                     }
                     Err(e) => {
+                        // Retry transport failure — clear batch to prevent unbounded growth.
                         self.batch.clear();
                         Err(e)
                     }
                 }
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // Transport failure — clear batch to prevent unbounded growth.
+                self.batch.clear();
+                Err(e)
+            }
         }
     }
 
-    /// Perform a single HTTP POST of `body` to `self.url`.
+    /// Perform a single HTTP POST of `body` to `url`.
+    ///
+    /// This is a free-standing helper (not `&self`) so that `send_batch` can
+    /// hold a reference to `self.batch` while calling it — avoiding a clone.
     ///
     /// Returns the HTTP status code on a successful transport-level exchange,
     /// or a [`SondaError::Sink`] on connection failure.
-    fn do_post(&self, body: &[u8]) -> Result<u16, SondaError> {
-        let response = self
-            .client
-            .post(&self.url)
-            .set("Content-Type", &self.content_type)
+    fn do_post(
+        client: &ureq::Agent,
+        url: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<u16, SondaError> {
+        let response = client
+            .post(url)
+            .set("Content-Type", content_type)
             .send_bytes(body);
 
         match response {
@@ -145,7 +166,7 @@ impl HttpPushSink {
             Err(ureq::Error::Status(code, _)) => Ok(code),
             Err(e) => Err(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
-                format!("HTTP push to '{}' failed: {}", self.url, e),
+                format!("HTTP push to '{}' failed: {}", url, e),
             )
             .into()),
         }

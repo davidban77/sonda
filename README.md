@@ -259,6 +259,7 @@ The `sink` field selects the output destination. Use a mapping with a `type` key
 | `file` | `path: string` | Write to a file. Parent directories are created automatically. |
 | `tcp` | `address: string` | Write over a persistent TCP connection (e.g. `"127.0.0.1:9999"`). |
 | `udp` | `address: string` | Send each event as a UDP datagram (e.g. `"127.0.0.1:9999"`). |
+| `http_push` | `url: string`, `content_type: string` (optional), `batch_size: usize` (optional) | POST batches of encoded events to an HTTP endpoint. Retries once on 5xx. |
 
 ```yaml
 # Write to a file
@@ -275,6 +276,13 @@ sink:
 sink:
   type: udp
   address: "127.0.0.1:9999"
+
+# POST batches to an HTTP endpoint
+sink:
+  type: http_push
+  url: "http://localhost:9090/api/v1/otlp/metrics"
+  content_type: "text/plain; version=0.0.4"
+  batch_size: 65536
 ```
 
 ### Gap windows
@@ -337,6 +345,16 @@ Sawtooth wave written to a file in InfluxDB line protocol:
 ```bash
 sonda metrics --scenario examples/file-sink.yaml
 cat /tmp/sonda-output.txt
+```
+
+### `examples/http-push-sink.yaml`
+
+Sine wave POSTed in batches to an HTTP endpoint (start a local receiver first):
+
+```bash
+# Listen with netcat (for testing)
+nc -l 9090 &
+sonda metrics --scenario examples/http-push-sink.yaml
 ```
 
 ---
