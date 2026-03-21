@@ -445,4 +445,176 @@ mod tests {
         assert_send_sync::<crate::generator::sawtooth::Sawtooth>();
         assert_send_sync::<crate::generator::constant::Constant>();
     }
+
+    // ---- LogGeneratorConfig deserialization tests ----------------------------
+
+    #[test]
+    fn deserialize_log_template_config_minimal() {
+        let yaml = "\
+type: template
+templates:
+  - message: \"hello {name}\"
+    field_pools:
+      name:
+        - alice
+        - bob
+";
+        let config: LogGeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize template config");
+        match config {
+            LogGeneratorConfig::Template {
+                templates,
+                severity_weights,
+                seed,
+            } => {
+                assert_eq!(templates.len(), 1);
+                assert_eq!(templates[0].message, "hello {name}");
+                assert!(templates[0].field_pools.contains_key("name"));
+                assert_eq!(
+                    templates[0].field_pools["name"],
+                    vec!["alice".to_string(), "bob".to_string()]
+                );
+                assert!(
+                    severity_weights.is_none(),
+                    "severity_weights must default to None"
+                );
+                assert!(seed.is_none(), "seed must default to None");
+            }
+            _ => panic!("expected Template variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_log_template_config_with_weights_and_seed() {
+        let yaml = "\
+type: template
+templates:
+  - message: \"msg\"
+    field_pools: {}
+severity_weights:
+  info: 0.7
+  warn: 0.2
+  error: 0.1
+seed: 42
+";
+        let config: LogGeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize template config with weights");
+        match config {
+            LogGeneratorConfig::Template {
+                severity_weights,
+                seed,
+                ..
+            } => {
+                let weights = severity_weights.expect("severity_weights should be present");
+                assert!((weights["info"] - 0.7).abs() < 1e-10);
+                assert!((weights["warn"] - 0.2).abs() < 1e-10);
+                assert!((weights["error"] - 0.1).abs() < 1e-10);
+                assert_eq!(seed, Some(42));
+            }
+            _ => panic!("expected Template variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_log_replay_config() {
+        let yaml = "type: replay\nfile: /var/log/app.log\n";
+        let config: LogGeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize replay config");
+        match config {
+            LogGeneratorConfig::Replay { file } => {
+                assert_eq!(file, "/var/log/app.log");
+            }
+            _ => panic!("expected Replay variant"),
+        }
+    }
+
+    // ---- create_log_generator factory tests ----------------------------------
+
+    #[test]
+    fn factory_template_config_creates_working_generator() {
+        let config = LogGeneratorConfig::Template {
+            templates: vec![TemplateConfig {
+                message: "event {id}".into(),
+                field_pools: {
+                    let mut m = HashMap::new();
+                    m.insert("id".into(), vec!["1".into(), "2".into(), "3".into()]);
+                    m
+                },
+            }],
+            severity_weights: None,
+            seed: Some(0),
+        };
+        let gen = create_log_generator(&config).expect("template factory must succeed");
+        let event = gen.generate(0);
+        // Must not contain unresolved placeholder.
+        assert!(!event.message.contains('{'));
+    }
+
+    #[test]
+    fn factory_template_config_seed_none_defaults_correctly() {
+        // seed: None should not error and should produce a generator.
+        let config = LogGeneratorConfig::Template {
+            templates: vec![TemplateConfig {
+                message: "static message".into(),
+                field_pools: HashMap::new(),
+            }],
+            severity_weights: None,
+            seed: None,
+        };
+        let gen = create_log_generator(&config).expect("template with seed=None must succeed");
+        assert_eq!(gen.generate(0).message, "static message");
+    }
+
+    #[test]
+    fn factory_template_invalid_severity_key_returns_error() {
+        let config = LogGeneratorConfig::Template {
+            templates: vec![TemplateConfig {
+                message: "msg".into(),
+                field_pools: HashMap::new(),
+            }],
+            severity_weights: {
+                let mut m = HashMap::new();
+                m.insert("bogus".into(), 1.0);
+                Some(m)
+            },
+            seed: None,
+        };
+        let result = create_log_generator(&config);
+        assert!(
+            result.is_err(),
+            "invalid severity key 'bogus' must produce Err"
+        );
+    }
+
+    #[test]
+    fn factory_replay_config_missing_file_returns_error() {
+        let config = LogGeneratorConfig::Replay {
+            file: "/this/path/does/not/exist.log".into(),
+        };
+        let result = create_log_generator(&config);
+        assert!(result.is_err(), "missing replay file must produce Err");
+    }
+
+    #[test]
+    fn factory_replay_config_creates_working_generator() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+        let mut tmp = NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "line one").expect("write");
+        writeln!(tmp, "line two").expect("write");
+        let config = LogGeneratorConfig::Replay {
+            file: tmp.path().to_string_lossy().into_owned(),
+        };
+        let gen =
+            create_log_generator(&config).expect("replay factory with real file must succeed");
+        assert_eq!(gen.generate(0).message, "line one");
+        assert_eq!(gen.generate(1).message, "line two");
+        assert_eq!(gen.generate(2).message, "line one");
+    }
+
+    #[test]
+    fn log_generators_are_send_and_sync() {
+        assert_send_sync::<crate::generator::log_template::LogTemplateGenerator>();
+        assert_send_sync::<crate::generator::log_replay::LogReplayGenerator>();
+    }
 }
