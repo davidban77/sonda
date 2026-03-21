@@ -27,7 +27,9 @@ pub trait Encoder: Send + Sync {
 /// Configuration selecting which encoder to use for a scenario.
 ///
 /// This enum is serde-deserializable from YAML scenario files.
+/// The `type` field selects the variant: `prometheus_text`, `influx_lp`, or `json_lines`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
 pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).
     #[serde(rename = "prometheus_text")]

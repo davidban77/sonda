@@ -26,7 +26,9 @@ pub trait Sink: Send + Sync {
 /// Configuration selecting which sink to use for a scenario.
 ///
 /// This enum is serde-deserializable from YAML scenario files.
+/// The `type` field selects the variant: `stdout`, `file`, `tcp`, or `udp`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
 pub enum SinkConfig {
     /// Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).
     #[serde(rename = "stdout")]
@@ -90,7 +92,7 @@ mod tests {
 
     #[test]
     fn sink_config_stdout_deserializes_from_yaml() {
-        let yaml = "stdout";
+        let yaml = "type: stdout";
         let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(config, SinkConfig::Stdout));
     }

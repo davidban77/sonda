@@ -206,8 +206,10 @@ labels:
   hostname: t0-a1
   zone: eu1
 
-encoder: prometheus_text
-sink: stdout
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
 ```
 
 Run it with:
@@ -230,6 +232,50 @@ sonda metrics --scenario examples/basic-metrics.yaml --rate 500
 | `uniform` | `min: f64`, `max: f64`, `seed: u64` (optional) | Uniformly distributed random value in `[min, max]`. Seeded for deterministic replay. |
 | `sine` | `amplitude: f64`, `period_secs: f64`, `offset: f64` | Sine wave: `offset + amplitude * sin(2π * tick / period_ticks)`. |
 | `sawtooth` | `min: f64`, `max: f64`, `period_secs: f64` | Linear ramp from `min` to `max` that resets at the period boundary. |
+
+### Encoder types
+
+The `encoder` field selects the wire format. Use a mapping with a `type` key:
+
+| `type` | Parameters | Description |
+|--------|-----------|-------------|
+| `prometheus_text` | _(none)_ | Prometheus text exposition format 0.0.4. |
+| `influx_lp` | `field_key: string` (optional, default `"value"`) | InfluxDB line protocol. |
+| `json_lines` | _(none)_ | JSON Lines (NDJSON), one object per line. |
+
+```yaml
+encoder:
+  type: influx_lp
+  field_key: requests
+```
+
+### Sink types
+
+The `sink` field selects the output destination. Use a mapping with a `type` key:
+
+| `type` | Parameters | Description |
+|--------|-----------|-------------|
+| `stdout` | _(none)_ | Write to standard output (buffered). Default. |
+| `file` | `path: string` | Write to a file. Parent directories are created automatically. |
+| `tcp` | `address: string` | Write over a persistent TCP connection (e.g. `"127.0.0.1:9999"`). |
+| `udp` | `address: string` | Send each event as a UDP datagram (e.g. `"127.0.0.1:9999"`). |
+
+```yaml
+# Write to a file
+sink:
+  type: file
+  path: /tmp/sonda-output.txt
+
+# Send over TCP
+sink:
+  type: tcp
+  address: "127.0.0.1:9999"
+
+# Send over UDP
+sink:
+  type: udp
+  address: "127.0.0.1:9999"
+```
 
 ### Gap windows
 

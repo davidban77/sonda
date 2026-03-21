@@ -527,8 +527,10 @@ gaps:
 labels:
   hostname: t0-a1
   zone: eu1
-encoder: prometheus_text
-sink: stdout
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
 "#;
         let config: ScenarioConfig =
             serde_yaml::from_str(yaml).expect("architecture example YAML must deserialize");
@@ -608,8 +610,10 @@ gaps:
 labels:
   hostname: t0-a1
   zone: eu1
-encoder: prometheus_text
-sink: stdout
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
 "#;
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
         assert!(
@@ -640,8 +644,10 @@ gaps:
   for: 5s
 labels:
   env: test
-encoder: prometheus_text
-sink: stdout
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
 "#;
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok(), "must validate");

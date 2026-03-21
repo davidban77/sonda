@@ -281,12 +281,7 @@ mod tests {
     fn sink_config_file_deserializes_from_yaml() {
         use crate::sink::SinkConfig;
 
-        // serde_yaml 0.9.x uses YAML tag syntax for externally-tagged enum
-        // variants with struct fields. The unit variant "stdout" stays a plain
-        // string, but "File { path }" requires the YAML tag form:
-        //   !file
-        //   path: /tmp/sonda-test.txt
-        let yaml = "!file\npath: /tmp/sonda-test.txt";
+        let yaml = "type: file\npath: /tmp/sonda-test.txt";
         let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::File { path } => {
@@ -297,11 +292,11 @@ mod tests {
     }
 
     #[test]
-    fn sink_config_file_deserializes_from_inline_yaml_tag() {
+    fn sink_config_file_deserializes_from_inline_yaml() {
         use crate::sink::SinkConfig;
 
-        // Inline YAML tag form also accepted by serde_yaml 0.9.
-        let yaml = "!file {path: /tmp/inline.txt}";
+        // Inline mapping form with `type` field.
+        let yaml = "{type: file, path: /tmp/inline.txt}";
         let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize inline");
         match config {
             SinkConfig::File { path } => {

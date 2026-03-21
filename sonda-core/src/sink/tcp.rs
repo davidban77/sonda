@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn sink_config_tcp_deserializes_from_yaml() {
-        let yaml = "!tcp\naddress: \"127.0.0.1:9999\"";
+        let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
         let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::Tcp { address } => {
