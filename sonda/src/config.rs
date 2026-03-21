@@ -1467,4 +1467,81 @@ mod tests {
             "CLI --encoder must override YAML encoder to syslog"
         );
     }
+
+    // ---- load_multi_config --------------------------------------------------
+
+    fn default_run_args(path: PathBuf) -> crate::cli::RunArgs {
+        crate::cli::RunArgs { scenario: path }
+    }
+
+    #[test]
+    fn load_multi_config_from_example_file_returns_ok() {
+        // The example multi-scenario file ships with the repo. Verify it parses.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/multi-scenario.yaml");
+        let args = default_run_args(path);
+        let config = load_multi_config(&args).expect("example multi-scenario.yaml must load");
+        assert_eq!(config.scenarios.len(), 2, "example must have 2 scenarios");
+    }
+
+    #[test]
+    fn load_multi_config_metrics_entry_has_correct_signal_type() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/multi-scenario.yaml");
+        let args = default_run_args(path);
+        let config = load_multi_config(&args).unwrap();
+        assert!(
+            matches!(
+                config.scenarios[0],
+                sonda_core::config::ScenarioEntry::Metrics(_)
+            ),
+            "first entry should be Metrics"
+        );
+    }
+
+    #[test]
+    fn load_multi_config_logs_entry_has_correct_signal_type() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/multi-scenario.yaml");
+        let args = default_run_args(path);
+        let config = load_multi_config(&args).unwrap();
+        assert!(
+            matches!(
+                config.scenarios[1],
+                sonda_core::config::ScenarioEntry::Logs(_)
+            ),
+            "second entry should be Logs"
+        );
+    }
+
+    #[test]
+    fn load_multi_config_from_missing_file_returns_error() {
+        let args = default_run_args(PathBuf::from("/nonexistent/multi.yaml"));
+        let err = load_multi_config(&args).expect_err("missing file must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("scenario") || msg.contains("nonexistent"),
+            "error must mention the missing file, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_multi_config_from_invalid_yaml_returns_error() {
+        use std::io::Write;
+        // Write a temp file with invalid YAML for a MultiScenarioConfig.
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile must be created");
+        writeln!(tmp, "not_scenarios_key: true").unwrap();
+        let args = default_run_args(tmp.path().to_path_buf());
+        let result = load_multi_config(&args);
+        assert!(
+            result.is_err(),
+            "invalid multi-scenario YAML should return error"
+        );
+    }
 }
