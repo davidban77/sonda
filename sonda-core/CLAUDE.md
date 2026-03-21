@@ -30,7 +30,8 @@ src/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format
 │   ├── influx.rs       ← Influx Line Protocol (post-MVP)
-│   └── json.rs         ← JSON Lines (post-MVP)
+│   ├── json.rs         ← JSON Lines (post-MVP)
+│   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory
 │   ├── stdout.rs       ← BufWriter<Stdout>
