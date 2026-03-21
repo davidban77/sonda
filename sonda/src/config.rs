@@ -194,8 +194,9 @@ fn build_labels(args: &MetricsArgs) -> Option<HashMap<String, String>> {
 fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
     match encoder {
         "prometheus_text" => Ok(EncoderConfig::PrometheusText),
+        "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol { field_key: None }),
         other => bail!(
-            "unknown encoder {:?}: expected one of prometheus_text",
+            "unknown encoder {:?}: expected one of prometheus_text, influx_lp",
             other
         ),
     }
