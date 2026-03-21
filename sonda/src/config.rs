@@ -195,8 +195,9 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
     match encoder {
         "prometheus_text" => Ok(EncoderConfig::PrometheusText),
         "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol { field_key: None }),
+        "json_lines" => Ok(EncoderConfig::JsonLines),
         other => bail!(
-            "unknown encoder {:?}: expected one of prometheus_text, influx_lp",
+            "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
             other
         ),
     }
