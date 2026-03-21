@@ -21,3 +21,4 @@ tokio = { version = "1", features = ["rt", "net", "time", "macros"], optional = 
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 
 [dev-dependencies]
+tempfile = "3"
