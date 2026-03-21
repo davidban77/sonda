@@ -453,12 +453,13 @@ cargo run -p sonda -- metrics --name up --rate 10 --duration 5s
 
 ## End-to-End Integration Tests
 
-The `tests/e2e/` directory contains a docker-compose based test suite that validates sonda's HTTP
-push sink against real observability backends.
+The `tests/e2e/` directory contains a docker-compose based test suite that validates sonda against
+real observability backends and message brokers.
 
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`)
+- [Task](https://taskfile.dev/) (optional — for convenient task runner commands)
 - `curl` and `python3` in PATH
 - Rust toolchain (for `cargo build`)
 
@@ -466,52 +467,99 @@ push sink against real observability backends.
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `prometheus` | 9090 | Prometheus with remote write receiver enabled |
 | `victoriametrics` | 8428 | VictoriaMetrics single-node (push target and query endpoint) |
+| `prometheus` | 9090 | Prometheus with remote write receiver enabled |
 | `vmagent` | 8429 | vmagent that relays incoming pushes to VictoriaMetrics |
+| `kafka` | 9094 | Kafka broker (KRaft mode, no Zookeeper) |
+| `kafka-ui` | 8080 | Kafka UI for browsing topics and messages |
+| `grafana` | 3000 | Grafana with VictoriaMetrics and Prometheus datasources pre-configured |
 
 ### Test scenarios
 
-| Scenario file | Encoder | Sink target | Metric name verified |
-|---------------|---------|-------------|----------------------|
+**VictoriaMetrics scenarios** (verified by querying `/api/v1/series`):
+
+| Scenario file | Encoder | Sink target | Metric verified |
+|---------------|---------|-------------|-----------------|
 | `vm-prometheus-text.yaml` | `prometheus_text` | VictoriaMetrics `/api/v1/import/prometheus` | `sonda_e2e_vm_prom_text` |
 | `vm-influx-lp.yaml` | `influx_lp` | VictoriaMetrics `/write` | `sonda_e2e_vm_influx_lp_value` |
-| `vmagent-prometheus-text.yaml` | `prometheus_text` | vmagent `/api/v1/import/prometheus` | `sonda_e2e_vmagent_prom_text` |
 
-### Running the tests
+**Kafka scenarios** (verified by consuming from topic):
+
+| Scenario file | Encoder | Kafka topic | Metric verified |
+|---------------|---------|-------------|-----------------|
+| `kafka-prometheus-text.yaml` | `prometheus_text` | `sonda-e2e-metrics` | messages consumed > 0 |
+| `kafka-json-lines.yaml` | `json_lines` | `sonda-e2e-json` | messages consumed > 0 |
+
+### Using the Taskfile
+
+The project includes a `Taskfile.yml` for common operations:
 
 ```bash
+task stack:up       # Start the full stack (VM, Prometheus, Kafka, Grafana, Kafka UI)
+task stack:down     # Stop and remove everything
+task stack:status   # Show service status
+task stack:logs     # Tail all service logs
+
+task e2e            # Run automated e2e tests (starts/stops stack)
+task demo           # Start stack + send a 30s sine wave demo to VM
+
+task run:vm-prom    # Send Prometheus text metrics to VictoriaMetrics
+task run:vm-influx  # Send InfluxDB LP metrics to VictoriaMetrics
+task run:kafka      # Send metrics to Kafka
+
+task check          # Full quality gate (build + test + lint)
+```
+
+### Exploring metrics visually
+
+Start the stack and send some data:
+
+```bash
+task stack:up
+task demo
+```
+
+Then open the dashboards:
+
+- **Grafana** — http://localhost:3000 (anonymous access, VictoriaMetrics datasource pre-configured). Go to Explore, select VictoriaMetrics, and query `demo_sine_wave`.
+- **Kafka UI** — http://localhost:8080. Browse topics `sonda-e2e-metrics` and `sonda-e2e-json` to see messages.
+- **VictoriaMetrics** — http://localhost:8428/vmui for the built-in query UI.
+
+### Running the automated tests
+
+```bash
+# Via Taskfile
+task e2e
+
+# Or directly
 ./tests/e2e/run.sh
 ```
 
-The script starts the docker-compose stack, waits for all services to become healthy, builds sonda,
-runs each scenario, queries VictoriaMetrics to verify data arrived, and tears everything down. It
-exits `0` if all scenarios pass, `1` if any fail.
+The script starts the docker-compose stack, waits for all services to become healthy, builds sonda
+in release mode, runs each scenario, verifies data arrived (VictoriaMetrics via series API, Kafka
+via consumer), and tears everything down. Exits `0` if all pass, `1` if any fail.
 
 ### Running scenarios manually
 
-Start the stack:
-
 ```bash
-docker compose -f tests/e2e/docker-compose.yml up -d
-```
+# Start the stack
+task stack:up
 
-Run an individual scenario:
-
-```bash
+# Run individual scenarios
 sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
-```
+sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
 
-Query VictoriaMetrics to verify:
+# Verify VictoriaMetrics
+curl "http://localhost:8428/api/v1/series?match[]={__name__=%22sonda_e2e_vm_prom_text%22}"
 
-```bash
-curl "http://localhost:8428/api/v1/query?query=sonda_e2e_vm_prom_text"
-```
+# Verify Kafka (consume from topic)
+docker exec sonda-e2e-kafka kafka-console-consumer.sh \
+    --bootstrap-server 127.0.0.1:9092 \
+    --topic sonda-e2e-metrics \
+    --from-beginning --timeout-ms 5000
 
-Tear down:
-
-```bash
-docker compose -f tests/e2e/docker-compose.yml down -v
+# Tear down
+task stack:down
 ```
 
 ---
