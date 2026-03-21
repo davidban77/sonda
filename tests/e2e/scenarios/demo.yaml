@@ -1,6 +1,6 @@
 name: demo_sine_wave
 rate: 100
-duration: 30s
+duration: 5m
 generator:
   type: sine
   amplitude: 50.0
