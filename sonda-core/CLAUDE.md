@@ -26,7 +26,8 @@ src/
 ├── schedule/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
 │   ├── runner.rs       ← the main event loop (metrics)
-│   └── log_runner.rs   ← the log event loop (logs)
+│   ├── log_runner.rs   ← the log event loop (logs)
+│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format
@@ -41,6 +42,7 @@ src/
 │   ├── udp.rs          ← UDP socket (UdpSocket)
 │   ├── http.rs         ← HTTP push sink (ureq)
 │   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
+│   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization

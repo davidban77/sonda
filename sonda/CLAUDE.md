@@ -32,10 +32,13 @@ wrong crate.
 ```
 sonda metrics --scenario <file.yaml>
 sonda metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--label k=v]...
-sonda logs --scenario <file.yaml>          # post-MVP
+sonda logs --scenario <file.yaml>
+sonda run --scenario <multi-scenario.yaml>
 ```
 
-The `metrics` subcommand is the MVP entry point. `logs` comes later.
+The `metrics` subcommand is the MVP entry point. `logs` emits log events. `run` runs multiple
+scenarios concurrently from a single YAML file whose `scenarios:` list carries `signal_type: metrics`
+or `signal_type: logs` entries.
 
 ## Adding a New Subcommand
 

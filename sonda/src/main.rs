@@ -76,6 +76,21 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
+
+            // Validate each scenario entry before handing off to the runner.
+            for (i, entry) in config.scenarios.iter().enumerate() {
+                match entry {
+                    sonda_core::ScenarioEntry::Metrics(scenario_config) => {
+                        sonda_core::config::validate::validate_config(scenario_config)
+                            .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
+                    }
+                    sonda_core::ScenarioEntry::Logs(log_config) => {
+                        sonda_core::config::validate::validate_log_config(log_config)
+                            .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
+                    }
+                }
+            }
+
             sonda_core::schedule::multi_runner::run_multi(config, Arc::clone(&running))
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
