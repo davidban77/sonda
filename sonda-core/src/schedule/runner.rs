@@ -110,6 +110,8 @@ pub fn run_with_sink(
     // Pre-allocate encode buffer — reused every tick to avoid per-event allocation.
     let mut buf: Vec<u8> = Vec::with_capacity(256);
 
+    // Record the wall-clock start time once. All tick deadlines are computed
+    // relative to this instant so sleep drift cannot accumulate across ticks.
     let start = Instant::now();
     let mut tick: u64 = 0;
 
@@ -140,13 +142,32 @@ pub fn run_with_sink(
                     if sleep_for > Duration::ZERO {
                         thread::sleep(sleep_for);
                     }
-                    // After sleeping, re-check duration before emitting.
+                    // After sleeping through the gap, advance tick to keep
+                    // deadlines consistent with actual wall-clock time so we
+                    // don't try to "catch up" for events suppressed by the gap.
+                    let now_elapsed = start.elapsed();
+                    tick = (now_elapsed.as_secs_f64() / interval.as_secs_f64()) as u64;
+                    // Re-check duration before emitting.
                     continue;
                 }
             }
 
+            // Deadline-based rate control: compute the absolute wall-clock time
+            // at which this tick should fire. If we are ahead of schedule, sleep
+            // the remaining delta. If we are already behind (deadline passed),
+            // emit immediately without sleeping — this naturally absorbs the
+            // overhead of encode/write without accumulating drift.
+            //
+            // Using `tick as u32` is safe here: at 1 MHz for 49 days tick would
+            // overflow u32, but no sonda scenario runs that long.
+            let deadline = start + interval * tick as u32;
+            let now = Instant::now();
+            if now < deadline {
+                thread::sleep(deadline - now);
+            }
+
             // Timestamp the event at the start of this iteration.
-            let now = std::time::SystemTime::now();
+            let wall_now = std::time::SystemTime::now();
 
             // Generate the value and build the metric event.
             // MetricEvent::with_timestamp takes owned String and Labels, so we
@@ -155,7 +176,7 @@ pub fn run_with_sink(
             // is typically small and fixed. A zero-copy API is possible post-MVP
             // if profiling shows this to be a bottleneck.
             let value = generator.value(tick);
-            let event = MetricEvent::with_timestamp(name.clone(), value, labels.clone(), now)?;
+            let event = MetricEvent::with_timestamp(name.clone(), value, labels.clone(), wall_now)?;
 
             // Encode and write.
             buf.clear();
@@ -163,12 +184,6 @@ pub fn run_with_sink(
             sink.write(&buf)?;
 
             tick += 1;
-
-            // Rate control: sleep for whatever time remains in this interval.
-            let iteration_elapsed = start.elapsed() - elapsed;
-            if interval > iteration_elapsed {
-                thread::sleep(interval - iteration_elapsed);
-            }
         }
         Ok(())
     })();
