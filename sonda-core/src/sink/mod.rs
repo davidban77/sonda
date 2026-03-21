@@ -5,6 +5,8 @@
 pub mod file;
 pub mod memory;
 pub mod stdout;
+pub mod tcp;
+pub mod udp;
 
 use std::path::Path;
 
@@ -38,6 +40,25 @@ pub enum SinkConfig {
         /// Filesystem path to write encoded events to.
         path: String,
     },
+
+    /// Write encoded events over a persistent TCP connection.
+    ///
+    /// The sink connects on construction and buffers writes via [`BufWriter`](std::io::BufWriter).
+    #[serde(rename = "tcp")]
+    Tcp {
+        /// Remote address to connect to, e.g. `"127.0.0.1:9999"`.
+        address: String,
+    },
+
+    /// Send each encoded event as a single UDP datagram.
+    ///
+    /// No connection is established; an ephemeral local port is bound and each
+    /// call to `write` sends one `send_to` datagram.
+    #[serde(rename = "udp")]
+    Udp {
+        /// Remote address to send datagrams to, e.g. `"127.0.0.1:9999"`.
+        address: String,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -45,6 +66,8 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
+        SinkConfig::Tcp { address } => Ok(Box::new(tcp::TcpSink::new(address)?)),
+        SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
     }
 }
 
