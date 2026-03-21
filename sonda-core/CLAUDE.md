@@ -40,6 +40,7 @@ src/
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
 │   ├── udp.rs          ← UDP socket (UdpSocket)
 │   ├── http.rs         ← HTTP push sink (ureq)
+│   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization

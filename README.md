@@ -361,6 +361,7 @@ The `sink` field selects the output destination. Use a mapping with a `type` key
 | `udp` | `address: string` | Send each event as a UDP datagram (e.g. `"127.0.0.1:9999"`). |
 | `http_push` | `url: string`, `content_type: string` (optional), `batch_size: usize` (optional) | POST batches of encoded events to an HTTP endpoint. Retries once on 5xx. |
 | `kafka` | `brokers: string`, `topic: string` | Publish batches of encoded events to a Kafka topic (requires `kafka` feature). `brokers` is a comma-separated list of `host:port` addresses. |
+| `loki` | `url: string`, `labels: map` (optional), `batch_size: usize` (optional) | POST log streams to the Loki push API (`/loki/api/v1/push`). `labels` are static key-value pairs attached to the log stream. Log events only — not supported for metrics. |
 
 ```yaml
 # Write to a file
