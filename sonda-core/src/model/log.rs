@@ -88,3 +88,267 @@ impl LogEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // LogEvent::new — creates event with current timestamp
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_uses_current_timestamp() {
+        let before = SystemTime::now();
+        let event = LogEvent::new(Severity::Info, "hello".to_string(), BTreeMap::new());
+        let after = SystemTime::now();
+
+        assert!(
+            event.timestamp >= before,
+            "timestamp should not precede the call"
+        );
+        assert!(
+            event.timestamp <= after,
+            "timestamp should not exceed the call"
+        );
+    }
+
+    #[test]
+    fn new_stores_severity_message_and_fields() {
+        let mut fields = BTreeMap::new();
+        fields.insert("host".to_string(), "web-01".to_string());
+
+        let event = LogEvent::new(Severity::Error, "connection failed".to_string(), fields);
+
+        assert_eq!(event.severity, Severity::Error);
+        assert_eq!(event.message, "connection failed");
+        assert_eq!(event.fields.get("host").map(String::as_str), Some("web-01"));
+    }
+
+    #[test]
+    fn new_with_empty_fields_succeeds() {
+        let event = LogEvent::new(Severity::Debug, "empty".to_string(), BTreeMap::new());
+        assert!(event.fields.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // LogEvent::with_timestamp — uses exact provided timestamp
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn with_timestamp_uses_exact_provided_timestamp() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Warn,
+            "test message".to_string(),
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            event.timestamp, ts,
+            "timestamp must be exactly the one provided"
+        );
+    }
+
+    #[test]
+    fn with_timestamp_stores_all_fields_correctly() {
+        let ts = UNIX_EPOCH + Duration::from_secs(42);
+        let mut fields = BTreeMap::new();
+        fields.insert("service".to_string(), "api".to_string());
+        fields.insert("region".to_string(), "us-east-1".to_string());
+
+        let event =
+            LogEvent::with_timestamp(ts, Severity::Fatal, "system crash".to_string(), fields);
+
+        assert_eq!(event.timestamp, ts);
+        assert_eq!(event.severity, Severity::Fatal);
+        assert_eq!(event.message, "system crash");
+        assert_eq!(event.fields.get("service").map(String::as_str), Some("api"));
+        assert_eq!(
+            event.fields.get("region").map(String::as_str),
+            Some("us-east-1")
+        );
+    }
+
+    #[test]
+    fn with_timestamp_at_unix_epoch_is_valid() {
+        let event = LogEvent::with_timestamp(
+            UNIX_EPOCH,
+            Severity::Trace,
+            "epoch".to_string(),
+            BTreeMap::new(),
+        );
+        assert_eq!(event.timestamp, UNIX_EPOCH);
+    }
+
+    // -----------------------------------------------------------------------
+    // LogEvent: fields use BTreeMap (sorted key order)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fields_are_sorted_by_key() {
+        let mut fields = BTreeMap::new();
+        fields.insert("zebra".to_string(), "z".to_string());
+        fields.insert("alpha".to_string(), "a".to_string());
+        fields.insert("mango".to_string(), "m".to_string());
+
+        let event = LogEvent::new(Severity::Info, "sorted".to_string(), fields);
+
+        let keys: Vec<&str> = event.fields.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["alpha", "mango", "zebra"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Severity: serializes to lowercase JSON
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_trace_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Trace).unwrap();
+        assert_eq!(s, r#""trace""#);
+    }
+
+    #[test]
+    fn severity_debug_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Debug).unwrap();
+        assert_eq!(s, r#""debug""#);
+    }
+
+    #[test]
+    fn severity_info_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Info).unwrap();
+        assert_eq!(s, r#""info""#);
+    }
+
+    #[test]
+    fn severity_warn_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Warn).unwrap();
+        assert_eq!(s, r#""warn""#);
+    }
+
+    #[test]
+    fn severity_error_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Error).unwrap();
+        assert_eq!(s, r#""error""#);
+    }
+
+    #[test]
+    fn severity_fatal_serializes_to_lowercase_json() {
+        let s = serde_json::to_string(&Severity::Fatal).unwrap();
+        assert_eq!(s, r#""fatal""#);
+    }
+
+    // -----------------------------------------------------------------------
+    // Severity: deserializes from lowercase JSON
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_deserializes_from_lowercase_trace() {
+        let s: Severity = serde_json::from_str(r#""trace""#).unwrap();
+        assert_eq!(s, Severity::Trace);
+    }
+
+    #[test]
+    fn severity_deserializes_from_lowercase_debug() {
+        let s: Severity = serde_json::from_str(r#""debug""#).unwrap();
+        assert_eq!(s, Severity::Debug);
+    }
+
+    #[test]
+    fn severity_deserializes_from_lowercase_info() {
+        let s: Severity = serde_json::from_str(r#""info""#).unwrap();
+        assert_eq!(s, Severity::Info);
+    }
+
+    #[test]
+    fn severity_deserializes_from_lowercase_warn() {
+        let s: Severity = serde_json::from_str(r#""warn""#).unwrap();
+        assert_eq!(s, Severity::Warn);
+    }
+
+    #[test]
+    fn severity_deserializes_from_lowercase_error() {
+        let s: Severity = serde_json::from_str(r#""error""#).unwrap();
+        assert_eq!(s, Severity::Error);
+    }
+
+    #[test]
+    fn severity_deserializes_from_lowercase_fatal() {
+        let s: Severity = serde_json::from_str(r#""fatal""#).unwrap();
+        assert_eq!(s, Severity::Fatal);
+    }
+
+    #[test]
+    fn severity_rejects_uppercase_deserialization() {
+        let result: Result<Severity, _> = serde_json::from_str(r#""INFO""#);
+        assert!(
+            result.is_err(),
+            "uppercase severity string must be rejected"
+        );
+    }
+
+    #[test]
+    fn severity_rejects_unknown_variant() {
+        let result: Result<Severity, _> = serde_json::from_str(r#""critical""#);
+        assert!(result.is_err(), "unknown severity variant must be rejected");
+    }
+
+    // -----------------------------------------------------------------------
+    // Severity: serializes to lowercase YAML
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_info_serializes_to_lowercase_yaml() {
+        let s = serde_yaml::to_string(&Severity::Info).unwrap();
+        assert!(s.trim() == "info", "expected 'info', got: {s}");
+    }
+
+    #[test]
+    fn severity_error_serializes_to_lowercase_yaml() {
+        let s = serde_yaml::to_string(&Severity::Error).unwrap();
+        assert!(s.trim() == "error", "expected 'error', got: {s}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Severity: Send + Sync contract
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Severity>();
+    }
+
+    // -----------------------------------------------------------------------
+    // LogEvent: Send + Sync contract
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn log_event_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LogEvent>();
+    }
+
+    // -----------------------------------------------------------------------
+    // LogEvent: Clone produces independent copies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn log_event_clone_is_independent() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1000);
+        let mut fields = BTreeMap::new();
+        fields.insert("k".to_string(), "v".to_string());
+
+        let original = LogEvent::with_timestamp(ts, Severity::Info, "msg".to_string(), fields);
+        let mut cloned = original.clone();
+
+        cloned.message = "different".to_string();
+        cloned.fields.insert("k".to_string(), "changed".to_string());
+
+        assert_eq!(original.message, "msg");
+        assert_eq!(original.fields.get("k").map(String::as_str), Some("v"));
+    }
+}
