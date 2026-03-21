@@ -35,7 +35,8 @@ src/
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
 │   ├── udp.rs          ← UDP socket (UdpSocket)
-│   └── http.rs         ← HTTP push sink (ureq)
+│   ├── http.rs         ← HTTP push sink (ureq)
+│   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization
     └── validate.rs     ← config validation logic

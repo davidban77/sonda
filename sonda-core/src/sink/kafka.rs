@@ -147,10 +147,9 @@ impl KafkaSink {
             return Ok(());
         }
 
-        // Take ownership of the buffer contents and replace with empty vec,
-        // restoring the pre-allocated capacity on success.
-        let payload = std::mem::take(&mut self.buffer);
-        self.buffer.reserve(KAFKA_BUFFER_SIZE);
+        // Swap out the buffer for a fresh pre-allocated vec. Using replace
+        // avoids an intermediate zero-capacity state that take() would produce.
+        let payload = std::mem::replace(&mut self.buffer, Vec::with_capacity(KAFKA_BUFFER_SIZE));
 
         let record = Record {
             key: None,
@@ -158,9 +157,6 @@ impl KafkaSink {
             headers: BTreeMap::new(),
             timestamp: Utc::now(),
         };
-
-        let topic = self.topic.clone();
-        let brokers = self.brokers.clone();
 
         self.runtime
             .block_on(async {
@@ -173,7 +169,7 @@ impl KafkaSink {
                     std::io::ErrorKind::BrokenPipe,
                     format!(
                         "kafka sink: failed to produce record to topic '{}' at broker(s) '{}': {}",
-                        topic, brokers, e
+                        self.topic, self.brokers, e
                     ),
                 )
             })?;

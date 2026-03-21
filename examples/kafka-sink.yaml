@@ -1,0 +1,32 @@
+# kafka-sink.yaml
+#
+# Publishes a constant metric to a local Kafka broker at 100 events/sec for
+# 30 seconds. Encoded bytes are buffered internally and flushed as a single
+# Kafka record when the buffer reaches 64 KiB or when the scenario ends.
+#
+# Prerequisites:
+#   A Kafka broker must be reachable at 127.0.0.1:9092.
+#   The topic "sonda-metrics" must exist (or auto-creation must be enabled).
+#
+# Usage:
+#   sonda metrics --scenario examples/kafka-sink.yaml
+
+name: kafka_constant
+rate: 100.0
+duration: 30s
+
+generator:
+  type: constant
+  value: 1.0
+
+labels:
+  hostname: localhost
+  env: dev
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: kafka
+  brokers: "127.0.0.1:9092"
+  topic: sonda-metrics

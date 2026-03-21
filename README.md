@@ -260,6 +260,7 @@ The `sink` field selects the output destination. Use a mapping with a `type` key
 | `tcp` | `address: string` | Write over a persistent TCP connection (e.g. `"127.0.0.1:9999"`). |
 | `udp` | `address: string` | Send each event as a UDP datagram (e.g. `"127.0.0.1:9999"`). |
 | `http_push` | `url: string`, `content_type: string` (optional), `batch_size: usize` (optional) | POST batches of encoded events to an HTTP endpoint. Retries once on 5xx. |
+| `kafka` | `brokers: string`, `topic: string` | Publish batches of encoded events to a Kafka topic (requires `kafka` feature). `brokers` is a comma-separated list of `host:port` addresses. |
 
 ```yaml
 # Write to a file
@@ -283,6 +284,12 @@ sink:
   url: "http://localhost:9090/api/v1/otlp/metrics"
   content_type: "text/plain; version=0.0.4"
   batch_size: 65536
+
+# Publish batches to a Kafka topic (requires the `kafka` feature)
+sink:
+  type: kafka
+  brokers: "127.0.0.1:9092"
+  topic: sonda-metrics
 ```
 
 ### Gap windows
@@ -355,6 +362,15 @@ Sine wave POSTed in batches to an HTTP endpoint (start a local receiver first):
 # Listen with netcat (for testing)
 nc -l 9090 &
 sonda metrics --scenario examples/http-push-sink.yaml
+```
+
+### `examples/kafka-sink.yaml`
+
+Constant metric published in batches to a local Kafka broker (requires `kafka` feature):
+
+```bash
+# Start a local Kafka broker first (e.g. via Docker)
+sonda metrics --scenario examples/kafka-sink.yaml
 ```
 
 ---

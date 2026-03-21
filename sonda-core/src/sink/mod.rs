@@ -4,6 +4,7 @@
 
 pub mod file;
 pub mod http;
+#[cfg(feature = "kafka")]
 pub mod kafka;
 pub mod memory;
 pub mod stdout;
@@ -90,6 +91,9 @@ pub enum SinkConfig {
     /// Bytes are accumulated in an internal buffer. When the buffer reaches
     /// 64 KiB, or when `flush()` is called explicitly, the buffer is published
     /// as a single Kafka record to partition 0 of the configured topic.
+    ///
+    /// Requires the `kafka` Cargo feature to be enabled.
+    #[cfg(feature = "kafka")]
     #[serde(rename = "kafka")]
     Kafka {
         /// Comma-separated list of broker `host:port` addresses,
@@ -119,6 +123,7 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
             Ok(Box::new(http::HttpPushSink::new(url, ct, bs)?))
         }
+        #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, topic } => {
             Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
         }
