@@ -4,6 +4,7 @@
 
 pub mod file;
 pub mod http;
+pub mod kafka;
 pub mod memory;
 pub mod stdout;
 pub mod tcp;
@@ -80,6 +81,24 @@ pub enum SinkConfig {
         /// Optional flush threshold in bytes. Defaults to 64 KiB if not specified.
         batch_size: Option<usize>,
     },
+
+    /// Batch encoded events and deliver them to a Kafka topic.
+    ///
+    /// Uses [`rskafka`](https://crates.io/crates/rskafka) — a pure-Rust Kafka
+    /// client with no C dependencies — for musl-compatible static linking.
+    ///
+    /// Bytes are accumulated in an internal buffer. When the buffer reaches
+    /// 64 KiB, or when `flush()` is called explicitly, the buffer is published
+    /// as a single Kafka record to partition 0 of the configured topic.
+    #[serde(rename = "kafka")]
+    Kafka {
+        /// Comma-separated list of broker `host:port` addresses,
+        /// e.g. `"127.0.0.1:9092"` or `"broker1:9092,broker2:9092"`.
+        brokers: String,
+
+        /// The Kafka topic name to produce records to.
+        topic: String,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -99,6 +118,9 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
                 .unwrap_or("application/octet-stream");
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
             Ok(Box::new(http::HttpPushSink::new(url, ct, bs)?))
+        }
+        SinkConfig::Kafka { brokers, topic } => {
+            Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
         }
     }
 }
