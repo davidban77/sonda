@@ -373,6 +373,53 @@ Constant metric published in batches to a local Kafka broker (requires `kafka` f
 sonda metrics --scenario examples/kafka-sink.yaml
 ```
 
+### `examples/influx-file.yaml`
+
+Sawtooth ramp in InfluxDB line protocol written to `/tmp/sonda-influx-output.txt`:
+
+```bash
+sonda metrics --scenario examples/influx-file.yaml
+cat /tmp/sonda-influx-output.txt
+```
+
+Output looks like:
+
+```
+disk_io_bytes,device=sda,host=storage-01 bytes=0.0 1742500000000000000
+disk_io_bytes,device=sda,host=storage-01 bytes=20000.0 1742500000020000000
+...
+```
+
+### `examples/json-tcp.yaml`
+
+HTTP request duration sine wave streamed as JSON Lines over TCP (start a listener first):
+
+```bash
+nc -l 9999 &
+sonda metrics --scenario examples/json-tcp.yaml
+```
+
+Output looks like:
+
+```json
+{"name":"http_request_duration_ms","value":150.0,"labels":{"method":"GET","service":"api-gateway","status":"200"},"timestamp":"2026-03-20T12:00:00.000Z"}
+```
+
+### `examples/prometheus-remote-write.yaml`
+
+Prometheus text exposition format POSTed in batches to an HTTP endpoint. Compatible with
+VictoriaMetrics, vmagent, and any endpoint that accepts the Prometheus text format over HTTP:
+
+```bash
+# Quick test with netcat
+nc -l 9090 &
+sonda metrics --scenario examples/prometheus-remote-write.yaml
+
+# Against VictoriaMetrics
+# Edit the url in the YAML to: http://localhost:8428/api/v1/import/prometheus
+sonda metrics --scenario examples/prometheus-remote-write.yaml
+```
+
 ---
 
 ## Output Format

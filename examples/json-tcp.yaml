@@ -1,0 +1,31 @@
+# JSON Lines encoder → TCP sink
+#
+# Streams structured JSON events over a persistent TCP connection.
+# Start a listener before running:
+#
+#   nc -l 9999 &
+#   sonda metrics --scenario examples/json-tcp.yaml
+#
+# Each line is a self-contained JSON object, compatible with Elasticsearch,
+# Loki, and any other NDJSON-based ingest path.
+name: http_request_duration_ms
+rate: 20
+duration: 10s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 20
+  offset: 150.0
+
+labels:
+  method: GET
+  status: 200
+  service: api-gateway
+
+encoder:
+  type: json_lines
+
+sink:
+  type: tcp
+  address: "127.0.0.1:9999"
