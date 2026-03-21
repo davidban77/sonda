@@ -64,6 +64,13 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     // Apply CLI overrides onto the loaded file config (each Some(...) wins).
     apply_overrides(&mut config, args)?;
 
+    // --output overrides the sink to a file sink regardless of YAML.
+    if let Some(ref path) = args.output {
+        config.sink = SinkConfig::File {
+            path: path.display().to_string(),
+        };
+    }
+
     Ok(config)
 }
 
@@ -233,6 +240,7 @@ mod tests {
             gap_for: None,
             labels: vec![],
             encoder: None,
+            output: None,
         }
     }
 
@@ -609,6 +617,97 @@ mod tests {
                 assert_eq!(value, 0.0, "default constant value should be 0.0");
             }
             other => panic!("expected Constant generator by default, got {other:?}"),
+        }
+    }
+
+    // ---- --output flag: overrides sink to File { path } ----------------------
+
+    #[test]
+    fn output_flag_sets_sink_to_file_with_correct_path() {
+        use sonda_core::sink::SinkConfig;
+
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            output: Some(PathBuf::from("/tmp/sonda-output-test.txt")),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("output flag should produce valid config");
+        match config.sink {
+            SinkConfig::File { path } => {
+                assert_eq!(path, "/tmp/sonda-output-test.txt");
+            }
+            other => panic!("expected SinkConfig::File, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_flag_overrides_stdout_default_sink() {
+        use sonda_core::sink::SinkConfig;
+
+        // Without --output the sink defaults to Stdout.
+        let args_no_output = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config_no_output = load_config(&args_no_output).expect("default config should succeed");
+        assert!(
+            matches!(config_no_output.sink, SinkConfig::Stdout),
+            "default sink should be Stdout"
+        );
+
+        // With --output the sink must be File.
+        let args_with_output = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            output: Some(PathBuf::from("/tmp/sonda-override.txt")),
+            ..default_args()
+        };
+        let config_with_output =
+            load_config(&args_with_output).expect("output flag config should succeed");
+        assert!(
+            matches!(config_with_output.sink, SinkConfig::File { .. }),
+            "sink should be File when --output is given"
+        );
+    }
+
+    #[test]
+    fn output_flag_overrides_yaml_file_sink_config() {
+        use sonda_core::sink::SinkConfig;
+
+        // Load a YAML scenario (uses stdout sink by default), then apply --output.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            output: Some(PathBuf::from("/tmp/sonda-yaml-override.txt")),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("output override on YAML should succeed");
+        match config.sink {
+            SinkConfig::File { path } => {
+                assert_eq!(path, "/tmp/sonda-yaml-override.txt");
+            }
+            other => panic!("expected SinkConfig::File after --output override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_flag_with_nested_path_preserves_full_path() {
+        use sonda_core::sink::SinkConfig;
+
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            output: Some(PathBuf::from("/tmp/sonda/nested/dir/test.txt")),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("nested output path should succeed");
+        match config.sink {
+            SinkConfig::File { path } => {
+                assert_eq!(path, "/tmp/sonda/nested/dir/test.txt");
+            }
+            other => panic!("expected SinkConfig::File, got {other:?}"),
         }
     }
 
