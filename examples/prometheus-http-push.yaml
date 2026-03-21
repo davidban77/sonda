@@ -6,7 +6,7 @@
 # Start a local receiver before running (netcat for quick testing):
 #
 #   nc -l 9090 &
-#   sonda metrics --scenario examples/prometheus-remote-write.yaml
+#   sonda metrics --scenario examples/prometheus-http-push.yaml
 #
 # For VictoriaMetrics:
 #   change url to: http://localhost:8428/api/v1/import/prometheus
@@ -24,8 +24,8 @@ generator:
   offset: 50.0
 
 gaps:
-  every: 2m
-  for: 10s
+  every: 15s
+  for: 3s
 
 labels:
   instance: node-01

@@ -405,7 +405,7 @@ Output looks like:
 {"name":"http_request_duration_ms","value":150.0,"labels":{"method":"GET","service":"api-gateway","status":"200"},"timestamp":"2026-03-20T12:00:00.000Z"}
 ```
 
-### `examples/prometheus-remote-write.yaml`
+### `examples/prometheus-http-push.yaml`
 
 Prometheus text exposition format POSTed in batches to an HTTP endpoint. Compatible with
 VictoriaMetrics, vmagent, and any endpoint that accepts the Prometheus text format over HTTP:
@@ -413,11 +413,11 @@ VictoriaMetrics, vmagent, and any endpoint that accepts the Prometheus text form
 ```bash
 # Quick test with netcat
 nc -l 9090 &
-sonda metrics --scenario examples/prometheus-remote-write.yaml
+sonda metrics --scenario examples/prometheus-http-push.yaml
 
 # Against VictoriaMetrics
 # Edit the url in the YAML to: http://localhost:8428/api/v1/import/prometheus
-sonda metrics --scenario examples/prometheus-remote-write.yaml
+sonda metrics --scenario examples/prometheus-http-push.yaml
 ```
 
 ---

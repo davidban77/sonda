@@ -158,9 +158,9 @@ pub fn run_with_sink(
             // emit immediately without sleeping — this naturally absorbs the
             // overhead of encode/write without accumulating drift.
             //
-            // Using `tick as u32` is safe here: at 1 MHz for 49 days tick would
-            // overflow u32, but no sonda scenario runs that long.
-            let deadline = start + interval * tick as u32;
+            // Use `mul_f64` instead of `* tick as u32` to avoid u32 overflow at
+            // high rates or long durations (u32 overflows after ~12 hours at 1 Hz).
+            let deadline = start + interval.mul_f64(tick as f64);
             let now = Instant::now();
             if now < deadline {
                 thread::sleep(deadline - now);
