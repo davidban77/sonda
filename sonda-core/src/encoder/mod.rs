@@ -6,6 +6,7 @@
 pub mod influx;
 pub mod json;
 pub mod prometheus;
+pub mod syslog;
 
 use serde::Deserialize;
 
@@ -59,6 +60,16 @@ pub enum EncoderConfig {
     /// Loki, and generic HTTP ingest endpoints.
     #[serde(rename = "json_lines")]
     JsonLines,
+    /// RFC 5424 syslog format.
+    ///
+    /// Encodes log events as syslog lines. `hostname` and `app_name` default to `"sonda"`.
+    #[serde(rename = "syslog")]
+    Syslog {
+        /// The HOSTNAME field in the syslog header. Defaults to `"sonda"`.
+        hostname: Option<String>,
+        /// The APP-NAME field in the syslog header. Defaults to `"sonda"`.
+        app_name: Option<String>,
+    },
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
@@ -69,6 +80,9 @@ pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
             Box::new(influx::InfluxLineProtocol::new(field_key.clone()))
         }
         EncoderConfig::JsonLines => Box::new(json::JsonLines::new()),
+        EncoderConfig::Syslog { hostname, app_name } => {
+            Box::new(syslog::Syslog::new(hostname.clone(), app_name.clone()))
+        }
     }
 }
 

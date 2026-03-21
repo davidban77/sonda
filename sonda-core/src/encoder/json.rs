@@ -1,12 +1,17 @@
 //! JSON Lines encoder.
 //!
-//! Encodes metric events as newline-delimited JSON (NDJSON). Each line is a self-contained
-//! JSON object, making the output compatible with Elasticsearch, Loki, and generic HTTP
-//! ingest endpoints.
+//! Encodes metric and log events as newline-delimited JSON (NDJSON). Each line is a
+//! self-contained JSON object, making the output compatible with Elasticsearch, Loki,
+//! and generic HTTP ingest endpoints.
 //!
-//! Output format:
+//! Metric output format:
 //! ```text
 //! {"name":"metric","value":1.0,"labels":{"k":"v"},"timestamp":"2026-03-20T12:00:00.000Z"}
+//! ```
+//!
+//! Log output format:
+//! ```text
+//! {"timestamp":"2026-03-20T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.1","fields":{"ip":"10.0.0.1","endpoint":"/api"}}
 //! ```
 //!
 //! Timestamp uses RFC 3339 / ISO 8601 format with millisecond precision. Formatted without
@@ -17,6 +22,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 
+use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 use crate::SondaError;
 
@@ -54,6 +60,18 @@ struct JsonMetric<'a> {
     value: f64,
     labels: BTreeMap<&'a str, &'a str>,
     timestamp: String,
+}
+
+/// Intermediate serde-serializable representation of a log event.
+///
+/// Field order matches the spec: timestamp, severity, message, fields.
+/// Uses `BTreeMap` for fields so the JSON field order is consistent and deterministic.
+#[derive(Serialize)]
+struct JsonLog<'a> {
+    timestamp: String,
+    severity: &'a str,
+    message: &'a str,
+    fields: BTreeMap<&'a str, &'a str>,
 }
 
 /// Format a [`std::time::SystemTime`] as an RFC 3339 string with millisecond precision.
@@ -118,6 +136,45 @@ impl Encoder for JsonLines {
             value: event.value,
             labels,
             timestamp,
+        };
+
+        serde_json::to_writer(&mut *buf, &record)
+            .map_err(|e| SondaError::Encoder(format!("JSON serialization failed: {e}")))?;
+
+        buf.push(b'\n');
+
+        Ok(())
+    }
+
+    /// Encode a log event as a JSON object and append it to `buf`, followed by `\n`.
+    ///
+    /// Output format: `{"timestamp":"...","severity":"info","message":"...","fields":{...}}`
+    ///
+    /// Uses `serde_json::to_writer` to write directly into the caller-provided buffer.
+    fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
+        let timestamp = format_rfc3339_millis(event.timestamp)?;
+
+        // Serialize severity to its lowercase string representation using serde.
+        let severity_str = match event.severity {
+            crate::model::log::Severity::Trace => "trace",
+            crate::model::log::Severity::Debug => "debug",
+            crate::model::log::Severity::Info => "info",
+            crate::model::log::Severity::Warn => "warn",
+            crate::model::log::Severity::Error => "error",
+            crate::model::log::Severity::Fatal => "fatal",
+        };
+
+        let fields: BTreeMap<&str, &str> = event
+            .fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let record = JsonLog {
+            timestamp,
+            severity: severity_str,
+            message: &event.message,
+            fields,
         };
 
         serde_json::to_writer(&mut *buf, &record)
