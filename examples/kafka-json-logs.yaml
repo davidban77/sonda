@@ -1,0 +1,20 @@
+name: app_logs_kafka
+rate: 10
+duration: 60s
+generator:
+  type: template
+  templates:
+    - message: "Event from {service} severity {level}"
+      field_pools:
+        service: ["auth", "api", "worker"]
+        level: ["INFO", "WARN", "ERROR"]
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+encoder:
+  type: json_lines
+sink:
+  type: kafka
+  brokers: "localhost:9094"
+  topic: sonda-logs

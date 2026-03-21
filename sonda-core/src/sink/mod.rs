@@ -6,11 +6,13 @@ pub mod file;
 pub mod http;
 #[cfg(feature = "kafka")]
 pub mod kafka;
+pub mod loki;
 pub mod memory;
 pub mod stdout;
 pub mod tcp;
 pub mod udp;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -103,6 +105,26 @@ pub enum SinkConfig {
         /// The Kafka topic name to produce records to.
         topic: String,
     },
+
+    /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
+    ///
+    /// Each call to `write()` appends one log line to the batch. When the batch
+    /// reaches `batch_size` entries, it is automatically flushed as a single POST
+    /// to `{url}/loki/api/v1/push`. Call `flush()` at shutdown to send any
+    /// remaining buffered entries.
+    #[serde(rename = "loki")]
+    Loki {
+        /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
+        url: String,
+
+        /// Stream labels attached to every batch, e.g. `{"job": "sonda", "env": "dev"}`.
+        #[serde(default)]
+        labels: HashMap<String, String>,
+
+        /// Flush threshold in log entries. Defaults to `100` if not specified.
+        #[serde(default)]
+        batch_size: Option<usize>,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -126,6 +148,18 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, topic } => {
             Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
+        }
+        SinkConfig::Loki {
+            url,
+            labels,
+            batch_size,
+        } => {
+            let bs = batch_size.unwrap_or(100);
+            Ok(Box::new(loki::LokiSink::new(
+                url.clone(),
+                labels.clone(),
+                bs,
+            )?))
         }
     }
 }

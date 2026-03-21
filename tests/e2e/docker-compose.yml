@@ -102,5 +102,18 @@ services:
       kafka:
         condition: service_healthy
 
+  loki:
+    image: grafana/loki:latest
+    container_name: sonda-e2e-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
 volumes:
   vm-storage:

@@ -43,7 +43,7 @@ tasks:
   # E2E Stack
   # ---------------------------------------------------------------------------
   stack:up:
-    desc: Start the observability stack (VM, Prometheus, vmagent, Grafana, Kafka)
+    desc: Start the observability stack (VM, Prometheus, vmagent, Grafana, Kafka, Loki)
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d
       - echo ""
@@ -54,6 +54,7 @@ tasks:
       - 'echo "  vmagent          http://localhost:8429"'
       - 'echo "  Kafka UI         http://localhost:8080"'
       - 'echo "  Kafka broker     localhost:9094  (external listener)"'
+      - 'echo "  Loki             http://localhost:3100"'
 
   stack:down:
     desc: Stop and remove the observability stack
@@ -90,6 +91,12 @@ tasks:
     deps: [build:release]
     cmds:
       - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/kafka-prometheus-text.yaml {{.CLI_ARGS}}
+
+  run:loki:
+    desc: Send log events to Loki (requires stack:up)
+    deps: [build:release]
+    cmds:
+      - ./target/release/sonda logs --scenario examples/loki-json-lines.yaml {{.CLI_ARGS}}
 
   run:constant:
     desc: Run a quick constant metric to stdout
