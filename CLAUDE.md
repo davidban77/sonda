@@ -194,7 +194,7 @@ Development is split into four phases. Each has a dedicated plan doc in `docs/`:
 - **Phase 0 — MVP**: workspace skeleton, sonda-core engine, Prometheus encoder, stdout sink, scheduler
   with gaps, value generators, CLI, tests, static binary.
 - **Phase 1 — Encoders & Sinks**: Influx LP, JSON Lines, remote-write, file sink, TCP/UDP sink, Kafka sink.
-- **Phase 2 — Logs, Bursts & Concurrency**: log events, burst windows, multi-scenario threading.
+- **Phase 2 — Logs, Bursts & Concurrency**: log events, burst windows, Loki sink, multi-scenario threading.
 - **Phase 3 — sonda-server**: axum REST API, scenario lifecycle, stats endpoints.
 
 ## Reference Documents

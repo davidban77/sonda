@@ -346,10 +346,197 @@ each targeting independent encoder/sink combinations, from a single multi-scenar
 
 ---
 
-## Slice 2.6 — Multi-Scenario Concurrency
+## Slice 2.6 — Loki Sink & Log E2e Tests
 
 ### Input state
-- Slices 2.4 and 2.5 pass all gates.
+- Slice 2.5 passes all gates (`LokiSink` needs the `LogEvent` model and the `ureq` dependency
+  already present from `HttpPushSink`).
+
+### Specification
+
+**Why a sink rather than an encoder:** Loki's push API wraps multiple log lines into a single JSON
+batch envelope (`{"streams": [...]}`). This batching boundary belongs in the sink, not the encoder.
+The `JsonLines` encoder continues to handle per-event serialization. `LokiSink` accumulates encoded
+lines and POSTs the batch when it is full or flushed.
+
+**Files to create:**
+- `sonda-core/src/sink/loki.rs`:
+  ```rust
+  pub struct LokiSink {
+      url: String,
+      labels: HashMap<String, String>,
+      batch_size: usize,
+      batch: Vec<(String, String)>,  // (unix_nano_timestamp, log_line)
+  }
+
+  impl LokiSink {
+      pub fn new(url: String, labels: HashMap<String, String>, batch_size: usize) -> Self;
+      fn flush_batch(&mut self) -> Result<(), SondaError>;  // POSTs current batch
+  }
+
+  impl Sink for LokiSink {
+      fn write(&mut self, data: &[u8]) -> Result<(), SondaError>;  // accumulates; auto-flushes at batch_size
+      fn flush(&mut self) -> Result<(), SondaError>;               // flushes remaining
+  }
+  ```
+  - Each call to `write()` appends one line to the batch. When `batch.len() == batch_size`, calls
+    `flush_batch()` automatically.
+  - `flush_batch()` builds the Loki JSON envelope and POSTs to `{url}/loki/api/v1/push`.
+  - Loki JSON push format:
+    ```json
+    {
+      "streams": [{
+        "stream": { "label1": "value1", ... },
+        "values": [["<unix_nanoseconds>", "<log_line>"]]
+      }]
+    }
+    ```
+  - Timestamps in the batch come from the current wall clock at write time (nanoseconds since Unix
+    epoch as a decimal string).
+  - HTTP errors from ureq are wrapped in `SondaError::Sink`.
+  - Uses the existing `ureq` dependency — no new HTTP client.
+
+**Files to modify:**
+- `sonda-core/src/sink/mod.rs`:
+  - Add `pub mod loki`.
+  - Add `Loki` variant to `SinkConfig`:
+    ```rust
+    #[serde(rename = "loki")]
+    Loki {
+        url: String,
+        #[serde(default)]
+        labels: HashMap<String, String>,
+        #[serde(default)]
+        batch_size: Option<usize>,
+    },
+    ```
+  - Wire into `create_sink()`: `SinkConfig::Loki { url, labels, batch_size }` →
+    `LokiSink::new(url, labels, batch_size.unwrap_or(100))`.
+
+**Files to create (examples):**
+- `examples/loki-json-lines.yaml`:
+  ```yaml
+  name: app_logs_loki
+  rate: 10
+  duration: 60s
+  generator:
+    type: template
+    templates:
+      - message: "Request from {ip} to {endpoint}"
+        field_pools:
+          ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+          endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+    severity_weights:
+      info: 0.7
+      warn: 0.2
+      error: 0.1
+  encoder:
+    type: json_lines
+  sink:
+    type: loki
+    url: http://localhost:3100
+    labels:
+      job: sonda
+      env: dev
+    batch_size: 50
+  ```
+
+- `examples/kafka-json-logs.yaml`:
+  ```yaml
+  name: app_logs_kafka
+  rate: 10
+  duration: 60s
+  generator:
+    type: template
+    templates:
+      - message: "Event from {service} severity {level}"
+        field_pools:
+          service: ["auth", "api", "worker"]
+          level: ["INFO", "WARN", "ERROR"]
+    severity_weights:
+      info: 0.7
+      warn: 0.2
+      error: 0.1
+  encoder:
+    type: json_lines
+  sink:
+    type: kafka
+    brokers: ["localhost:9092"]
+    topic: sonda-logs
+  ```
+
+**Docker-compose additions (`docker-compose.yml` or `docker/docker-compose.yml`):**
+- Add `loki` service:
+  ```yaml
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+  ```
+- Add Loki as a Grafana datasource in the provisioning config (e.g.,
+  `docker/grafana/provisioning/datasources/loki.yaml`):
+  ```yaml
+  apiVersion: 1
+  datasources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki:3100
+      isDefault: false
+  ```
+
+**Taskfile additions (`Taskfile.yml` or `Makefile`):**
+- `run:loki` task: `sonda logs --scenario examples/loki-json-lines.yaml`
+- Update `stack:up` (or equivalent) to print Loki URL: `Loki: http://localhost:3100`
+
+**E2e verification:**
+- After running `loki-json-lines.yaml`, query Loki to confirm logs arrived:
+  ```
+  GET http://localhost:3100/loki/api/v1/query_range?query={job="sonda"}&start=<epoch_ns>&end=<epoch_ns>
+  ```
+  Response should contain log streams with the configured labels.
+
+### Output files
+| File | Status |
+|------|--------|
+| `sonda-core/src/sink/loki.rs` | new |
+| `sonda-core/src/sink/mod.rs` | modified |
+| `examples/loki-json-lines.yaml` | new |
+| `examples/kafka-json-logs.yaml` | new |
+| `docker-compose.yml` (or equivalent) | modified |
+| `docker/grafana/provisioning/datasources/loki.yaml` | new |
+| `Taskfile.yml` (or equivalent) | modified |
+
+### Test criteria
+- **Loki push format**: `flush_batch()` produces valid JSON matching the Loki push API envelope.
+- **Batch accumulation**: write 49 lines → no HTTP call. Write 50th line → HTTP call fires.
+- **Auto-flush on drop / explicit flush**: `flush()` sends remaining < batch_size lines.
+- **Labels in stream**: configured labels appear in `streams[0].stream` of the POST body.
+- **Empty batch flush**: `flush()` with zero buffered lines does nothing (no HTTP call).
+- **E2e (manual/integration)**: logs arrive in Loki and are queryable via `query_range`.
+- **E2e (manual/integration)**: `kafka-json-logs.yaml` produces log events in the Kafka topic.
+
+### Review criteria
+- Uses existing `ureq` dependency — no new HTTP client introduced.
+- Loki JSON envelope format matches the Loki push API spec exactly.
+- Labels are configurable per scenario; `job` label is not hardcoded.
+- `batch_size` defaults to 100 if not specified.
+- HTTP 4xx/5xx responses are treated as errors (not silently swallowed).
+- Documentation updated: README (if it lists sinks), sonda-core `CLAUDE.md`, `examples/` directory.
+
+### UAT criteria
+- `sonda logs --scenario examples/loki-json-lines.yaml` with a running Loki → logs queryable in
+  Grafana/Loki UI under the `job="sonda"` label.
+- Invalid Loki URL → clear error message (no panic).
+- `sonda run --scenario examples/kafka-json-logs.yaml` with Kafka running → messages visible in topic.
+
+---
+
+## Slice 2.7 — Multi-Scenario Concurrency
+
+### Input state
+- Slices 2.4, 2.5, and 2.6 pass all gates.
 
 ### Specification
 
@@ -452,9 +639,13 @@ each targeting independent encoder/sink combinations, from a single multi-scenar
 ## Dependency Graph
 
 ```
-Slice 2.1 (log model) → Slice 2.2 (log generators) → Slice 2.3 (log encoders) → Slice 2.5 (CLI logs)
-                                                                                        ↓
-Slice 2.4 (burst windows)  ──────────────────────────────────────────────────────→ Slice 2.6 (concurrency)
+Slice 2.1 (log model) → Slice 2.2 (log generators) → Slice 2.3 (log encoders) → Slice 2.5 (CLI logs) → Slice 2.6 (Loki sink)
+                                                                                                               ↓
+Slice 2.4 (burst windows)  ──────────────────────────────────────────────────────────────────────────→ Slice 2.7 (concurrency)
 ```
 
 2.1-2.3 (log pipeline) and 2.4 (bursts) are independent parallel tracks.
+Slice 2.6 (Loki sink) depends on 2.5 (CLI logs) for `LogEvent` and the existing `ureq` dep.
+Slice 2.7 (concurrency) depends on 2.4 (bursts), 2.5 (CLI logs), and 2.6 (Loki sink) all passing.
+
+**Phase 2 contains 7 slices total** (2.1 – 2.7).

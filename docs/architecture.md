@@ -166,6 +166,7 @@ Sink implementations follow a natural progression of complexity:
 | **Tcp / Udp** | Raw socket delivery. Targets syslog receivers, statsd, and similar line-protocol endpoints. |
 | **HttpPush** | HTTP POST to a configurable endpoint. Supports remote-write protocol for VictoriaMetrics and Prometheus. |
 | **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
+| **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
 
 ---
 
