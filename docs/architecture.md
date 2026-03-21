@@ -308,7 +308,7 @@ Everything else — additional encoders, sinks, `sonda-server`, log generation, 
 | **Expansion E** | Config-driven multi-scenario: a single YAML file defines multiple concurrent streams. |
 | **Expansion F** | Concurrency: multiple scenarios on parallel threads; mpsc channel to shared sink. |
 | **Expansion G** | sonda-server: REST API control plane built with axum. Start/stop/inspect scenarios over HTTP. |
-| **Expansion H** | Kafka sink: produce encoded events to a Kafka topic. Topic and partition configurable. |
+| **Expansion H** | Kafka sink: produce encoded events to a Kafka topic. Topic and partition configurable. (Moved into Phase 1 as Slice 1.6.) |
 | **Expansion I** | Clustering: deferred decision. If needed, a shared state store or coordination layer for sonda-server. No design committed at this time. |
 
 ---

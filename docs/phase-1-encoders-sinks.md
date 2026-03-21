@@ -1,13 +1,13 @@
 # Phase 1 — Encoders & Sinks Implementation Plan
 
 **Goal:** Expand Sonda beyond Prometheus-to-stdout. Add Influx Line Protocol and JSON Lines encoders,
-and file, TCP/UDP, and HTTP remote-write sinks.
+and file, TCP/UDP, HTTP remote-write, and Kafka sinks.
 
 **Prerequisite:** Phase 0 complete — encoder/sink traits stable, factory pattern proven, scenario runner
 handles gaps, CLI works end-to-end.
 
 **Final exit criteria:** A single scenario can target any combination of
-`{prometheus_text, influx_lp, json_lines}` × `{stdout, file, tcp, udp, http_push}` via YAML config.
+`{prometheus_text, influx_lp, json_lines}` × `{stdout, file, tcp, udp, http_push, kafka}` via YAML config.
 
 ---
 
@@ -275,10 +275,78 @@ handles gaps, CLI works end-to-end.
 
 ---
 
-## Slice 1.6 — Encoder × Sink Matrix Validation
+## Slice 1.6 — Kafka Sink
 
 ### Input state
-- Slices 1.1–1.5 pass all gates.
+- Slice 1.5 passes all gates.
+
+### Specification
+
+**Files to create:**
+- `sonda-core/src/sink/kafka.rs`:
+  ```rust
+  pub struct KafkaSink {
+      topic: String,
+      client: rskafka::client::partition::PartitionClient,
+      buffer: Vec<u8>,
+  }
+  ```
+  - `KafkaSink::new(brokers: &str, topic: &str) -> Result<Self, SondaError>` — connects to the
+    broker(s) synchronously on construction. `brokers` is a comma-separated list of
+    `host:port` pairs.
+  - `write()` appends data to an internal buffer. When the buffer exceeds a reasonable threshold
+    (64 KB), auto-flush.
+  - `flush()` publishes the buffered bytes as a single Kafka record to the configured topic and
+    clears the buffer. Returns `SondaError::Sink(...)` on delivery failure.
+  - Uses `rskafka` (pure Rust, no C dependencies, musl-compatible). Do not use `rdkafka` (C
+    bindings).
+
+**Files to modify:**
+- `sonda-core/Cargo.toml` — add `rskafka` as a workspace dependency.
+- `sonda-core/src/sink/mod.rs`:
+  - Add `pub mod kafka`.
+  - Add variant to `SinkConfig`:
+    ```rust
+    #[serde(rename = "kafka")]
+    Kafka { brokers: String, topic: String },
+    ```
+  - Wire into `create_sink()`.
+
+### Output files
+| File | Status |
+|------|--------|
+| `sonda-core/src/sink/kafka.rs` | new |
+| `sonda-core/src/sink/mod.rs` | modified |
+| `sonda-core/Cargo.toml` | modified |
+
+### Test criteria
+- Integration tests use a docker-compose Kafka broker (Redpanda or plain Kafka).
+- Write data via `KafkaSink` → consume from the topic via `rskafka` consumer → verify exact bytes
+  match what was written.
+- Multiple `write()` calls followed by `flush()` → all data arrives in a single record.
+- Auto-flush at 64 KB threshold → record delivered before explicit `flush()` call.
+- Connection to unreachable broker → `SondaError::Sink(...)` with broker address in message.
+- Invalid topic name → `SondaError::Sink(...)`.
+
+### Review criteria
+- Uses `rskafka` (pure Rust). No `rdkafka` or any crate with C bindings.
+- Confirmed musl-compatible: no C FFI in the transitive dependency tree.
+- Buffer pre-allocated; no per-`write()` heap allocation beyond buffer growth.
+- `flush()` is idempotent when the buffer is empty.
+- Error messages include the broker address and topic name.
+
+### UAT criteria
+- `docker-compose up -d kafka` (or Redpanda) → `sonda metrics --name up --rate 100 --duration 5s`
+  with kafka sink pointing at the local broker and topic `sonda-test`.
+- After run: consume from `sonda-test` topic with `kcat` or `rpk` → data matches Sonda output.
+- Verify no C library warnings or linker errors on musl build.
+
+---
+
+## Slice 1.7 — Encoder × Sink Matrix Validation
+
+### Input state
+- Slices 1.1–1.6 pass all gates.
 
 ### Specification
 
@@ -299,7 +367,7 @@ handles gaps, CLI works end-to-end.
 | `README.md` | modified |
 
 ### Test criteria
-- All 15 combinations (3 encoders × 5 sinks) compile and produce output.
+- All 18 combinations (3 encoders × 6 sinks) compile and produce output.
 - Integration test that programmatically tests each combination with MemorySink.
 
 ### Review criteria
@@ -323,5 +391,7 @@ Slice 1.3 (file sink)       ──┐
 Slice 1.4 (tcp/udp sinks)   ──┤  (parallel, after at least one encoder)
 Slice 1.5 (http sink)       ──┤
                                ↓
-Slice 1.6 (matrix validation)
+Slice 1.6 (kafka sink)
+                               ↓
+Slice 1.7 (matrix validation)
 ```
