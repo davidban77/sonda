@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::config::{GapConfig, ScenarioConfig};
+use sonda_core::config::{BurstConfig, GapConfig, ScenarioConfig};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
 use sonda_core::sink::SinkConfig;
@@ -55,6 +55,7 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             duration: args.duration.clone(),
             generator: build_generator_config(args)?,
             gaps: build_gap_config(args)?,
+            bursts: build_burst_config(args)?,
             labels: build_labels(args),
             encoder: parse_encoder_config(args.encoder.as_deref().unwrap_or("prometheus_text"))?,
             sink: SinkConfig::Stdout,
@@ -106,6 +107,11 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     // Gap: override if either gap flag is present.
     if args.gap_every.is_some() || args.gap_for.is_some() {
         config.gaps = build_gap_config(args)?;
+    }
+
+    // Burst: override if any burst flag is present.
+    if args.burst_every.is_some() || args.burst_for.is_some() || args.burst_multiplier.is_some() {
+        config.bursts = build_burst_config(args)?;
     }
 
     // Labels: CLI labels are merged on top of (not replacing) the file labels.
@@ -181,6 +187,23 @@ fn build_gap_config(args: &MetricsArgs) -> Result<Option<GapConfig>> {
     }
 }
 
+/// Build an optional [`BurstConfig`] from `--burst-every`, `--burst-for`, and `--burst-multiplier`.
+///
+/// All three flags must be provided together, or none. Providing a partial set is an error.
+fn build_burst_config(args: &MetricsArgs) -> Result<Option<BurstConfig>> {
+    match (&args.burst_every, &args.burst_for, args.burst_multiplier) {
+        (Some(every), Some(burst_for), Some(multiplier)) => Ok(Some(BurstConfig {
+            every: every.clone(),
+            r#for: burst_for.clone(),
+            multiplier,
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
+        ),
+    }
+}
+
 /// Build a label `HashMap` from the `--label k=v` CLI args.
 ///
 /// Returns `None` when no labels were provided.
@@ -238,6 +261,9 @@ mod tests {
             seed: None,
             gap_every: None,
             gap_for: None,
+            burst_every: None,
+            burst_for: None,
+            burst_multiplier: None,
             labels: vec![],
             encoder: None,
             output: None,

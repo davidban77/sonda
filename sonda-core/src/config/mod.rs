@@ -22,6 +22,23 @@ pub struct GapConfig {
     pub r#for: String,
 }
 
+/// Burst window configuration — a recurring high-rate period within a scenario.
+///
+/// During a burst the event rate is multiplied by `multiplier`. The burst
+/// repeats on a fixed cycle defined by `every`, and each instance lasts for `for`.
+///
+/// If a gap and burst overlap in time, the gap takes priority and no events
+/// are emitted.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BurstConfig {
+    /// How often the burst recurs (e.g. `"10s"`).
+    pub every: String,
+    /// How long each burst lasts (e.g. `"2s"`). Must be less than `every`.
+    pub r#for: String,
+    /// Rate multiplier during the burst (must be strictly positive).
+    pub multiplier: f64,
+}
+
 fn default_encoder() -> EncoderConfig {
     EncoderConfig::PrometheusText
 }
@@ -70,6 +87,11 @@ pub struct ScenarioConfig {
     /// Optional gap window: recurring silent periods in the event stream.
     #[serde(default)]
     pub gaps: Option<GapConfig>,
+    /// Optional burst window: recurring high-rate periods in the event stream.
+    ///
+    /// When both a gap and a burst overlap in time, the gap takes priority.
+    #[serde(default)]
+    pub bursts: Option<BurstConfig>,
     /// Static labels attached to every emitted event.
     #[serde(default)]
     pub labels: Option<HashMap<String, String>>,

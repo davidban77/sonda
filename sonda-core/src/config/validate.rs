@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::model::metric::is_valid_metric_name;
 use crate::SondaError;
 
-use super::ScenarioConfig;
+use super::{BurstConfig, ScenarioConfig};
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
@@ -109,11 +109,49 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
         }
     }
 
+    // Burst consistency: multiplier > 0, burst.for < burst.every.
+    if let Some(ref burst) = config.bursts {
+        validate_burst_config(burst)?;
+    }
+
     // Metric name must be a valid Prometheus metric name.
     if !is_valid_metric_name(&config.name) {
         return Err(SondaError::Config(format!(
             "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
             config.name
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validate a [`BurstConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `multiplier` is strictly positive (not NaN, not zero, not negative).
+/// - `burst.for` is strictly less than `burst.every`.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
+    // Multiplier must be strictly positive.
+    if burst.multiplier.is_nan() || burst.multiplier <= 0.0 {
+        return Err(SondaError::Config(format!(
+            "bursts.multiplier must be positive, got {}",
+            burst.multiplier
+        )));
+    }
+
+    // Parse both duration strings.
+    let every = parse_duration(&burst.every)
+        .map_err(|e| prepend_context("invalid bursts.every", &burst.every, e))?;
+    let for_dur = parse_duration(&burst.r#for)
+        .map_err(|e| prepend_context("invalid bursts.for", &burst.r#for, e))?;
+
+    // burst.for must be strictly less than burst.every.
+    if for_dur >= every {
+        return Err(SondaError::Config(format!(
+            "bursts.for ({:?}) must be less than bursts.every ({:?})",
+            burst.r#for, burst.every
         )));
     }
 
@@ -845,6 +883,7 @@ generator:
             duration: None,
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
+            bursts: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,

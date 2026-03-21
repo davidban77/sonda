@@ -46,6 +46,53 @@ pub struct Schedule {
     pub burst: Option<BurstWindow>,
 }
 
+/// Returns `Some(multiplier)` if the scheduler should be in a burst at the given elapsed time,
+/// or `None` if no burst is active.
+///
+/// Burst windows are periodic. The burst occupies the **start** of each cycle:
+/// from `0` to `duration`. For example, with `every=10s` and `duration=2s`, the burst
+/// is active during seconds 0–2 of each cycle.
+///
+/// # Arguments
+///
+/// * `elapsed` — time since the scenario started.
+/// * `burst` — the burst window configuration.
+pub fn is_in_burst(elapsed: Duration, burst: &BurstWindow) -> Option<f64> {
+    let every_secs = burst.every.as_secs_f64();
+    let duration_secs = burst.duration.as_secs_f64();
+    // Position within the current cycle [0, every).
+    let cycle_pos = elapsed.as_secs_f64() % every_secs;
+    // Burst occupies the start of each cycle: [0, duration).
+    if cycle_pos < duration_secs {
+        Some(burst.multiplier)
+    } else {
+        None
+    }
+}
+
+/// Returns how long until the current burst ends.
+///
+/// This function assumes the caller has already verified that `elapsed` is
+/// within a burst (i.e., [`is_in_burst`] returned `Some`). The returned `Duration`
+/// is the amount of time remaining in the burst window.
+///
+/// # Arguments
+///
+/// * `elapsed` — time since the scenario started.
+/// * `burst` — the burst window configuration.
+pub fn time_until_burst_end(elapsed: Duration, burst: &BurstWindow) -> Duration {
+    let every_secs = burst.every.as_secs_f64();
+    let duration_secs = burst.duration.as_secs_f64();
+    let cycle_pos = elapsed.as_secs_f64() % every_secs;
+    let remaining_secs = duration_secs - cycle_pos;
+    // Guard against floating point producing a tiny negative or zero value.
+    if remaining_secs <= 0.0 {
+        Duration::ZERO
+    } else {
+        Duration::from_secs_f64(remaining_secs)
+    }
+}
+
 /// Returns `true` if the scheduler should be in a gap at the given elapsed time.
 ///
 /// Gap windows are periodic. The gap occupies the tail of each cycle:

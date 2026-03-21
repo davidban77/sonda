@@ -13,7 +13,7 @@ use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent};
-use crate::schedule::{is_in_gap, time_until_gap_end, GapWindow};
+use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
@@ -85,6 +85,19 @@ pub fn run_with_sink(
         })
         .transpose()?;
 
+    // Build the burst window from config, if present.
+    let burst_window: Option<BurstWindow> = config
+        .bursts
+        .as_ref()
+        .map(|b| -> Result<BurstWindow, SondaError> {
+            Ok(BurstWindow {
+                every: parse_duration(&b.every)?,
+                duration: parse_duration(&b.r#for)?,
+                multiplier: b.multiplier,
+            })
+        })
+        .transpose()?;
+
     // Build generator and encoder from config.
     let generator = create_generator(&config.generator, config.rate);
     let encoder = create_encoder(&config.encoder);
@@ -104,15 +117,18 @@ pub fn run_with_sink(
     // The name is invariant for the lifetime of a scenario.
     let name = config.name.clone();
 
-    // The target inter-event interval.
-    let interval = Duration::from_secs_f64(1.0 / config.rate);
+    // The base inter-event interval (at normal rate, no burst).
+    let base_interval = Duration::from_secs_f64(1.0 / config.rate);
 
     // Pre-allocate encode buffer — reused every tick to avoid per-event allocation.
     let mut buf: Vec<u8> = Vec::with_capacity(256);
 
-    // Record the wall-clock start time once. All tick deadlines are computed
-    // relative to this instant so sleep drift cannot accumulate across ticks.
+    // Record the wall-clock start time once. The next_deadline tracks the
+    // absolute time at which the next event should be emitted. Unlike a pure
+    // tick-counter approach, tracking the deadline directly avoids catch-up
+    // accumulation across burst/normal transitions.
     let start = Instant::now();
+    let mut next_deadline = start;
     let mut tick: u64 = 0;
 
     // Run the event loop, capturing any error so we can still flush before returning.
@@ -136,34 +152,48 @@ pub fn run_with_sink(
             }
 
             // Check gap window — sleep through it rather than busy-wait.
+            // Gap always takes priority over burst: no events during a gap.
             if let Some(ref gap) = gap_window {
                 if is_in_gap(elapsed, gap) {
                     let sleep_for = time_until_gap_end(elapsed, gap);
                     if sleep_for > Duration::ZERO {
                         thread::sleep(sleep_for);
                     }
-                    // After sleeping through the gap, advance tick to keep
-                    // deadlines consistent with actual wall-clock time so we
-                    // don't try to "catch up" for events suppressed by the gap.
-                    let now_elapsed = start.elapsed();
-                    tick = (now_elapsed.as_secs_f64() / interval.as_secs_f64()) as u64;
+                    // After sleeping through the gap, reset the next_deadline to
+                    // now so we do not try to "catch up" for events suppressed by
+                    // the gap. Also re-derive tick from elapsed time at base rate
+                    // so the generator tick counter stays approximately in sync
+                    // with wall-clock time.
+                    let now = Instant::now();
+                    next_deadline = now;
+                    tick = (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
                     // Re-check duration before emitting.
                     continue;
                 }
             }
 
-            // Deadline-based rate control: compute the absolute wall-clock time
-            // at which this tick should fire. If we are ahead of schedule, sleep
+            // Determine the effective inter-event interval for this tick.
+            // During a burst, divide the base interval by the burst multiplier
+            // to produce a proportionally shorter interval (higher rate).
+            // Outside a burst, use the base interval unchanged.
+            let effective_interval = if let Some(ref burst) = burst_window {
+                if let Some(multiplier) = is_in_burst(elapsed, burst) {
+                    // multiplier is validated to be > 0, so division is safe.
+                    Duration::from_secs_f64(base_interval.as_secs_f64() / multiplier)
+                } else {
+                    base_interval
+                }
+            } else {
+                base_interval
+            };
+
+            // Deadline-based rate control: if we are ahead of schedule, sleep
             // the remaining delta. If we are already behind (deadline passed),
             // emit immediately without sleeping — this naturally absorbs the
             // overhead of encode/write without accumulating drift.
-            //
-            // Use `mul_f64` instead of `* tick as u32` to avoid u32 overflow at
-            // high rates or long durations (u32 overflows after ~12 hours at 1 Hz).
-            let deadline = start + interval.mul_f64(tick as f64);
             let now = Instant::now();
-            if now < deadline {
-                thread::sleep(deadline - now);
+            if now < next_deadline {
+                thread::sleep(next_deadline - now);
             }
 
             // Timestamp the event at the start of this iteration.
@@ -183,6 +213,9 @@ pub fn run_with_sink(
             encoder.encode_metric(&event, &mut buf)?;
             sink.write(&buf)?;
 
+            // Advance the deadline by one effective interval. This preserves
+            // accurate timing even if encode/write takes non-trivial time.
+            next_deadline += effective_interval;
             tick += 1;
         }
         Ok(())
@@ -214,6 +247,7 @@ mod tests {
             duration: Some(duration.to_string()),
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps,
+            bursts: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
