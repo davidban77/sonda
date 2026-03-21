@@ -45,6 +45,9 @@ HEALTH_WAIT_SECS=60
 # VictoriaMetrics query endpoint
 VM_QUERY_URL="http://localhost:8428/api/v1/query"
 
+# Kafka container name (must match docker-compose.yml)
+KAFKA_CONTAINER="sonda-e2e-kafka"
+
 # Track overall pass/fail state
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -112,6 +115,100 @@ data = json.load(sys.stdin)
 results = data.get('data', [])
 print(len(results))
 " 2>/dev/null || echo "0"
+}
+
+# Wait for Kafka to accept broker connections by polling kafka-topics.sh inside
+# the container. This mirrors the docker-compose healthcheck but runs from the
+# host side so the script can gate on it without depending on Docker health state.
+# Usage: wait_for_kafka <max_seconds>
+wait_for_kafka() {
+    local max_secs="$1"
+    local elapsed=0
+
+    info "Waiting for Kafka broker to be ready (up to ${max_secs}s)..."
+    while true; do
+        if docker exec "${KAFKA_CONTAINER}" kafka-topics.sh \
+                --bootstrap-server 127.0.0.1:9092 \
+                --list >/dev/null 2>&1; then
+            info "Kafka is healthy."
+            return 0
+        fi
+        if [ "${elapsed}" -ge "${max_secs}" ]; then
+            fatal "Kafka did not become healthy within ${max_secs}s."
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+}
+
+# Consume all messages from a Kafka topic (from beginning) using a short
+# timeout, then return the line count as a proxy for message count.
+# Usage: query_kafka_count <topic>
+query_kafka_count() {
+    local topic="$1"
+    local count
+    count=$(docker exec "${KAFKA_CONTAINER}" kafka-console-consumer.sh \
+        --bootstrap-server 127.0.0.1:9092 \
+        --topic "${topic}" \
+        --from-beginning \
+        --timeout-ms 5000 2>/dev/null | wc -l)
+    # wc -l may include leading whitespace on some platforms; strip it
+    echo "${count}" | tr -d ' '
+}
+
+# Run a single Kafka scenario: execute sonda, then verify messages arrived in
+# the target topic using kafka-console-consumer inside the Kafka container.
+# Usage: run_kafka_scenario <scenario_file> <topic> <description>
+run_kafka_scenario() {
+    local scenario_file="$1"
+    local topic="$2"
+    local description="$3"
+
+    info "Running Kafka scenario: ${description}"
+    info "  File:  ${scenario_file}"
+    info "  Topic: ${topic}"
+
+    local timeout_secs=$((SCENARIO_DURATION + 10))
+    "${SONDA_BIN}" metrics \
+            --scenario "${scenario_file}" \
+            --duration "${SCENARIO_DURATION}s" \
+            >/dev/null 2>/tmp/sonda-e2e-stderr.log &
+    local sonda_pid=$!
+
+    local waited=0
+    while kill -0 "${sonda_pid}" 2>/dev/null && [ "${waited}" -lt "${timeout_secs}" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "${sonda_pid}" 2>/dev/null; then
+        kill "${sonda_pid}" 2>/dev/null
+        wait "${sonda_pid}" 2>/dev/null
+        fail "${description}: sonda timed out after ${timeout_secs}s"
+        return
+    fi
+
+    wait "${sonda_pid}" 2>/dev/null
+    local exit_code=$?
+
+    if [ "${exit_code}" -ne 0 ]; then
+        fail "${description}: sonda exited with code ${exit_code}"
+        return
+    fi
+
+    info "  sonda exited cleanly."
+    info "  Waiting ${INGEST_SETTLE_SECS}s for Kafka ingestion to settle..."
+    sleep "${INGEST_SETTLE_SECS}"
+
+    local count
+    count=$(query_kafka_count "${topic}")
+    info "  Kafka message count: ${count}"
+
+    if [ "${count}" -gt 0 ] 2>/dev/null; then
+        pass "${description}"
+    else
+        fail "${description}: no messages found in Kafka topic '${topic}' (count=${count})"
+    fi
 }
 
 # Run a single scenario and verify data reached VictoriaMetrics.
@@ -222,6 +319,7 @@ docker compose -f "${COMPOSE_FILE}" up -d
 wait_for_health "http://localhost:9090/-/ready"   "Prometheus"        "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8428/health"    "VictoriaMetrics"   "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8429/health"    "vmagent"           "${HEALTH_WAIT_SECS}"
+wait_for_kafka  "${HEALTH_WAIT_SECS}"
 
 # ---------------------------------------------------------------------------
 # Run scenarios
@@ -239,6 +337,16 @@ run_scenario \
     "${SCENARIO_DIR}/vm-influx-lp.yaml" \
     "sonda_e2e_vm_influx_lp_value" \
     "VictoriaMetrics via InfluxDB line protocol"
+
+run_kafka_scenario \
+    "${SCENARIO_DIR}/kafka-prometheus-text.yaml" \
+    "sonda-e2e-metrics" \
+    "Kafka via Prometheus text format"
+
+run_kafka_scenario \
+    "${SCENARIO_DIR}/kafka-json-lines.yaml" \
+    "sonda-e2e-json" \
+    "Kafka via JSON Lines"
 
 # NOTE: vmagent scenario is disabled. vmagent's /api/v1/import/prometheus
 # endpoint accepts data (204) but does not relay plain text — it only forwards

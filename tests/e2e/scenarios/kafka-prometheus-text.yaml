@@ -1,0 +1,38 @@
+# Scenario: sonda -> Kafka via Prometheus text format
+#
+# Sends Prometheus text metrics to a Kafka topic using the kafka sink.
+# KRaft-mode Kafka (bitnami/kafka) listens on the EXTERNAL listener at
+# localhost:9094 from the host machine's perspective.
+#
+# Run this scenario after starting the e2e stack:
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
+#
+# Verify data arrived:
+#   docker exec sonda-e2e-kafka kafka-console-consumer.sh \
+#     --bootstrap-server 127.0.0.1:9092 \
+#     --topic sonda-e2e-metrics \
+#     --from-beginning \
+#     --timeout-ms 5000
+name: sonda_e2e_kafka_prom_text
+rate: 50
+duration: 5s
+
+generator:
+  type: sine
+  amplitude: 10.0
+  period_secs: 10
+  offset: 50.0
+
+labels:
+  scenario: kafka-prometheus-text
+  encoder: prometheus_text
+  sink: kafka
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: kafka
+  brokers: "localhost:9094"
+  topic: sonda-e2e-metrics

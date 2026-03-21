@@ -43,7 +43,7 @@ tasks:
   # E2E Stack
   # ---------------------------------------------------------------------------
   stack:up:
-    desc: Start the observability stack (VM, Prometheus, vmagent, Grafana)
+    desc: Start the observability stack (VM, Prometheus, vmagent, Grafana, Kafka)
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} up -d
       - echo ""
@@ -52,6 +52,8 @@ tasks:
       - 'echo "  VictoriaMetrics  http://localhost:8428"'
       - 'echo "  Prometheus       http://localhost:9090"'
       - 'echo "  vmagent          http://localhost:8429"'
+      - 'echo "  Kafka UI         http://localhost:8080"'
+      - 'echo "  Kafka broker     localhost:9094  (external listener)"'
 
   stack:down:
     desc: Stop and remove the observability stack
@@ -82,6 +84,12 @@ tasks:
     deps: [build:release]
     cmds:
       - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/vm-influx-lp.yaml {{.CLI_ARGS}}
+
+  run:kafka:
+    desc: Send Prometheus text metrics to Kafka topic sonda-e2e-metrics
+    deps: [build:release]
+    cmds:
+      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/kafka-prometheus-text.yaml {{.CLI_ARGS}}
 
   run:constant:
     desc: Run a quick constant metric to stdout
