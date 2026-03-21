@@ -119,6 +119,27 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub gap_for: Option<String>,
 
+    /// Burst recurrence interval (e.g. `"10s"`).
+    ///
+    /// Together with `--burst-for` and `--burst-multiplier`, this defines a
+    /// recurring high-rate period: events are emitted at `rate * multiplier`
+    /// for `--burst-for` out of every `--burst-every` cycle.
+    /// All three `--burst-*` flags must be provided together.
+    #[arg(long)]
+    pub burst_every: Option<String>,
+
+    /// Burst duration within each cycle (e.g. `"1s"`).
+    ///
+    /// Must be strictly less than `--burst-every`.
+    #[arg(long)]
+    pub burst_for: Option<String>,
+
+    /// Rate multiplier during each burst (must be strictly positive, e.g. `10.0`).
+    ///
+    /// Effective rate during burst = base rate × multiplier.
+    #[arg(long)]
+    pub burst_multiplier: Option<f64>,
+
     /// Static label attached to every emitted event (repeatable).
     ///
     /// Format: `key=value`. Keys must match `[a-zA-Z_][a-zA-Z0-9_]*`.

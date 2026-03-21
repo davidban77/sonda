@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::config::{GapConfig, ScenarioConfig};
+use sonda_core::config::{BurstConfig, GapConfig, ScenarioConfig};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
 use sonda_core::sink::SinkConfig;
@@ -55,6 +55,7 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             duration: args.duration.clone(),
             generator: build_generator_config(args)?,
             gaps: build_gap_config(args)?,
+            bursts: build_burst_config(args)?,
             labels: build_labels(args),
             encoder: parse_encoder_config(args.encoder.as_deref().unwrap_or("prometheus_text"))?,
             sink: SinkConfig::Stdout,
@@ -106,6 +107,11 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     // Gap: override if either gap flag is present.
     if args.gap_every.is_some() || args.gap_for.is_some() {
         config.gaps = build_gap_config(args)?;
+    }
+
+    // Burst: override if any burst flag is present.
+    if args.burst_every.is_some() || args.burst_for.is_some() || args.burst_multiplier.is_some() {
+        config.bursts = build_burst_config(args)?;
     }
 
     // Labels: CLI labels are merged on top of (not replacing) the file labels.
@@ -181,6 +187,23 @@ fn build_gap_config(args: &MetricsArgs) -> Result<Option<GapConfig>> {
     }
 }
 
+/// Build an optional [`BurstConfig`] from `--burst-every`, `--burst-for`, and `--burst-multiplier`.
+///
+/// All three flags must be provided together, or none. Providing a partial set is an error.
+fn build_burst_config(args: &MetricsArgs) -> Result<Option<BurstConfig>> {
+    match (&args.burst_every, &args.burst_for, args.burst_multiplier) {
+        (Some(every), Some(burst_for), Some(multiplier)) => Ok(Some(BurstConfig {
+            every: every.clone(),
+            r#for: burst_for.clone(),
+            multiplier,
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
+        ),
+    }
+}
+
 /// Build a label `HashMap` from the `--label k=v` CLI args.
 ///
 /// Returns `None` when no labels were provided.
@@ -238,6 +261,9 @@ mod tests {
             seed: None,
             gap_every: None,
             gap_for: None,
+            burst_every: None,
+            burst_for: None,
+            burst_multiplier: None,
             labels: vec![],
             encoder: None,
             output: None,
@@ -709,6 +735,122 @@ mod tests {
             }
             other => panic!("expected SinkConfig::File, got {other:?}"),
         }
+    }
+
+    // ---- Burst config: all three flags required together --------------------
+
+    #[test]
+    fn burst_every_without_burst_for_and_multiplier_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-every alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_for_without_burst_every_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_for: Some("2s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-for alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_multiplier_without_other_burst_flags_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_multiplier: Some(5.0),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--burst-multiplier alone should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn burst_every_and_for_without_multiplier_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            burst_for: Some("2s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args)
+            .expect_err("--burst-every + --burst-for without --burst-multiplier should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst"),
+            "error should mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn all_three_burst_flags_together_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            burst_every: Some("10s".to_string()),
+            burst_for: Some("2s".to_string()),
+            burst_multiplier: Some(5.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("all three burst flags should succeed");
+        let bursts = config.bursts.as_ref().expect("bursts must be set");
+        assert_eq!(bursts.every, "10s");
+        assert_eq!(bursts.r#for, "2s");
+        assert_eq!(bursts.multiplier, 5.0);
+    }
+
+    #[test]
+    fn no_burst_flags_produces_none_burst_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("no burst flags should succeed");
+        assert!(
+            config.bursts.is_none(),
+            "bursts must be None when no burst flags are provided"
+        );
+    }
+
+    #[test]
+    fn burst_flags_override_yaml_burst_config() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            burst_every: Some("5s".to_string()),
+            burst_for: Some("1s".to_string()),
+            burst_multiplier: Some(10.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("burst flags should override YAML");
+        let bursts = config.bursts.as_ref().expect("bursts must be set");
+        assert_eq!(bursts.every, "5s");
+        assert_eq!(bursts.r#for, "1s");
+        assert_eq!(bursts.multiplier, 10.0);
     }
 
     // ---- Round-trip: deserialize → validate → factories succeed ---------------
