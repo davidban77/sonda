@@ -198,8 +198,10 @@ labels:
   hostname: t0-a1
   zone: eu1
 
-encoder: prometheus_text
-sink: stdout
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
 ```
 
 YAML is chosen as the primary scenario format because it is familiar to the observability and infrastructure engineering community (Prometheus, Ansible, Kubernetes all use YAML for configuration). App-level settings such as API port and log level are passed as CLI flags or environment variables — there is no separate app config file.

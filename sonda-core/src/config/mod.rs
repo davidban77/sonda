@@ -51,8 +51,10 @@ fn default_sink() -> SinkConfig {
 /// labels:
 ///   hostname: t0-a1
 ///   zone: eu1
-/// encoder: prometheus_text
-/// sink: stdout
+/// encoder:
+///   type: prometheus_text
+/// sink:
+///   type: stdout
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScenarioConfig {

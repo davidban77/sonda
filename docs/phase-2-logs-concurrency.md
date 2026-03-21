@@ -403,15 +403,20 @@ each targeting independent encoder/sink combinations, from a single multi-scenar
       rate: 100
       duration: 30s
       generator: { type: sine, amplitude: 50, period_secs: 60, offset: 50 }
-      encoder: prometheus_text
-      sink: stdout
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
     - signal_type: logs
       name: app_logs
       rate: 10
       duration: 30s
       generator: { type: template, templates: [...] }
-      encoder: json_lines
-      sink: { file: { path: /tmp/logs.json } }
+      encoder:
+        type: json_lines
+      sink:
+        type: file
+        path: /tmp/logs.json
   ```
 
 ### Output files

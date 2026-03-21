@@ -512,8 +512,8 @@ mod tests {
 
     #[test]
     fn encoder_config_deserialization_influx_lp_no_field_key() {
-        // serde_yaml uses YAML tags for enum struct variants: "!variant_name\nfield: value"
-        let config: EncoderConfig = serde_yaml::from_str("!influx_lp\nfield_key: null").unwrap();
+        let config: EncoderConfig =
+            serde_yaml::from_str("type: influx_lp\nfield_key: null").unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol { field_key: None }
@@ -522,9 +522,8 @@ mod tests {
 
     #[test]
     fn encoder_config_deserialization_influx_lp_with_field_key() {
-        // serde_yaml uses YAML tags for enum struct variants: "!variant_name\nfield: value"
         let config: EncoderConfig =
-            serde_yaml::from_str("!influx_lp\nfield_key: requests").unwrap();
+            serde_yaml::from_str("type: influx_lp\nfield_key: requests").unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {
