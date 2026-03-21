@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use std::fs;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::config::{GapConfig, ScenarioConfig};
+use sonda_core::config::{BurstConfig, GapConfig, LogScenarioConfig, ScenarioConfig};
 use sonda_core::encoder::EncoderConfig;
-use sonda_core::generator::GeneratorConfig;
+use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::MetricsArgs;
+use crate::cli::{LogsArgs, MetricsArgs};
 
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
 ///
@@ -206,6 +206,169 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
         other => bail!(
             "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
             other
+        ),
+    }
+}
+
+/// Parse the `--encoder` flag value into a log-appropriate [`EncoderConfig`].
+///
+/// Log encoders are a subset: `json_lines` and `syslog`.
+fn parse_log_encoder_config(encoder: &str) -> Result<EncoderConfig> {
+    match encoder {
+        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "syslog" => Ok(EncoderConfig::Syslog {
+            hostname: None,
+            app_name: None,
+        }),
+        other => bail!(
+            "unknown log encoder {:?}: expected one of json_lines, syslog",
+            other
+        ),
+    }
+}
+
+/// Load and return a [`LogScenarioConfig`] from the provided [`LogsArgs`].
+///
+/// If `--scenario` is given the file is read and deserialized first. Any CLI
+/// flag that is `Some(...)` then overrides the corresponding field in the file.
+///
+/// If no `--scenario` file is given the config is built entirely from CLI
+/// flags; `--mode` is required in this case.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The scenario file cannot be read or is not valid YAML.
+/// - `--mode` is absent and no scenario file was provided.
+/// - `--mode replay` is specified without `--file`.
+/// - An unrecognized `--encoder` value is given.
+/// - Both `--gap-every` and `--gap-for` are not provided together.
+/// - `--burst-every`, `--burst-for`, and `--burst-multiplier` are not all
+///   provided together.
+pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
+    let mut config = if let Some(ref path) = args.scenario {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+        serde_yaml::from_str::<LogScenarioConfig>(&contents)
+            .with_context(|| format!("failed to parse scenario file {}", path.display()))?
+    } else {
+        // No scenario file — build from CLI flags.
+        let mode = args.mode.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--mode is required when no --scenario file is provided")
+        })?;
+        let generator = build_log_generator_config(mode, args)?;
+        let rate = args.rate.unwrap_or(10.0);
+
+        LogScenarioConfig {
+            name: "logs".to_string(),
+            rate,
+            duration: args.duration.clone(),
+            generator,
+            gaps: build_gap_config_for_logs(args)?,
+            bursts: build_burst_config(args)?,
+            encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
+            sink: SinkConfig::Stdout,
+        }
+    };
+
+    // Apply CLI overrides onto the loaded file config.
+    apply_log_overrides(&mut config, args)?;
+
+    // --output overrides the sink to a file sink regardless of YAML.
+    if let Some(ref path) = args.output {
+        config.sink = SinkConfig::File {
+            path: path.display().to_string(),
+        };
+    }
+
+    Ok(config)
+}
+
+/// Apply CLI flag overrides onto a log config loaded from a YAML file.
+fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Result<()> {
+    if let Some(rate) = args.rate {
+        config.rate = rate;
+    }
+    if args.duration.is_some() {
+        config.duration = args.duration.clone();
+    }
+
+    // Generator: rebuild if mode or file flag was provided.
+    if let Some(ref mode) = args.mode {
+        config.generator = build_log_generator_config(mode, args)?;
+    }
+
+    // Gap: override if either gap flag is present.
+    if args.gap_every.is_some() || args.gap_for.is_some() {
+        config.gaps = build_gap_config_for_logs(args)?;
+    }
+
+    // Burst: override if any burst flag is present.
+    if args.burst_every.is_some() || args.burst_for.is_some() || args.burst_multiplier.is_some() {
+        config.bursts = build_burst_config(args)?;
+    }
+
+    // Encoder: override when the user explicitly passes --encoder.
+    if let Some(ref enc) = args.encoder {
+        config.encoder = parse_log_encoder_config(enc)?;
+    }
+
+    Ok(())
+}
+
+/// Build a [`LogGeneratorConfig`] from CLI flags.
+fn build_log_generator_config(mode: &str, args: &LogsArgs) -> Result<LogGeneratorConfig> {
+    match mode {
+        "template" => {
+            // Build a minimal single-template config with no placeholders.
+            // Proper template config with field pools requires a scenario YAML file.
+            Ok(LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "synthetic log event".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            })
+        }
+        "replay" => {
+            let file = args.file.clone().ok_or_else(|| {
+                anyhow::anyhow!("--file is required when --mode replay is specified")
+            })?;
+            Ok(LogGeneratorConfig::Replay { file })
+        }
+        other => bail!(
+            "unknown log mode {:?}: expected one of template, replay",
+            other
+        ),
+    }
+}
+
+/// Build an optional [`GapConfig`] from `--gap-every` and `--gap-for` log args.
+fn build_gap_config_for_logs(args: &LogsArgs) -> Result<Option<GapConfig>> {
+    match (&args.gap_every, &args.gap_for) {
+        (Some(every), Some(gap_for)) => Ok(Some(GapConfig {
+            every: every.clone(),
+            r#for: gap_for.clone(),
+        })),
+        (None, None) => Ok(None),
+        (Some(_), None) => bail!("--gap-for is required when --gap-every is provided"),
+        (None, Some(_)) => bail!("--gap-every is required when --gap-for is provided"),
+    }
+}
+
+/// Build an optional [`BurstConfig`] from `--burst-every`, `--burst-for`, and
+/// `--burst-multiplier` log args.
+fn build_burst_config(args: &LogsArgs) -> Result<Option<BurstConfig>> {
+    match (&args.burst_every, &args.burst_for, args.burst_multiplier) {
+        (Some(every), Some(burst_for), Some(multiplier)) => Ok(Some(BurstConfig {
+            every: every.clone(),
+            r#for: burst_for.clone(),
+            multiplier,
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
         ),
     }
 }

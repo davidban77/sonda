@@ -11,6 +11,8 @@ pub mod model;
 pub mod schedule;
 pub mod sink;
 
+pub use config::BurstConfig;
+pub use config::LogScenarioConfig;
 pub use model::log::LogEvent;
 pub use model::log::Severity;
 pub use model::metric::Labels;

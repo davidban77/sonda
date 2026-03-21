@@ -58,6 +58,20 @@ fn run() -> anyhow::Result<()> {
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         }
+        Commands::Logs(ref args) => {
+            let config = config::load_log_config(args)?;
+
+            // Build a sink from the config so we can pass it and the shutdown
+            // flag directly to run_logs_with_sink.
+            let mut sink = sonda_core::sink::create_sink(&config.sink)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            sonda_core::schedule::log_runner::run_logs_with_sink(
+                &config,
+                sink.as_mut(),
+                Some(running.as_ref()),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
     }
 
     Ok(())

@@ -1,0 +1,52 @@
+name: app_logs_template
+rate: 10
+duration: 60s
+
+generator:
+  type: template
+  templates:
+    - message: "Request from {ip} to {endpoint} returned {status}"
+      field_pools:
+        ip:
+          - "10.0.0.1"
+          - "10.0.0.2"
+          - "10.0.0.3"
+          - "192.168.1.10"
+        endpoint:
+          - "/api/v1/health"
+          - "/api/v1/metrics"
+          - "/api/v1/logs"
+          - "/api/v1/users"
+        status:
+          - "200"
+          - "201"
+          - "400"
+          - "404"
+          - "500"
+    - message: "Service {service} processed {count} events in {duration_ms}ms"
+      field_pools:
+        service:
+          - "ingest"
+          - "transform"
+          - "export"
+        count:
+          - "1"
+          - "10"
+          - "100"
+          - "1000"
+        duration_ms:
+          - "5"
+          - "12"
+          - "47"
+          - "200"
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+  seed: 42
+
+encoder:
+  type: json_lines
+
+sink:
+  type: stdout

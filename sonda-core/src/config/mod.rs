@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::encoder::EncoderConfig;
-use crate::generator::GeneratorConfig;
+use crate::generator::{GeneratorConfig, LogGeneratorConfig};
 use crate::sink::SinkConfig;
 
 /// Gap window configuration — a recurring silent period within a scenario.
@@ -22,8 +22,27 @@ pub struct GapConfig {
     pub r#for: String,
 }
 
+/// Burst window configuration — a recurring high-rate period within a scenario.
+///
+/// During a burst the effective event rate is multiplied by `multiplier`.
+/// The burst repeats on a fixed cycle defined by `every`, and each instance
+/// lasts for `for`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BurstConfig {
+    /// How often the burst recurs (e.g. `"5s"`).
+    pub every: String,
+    /// How long each burst lasts (e.g. `"1s"`). Must be less than `every`.
+    pub r#for: String,
+    /// Rate multiplier during the burst (e.g. `10.0` for 10× the base rate).
+    pub multiplier: f64,
+}
+
 fn default_encoder() -> EncoderConfig {
     EncoderConfig::PrometheusText
+}
+
+fn default_log_encoder() -> EncoderConfig {
+    EncoderConfig::JsonLines
 }
 
 fn default_sink() -> SinkConfig {
@@ -75,6 +94,57 @@ pub struct ScenarioConfig {
     pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `prometheus_text`.
     #[serde(default = "default_encoder")]
+    pub encoder: EncoderConfig,
+    /// Output sink. Defaults to `stdout`.
+    #[serde(default = "default_sink")]
+    pub sink: SinkConfig,
+}
+
+/// Full configuration for a single log scenario run.
+///
+/// Deserialized from a YAML scenario file. CLI flags can override any field.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// name: app_logs
+/// rate: 10
+/// duration: 60s
+/// generator:
+///   type: template
+///   templates:
+///     - message: "Request from {ip} to {endpoint}"
+///       field_pools:
+///         ip: ["10.0.0.1", "10.0.0.2"]
+///         endpoint: ["/api", "/health"]
+///   severity_weights:
+///     info: 0.7
+///     warn: 0.2
+///     error: 0.1
+/// encoder:
+///   type: json_lines
+/// sink:
+///   type: stdout
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogScenarioConfig {
+    /// Scenario name (used for identification and logging).
+    pub name: String,
+    /// Target event rate in events per second. Must be strictly positive.
+    pub rate: f64,
+    /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
+    #[serde(default)]
+    pub duration: Option<String>,
+    /// Log generator configuration.
+    pub generator: LogGeneratorConfig,
+    /// Optional gap window: recurring silent periods in the event stream.
+    #[serde(default)]
+    pub gaps: Option<GapConfig>,
+    /// Optional burst window: recurring high-rate periods.
+    #[serde(default)]
+    pub bursts: Option<BurstConfig>,
+    /// Output encoder. Defaults to `json_lines`.
+    #[serde(default = "default_log_encoder")]
     pub encoder: EncoderConfig,
     /// Output sink. Defaults to `stdout`.
     #[serde(default = "default_sink")]
