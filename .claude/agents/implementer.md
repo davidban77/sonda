@@ -62,7 +62,19 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    cargo fmt --all -- --check
    ```
 
-9. **Commit**: Use the `/commit` skill. Commit message: `feat(slice-$ARGUMENTS): <short description>`
+9. **Commit**:
+   - Stage only the files you created or modified (avoid `git add -A` or `git add .`).
+   - Commit message: `feat(slice-$ARGUMENTS): <short description>`
+   - Keep the first line under 72 characters.
+   - **No `Co-Authored-By` trailer.**
+   - No `--no-verify` or `--no-gpg-sign`.
+   - Pass the message via HEREDOC:
+     ```bash
+     git commit -m "$(cat <<'EOF'
+     feat(slice-$ARGUMENTS): <short description>
+     EOF
+     )"
+     ```
 
 ## Rules
 

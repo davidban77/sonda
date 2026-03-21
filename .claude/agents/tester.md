@@ -59,7 +59,19 @@ You are testing **Slice $ARGUMENTS**. This is the only slice you work on.
    cargo fmt --all -- --check
    ```
 
-9. **Commit**: Use the `/commit` skill. Commit message: `test(slice-$ARGUMENTS): <short description>`
+9. **Commit**:
+   - Stage only test files (avoid `git add -A` or `git add .`).
+   - Commit message: `test(slice-$ARGUMENTS): <short description>`
+   - Keep the first line under 72 characters.
+   - **No `Co-Authored-By` trailer.**
+   - No `--no-verify` or `--no-gpg-sign`.
+   - Pass the message via HEREDOC:
+     ```bash
+     git commit -m "$(cat <<'EOF'
+     test(slice-$ARGUMENTS): <short description>
+     EOF
+     )"
+     ```
 
 10. **Report**: Provide a summary of tests written, pass/fail counts, coverage assessment,
    and any code bugs discovered (file + line + description).
