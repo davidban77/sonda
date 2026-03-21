@@ -1,0 +1,8 @@
+name: up
+rate: 10
+duration: 10s
+generator:
+  type: constant
+  value: 1.0
+encoder: prometheus_text
+sink: stdout
