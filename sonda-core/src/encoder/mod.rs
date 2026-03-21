@@ -60,3 +60,155 @@ pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
         EncoderConfig::JsonLines => Box::new(json::JsonLines::new()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig: internally-tagged deserialization (`type:` field)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn encoder_config_prometheus_text_deserializes_with_type_field() {
+        let yaml = "type: prometheus_text";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(config, EncoderConfig::PrometheusText));
+    }
+
+    #[test]
+    fn encoder_config_json_lines_deserializes_with_type_field() {
+        let yaml = "type: json_lines";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(config, EncoderConfig::JsonLines));
+    }
+
+    #[test]
+    fn encoder_config_influx_lp_without_field_key_deserializes_with_type_field() {
+        let yaml = "type: influx_lp";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::InfluxLineProtocol { field_key: None }
+        ));
+    }
+
+    #[test]
+    fn encoder_config_influx_lp_with_field_key_deserializes_with_type_field() {
+        let yaml = "type: influx_lp\nfield_key: requests";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k) } if k == "requests"
+        ));
+    }
+
+    #[test]
+    fn encoder_config_unknown_type_returns_error() {
+        let yaml = "type: no_such_encoder";
+        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unknown type tag should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn encoder_config_missing_type_field_returns_error() {
+        // Without the `type` field the internally-tagged enum cannot identify the variant.
+        let yaml = "prometheus_text";
+        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "missing type field should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn encoder_config_old_external_tag_format_is_rejected() {
+        // The old externally-tagged format (`!prometheus_text`) must no longer be accepted.
+        let yaml = "!prometheus_text";
+        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "externally-tagged YAML format must be rejected in favour of internally-tagged"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig: factory wiring for all variants
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn create_encoder_prometheus_text_succeeds() {
+        let config = EncoderConfig::PrometheusText;
+        // If factory panics the test fails; just ensure it returns without error.
+        let _enc = create_encoder(&config);
+    }
+
+    #[test]
+    fn create_encoder_json_lines_succeeds() {
+        let config = EncoderConfig::JsonLines;
+        let _enc = create_encoder(&config);
+    }
+
+    #[test]
+    fn create_encoder_influx_lp_no_field_key_succeeds() {
+        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        let _enc = create_encoder(&config);
+    }
+
+    #[test]
+    fn create_encoder_influx_lp_with_field_key_succeeds() {
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: Some("bytes".to_string()),
+        };
+        let _enc = create_encoder(&config);
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig: Send + Sync contract
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn encoder_config_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<EncoderConfig>();
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig: Clone + Debug contract
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn encoder_config_prometheus_text_is_cloneable_and_debuggable() {
+        let config = EncoderConfig::PrometheusText;
+        let cloned = config.clone();
+        assert!(matches!(cloned, EncoderConfig::PrometheusText));
+        let s = format!("{config:?}");
+        assert!(s.contains("PrometheusText"));
+    }
+
+    #[test]
+    fn encoder_config_json_lines_is_cloneable_and_debuggable() {
+        let config = EncoderConfig::JsonLines;
+        let cloned = config.clone();
+        assert!(matches!(cloned, EncoderConfig::JsonLines));
+        let s = format!("{config:?}");
+        assert!(s.contains("JsonLines"));
+    }
+
+    #[test]
+    fn encoder_config_influx_lp_is_cloneable_and_debuggable() {
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: Some("val".to_string()),
+        };
+        let cloned = config.clone();
+        assert!(matches!(
+            cloned,
+            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k) } if k == "val"
+        ));
+        let s = format!("{config:?}");
+        assert!(s.contains("InfluxLineProtocol"));
+    }
+}
