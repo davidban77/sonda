@@ -133,6 +133,14 @@ pub struct MetricsArgs {
     /// neither is set, `prometheus_text` is the default.
     #[arg(long)]
     pub encoder: Option<String>,
+
+    /// Write output to a file at this path instead of stdout.
+    ///
+    /// Shorthand for `sink: file` in a YAML scenario. Parent directories are
+    /// created automatically if they do not exist. Takes precedence over any
+    /// sink configured in the scenario file.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
 
 /// Parse a `key=value` label string into a `(String, String)` pair.

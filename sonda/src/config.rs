@@ -64,6 +64,13 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     // Apply CLI overrides onto the loaded file config (each Some(...) wins).
     apply_overrides(&mut config, args)?;
 
+    // --output overrides the sink to a file sink regardless of YAML.
+    if let Some(ref path) = args.output {
+        config.sink = SinkConfig::File {
+            path: path.display().to_string(),
+        };
+    }
+
     Ok(config)
 }
 
@@ -233,6 +240,7 @@ mod tests {
             gap_for: None,
             labels: vec![],
             encoder: None,
+            output: None,
         }
     }
 

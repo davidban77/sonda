@@ -2,8 +2,11 @@
 //!
 //! All sinks implement the `Sink` trait.
 
+pub mod file;
 pub mod memory;
 pub mod stdout;
+
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -26,12 +29,22 @@ pub enum SinkConfig {
     /// Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).
     #[serde(rename = "stdout")]
     Stdout,
+
+    /// Write encoded events to a file at the given path.
+    ///
+    /// Parent directories are created automatically if they do not exist.
+    #[serde(rename = "file")]
+    File {
+        /// Filesystem path to write encoded events to.
+        path: String,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
 pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
+        SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
     }
 }
 
