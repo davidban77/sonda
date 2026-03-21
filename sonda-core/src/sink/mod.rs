@@ -3,6 +3,7 @@
 //! All sinks implement the `Sink` trait.
 
 pub mod file;
+pub mod http;
 pub mod memory;
 pub mod stdout;
 pub mod tcp;
@@ -61,6 +62,24 @@ pub enum SinkConfig {
         /// Remote address to send datagrams to, e.g. `"127.0.0.1:9999"`.
         address: String,
     },
+
+    /// Batch encoded events and deliver them via HTTP POST.
+    ///
+    /// Bytes are accumulated in a buffer until `batch_size` bytes are reached,
+    /// then flushed as a single POST request. The `flush()` method sends any
+    /// remaining buffered data.
+    #[serde(rename = "http_push")]
+    HttpPush {
+        /// Target URL for HTTP POST requests, e.g. `"http://localhost:9090/api/v1/write"`.
+        url: String,
+
+        /// Optional `Content-Type` header value. Defaults to
+        /// `"application/octet-stream"` if not specified.
+        content_type: Option<String>,
+
+        /// Optional flush threshold in bytes. Defaults to 64 KiB if not specified.
+        batch_size: Option<usize>,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -70,6 +89,17 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
         SinkConfig::Tcp { address } => Ok(Box::new(tcp::TcpSink::new(address)?)),
         SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
+        SinkConfig::HttpPush {
+            url,
+            content_type,
+            batch_size,
+        } => {
+            let ct = content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
+            let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
+            Ok(Box::new(http::HttpPushSink::new(url, ct, bs)?))
+        }
     }
 }
 
