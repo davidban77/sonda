@@ -1,0 +1,13 @@
+name: app_logs_replay
+rate: 5
+duration: 30s
+
+generator:
+  type: replay
+  file: /var/log/app.log
+
+encoder:
+  type: json_lines
+
+sink:
+  type: stdout

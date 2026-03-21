@@ -24,6 +24,8 @@ pub struct Cli {
 pub enum Commands {
     /// Generate synthetic metrics and write them to the configured sink.
     Metrics(MetricsArgs),
+    /// Generate synthetic log events and write them to the configured sink.
+    Logs(LogsArgs),
 }
 
 /// Arguments for the `metrics` subcommand.
@@ -160,6 +162,96 @@ pub struct MetricsArgs {
     /// Shorthand for `sink: file` in a YAML scenario. Parent directories are
     /// created automatically if they do not exist. Takes precedence over any
     /// sink configured in the scenario file.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+}
+
+/// Arguments for the `logs` subcommand.
+///
+/// All flags are optional when a `--scenario` file is provided. CLI flags take
+/// precedence over any value in the scenario file.
+#[derive(Debug, Args)]
+pub struct LogsArgs {
+    /// Path to a YAML log scenario file.
+    ///
+    /// When provided, the file is loaded and deserialized first. Any CLI flag
+    /// that is also present overrides the corresponding value in the file.
+    #[arg(long)]
+    pub scenario: Option<PathBuf>,
+
+    /// Log generator mode.
+    ///
+    /// Accepted values: `template`, `replay`.
+    /// Required when no `--scenario` file is provided.
+    #[arg(long)]
+    pub mode: Option<String>,
+
+    /// Path to a log file for use with `--mode replay`.
+    ///
+    /// Lines from this file are replayed in order, cycling back to the start
+    /// when exhausted.
+    #[arg(long)]
+    pub file: Option<String>,
+
+    /// Target event rate in events per second.
+    ///
+    /// Must be strictly positive. Defaults to `10.0` when no scenario file
+    /// is provided and this flag is omitted.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Total run duration (e.g. `"30s"`, `"5m"`, `"1h"`, `"100ms"`).
+    ///
+    /// When absent the scenario runs indefinitely until Ctrl+C.
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Output encoder format.
+    ///
+    /// Accepted values: `json_lines`, `syslog`. Default: `json_lines`.
+    #[arg(long)]
+    pub encoder: Option<String>,
+
+    /// Static label attached to every emitted event (repeatable).
+    ///
+    /// Format: `key=value`. Keys must match `[a-zA-Z_][a-zA-Z0-9_]*`.
+    /// Example: `--label hostname=t0-a1 --label zone=eu1`
+    #[arg(long = "label", value_parser = parse_label)]
+    pub labels: Vec<(String, String)>,
+
+    /// Gap recurrence interval (e.g. `"2m"`).
+    ///
+    /// Together with `--gap-for`, this defines a recurring silent period.
+    #[arg(long)]
+    pub gap_every: Option<String>,
+
+    /// Gap duration within each cycle (e.g. `"20s"`).
+    ///
+    /// Must be strictly less than `--gap-every`.
+    #[arg(long)]
+    pub gap_for: Option<String>,
+
+    /// Burst recurrence interval (e.g. `"5s"`).
+    ///
+    /// Together with `--burst-for` and `--burst-multiplier`, this defines a
+    /// recurring high-rate period.
+    #[arg(long)]
+    pub burst_every: Option<String>,
+
+    /// Burst duration within each cycle (e.g. `"1s"`).
+    ///
+    /// Must be strictly less than `--burst-every`.
+    #[arg(long)]
+    pub burst_for: Option<String>,
+
+    /// Rate multiplier during burst periods (e.g. `10.0` for 10× the base rate).
+    #[arg(long)]
+    pub burst_multiplier: Option<f64>,
+
+    /// Write output to a file at this path instead of stdout.
+    ///
+    /// Shorthand for `sink: file` in a YAML scenario. Takes precedence over
+    /// any sink configured in the scenario file.
     #[arg(long)]
     pub output: Option<PathBuf>,
 }

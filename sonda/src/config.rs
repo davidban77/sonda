@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use std::fs;
 
 use anyhow::{bail, Context, Result};
-use sonda_core::config::{BurstConfig, GapConfig, ScenarioConfig};
+use sonda_core::config::{BurstConfig, GapConfig, LogScenarioConfig, ScenarioConfig};
 use sonda_core::encoder::EncoderConfig;
-use sonda_core::generator::GeneratorConfig;
+use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::MetricsArgs;
+use crate::cli::{LogsArgs, MetricsArgs};
 
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
 ///
@@ -229,6 +229,169 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
         other => bail!(
             "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
             other
+        ),
+    }
+}
+
+/// Parse the `--encoder` flag value into a log-appropriate [`EncoderConfig`].
+///
+/// Log encoders are a subset: `json_lines` and `syslog`.
+fn parse_log_encoder_config(encoder: &str) -> Result<EncoderConfig> {
+    match encoder {
+        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "syslog" => Ok(EncoderConfig::Syslog {
+            hostname: None,
+            app_name: None,
+        }),
+        other => bail!(
+            "unknown log encoder {:?}: expected one of json_lines, syslog",
+            other
+        ),
+    }
+}
+
+/// Load and return a [`LogScenarioConfig`] from the provided [`LogsArgs`].
+///
+/// If `--scenario` is given the file is read and deserialized first. Any CLI
+/// flag that is `Some(...)` then overrides the corresponding field in the file.
+///
+/// If no `--scenario` file is given the config is built entirely from CLI
+/// flags; `--mode` is required in this case.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The scenario file cannot be read or is not valid YAML.
+/// - `--mode` is absent and no scenario file was provided.
+/// - `--mode replay` is specified without `--file`.
+/// - An unrecognized `--encoder` value is given.
+/// - Both `--gap-every` and `--gap-for` are not provided together.
+/// - `--burst-every`, `--burst-for`, and `--burst-multiplier` are not all
+///   provided together.
+pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
+    let mut config = if let Some(ref path) = args.scenario {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+        serde_yaml::from_str::<LogScenarioConfig>(&contents)
+            .with_context(|| format!("failed to parse scenario file {}", path.display()))?
+    } else {
+        // No scenario file — build from CLI flags.
+        let mode = args.mode.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--mode is required when no --scenario file is provided")
+        })?;
+        let generator = build_log_generator_config(mode, args)?;
+        let rate = args.rate.unwrap_or(10.0);
+
+        LogScenarioConfig {
+            name: "logs".to_string(),
+            rate,
+            duration: args.duration.clone(),
+            generator,
+            gaps: build_gap_config_for_logs(args)?,
+            bursts: build_log_burst_config(args)?,
+            encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
+            sink: SinkConfig::Stdout,
+        }
+    };
+
+    // Apply CLI overrides onto the loaded file config.
+    apply_log_overrides(&mut config, args)?;
+
+    // --output overrides the sink to a file sink regardless of YAML.
+    if let Some(ref path) = args.output {
+        config.sink = SinkConfig::File {
+            path: path.display().to_string(),
+        };
+    }
+
+    Ok(config)
+}
+
+/// Apply CLI flag overrides onto a log config loaded from a YAML file.
+fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Result<()> {
+    if let Some(rate) = args.rate {
+        config.rate = rate;
+    }
+    if args.duration.is_some() {
+        config.duration = args.duration.clone();
+    }
+
+    // Generator: rebuild if mode or file flag was provided.
+    if let Some(ref mode) = args.mode {
+        config.generator = build_log_generator_config(mode, args)?;
+    }
+
+    // Gap: override if either gap flag is present.
+    if args.gap_every.is_some() || args.gap_for.is_some() {
+        config.gaps = build_gap_config_for_logs(args)?;
+    }
+
+    // Burst: override if any burst flag is present.
+    if args.burst_every.is_some() || args.burst_for.is_some() || args.burst_multiplier.is_some() {
+        config.bursts = build_log_burst_config(args)?;
+    }
+
+    // Encoder: override when the user explicitly passes --encoder.
+    if let Some(ref enc) = args.encoder {
+        config.encoder = parse_log_encoder_config(enc)?;
+    }
+
+    Ok(())
+}
+
+/// Build a [`LogGeneratorConfig`] from CLI flags.
+fn build_log_generator_config(mode: &str, args: &LogsArgs) -> Result<LogGeneratorConfig> {
+    match mode {
+        "template" => {
+            // Build a minimal single-template config with no placeholders.
+            // Proper template config with field pools requires a scenario YAML file.
+            Ok(LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "synthetic log event".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            })
+        }
+        "replay" => {
+            let file = args.file.clone().ok_or_else(|| {
+                anyhow::anyhow!("--file is required when --mode replay is specified")
+            })?;
+            Ok(LogGeneratorConfig::Replay { file })
+        }
+        other => bail!(
+            "unknown log mode {:?}: expected one of template, replay",
+            other
+        ),
+    }
+}
+
+/// Build an optional [`GapConfig`] from `--gap-every` and `--gap-for` log args.
+fn build_gap_config_for_logs(args: &LogsArgs) -> Result<Option<GapConfig>> {
+    match (&args.gap_every, &args.gap_for) {
+        (Some(every), Some(gap_for)) => Ok(Some(GapConfig {
+            every: every.clone(),
+            r#for: gap_for.clone(),
+        })),
+        (None, None) => Ok(None),
+        (Some(_), None) => bail!("--gap-for is required when --gap-every is provided"),
+        (None, Some(_)) => bail!("--gap-every is required when --gap-for is provided"),
+    }
+}
+
+/// Build an optional [`BurstConfig`] from `--burst-every`, `--burst-for`, and
+/// `--burst-multiplier` log args.
+fn build_log_burst_config(args: &LogsArgs) -> Result<Option<BurstConfig>> {
+    match (&args.burst_every, &args.burst_for, args.burst_multiplier) {
+        (Some(every), Some(burst_for), Some(multiplier)) => Ok(Some(BurstConfig {
+            every: every.clone(),
+            r#for: burst_for.clone(),
+            multiplier,
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
         ),
     }
 }
@@ -877,5 +1040,409 @@ mod tests {
         let _gen = create_generator(&config.generator, config.rate);
         let _enc = create_encoder(&config.encoder);
         let _sink = create_sink(&config.sink).expect("sink factory should succeed");
+    }
+
+    // =========================================================================
+    // Slice 2.5 — load_log_config tests
+    // =========================================================================
+
+    /// Helper to build a minimal `LogsArgs` with no flags set.
+    fn default_logs_args() -> crate::cli::LogsArgs {
+        crate::cli::LogsArgs {
+            scenario: None,
+            mode: None,
+            file: None,
+            rate: None,
+            duration: None,
+            encoder: None,
+            labels: vec![],
+            gap_every: None,
+            gap_for: None,
+            burst_every: None,
+            burst_for: None,
+            burst_multiplier: None,
+            output: None,
+        }
+    }
+
+    // ---- Config from flags only (log subcommand) -----------------------------
+
+    #[test]
+    fn load_log_config_mode_template_produces_template_generator() {
+        use sonda_core::generator::LogGeneratorConfig;
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            duration: Some("5s".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("template mode flags must produce config");
+        assert_eq!(config.rate, 10.0);
+        assert_eq!(config.duration.as_deref(), Some("5s"));
+        assert!(
+            matches!(config.generator, LogGeneratorConfig::Template { .. }),
+            "generator must be Template when --mode template"
+        );
+    }
+
+    #[test]
+    fn load_log_config_mode_replay_with_file_produces_replay_generator() {
+        use std::io::Write;
+
+        use sonda_core::generator::LogGeneratorConfig;
+        use tempfile::NamedTempFile;
+
+        let mut tmp = NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "line one").expect("write line");
+        writeln!(tmp, "line two").expect("write line");
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("replay".to_string()),
+            file: Some(tmp.path().to_string_lossy().into_owned()),
+            rate: Some(5.0),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("replay mode with file must produce config");
+        match config.generator {
+            LogGeneratorConfig::Replay { file } => {
+                assert!(!file.is_empty(), "replay file path must be set");
+            }
+            other => panic!("expected Replay generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_log_config_mode_replay_without_file_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("replay".to_string()),
+            file: None,
+            ..default_logs_args()
+        };
+
+        let err = load_log_config(&args).expect_err("replay without --file must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file") || msg.contains("--file"),
+            "error must mention --file, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_without_mode_or_scenario_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: None,
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("missing --mode must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mode") || msg.contains("required"),
+            "error must mention --mode or 'required', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_unknown_mode_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("livestream".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("unknown mode must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("livestream"),
+            "error must mention the unknown mode, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_encoder_json_lines_is_accepted() {
+        use sonda_core::encoder::EncoderConfig;
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            encoder: Some("json_lines".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("json_lines encoder must be accepted");
+        assert!(
+            matches!(config.encoder, EncoderConfig::JsonLines),
+            "encoder must be JsonLines"
+        );
+    }
+
+    #[test]
+    fn load_log_config_encoder_syslog_is_accepted() {
+        use sonda_core::encoder::EncoderConfig;
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            encoder: Some("syslog".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("syslog encoder must be accepted for logs");
+        assert!(
+            matches!(config.encoder, EncoderConfig::Syslog { .. }),
+            "encoder must be Syslog, got {:?}",
+            config.encoder
+        );
+    }
+
+    #[test]
+    fn load_log_config_encoder_prometheus_text_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            encoder: Some("prometheus_text".to_string()),
+            ..default_logs_args()
+        };
+
+        let err = load_log_config(&args).expect_err("prometheus_text is not a valid log encoder");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("prometheus_text") || msg.contains("json_lines"),
+            "error must mention the bad encoder, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_default_rate_is_10() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: None,
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("default rate config must succeed");
+        assert_eq!(
+            config.rate, 10.0,
+            "default rate must be 10.0 when --rate is omitted"
+        );
+    }
+
+    #[test]
+    fn load_log_config_default_encoder_is_json_lines() {
+        use sonda_core::encoder::EncoderConfig;
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            encoder: None,
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("default encoder config must succeed");
+        assert!(
+            matches!(config.encoder, EncoderConfig::JsonLines),
+            "default encoder for logs must be json_lines, got {:?}",
+            config.encoder
+        );
+    }
+
+    // ---- Gap config validation for logs --------------------------------------
+
+    #[test]
+    fn load_log_config_gap_every_without_gap_for_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            gap_every: Some("2m".to_string()),
+            gap_for: None,
+            ..default_logs_args()
+        };
+
+        let err = load_log_config(&args).expect_err("gap-every without gap-for must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gap-for") || msg.contains("gap_for"),
+            "error must mention gap-for, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_gap_for_without_gap_every_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            gap_every: None,
+            gap_for: Some("20s".to_string()),
+            ..default_logs_args()
+        };
+
+        let err = load_log_config(&args).expect_err("gap-for without gap-every must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("gap-every") || msg.contains("gap_every"),
+            "error must mention gap-every, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_both_gap_flags_together_succeeds() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            gap_every: Some("2m".to_string()),
+            gap_for: Some("20s".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("both gap flags must succeed");
+        let gaps = config.gaps.as_ref().expect("gaps must be set");
+        assert_eq!(gaps.every, "2m");
+        assert_eq!(gaps.r#for, "20s");
+    }
+
+    // ---- Burst config validation for logs ------------------------------------
+
+    #[test]
+    fn load_log_config_partial_burst_flags_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            burst_every: Some("5s".to_string()),
+            burst_for: Some("1s".to_string()),
+            burst_multiplier: None, // missing
+            ..default_logs_args()
+        };
+
+        let err = load_log_config(&args).expect_err("partial burst flags must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("burst") || msg.contains("multiplier"),
+            "error must mention burst flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_log_config_all_burst_flags_together_succeeds() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            burst_every: Some("5s".to_string()),
+            burst_for: Some("1s".to_string()),
+            burst_multiplier: Some(10.0),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("all burst flags must succeed");
+        let bursts = config.bursts.as_ref().expect("bursts must be set");
+        assert_eq!(bursts.every, "5s");
+        assert_eq!(bursts.r#for, "1s");
+        assert_eq!(bursts.multiplier, 10.0);
+    }
+
+    // ---- --output flag for logs ----------------------------------------------
+
+    #[test]
+    fn load_log_config_output_flag_sets_file_sink() {
+        use sonda_core::sink::SinkConfig;
+
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            output: Some(PathBuf::from("/tmp/sonda-logs-test.json")),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("output flag must produce valid config");
+        match config.sink {
+            SinkConfig::File { path } => {
+                assert_eq!(path, "/tmp/sonda-logs-test.json");
+            }
+            other => panic!("expected SinkConfig::File after --output, got {other:?}"),
+        }
+    }
+
+    // ---- Config from YAML file -----------------------------------------------
+
+    #[test]
+    fn load_log_config_from_yaml_file_log_template() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("log-template fixture must load");
+        assert_eq!(config.name, "test_log_template");
+        assert_eq!(config.rate, 10.0);
+    }
+
+    #[test]
+    fn load_log_config_from_missing_yaml_file_returns_error() {
+        let args = crate::cli::LogsArgs {
+            scenario: Some(PathBuf::from("/nonexistent/path/log-scenario.yaml")),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("missing file must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("scenario") || msg.contains("nonexistent"),
+            "error must mention the file path, got: {msg}"
+        );
+    }
+
+    // ---- CLI overrides on YAML -----------------------------------------------
+
+    #[test]
+    fn load_log_config_cli_rate_overrides_yaml_rate() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        // The fixture has rate: 10. CLI overrides to 999.
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            rate: Some(999.0),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("CLI rate override must succeed");
+        assert_eq!(config.rate, 999.0, "CLI --rate must override YAML rate");
+    }
+
+    #[test]
+    fn load_log_config_cli_duration_overrides_yaml_duration() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            duration: Some("42s".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("CLI duration override must succeed");
+        assert_eq!(
+            config.duration.as_deref(),
+            Some("42s"),
+            "CLI --duration must override YAML duration"
+        );
+    }
+
+    #[test]
+    fn load_log_config_cli_encoder_overrides_yaml_encoder() {
+        use sonda_core::encoder::EncoderConfig;
+
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        // The fixture uses json_lines; override to syslog.
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            encoder: Some("syslog".to_string()),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("CLI encoder override must succeed");
+        assert!(
+            matches!(config.encoder, EncoderConfig::Syslog { .. }),
+            "CLI --encoder must override YAML encoder to syslog"
+        );
     }
 }

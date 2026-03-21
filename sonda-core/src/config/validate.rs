@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::model::metric::is_valid_metric_name;
 use crate::SondaError;
 
-use super::{BurstConfig, ScenarioConfig};
+use super::{BurstConfig, LogScenarioConfig, ScenarioConfig};
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
@@ -153,6 +153,49 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
             "bursts.for ({:?}) must be less than bursts.every ({:?})",
             burst.r#for, burst.every
         )));
+    }
+
+    Ok(())
+}
+
+/// Validate a [`LogScenarioConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `rate` is strictly positive and not NaN.
+/// - `duration`, if provided, is a parseable duration string.
+/// - If gaps are configured, `gap.for` is strictly less than `gap.every`.
+/// - If bursts are configured, `burst.for` is strictly less than `burst.every`
+///   and `burst.multiplier` is strictly positive.
+///
+/// Returns [`SondaError::Config`] with a descriptive message naming the field
+/// and the invalid value.
+pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
+    if config.rate.is_nan() || config.rate <= 0.0 {
+        return Err(SondaError::Config(format!(
+            "rate must be positive, got {}",
+            config.rate
+        )));
+    }
+
+    if let Some(ref dur_str) = config.duration {
+        parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
+    }
+
+    if let Some(ref gap) = config.gaps {
+        let every = parse_duration(&gap.every)
+            .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
+        let for_dur = parse_duration(&gap.r#for)
+            .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
+        if for_dur >= every {
+            return Err(SondaError::Config(format!(
+                "gaps.for ({:?}) must be less than gaps.every ({:?})",
+                gap.r#for, gap.every
+            )));
+        }
+    }
+
+    if let Some(ref burst) = config.bursts {
+        validate_burst_config(burst)?;
     }
 
     Ok(())

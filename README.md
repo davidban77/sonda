@@ -100,6 +100,7 @@ sonda <COMMAND>
 
 Commands:
   metrics  Generate synthetic metrics and write them to the configured sink
+  logs     Generate synthetic log events and write them to the configured sink
   help     Print help information
 
 Options:
@@ -196,6 +197,84 @@ Options:
           Print help
 ```
 
+### `sonda logs`
+
+```
+Usage: sonda logs [OPTIONS]
+
+Options:
+      --scenario <SCENARIO>
+          Path to a YAML log scenario file.
+          When provided, loaded first; CLI flags override file values.
+
+      --mode <MODE>
+          Log generator mode.
+          Accepted values: template, replay.
+          Required when no --scenario file is provided.
+
+      --file <FILE>
+          Path to a log file for use with --mode replay.
+          Lines are replayed in order, cycling back to the start when exhausted.
+
+      --rate <RATE>
+          Target event rate in events per second.
+          Must be strictly positive. Defaults to 10.0 when no scenario file is provided.
+
+      --duration <DURATION>
+          Total run duration (e.g. "30s", "5m", "1h", "100ms").
+          When absent the scenario runs indefinitely until Ctrl+C.
+
+      --encoder <ENCODER>
+          Output encoder format.
+          Accepted values: json_lines, syslog. Default: json_lines.
+
+      --output <OUTPUT>
+          Write output to a file at this path instead of stdout.
+          Shorthand for sink: file in a YAML scenario.
+
+      --label <key=value>
+          Static label attached to every emitted event (repeatable).
+          Format: key=value.
+          Example: --label hostname=t0-a1 --label zone=eu1
+
+      --message <MESSAGE>
+          A single static message template for use with --mode template.
+          Overrides any templates in the scenario file.
+
+      --severity-weights <WEIGHTS>
+          Comma-separated severity=weight pairs (e.g. "info=0.7,warn=0.2,error=0.1").
+          Used with --mode template.
+
+      --seed <SEED>
+          RNG seed for deterministic template resolution.
+          When absent a seed of 0 is used.
+
+      --replay-file <REPLAY_FILE>
+          Alias for --file. Path to the log file for --mode replay.
+
+      --gap-every <GAP_EVERY>
+          Gap recurrence interval (e.g. "2m").
+          Together with --gap-for, defines a recurring silent period.
+
+      --gap-for <GAP_FOR>
+          Gap duration within each cycle (e.g. "20s").
+          Must be strictly less than --gap-every.
+
+      --burst-every <BURST_EVERY>
+          Burst recurrence interval (e.g. "5s").
+          Together with --burst-for and --burst-multiplier, defines a recurring high-rate period.
+
+      --burst-for <BURST_FOR>
+          Burst duration within each cycle (e.g. "1s").
+          Must be strictly less than --burst-every.
+
+      --burst-multiplier <BURST_MULTIPLIER>
+          Rate multiplier during burst periods (e.g. 10.0 for 10x the base rate).
+
+  -h, --help
+          Print help
+```
+
 ---
 
 ## YAML Scenario Files
@@ -244,7 +323,7 @@ Override the rate from the CLI:
 sonda metrics --scenario examples/basic-metrics.yaml --rate 500
 ```
 
-### Generator types
+### Metric generator types
 
 | `type` | Parameters | Description |
 |--------|-----------|-------------|
@@ -342,6 +421,80 @@ bursts:
 `for` must be strictly less than `every`. `multiplier` must be strictly positive.
 
 When a gap and a burst would overlap, the gap takes priority and no events are emitted.
+
+---
+
+## Log Scenario Files
+
+Log scenarios use a different config structure from metric scenarios. Run with `sonda logs --scenario <file.yaml>`.
+
+```yaml
+name: app_logs_template
+rate: 10
+duration: 60s
+
+generator:
+  type: template
+  templates:
+    - message: "Request from {ip} to {endpoint} returned {status}"
+      field_pools:
+        ip:
+          - "10.0.0.1"
+          - "10.0.0.2"
+          - "10.0.0.3"
+        endpoint:
+          - "/api/v1/health"
+          - "/api/v1/metrics"
+        status:
+          - "200"
+          - "404"
+          - "500"
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+  seed: 42
+
+gaps:
+  every: 2m
+  for: 20s
+
+bursts:
+  every: 5s
+  for: 1s
+  multiplier: 10.0
+
+encoder:
+  type: json_lines
+sink:
+  type: stdout
+```
+
+Run it with:
+
+```bash
+sonda logs --scenario examples/log-template.yaml
+```
+
+### Log generator types
+
+| `type` | Parameters | Description |
+|--------|-----------|-------------|
+| `template` | `templates: list`, `severity_weights: map` (optional), `seed: u64` (optional) | Generates structured log events from message templates with field pools. Placeholders like `{ip}` are resolved from the matching pool entry using a deterministic hash of the seed and tick. |
+| `replay` | `file: string` | Replays lines from a file at the configured rate, cycling back to the start when exhausted. Each line becomes a log event with severity `info`. |
+
+### `LogScenarioConfig` YAML schema
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | required | Scenario name (used for identification). |
+| `rate` | `f64` | required | Target event rate in events per second. Must be strictly positive. |
+| `duration` | `string` | none (indefinite) | Total run duration (e.g. `"30s"`, `"5m"`). |
+| `generator` | `object` | required | Log generator configuration. See log generator types above. |
+| `gaps` | `object` | none | Optional gap window: `every` and `for` duration strings. |
+| `bursts` | `object` | none | Optional burst window: `every`, `for`, and `multiplier`. |
+| `encoder` | `object` | `{type: json_lines}` | Output encoder. Accepted values: `json_lines`, `syslog`. |
+| `sink` | `object` | `{type: stdout}` | Output sink. Any sink type supported by metric scenarios. |
 
 ---
 
@@ -470,6 +623,31 @@ sonda metrics --scenario examples/prometheus-http-push.yaml
 # Against VictoriaMetrics
 # Edit the url in the YAML to: http://localhost:8428/api/v1/import/prometheus
 sonda metrics --scenario examples/prometheus-http-push.yaml
+```
+
+### `examples/log-template.yaml`
+
+Template-based log generation at 10 events/sec for 60 seconds. Emits JSON Lines to stdout with
+varied messages, field values, and severity levels (70% info, 20% warn, 10% error):
+
+```bash
+sonda logs --scenario examples/log-template.yaml
+```
+
+Output looks like:
+
+```json
+{"timestamp":"2026-03-21T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.2 to /api/v1/health returned 200","fields":{"endpoint":"/api/v1/health","ip":"10.0.0.2","status":"200"}}
+{"timestamp":"2026-03-21T12:00:00.100Z","severity":"warn","message":"Service ingest processed 100 events in 47ms","fields":{"count":"100","duration_ms":"47","service":"ingest"}}
+```
+
+### `examples/log-replay.yaml`
+
+Replay lines from an existing log file at 5 events/sec for 30 seconds. Lines cycle when the file
+is exhausted. Update the `file:` path in the YAML to point to a real log file:
+
+```bash
+sonda logs --scenario examples/log-replay.yaml
 ```
 
 ---

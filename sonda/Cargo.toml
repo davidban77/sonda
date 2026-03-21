@@ -17,3 +17,6 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 anyhow = { workspace = true }
 ctrlc = "3"
+
+[dev-dependencies]
+tempfile = "3"
