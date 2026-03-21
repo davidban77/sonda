@@ -33,4 +33,4 @@ sink:
   type: http_push
   url: "http://localhost:8428/write"
   content_type: "text/plain"
-  batch_size: 65536
+  batch_size: 4096

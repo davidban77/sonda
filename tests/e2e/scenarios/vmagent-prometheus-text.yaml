@@ -31,4 +31,4 @@ sink:
   type: http_push
   url: "http://localhost:8429/api/v1/import/prometheus"
   content_type: "text/plain"
-  batch_size: 65536
+  batch_size: 4096
