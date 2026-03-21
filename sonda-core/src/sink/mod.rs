@@ -385,4 +385,89 @@ sink:
             matches!(config.sink, SinkConfig::Udp { ref address } if address == "127.0.0.1:5555")
         );
     }
+
+    // -----------------------------------------------------------------------
+    // SinkConfig::Kafka deserialization and factory wiring
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sink_config_kafka_deserializes_with_type_field() {
+        let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
+        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            matches!(config, SinkConfig::Kafka { ref brokers, ref topic }
+                if brokers == "127.0.0.1:9092" && topic == "sonda-test")
+        );
+    }
+
+    #[test]
+    fn sink_config_kafka_requires_brokers_field() {
+        let yaml = "type: kafka\ntopic: sonda-test";
+        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "kafka variant without brokers should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn sink_config_kafka_requires_topic_field() {
+        let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
+        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "kafka variant without topic should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn sink_config_kafka_is_cloneable_and_debuggable() {
+        let config = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+        };
+        let cloned = config.clone();
+        assert!(
+            matches!(cloned, SinkConfig::Kafka { ref brokers, ref topic }
+                if brokers == "127.0.0.1:9092" && topic == "sonda-test")
+        );
+        let s = format!("{config:?}");
+        assert!(s.contains("Kafka"));
+    }
+
+    /// create_sink with an unreachable broker returns Err (not a panic).
+    /// This verifies the factory arm for Kafka is wired correctly and that
+    /// construction failures surface as SondaError rather than unwrap panics.
+    ///
+    /// Ignored by default because rskafka may wait for a long TCP timeout
+    /// before returning an error. Run with `cargo test -- --ignored` when the
+    /// test environment can tolerate network delays.
+    #[test]
+    #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
+    fn create_sink_kafka_with_unreachable_broker_returns_err() {
+        // Port 1 is privileged and will always refuse connections.
+        let config = SinkConfig::Kafka {
+            brokers: "127.0.0.1:1".to_string(),
+            topic: "sonda-test".to_string(),
+        };
+        let result = create_sink(&config);
+        assert!(
+            result.is_err(),
+            "create_sink should propagate the broker connection failure"
+        );
+    }
+
+    /// create_sink with an empty broker string returns Err immediately.
+    #[test]
+    fn create_sink_kafka_with_empty_broker_returns_err() {
+        let config = SinkConfig::Kafka {
+            brokers: String::new(),
+            topic: "sonda-test".to_string(),
+        };
+        let result = create_sink(&config);
+        assert!(
+            result.is_err(),
+            "create_sink should reject an empty broker string"
+        );
+    }
 }
