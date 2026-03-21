@@ -4,6 +4,7 @@
 //! `Vec<u8>` to avoid per-event allocations.
 
 pub mod influx;
+pub mod json;
 pub mod prometheus;
 
 use serde::Deserialize;
@@ -39,6 +40,12 @@ pub enum EncoderConfig {
         /// The InfluxDB field key for the metric value. Defaults to `"value"` if absent.
         field_key: Option<String>,
     },
+    /// JSON Lines (NDJSON) format.
+    ///
+    /// Each event is serialized as one JSON object per line. Compatible with Elasticsearch,
+    /// Loki, and generic HTTP ingest endpoints.
+    #[serde(rename = "json_lines")]
+    JsonLines,
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
@@ -48,5 +55,6 @@ pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
         EncoderConfig::InfluxLineProtocol { field_key } => {
             Box::new(influx::InfluxLineProtocol::new(field_key.clone()))
         }
+        EncoderConfig::JsonLines => Box::new(json::JsonLines::new()),
     }
 }
