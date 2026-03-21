@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# tests/e2e/run.sh — end-to-end integration test runner for sonda's HTTP push sink.
+#
+# This script:
+#   1. Starts docker-compose services (Prometheus, VictoriaMetrics, vmagent)
+#   2. Waits for all services to become healthy
+#   3. Builds sonda in release mode
+#   4. Runs each test scenario for a short duration
+#   5. Waits for ingestion to settle
+#   6. Queries VictoriaMetrics to verify data arrived
+#   7. Reports PASS/FAIL for each scenario
+#   8. Tears down docker-compose
+#   9. Exits 0 if all scenarios passed, 1 if any failed
+#
+# Usage:
+#   ./tests/e2e/run.sh
+#
+# Prerequisites:
+#   - docker and docker compose (v2) installed and in PATH
+#   - curl installed and in PATH
+#   - Rust toolchain installed (for cargo build)
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+SCENARIO_DIR="${SCRIPT_DIR}/scenarios"
+
+# Sonda binary path (release build)
+SONDA_BIN="${REPO_ROOT}/target/release/sonda"
+
+# How long each scenario runs
+SCENARIO_DURATION=5
+
+# How long to wait for ingestion to settle after a scenario finishes
+INGEST_SETTLE_SECS=3
+
+# How long to wait for each service to become healthy (seconds)
+HEALTH_WAIT_SECS=60
+
+# VictoriaMetrics query endpoint
+VM_QUERY_URL="http://localhost:8428/api/v1/query"
+
+# Track overall pass/fail state
+PASS_COUNT=0
+FAIL_COUNT=0
+
+# ---------------------------------------------------------------------------
+# Cleanup trap
+# ---------------------------------------------------------------------------
+
+cleanup() {
+    echo ""
+    echo "--- Tearing down docker-compose services ---"
+    docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+info()  { echo "[INFO]  $*"; }
+pass()  { echo "[PASS]  $*"; PASS_COUNT=$((PASS_COUNT + 1)); }
+fail()  { echo "[FAIL]  $*"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
+fatal() { echo "[FATAL] $*" >&2; exit 1; }
+
+# Wait for an HTTP endpoint to return a non-error response.
+# Usage: wait_for_health <url> <service_name> <max_seconds>
+wait_for_health() {
+    local url="$1"
+    local name="$2"
+    local max_secs="$3"
+    local elapsed=0
+
+    info "Waiting for ${name} at ${url} (up to ${max_secs}s)..."
+    while true; do
+        if curl -sf --max-time 3 "${url}" >/dev/null 2>&1; then
+            info "${name} is healthy."
+            return 0
+        fi
+        if [ "${elapsed}" -ge "${max_secs}" ]; then
+            fatal "${name} did not become healthy within ${max_secs}s."
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+}
+
+# Query VictoriaMetrics for a metric and return the number of result series.
+# Usage: query_vm_count <metric_name>
+query_vm_count() {
+    local metric="$1"
+    local encoded
+    encoded="$(python3 -c "import urllib.parse; print(urllib.parse.quote('${metric}'))" 2>/dev/null \
+        || printf '%s' "${metric}" | sed 's/{/%7B/g; s/}/%7D/g; s/ /+/g')"
+    local result
+    result=$(curl -sf --max-time 10 "${VM_QUERY_URL}?query=${encoded}" 2>/dev/null || echo '{}')
+    # Extract the count of result entries from the JSON response using basic tools.
+    # The response shape is: {"status":"success","data":{"resultType":"vector","result":[...]}}
+    echo "${result}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+results = data.get('data', {}).get('result', [])
+print(len(results))
+" 2>/dev/null || echo "0"
+}
+
+# Run a single scenario and verify data reached VictoriaMetrics.
+# Usage: run_scenario <scenario_file> <metric_name> <description>
+run_scenario() {
+    local scenario_file="$1"
+    local metric_name="$2"
+    local description="$3"
+
+    info "Running scenario: ${description}"
+    info "  File:   ${scenario_file}"
+    info "  Metric: ${metric_name}"
+
+    # Run sonda for SCENARIO_DURATION seconds (the scenario YAML also sets duration,
+    # but we cap with a timeout to be safe).
+    local timeout_secs=$((SCENARIO_DURATION + 10))
+    if timeout "${timeout_secs}" "${SONDA_BIN}" metrics \
+            --scenario "${scenario_file}" \
+            --duration "${SCENARIO_DURATION}s" \
+            >/dev/null 2>&1; then
+        info "  sonda exited cleanly."
+    else
+        local exit_code=$?
+        # timeout(1) exits 124 when the process is killed; treat as failure.
+        if [ "${exit_code}" -eq 124 ]; then
+            fail "${description}: sonda timed out after ${timeout_secs}s"
+            return
+        fi
+        # Non-zero exit from sonda itself.
+        fail "${description}: sonda exited with code ${exit_code}"
+        return
+    fi
+
+    info "  Waiting ${INGEST_SETTLE_SECS}s for ingestion to settle..."
+    sleep "${INGEST_SETTLE_SECS}"
+
+    local count
+    count=$(query_vm_count "${metric_name}")
+    info "  Query result count: ${count}"
+
+    if [ "${count}" -gt 0 ] 2>/dev/null; then
+        pass "${description}"
+    else
+        fail "${description}: metric '${metric_name}' not found in VictoriaMetrics (count=${count})"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+
+info "=== sonda e2e integration tests ==="
+info "Repo root: ${REPO_ROOT}"
+
+# Check docker is available.
+if ! command -v docker >/dev/null 2>&1; then
+    fatal "docker is not installed or not in PATH."
+fi
+
+# Check docker compose v2 is available (docker compose, not docker-compose).
+if ! docker compose version >/dev/null 2>&1; then
+    fatal "docker compose (v2) is not available. Install Docker Desktop or the compose plugin."
+fi
+
+# Check curl is available.
+if ! command -v curl >/dev/null 2>&1; then
+    fatal "curl is not installed or not in PATH."
+fi
+
+# Check python3 is available (used for URL encoding and JSON parsing).
+if ! command -v python3 >/dev/null 2>&1; then
+    fatal "python3 is not installed or not in PATH (needed for URL encoding and JSON parsing)."
+fi
+
+# ---------------------------------------------------------------------------
+# Build sonda
+# ---------------------------------------------------------------------------
+
+info "Building sonda (release)..."
+cargo build --release -p sonda --manifest-path "${REPO_ROOT}/Cargo.toml"
+info "Build complete: ${SONDA_BIN}"
+
+# ---------------------------------------------------------------------------
+# Start services
+# ---------------------------------------------------------------------------
+
+info "Starting docker-compose services..."
+docker compose -f "${COMPOSE_FILE}" up -d
+
+# ---------------------------------------------------------------------------
+# Wait for services to be healthy
+# ---------------------------------------------------------------------------
+
+wait_for_health "http://localhost:9090/-/ready"   "Prometheus"        "${HEALTH_WAIT_SECS}"
+wait_for_health "http://localhost:8428/health"    "VictoriaMetrics"   "${HEALTH_WAIT_SECS}"
+wait_for_health "http://localhost:8429/health"    "vmagent"           "${HEALTH_WAIT_SECS}"
+
+# ---------------------------------------------------------------------------
+# Run scenarios
+# ---------------------------------------------------------------------------
+
+info ""
+info "=== Running scenarios ==="
+
+run_scenario \
+    "${SCENARIO_DIR}/vm-prometheus-text.yaml" \
+    "sonda_e2e_vm_prom_text" \
+    "VictoriaMetrics via Prometheus text format"
+
+run_scenario \
+    "${SCENARIO_DIR}/vm-influx-lp.yaml" \
+    "sonda_e2e_vm_influx_lp_value" \
+    "VictoriaMetrics via InfluxDB line protocol"
+
+run_scenario \
+    "${SCENARIO_DIR}/vmagent-prometheus-text.yaml" \
+    "sonda_e2e_vmagent_prom_text" \
+    "vmagent -> VictoriaMetrics via Prometheus text format"
+
+# ---------------------------------------------------------------------------
+# Results
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "=== Results ==="
+echo "  PASS: ${PASS_COUNT}"
+echo "  FAIL: ${FAIL_COUNT}"
+echo ""
+
+if [ "${FAIL_COUNT}" -gt 0 ]; then
+    echo "RESULT: FAIL (${FAIL_COUNT} scenario(s) failed)"
+    exit 1
+else
+    echo "RESULT: PASS (all ${PASS_COUNT} scenario(s) passed)"
+    exit 0
+fi

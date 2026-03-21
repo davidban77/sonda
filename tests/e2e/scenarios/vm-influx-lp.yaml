@@ -1,0 +1,36 @@
+# Scenario: sonda -> VictoriaMetrics via InfluxDB line protocol
+#
+# VictoriaMetrics accepts InfluxDB line protocol via POST to /write with
+# Content-Type: text/plain. The metric name from the line protocol becomes
+# the VictoriaMetrics metric name (with the field key appended as a suffix).
+#
+# Run this scenario after starting the e2e stack:
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   sonda metrics --scenario tests/e2e/scenarios/vm-influx-lp.yaml
+#
+# Verify data arrived (VM appends _<field_key> to measurement name):
+#   curl "http://localhost:8428/api/v1/query?query=sonda_e2e_vm_influx_lp_value"
+name: sonda_e2e_vm_influx_lp
+rate: 50
+duration: 5s
+
+generator:
+  type: sawtooth
+  min: 0.0
+  max: 100.0
+  period_secs: 10
+
+labels:
+  scenario: vm-influx-lp
+  encoder: influx_lp
+  sink: http_push
+
+encoder:
+  type: influx_lp
+  field_key: value
+
+sink:
+  type: http_push
+  url: "http://localhost:8428/write"
+  content_type: "text/plain"
+  batch_size: 65536
