@@ -2,18 +2,29 @@
 //!
 //! All generators implement the `ValueGenerator` trait and are constructed
 //! via `create_generator()` which returns `Box<dyn ValueGenerator>`.
+//!
+//! Log generators implement the `LogGenerator` trait and produce `LogEvent`
+//! values. They are constructed via `create_log_generator()`.
 
 pub mod constant;
+pub mod log_replay;
+pub mod log_template;
 pub mod sawtooth;
 pub mod sine;
 pub mod uniform;
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use self::constant::Constant;
+use self::log_replay::LogReplayGenerator;
+use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
 use self::sine::Sine;
 use self::uniform::UniformRandom;
+use crate::model::log::{LogEvent, Severity};
+use crate::SondaError;
 
 /// A generator produces a single f64 value for a given tick index.
 ///
@@ -99,6 +110,162 @@ pub fn create_generator(config: &GeneratorConfig, rate: f64) -> Box<dyn ValueGen
             max,
             period_secs,
         } => Box::new(Sawtooth::new(*min, *max, *period_secs, rate)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Log generators
+// ---------------------------------------------------------------------------
+
+/// A log generator produces a `LogEvent` for a given tick index.
+///
+/// Implementations must be deterministic for a given configuration and tick.
+/// Side effects are not allowed in `generate()`.
+pub trait LogGenerator: Send + Sync {
+    /// Produce a `LogEvent` for the given tick index (0-based, monotonically increasing).
+    fn generate(&self, tick: u64) -> LogEvent;
+}
+
+/// Configuration for one message template used by [`LogGeneratorConfig::Template`].
+///
+/// The `message` field may contain `{placeholder}` tokens that are resolved
+/// using the corresponding value pool from `field_pools`.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// message: "Request from {ip} to {endpoint}"
+/// field_pools:
+///   ip:
+///     - "10.0.0.1"
+///     - "10.0.0.2"
+///   endpoint:
+///     - "/api"
+///     - "/health"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct TemplateConfig {
+    /// The message template. Use `{field_name}` for dynamic placeholders.
+    pub message: String,
+    /// Maps placeholder names to their value pools.
+    #[serde(default)]
+    pub field_pools: HashMap<String, Vec<String>>,
+}
+
+/// Configuration for a log generator, used for YAML deserialization.
+///
+/// The `type` field selects which generator to instantiate.
+///
+/// # Example YAML — template generator
+///
+/// ```yaml
+/// generator:
+///   type: template
+///   templates:
+///     - message: "Request from {ip} to {endpoint}"
+///       field_pools:
+///         ip: ["10.0.0.1", "10.0.0.2"]
+///         endpoint: ["/api", "/health"]
+///   severity_weights:
+///     info: 0.7
+///     warn: 0.2
+///     error: 0.1
+///   seed: 42
+/// ```
+///
+/// # Example YAML — replay generator
+///
+/// ```yaml
+/// generator:
+///   type: replay
+///   file: /var/log/app.log
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
+pub enum LogGeneratorConfig {
+    /// Generates events from message templates with randomized field pool values.
+    #[serde(rename = "template")]
+    Template {
+        /// One or more template entries. Templates are selected round-robin by tick.
+        templates: Vec<TemplateConfig>,
+        /// Optional severity weight map. Keys are severity names (`info`, `warn`, etc.),
+        /// values are relative weights. Defaults to `info: 1.0` when absent.
+        #[serde(default)]
+        severity_weights: Option<HashMap<String, f64>>,
+        /// Seed for deterministic replay. Defaults to `0` when absent.
+        seed: Option<u64>,
+    },
+    /// Replays lines from a file, cycling back to the start when exhausted.
+    #[serde(rename = "replay")]
+    Replay {
+        /// Path to the file containing log lines to replay.
+        file: String,
+    },
+}
+
+/// Parse a severity name string into a [`Severity`] variant.
+fn parse_severity(s: &str) -> Result<Severity, SondaError> {
+    match s.to_lowercase().as_str() {
+        "trace" => Ok(Severity::Trace),
+        "debug" => Ok(Severity::Debug),
+        "info" => Ok(Severity::Info),
+        "warn" | "warning" => Ok(Severity::Warn),
+        "error" => Ok(Severity::Error),
+        "fatal" => Ok(Severity::Fatal),
+        other => Err(SondaError::Config(format!(
+            "unknown severity {:?}: must be one of trace, debug, info, warn, error, fatal",
+            other
+        ))),
+    }
+}
+
+/// Construct a `Box<dyn LogGenerator>` from the given configuration.
+///
+/// # Errors
+/// - Returns [`SondaError::Config`] if severity weight keys are invalid.
+/// - Returns [`SondaError::Config`] if the replay file is empty or cannot be parsed.
+/// - Returns [`SondaError::Sink`] (wrapping `std::io::Error`) if the replay file
+///   cannot be opened.
+pub fn create_log_generator(
+    config: &LogGeneratorConfig,
+) -> Result<Box<dyn LogGenerator>, SondaError> {
+    match config {
+        LogGeneratorConfig::Template {
+            templates,
+            severity_weights,
+            seed,
+        } => {
+            let seed = seed.unwrap_or(0);
+
+            // Build severity weight vector from the optional map.
+            let weights: Vec<(Severity, f64)> = if let Some(map) = severity_weights {
+                let mut pairs = Vec::with_capacity(map.len());
+                for (name, weight) in map {
+                    let severity = parse_severity(name)?;
+                    pairs.push((severity, *weight));
+                }
+                // Sort by severity ordinal for deterministic ordering.
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                pairs
+            } else {
+                vec![]
+            };
+
+            // Convert TemplateConfig into TemplateEntry.
+            let entries: Vec<TemplateEntry> = templates
+                .iter()
+                .map(|tc| TemplateEntry {
+                    message: tc.message.clone(),
+                    field_pools: tc.field_pools.clone(),
+                })
+                .collect();
+
+            Ok(Box::new(LogTemplateGenerator::new(entries, weights, seed)))
+        }
+        LogGeneratorConfig::Replay { file } => {
+            let path = std::path::Path::new(file);
+            Ok(Box::new(LogReplayGenerator::from_file(path)?))
+        }
     }
 }
 
