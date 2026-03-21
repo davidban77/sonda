@@ -435,6 +435,71 @@ cargo run -p sonda -- metrics --name up --rate 10 --duration 5s
 
 ---
 
+## End-to-End Integration Tests
+
+The `tests/e2e/` directory contains a docker-compose based test suite that validates sonda's HTTP
+push sink against real observability backends.
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`)
+- `curl` and `python3` in PATH
+- Rust toolchain (for `cargo build`)
+
+### Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| `prometheus` | 9090 | Prometheus with remote write receiver enabled |
+| `victoriametrics` | 8428 | VictoriaMetrics single-node (push target and query endpoint) |
+| `vmagent` | 8429 | vmagent that relays incoming pushes to VictoriaMetrics |
+
+### Test scenarios
+
+| Scenario file | Encoder | Sink target | Metric name verified |
+|---------------|---------|-------------|----------------------|
+| `vm-prometheus-text.yaml` | `prometheus_text` | VictoriaMetrics `/api/v1/import/prometheus` | `sonda_e2e_vm_prom_text` |
+| `vm-influx-lp.yaml` | `influx_lp` | VictoriaMetrics `/write` | `sonda_e2e_vm_influx_lp_value` |
+| `vmagent-prometheus-text.yaml` | `prometheus_text` | vmagent `/api/v1/import/prometheus` | `sonda_e2e_vmagent_prom_text` |
+
+### Running the tests
+
+```bash
+./tests/e2e/run.sh
+```
+
+The script starts the docker-compose stack, waits for all services to become healthy, builds sonda,
+runs each scenario, queries VictoriaMetrics to verify data arrived, and tears everything down. It
+exits `0` if all scenarios pass, `1` if any fail.
+
+### Running scenarios manually
+
+Start the stack:
+
+```bash
+docker compose -f tests/e2e/docker-compose.yml up -d
+```
+
+Run an individual scenario:
+
+```bash
+sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
+```
+
+Query VictoriaMetrics to verify:
+
+```bash
+curl "http://localhost:8428/api/v1/query?query=sonda_e2e_vm_prom_text"
+```
+
+Tear down:
+
+```bash
+docker compose -f tests/e2e/docker-compose.yml down -v
+```
+
+---
+
 ## License
 
 See [LICENSE](LICENSE) for details.

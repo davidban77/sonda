@@ -1,0 +1,10 @@
+# Minimal Prometheus configuration for the sonda e2e test environment.
+#
+# The remote write receiver is enabled via the --web.enable-remote-write-receiver
+# CLI flag in docker-compose.yml. No scrape targets are needed because sonda
+# pushes data rather than exposing a scrape endpoint.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs: []
