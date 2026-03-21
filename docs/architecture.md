@@ -165,7 +165,7 @@ Sink implementations follow a natural progression of complexity:
 | **File** | Buffered file writer. Configurable path. Supports rotation (planned). |
 | **Tcp / Udp** | Raw socket delivery. Targets syslog receivers, statsd, and similar line-protocol endpoints. |
 | **HttpPush** | HTTP POST to a configurable endpoint. Supports remote-write protocol for VictoriaMetrics and Prometheus. |
-| **Kafka** | Kafka producer via a Rust client library (planned). Topic and partition configurable per scenario. |
+| **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
 
 ---
 
@@ -264,6 +264,8 @@ Each scenario runs on a dedicated OS thread. A shared sink (or per-scenario sink
 ### Phase 3 — Async (tokio, if needed)
 
 If the HTTP server (`sonda-server`) or a high-throughput HTTP sink requires async I/O, tokio will be introduced in `sonda-server` as a dependency. `sonda-core` will remain async-agnostic — it exposes synchronous interfaces that can be called from async contexts via `spawn_blocking`. This keeps the core library portable and avoids tokio becoming a transitive dependency of every consumer.
+
+> **Exception — Kafka sink:** The `kafka` Cargo feature in `sonda-core` pulls in `tokio` and `rskafka` as optional dependencies. The Kafka sink spins up a private single-threaded `tokio::runtime::Runtime` inside the struct to drive async `rskafka` calls, while keeping the public `Sink` interface fully synchronous. Because these dependencies are gated behind `#[cfg(feature = "kafka")]`, `sonda-core` remains async-agnostic by default. Consumers that do not need Kafka do not pay for tokio. The CLI and sonda-server opt in explicitly by enabling the feature in their `Cargo.toml`.
 
 ---
 

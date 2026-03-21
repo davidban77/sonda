@@ -11,7 +11,7 @@ name = "sonda"
 path = "src/main.rs"
 
 [dependencies]
-sonda-core = { workspace = true }
+sonda-core = { workspace = true, features = ["kafka"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

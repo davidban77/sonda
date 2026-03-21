@@ -1,0 +1,38 @@
+# Scenario: sonda -> Kafka via JSON Lines format
+#
+# Sends JSON Lines encoded metrics to a Kafka topic using the kafka sink.
+# Each metric event is serialised as a single JSON object on its own line,
+# which is the natural unit of a Kafka message.
+#
+# Run this scenario after starting the e2e stack:
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   sonda metrics --scenario tests/e2e/scenarios/kafka-json-lines.yaml
+#
+# Verify data arrived:
+#   docker exec sonda-e2e-kafka kafka-console-consumer.sh \
+#     --bootstrap-server 127.0.0.1:9092 \
+#     --topic sonda-e2e-json \
+#     --from-beginning \
+#     --timeout-ms 5000
+name: sonda_e2e_kafka_json_lines
+rate: 50
+duration: 5s
+
+generator:
+  type: sine
+  amplitude: 10.0
+  period_secs: 10
+  offset: 50.0
+
+labels:
+  scenario: kafka-json-lines
+  encoder: json_lines
+  sink: kafka
+
+encoder:
+  type: json_lines
+
+sink:
+  type: kafka
+  brokers: "localhost:9094"
+  topic: sonda-e2e-json
