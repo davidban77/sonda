@@ -32,8 +32,9 @@ src/
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory
 │   ├── stdout.rs       ← BufWriter<Stdout>
-│   ├── file.rs         ← BufWriter<File> (post-MVP)
-│   └── tcp.rs          ← TCP/UDP socket (post-MVP)
+│   ├── file.rs         ← BufWriter<File>
+│   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
+│   └── udp.rs          ← UDP socket (UdpSocket)
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization
     └── validate.rs     ← config validation logic

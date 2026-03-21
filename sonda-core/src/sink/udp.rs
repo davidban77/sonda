@@ -1,6 +1,6 @@
 //! UDP sink — delivers encoded telemetry as individual datagrams.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 
 use crate::sink::Sink;
 use crate::SondaError;
@@ -22,19 +22,32 @@ pub struct UdpSink {
 }
 
 impl UdpSink {
-    /// Bind an ephemeral local port and target `addr` for outgoing datagrams.
+    /// Bind an ephemeral local port and resolve `addr` for outgoing datagrams.
+    ///
+    /// `addr` may be a `"host:port"` string where the host is either a numeric
+    /// IP address or a DNS hostname. DNS resolution is performed at construction
+    /// time using [`ToSocketAddrs`]; the first resolved address is used.
     ///
     /// # Errors
     ///
-    /// Returns [`SondaError::Sink`] if `addr` cannot be parsed or if the
-    /// local socket cannot be bound.
+    /// Returns [`SondaError::Sink`] if `addr` cannot be resolved, yields no
+    /// addresses, or if the local socket cannot be bound.
     pub fn new(addr: &str) -> Result<Self, SondaError> {
-        let target: SocketAddr = addr.parse().map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("UDP address parse error for {addr}: {e}"),
-            )
-        })?;
+        let target: SocketAddr = addr
+            .to_socket_addrs()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("UDP address resolution error for {addr}: {e}"),
+                )
+            })?
+            .next()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("UDP address {addr} resolved to no addresses"),
+                )
+            })?;
         // Bind on the wildcard address, matching the IP version of the target.
         let bind_addr = if target.is_ipv6() {
             ":::0"
