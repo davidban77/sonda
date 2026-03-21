@@ -40,14 +40,21 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    - Adding a sink → read `.claude/skills/add-sink/SKILL.md`
    If a skill matches, follow its steps and quality checklist alongside the slice spec.
 
-6. **Verify input state**: Check prerequisites exist and prior slices compile:
+6. **Sync with main**: If working in a worktree, merge the latest main branch to avoid
+   conflicts when merging back:
+   ```bash
+   git merge main
+   ```
+   Resolve any conflicts before proceeding. This ensures you have all prior slice changes.
+
+7. **Verify input state**: Check prerequisites exist and prior slices compile:
    ```bash
    cargo build --workspace
    cargo test --workspace
    ```
    If these fail, STOP and report — a prior slice is broken.
 
-7. **Implement the code**:
+8. **Implement the code**:
    - Create only the files specified in the slice.
    - Follow exact type signatures, trait implementations, and module structure from the spec.
    - Follow all coding conventions from the root `CLAUDE.md`.
@@ -55,14 +62,14 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    - Do NOT write test code (`#[cfg(test)]` blocks).
    - Do NOT modify files outside the slice scope unless the spec explicitly says to.
 
-8. **Verify your work**:
+9. **Verify your work**:
    ```bash
    cargo build --workspace
    cargo clippy --workspace -- -D warnings
    cargo fmt --all -- --check
    ```
 
-9. **Commit**:
+10. **Commit**:
    - Stage only the files you created or modified (avoid `git add -A` or `git add .`).
    - Commit message: `feat(slice-$ARGUMENTS): <short description>`
    - Keep the first line under 72 characters.
