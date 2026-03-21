@@ -1,0 +1,131 @@
+version: "3"
+
+vars:
+  COMPOSE_FILE: tests/e2e/docker-compose.yml
+  SCENARIO_DIR: tests/e2e/scenarios
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Build
+  # ---------------------------------------------------------------------------
+  build:
+    desc: Build the workspace (debug)
+    cmds:
+      - cargo build --workspace
+
+  build:release:
+    desc: Build sonda in release mode
+    cmds:
+      - cargo build --release -p sonda
+
+  # ---------------------------------------------------------------------------
+  # Test & Lint
+  # ---------------------------------------------------------------------------
+  test:
+    desc: Run all unit and integration tests
+    cmds:
+      - cargo test --workspace
+
+  lint:
+    desc: Run clippy and format check
+    cmds:
+      - cargo clippy --workspace -- -D warnings
+      - cargo fmt --all -- --check
+
+  check:
+    desc: Run full quality gate (build + test + lint)
+    cmds:
+      - task: build
+      - task: test
+      - task: lint
+
+  # ---------------------------------------------------------------------------
+  # E2E Stack
+  # ---------------------------------------------------------------------------
+  stack:up:
+    desc: Start the observability stack (VM, Prometheus, vmagent, Grafana)
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+      - echo ""
+      - echo "Services:"
+      - 'echo "  Grafana          http://localhost:3000  (admin/admin)"'
+      - 'echo "  VictoriaMetrics  http://localhost:8428"'
+      - 'echo "  Prometheus       http://localhost:9090"'
+      - 'echo "  vmagent          http://localhost:8429"'
+
+  stack:down:
+    desc: Stop and remove the observability stack
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down -v
+
+  stack:logs:
+    desc: Tail logs from all stack services
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} logs -f
+
+  stack:status:
+    desc: Show status of stack services
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} ps
+
+  # ---------------------------------------------------------------------------
+  # Run sonda against the stack
+  # ---------------------------------------------------------------------------
+  run:vm-prom:
+    desc: Send Prometheus text metrics to VictoriaMetrics
+    deps: [build:release]
+    cmds:
+      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/vm-prometheus-text.yaml {{.CLI_ARGS}}
+
+  run:vm-influx:
+    desc: Send InfluxDB LP metrics to VictoriaMetrics
+    deps: [build:release]
+    cmds:
+      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/vm-influx-lp.yaml {{.CLI_ARGS}}
+
+  run:constant:
+    desc: Run a quick constant metric to stdout
+    deps: [build:release]
+    cmds:
+      - ./target/release/sonda metrics --name up --rate 10 --duration 5s {{.CLI_ARGS}}
+
+  run:sine:
+    desc: Run a sine wave metric to stdout
+    deps: [build:release]
+    cmds:
+      - |
+        ./target/release/sonda metrics \
+          --name cpu_usage \
+          --rate 10 \
+          --duration 10s \
+          --value-mode sine \
+          --amplitude 50 \
+          --period-secs 10 \
+          --offset 50 \
+          --label host=dev-machine \
+          {{.CLI_ARGS}}
+
+  # ---------------------------------------------------------------------------
+  # E2E Tests
+  # ---------------------------------------------------------------------------
+  e2e:
+    desc: Run full e2e integration tests (starts/stops stack automatically)
+    cmds:
+      - bash tests/e2e/run.sh
+
+  # ---------------------------------------------------------------------------
+  # Convenience
+  # ---------------------------------------------------------------------------
+  demo:
+    desc: Start stack, send metrics for 30s, then open Grafana
+    cmds:
+      - task: build:release
+      - task: stack:up
+      - echo ""
+      - echo "Sending sine wave metrics to VictoriaMetrics for 30s..."
+      - 'echo "Open Grafana at http://localhost:3000 and explore!"'
+      - echo ""
+      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/demo.yaml
+      - echo ""
+      - 'echo "Done! Explore metrics in Grafana at http://localhost:3000"'
+      - 'echo "Query: demo_sine_wave"'

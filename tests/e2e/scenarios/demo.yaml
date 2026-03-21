@@ -1,0 +1,18 @@
+name: demo_sine_wave
+rate: 100
+duration: 30s
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 10
+  offset: 50.0
+labels:
+  host: demo
+  env: dev
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+  batch_size: 4096

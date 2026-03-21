@@ -53,5 +53,20 @@ services:
       retries: 10
       start_period: 15s
 
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sonda-e2e-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+
 volumes:
   vm-storage:
