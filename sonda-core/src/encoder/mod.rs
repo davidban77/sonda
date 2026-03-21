@@ -9,6 +9,7 @@ pub mod prometheus;
 
 use serde::Deserialize;
 
+use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 
 /// Encodes telemetry events into a specific wire format.
@@ -22,6 +23,16 @@ pub trait Encoder: Send + Sync {
         event: &MetricEvent,
         buf: &mut Vec<u8>,
     ) -> Result<(), crate::SondaError>;
+
+    /// Encode a log event into the provided buffer.
+    ///
+    /// Returns an error by default. Encoders that support log encoding must
+    /// override this method.
+    fn encode_log(&self, _event: &LogEvent, _buf: &mut Vec<u8>) -> Result<(), crate::SondaError> {
+        Err(crate::SondaError::Encoder(
+            "log encoding not supported by this encoder".into(),
+        ))
+    }
 }
 
 /// Configuration selecting which encoder to use for a scenario.
