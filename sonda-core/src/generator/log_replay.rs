@@ -23,20 +23,20 @@ pub struct LogReplayGenerator {
 impl LogReplayGenerator {
     /// Load a `LogReplayGenerator` from a file at the given path.
     ///
-    /// The file is read line-by-line; empty lines are preserved. Blank files
-    /// (containing only whitespace or no content) return a
-    /// [`SondaError::Config`] error.
+    /// The file is read line-by-line. Blank lines (empty or whitespace-only)
+    /// are filtered out. Returns a [`SondaError::Config`] error if the file
+    /// contains no non-blank lines.
     ///
     /// # Errors
     /// - Returns [`SondaError::Sink`] (wrapping `std::io::Error`) if the file
     ///   cannot be read.
-    /// - Returns [`SondaError::Config`] if the file contains no non-empty lines.
+    /// - Returns [`SondaError::Config`] if the file contains no non-blank lines.
     pub fn from_file(path: &Path) -> Result<Self, SondaError> {
         let content = std::fs::read_to_string(path).map_err(SondaError::Sink)?;
         let lines: Vec<String> = content
             .lines()
             .map(|l| l.to_string())
-            .filter(|l| !l.is_empty())
+            .filter(|l| !l.trim().is_empty())
             .collect();
 
         if lines.is_empty() {

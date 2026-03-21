@@ -20,7 +20,9 @@ src/
 │   ├── sawtooth.rs
 │   ├── counter.rs
 │   ├── gauge.rs        ← random-walk gauge style
-│   └── microburst.rs
+│   ├── microburst.rs
+│   ├── log_template.rs ← template-based log line generator
+│   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
 │   └── runner.rs       ← the main event loop
