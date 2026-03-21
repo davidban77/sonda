@@ -128,7 +128,7 @@ pub struct MetricsArgs {
 
     /// Output encoder format.
     ///
-    /// Accepted values: `prometheus_text`. Default: `prometheus_text`.
+    /// Accepted values: `prometheus_text`, `influx_lp`. Default: `prometheus_text`.
     /// When omitted, the YAML scenario file's `encoder` field is used; when
     /// neither is set, `prometheus_text` is the default.
     #[arg(long)]

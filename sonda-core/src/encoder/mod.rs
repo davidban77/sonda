@@ -3,6 +3,7 @@
 //! All encoders implement the `Encoder` trait. They write into a caller-provided
 //! `Vec<u8>` to avoid per-event allocations.
 
+pub mod influx;
 pub mod prometheus;
 
 use serde::Deserialize;
@@ -30,11 +31,22 @@ pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).
     #[serde(rename = "prometheus_text")]
     PrometheusText,
+    /// InfluxDB line protocol.
+    ///
+    /// `field_key` sets the field key used for the metric value. Defaults to `"value"`.
+    #[serde(rename = "influx_lp")]
+    InfluxLineProtocol {
+        /// The InfluxDB field key for the metric value. Defaults to `"value"` if absent.
+        field_key: Option<String>,
+    },
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
 pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
     match config {
         EncoderConfig::PrometheusText => Box::new(prometheus::PrometheusText::new()),
+        EncoderConfig::InfluxLineProtocol { field_key } => {
+            Box::new(influx::InfluxLineProtocol::new(field_key.clone()))
+        }
     }
 }
