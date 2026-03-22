@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Core engine for Sonda synthetic telemetry generation"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools::testing"]
+description = "Core engine for Sonda — synthetic telemetry generation library"
+readme = "../README.md"
 
 [features]
 kafka = ["dep:rskafka", "dep:tokio", "dep:chrono"]

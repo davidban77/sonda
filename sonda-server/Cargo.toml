@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "HTTP control plane for Sonda synthetic telemetry generator"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["web-programming::http-server", "development-tools::testing"]
+description = "HTTP control plane for Sonda — synthetic telemetry generator"
+readme = "../README.md"
 
 [[bin]]
 name = "sonda-server"

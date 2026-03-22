@@ -1,0 +1,61 @@
+name: Publish to crates.io
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (skip actual publish)"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    name: Publish crates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Dry-run publish sonda-core
+        run: cargo publish --dry-run -p sonda-core
+
+      - name: Dry-run publish sonda
+        run: cargo publish --dry-run -p sonda
+
+      - name: Dry-run publish sonda-server
+        run: cargo publish --dry-run -p sonda-server
+
+      - name: Publish sonda-core
+        if: ${{ inputs.dry_run == false }}
+        run: cargo publish -p sonda-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index to update
+        if: ${{ inputs.dry_run == false }}
+        run: sleep 30
+
+      - name: Publish sonda
+        if: ${{ inputs.dry_run == false }}
+        run: cargo publish -p sonda
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish sonda-server
+        if: ${{ inputs.dry_run == false }}
+        run: cargo publish -p sonda-server
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
