@@ -1,0 +1,5 @@
+# Default owner for all files
+* @davidban77
+
+# Core library requires owner review
+sonda-core/ @davidban77
