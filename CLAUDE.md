@@ -23,7 +23,8 @@ sonda/                       ← workspace root (you are here)
 │   ├── phase-0-mvp.md
 │   ├── phase-1-encoders-sinks.md
 │   ├── phase-2-logs-concurrency.md
-│   └── phase-3-server.md
+│   ├── phase-3-server.md
+│   └── phase-4-distribution.md
 └── .claude/
     ├── agents/              ← subagent definitions (see Agent Workflow below)
     │   ├── implementer.md   ← writes production code in isolated worktree
@@ -189,13 +190,14 @@ cargo fmt --all -- --check
 
 ## Phase Overview
 
-Development is split into four phases. Each has a dedicated plan doc in `docs/`:
+Development is split into five phases. Each has a dedicated plan doc in `docs/`:
 
 - **Phase 0 — MVP**: workspace skeleton, sonda-core engine, Prometheus encoder, stdout sink, scheduler
   with gaps, value generators, CLI, tests, static binary.
 - **Phase 1 — Encoders & Sinks**: Influx LP, JSON Lines, remote-write, file sink, TCP/UDP sink, Kafka sink.
 - **Phase 2 — Logs, Bursts & Concurrency**: log events, burst windows, Loki sink, multi-scenario threading.
 - **Phase 3 — sonda-server**: axum REST API, scenario lifecycle, stats endpoints.
+- **Phase 4 — Distribution**: release binaries, install script, crate publishing on crates.io.
 
 ## Reference Documents
 
@@ -204,3 +206,4 @@ Development is split into four phases. Each has a dedicated plan doc in `docs/`:
 - `docs/phase-1-encoders-sinks.md` — Phase 1 plan
 - `docs/phase-2-logs-concurrency.md` — Phase 2 plan
 - `docs/phase-3-server.md` — Phase 3 plan
+- `docs/phase-4-distribution.md` — Phase 4 plan
