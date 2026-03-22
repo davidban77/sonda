@@ -1,0 +1,53 @@
+# VictoriaMetrics metrics scenario
+#
+# Pushes Prometheus text exposition format metrics directly to VictoriaMetrics
+# using the HTTP import API. This bypasses vmagent and writes data straight
+# into the TSDB.
+#
+# Prerequisites:
+#   Start the VictoriaMetrics compose stack:
+#     docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage with the CLI (from the host, targeting the exposed VM port):
+#   sonda metrics --scenario examples/victoriametrics-metrics.yaml
+#
+# Usage with sonda-server (POST to the running container):
+#   curl -X POST -H "Content-Type: text/yaml" \
+#     --data-binary @examples/victoriametrics-metrics.yaml \
+#     http://localhost:8080/scenarios
+#
+# Verify data arrived:
+#   curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
+#
+# Query the latest value:
+#   curl "http://localhost:8428/api/v1/query?query=sonda_http_request_duration_ms"
+#
+# Explore in Grafana:
+#   Open http://localhost:3000, go to Explore, select VictoriaMetrics,
+#   and query: sonda_http_request_duration_ms
+
+name: sonda_http_request_duration_ms
+rate: 10
+duration: 120s
+
+generator:
+  type: sine
+  amplitude: 40.0
+  period_secs: 30
+  offset: 60.0
+
+labels:
+  instance: api-server-01
+  job: sonda
+  method: GET
+  service: api-gateway
+  region: us-east-1
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: http_push
+  url: "http://victoriametrics:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+  batch_size: 65536
