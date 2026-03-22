@@ -430,6 +430,7 @@ sink:
     // SinkConfig::Kafka deserialization and factory wiring
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn sink_config_kafka_deserializes_with_type_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
@@ -440,6 +441,7 @@ sink:
         );
     }
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn sink_config_kafka_requires_brokers_field() {
         let yaml = "type: kafka\ntopic: sonda-test";
@@ -450,6 +452,7 @@ sink:
         );
     }
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn sink_config_kafka_requires_topic_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
@@ -460,6 +463,7 @@ sink:
         );
     }
 
+    #[cfg(feature = "kafka")]
     #[test]
     fn sink_config_kafka_is_cloneable_and_debuggable() {
         let config = SinkConfig::Kafka {
@@ -482,6 +486,7 @@ sink:
     /// Ignored by default because rskafka may wait for a long TCP timeout
     /// before returning an error. Run with `cargo test -- --ignored` when the
     /// test environment can tolerate network delays.
+    #[cfg(feature = "kafka")]
     #[test]
     #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
     fn create_sink_kafka_with_unreachable_broker_returns_err() {
@@ -498,6 +503,7 @@ sink:
     }
 
     /// create_sink with an empty broker string returns Err immediately.
+    #[cfg(feature = "kafka")]
     #[test]
     fn create_sink_kafka_with_empty_broker_returns_err() {
         let config = SinkConfig::Kafka {

@@ -195,8 +195,8 @@ pub struct LogsArgs {
     /// Path to a log file for use with `--mode replay`.
     ///
     /// Lines from this file are replayed in order, cycling back to the start
-    /// when exhausted.
-    #[arg(long)]
+    /// when exhausted. `--replay-file` is accepted as an alias for this flag.
+    #[arg(long, alias = "replay-file")]
     pub file: Option<String>,
 
     /// Target event rate in events per second.
@@ -260,6 +260,29 @@ pub struct LogsArgs {
     /// any sink configured in the scenario file.
     #[arg(long)]
     pub output: Option<PathBuf>,
+
+    /// A single static message template for use with `--mode template`.
+    ///
+    /// Overrides any templates defined in the scenario file. The message string
+    /// may contain `{placeholder}` tokens, but no field pools are configured
+    /// from the CLI, so placeholders remain as-is unless a scenario file
+    /// supplies them.
+    #[arg(long)]
+    pub message: Option<String>,
+
+    /// Comma-separated severity weight pairs for `--mode template`.
+    ///
+    /// Format: `info=0.7,warn=0.2,error=0.1`. Weights are relative — they do
+    /// not need to sum to 1.0. Valid severity names: `trace`, `debug`, `info`,
+    /// `warn`, `error`, `fatal`.
+    #[arg(long = "severity-weights")]
+    pub severity_weights: Option<String>,
+
+    /// RNG seed for deterministic template resolution.
+    ///
+    /// Used with `--mode template`. When absent a seed of `0` is used.
+    #[arg(long)]
+    pub seed: Option<u64>,
 }
 
 /// Arguments for the `run` subcommand (multi-scenario).

@@ -318,9 +318,37 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
         config.duration = args.duration.clone();
     }
 
-    // Generator: rebuild if mode or file flag was provided.
+    // Generator: rebuild if any generator-related flag was provided.
+    //
+    // When --mode is absent but --message / --severity-weights / --seed are
+    // present, apply those overrides on top of the existing generator config
+    // rather than replacing it wholesale. This lets users tweak a YAML-loaded
+    // template generator without re-specifying the mode.
     if let Some(ref mode) = args.mode {
         config.generator = build_log_generator_config(mode, args)?;
+    } else if args.message.is_some() || args.severity_weights.is_some() || args.seed.is_some() {
+        // Patch the existing template generator config in place if it is a
+        // Template variant; ignore for Replay (flags have no meaning there).
+        if let LogGeneratorConfig::Template {
+            ref mut templates,
+            ref mut severity_weights,
+            ref mut seed,
+        } = config.generator
+        {
+            if let Some(ref msg) = args.message {
+                // Replace all templates with the single CLI-supplied message.
+                *templates = vec![TemplateConfig {
+                    message: msg.clone(),
+                    field_pools: HashMap::new(),
+                }];
+            }
+            if let Some(ref sw) = args.severity_weights {
+                *severity_weights = Some(parse_severity_weights(sw)?);
+            }
+            if let Some(s) = args.seed {
+                *seed = Some(s);
+            }
+        }
     }
 
     // Gap: override if either gap flag is present.
@@ -341,19 +369,58 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
     Ok(())
 }
 
+/// Parse a `--severity-weights` string (e.g. `"info=0.7,warn=0.2,error=0.1"`) into a
+/// `HashMap<String, f64>`.
+///
+/// Each entry must be in `name=weight` format where `weight` is a non-negative float.
+fn parse_severity_weights(s: &str) -> Result<HashMap<String, f64>> {
+    let mut map = HashMap::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let eq = pair.find('=').ok_or_else(|| {
+            anyhow::anyhow!(
+                "severity weight {:?} must be in name=weight format (no '=' found)",
+                pair
+            )
+        })?;
+        let name = pair[..eq].trim().to_string();
+        let weight_str = pair[eq + 1..].trim();
+        let weight: f64 = weight_str.parse().with_context(|| {
+            format!(
+                "severity weight for {:?}: {:?} is not a valid float",
+                name, weight_str
+            )
+        })?;
+        map.insert(name, weight);
+    }
+    Ok(map)
+}
+
 /// Build a [`LogGeneratorConfig`] from CLI flags.
 fn build_log_generator_config(mode: &str, args: &LogsArgs) -> Result<LogGeneratorConfig> {
     match mode {
         "template" => {
-            // Build a minimal single-template config with no placeholders.
-            // Proper template config with field pools requires a scenario YAML file.
+            let message = args
+                .message
+                .clone()
+                .unwrap_or_else(|| "synthetic log event".to_string());
+
+            let severity_weights = args
+                .severity_weights
+                .as_deref()
+                .map(parse_severity_weights)
+                .transpose()?;
+
             Ok(LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
-                    message: "synthetic log event".to_string(),
+                    message,
                     field_pools: HashMap::new(),
                 }],
-                severity_weights: None,
-                seed: None,
+                severity_weights,
+                seed: args.seed,
             })
         }
         "replay" => {
@@ -1084,6 +1151,9 @@ mod tests {
             burst_for: None,
             burst_multiplier: None,
             output: None,
+            message: None,
+            severity_weights: None,
+            seed: None,
         }
     }
 

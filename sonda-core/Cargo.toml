@@ -14,7 +14,6 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-rand = { version = "0.8", features = ["small_rng"] }
 ureq = { workspace = true }
 rskafka = { version = "0.6.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "macros"], optional = true }

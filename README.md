@@ -192,7 +192,12 @@ Options:
 
       --encoder <ENCODER>
           Output encoder format.
-          Accepted values: prometheus_text. Default: prometheus_text.
+          Accepted values: prometheus_text, influx_lp, json_lines.
+          Default: prometheus_text.
+
+      --output <OUTPUT>
+          Write output to a file at this path instead of stdout.
+          Shorthand for sink: file in a YAML scenario.
 
   -h, --help
           Print help
@@ -822,7 +827,8 @@ real observability backends and message brokers.
 | `vmagent` | 8429 | vmagent that relays incoming pushes to VictoriaMetrics |
 | `kafka` | 9094 | Kafka broker (KRaft mode, no Zookeeper) |
 | `kafka-ui` | 8080 | Kafka UI for browsing topics and messages |
-| `grafana` | 3000 | Grafana with VictoriaMetrics and Prometheus datasources pre-configured |
+| `grafana` | 3000 | Grafana with VictoriaMetrics, Prometheus, and Loki datasources pre-configured |
+| `loki` | 3100 | Loki log aggregation system (push target for `sonda logs`) |
 
 ### Test scenarios
 
