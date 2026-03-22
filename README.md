@@ -1307,6 +1307,16 @@ task stack:down
 
 ---
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding
+conventions, and the pull request process.
+
+For details on how releases, versioning, and dependency management work, see
+[docs/release-workflow.md](docs/release-workflow.md).
+
+---
+
 ## License
 
 Licensed under either of
