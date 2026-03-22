@@ -8,6 +8,14 @@ updates:
       prefix: "deps"
     open-pull-requests-limit: 5
     target-branch: "main"
+    ignore:
+      # Major version bumps require code changes — handle manually
+      - dependency-name: "axum"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tower-http"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "reqwest"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
