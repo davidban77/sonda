@@ -768,9 +768,9 @@ sink:
 
     // ---- GET /scenarios/nonexistent: 404 -------------------------------------
 
-    /// GET /scenarios/:id with a nonexistent ID returns 404.
+    /// GET /scenarios/:id with a nonexistent ID returns 404 with a JSON error body.
     #[tokio::test]
-    async fn get_scenario_nonexistent_returns_404() {
+    async fn get_scenario_nonexistent_returns_404_with_json_body() {
         let app = router_with_handles(vec![]);
 
         let req = Request::builder()
@@ -783,6 +783,43 @@ sink:
             resp.status(),
             StatusCode::NOT_FOUND,
             "nonexistent scenario ID must return 404"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str().unwrap(),
+            "not_found",
+            "404 response must have error field set to 'not_found'"
+        );
+        assert_eq!(
+            body["detail"].as_str().unwrap(),
+            "scenario not found: nonexistent-id",
+            "404 response detail must include the requested scenario ID"
+        );
+    }
+
+    /// GET /scenarios/:id 404 response has Content-Type application/json.
+    #[tokio::test]
+    async fn get_scenario_nonexistent_returns_json_content_type() {
+        let app = router_with_handles(vec![]);
+
+        let req = Request::builder()
+            .uri("/scenarios/some-missing-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("404 response must have Content-Type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "404 Content-Type must be application/json, got: {ct}"
         );
     }
 
