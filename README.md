@@ -746,6 +746,24 @@ Requires the e2e stack with Kafka running (`task stack:up`):
 sonda logs --scenario examples/kafka-json-logs.yaml
 ```
 
+### `examples/docker-metrics.yaml`
+
+CPU usage sine wave (30-70%) at 10 events/sec for 120 seconds with a recurring 5-second gap.
+Designed for the Docker Compose stack:
+
+```bash
+sonda metrics --scenario examples/docker-metrics.yaml
+```
+
+### `examples/docker-alerts.yaml`
+
+Sine wave (0-100) that crosses alert thresholds with burst windows. Useful for testing
+Prometheus/Alertmanager alert rules:
+
+```bash
+sonda metrics --scenario examples/docker-alerts.yaml
+```
+
 ---
 
 ## Output Format
@@ -879,6 +897,103 @@ Error responses:
 | GET    | `/scenarios/:id`       | 3.3   | Inspect a scenario: config, stats, elapsed |
 | DELETE | `/scenarios/:id`       | 3.4   | Stop and remove a running scenario         |
 | GET    | `/scenarios/:id/stats` | 3.5   | Live stats: rate, events, gap/burst state  |
+
+---
+
+## Docker Deployment
+
+Sonda ships as a minimal Docker image built from scratch with statically linked musl binaries.
+Both the `sonda` CLI and `sonda-server` HTTP API are included in the image.
+
+### Building the image
+
+```bash
+docker build -t sonda .
+```
+
+The multi-stage Dockerfile builds static `x86_64-unknown-linux-musl` binaries and copies them
+into a `scratch` base image. The final image contains only the two binaries and is typically
+under 20 MB.
+
+### Running with Docker
+
+```bash
+# Run the server on port 8080
+docker run -p 8080:8080 sonda
+
+# Run the CLI instead
+docker run --entrypoint /sonda sonda metrics --name up --rate 10 --duration 5s
+
+# Mount scenario files from the host
+docker run -p 8080:8080 -v ./examples:/scenarios sonda
+```
+
+### Docker Compose stack
+
+A `docker-compose.yml` is included with a realistic observability stack for demos and testing:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `sonda-server` | 8080 | Sonda HTTP API (built from the Dockerfile) |
+| `prometheus` | 9090 | Prometheus (scrape or receive remote-write) |
+| `alertmanager` | 9093 | Alertmanager for alert routing |
+| `grafana` | 3000 | Grafana dashboards (admin password: `admin`) |
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+Verify the server is running:
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+Post a scenario to the running server:
+
+```bash
+# Start a metrics scenario
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @examples/docker-metrics.yaml \
+  http://localhost:8080/scenarios
+
+# Start an alert-testing scenario
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @examples/docker-alerts.yaml \
+  http://localhost:8080/scenarios
+
+# List running scenarios
+curl http://localhost:8080/scenarios
+
+# View live stats for a scenario
+curl http://localhost:8080/scenarios/<id>/stats
+
+# Stop a scenario
+curl -X DELETE http://localhost:8080/scenarios/<id>
+```
+
+Open Grafana at http://localhost:3000 to explore metrics. Prometheus is available at
+http://localhost:9090 for querying.
+
+Tear down the stack:
+
+```bash
+docker compose down
+```
+
+### Docker scenario examples
+
+Two scenario files are provided specifically for the Docker stack:
+
+- **`examples/docker-metrics.yaml`** -- CPU usage sine wave (30-70%) with recurring gaps.
+  Useful for testing metric pipelines and gap-fill behavior.
+
+- **`examples/docker-alerts.yaml`** -- Sine wave (0-100) that crosses typical warning (70)
+  and critical (90) thresholds. Includes bursts for spike simulation. Useful for testing
+  alert rules in Prometheus or Alertmanager.
 
 ---
 

@@ -1,0 +1,53 @@
+# Docker alerts scenario
+#
+# Produces a sine wave that crosses alert thresholds, useful for testing
+# alerting rules in Prometheus or Alertmanager. The value oscillates between
+# 0 and 100 with a 30-second period, crossing typical warning (70) and
+# critical (90) thresholds twice per cycle.
+#
+# Alert rule example (for Prometheus):
+#   - alert: HighCpuUsage
+#     expr: docker_alert_cpu > 90
+#     for: 5s
+#     labels:
+#       severity: critical
+#
+#   - alert: ElevatedCpuUsage
+#     expr: docker_alert_cpu > 70
+#     for: 5s
+#     labels:
+#       severity: warning
+#
+# Usage with the CLI:
+#   sonda metrics --scenario examples/docker-alerts.yaml
+#
+# Usage with sonda-server (POST to the running container):
+#   curl -X POST -H "Content-Type: text/yaml" \
+#     --data-binary @examples/docker-alerts.yaml \
+#     http://localhost:8080/scenarios
+
+name: docker_alert_cpu
+rate: 10
+duration: 120s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 30
+  offset: 50.0
+
+bursts:
+  every: 30s
+  for: 5s
+  multiplier: 3.0
+
+labels:
+  host: docker-alert-demo
+  region: us-east-1
+  service: payment-service
+  env: staging
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

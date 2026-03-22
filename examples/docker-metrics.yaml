@@ -1,0 +1,37 @@
+# Docker metrics scenario
+#
+# A realistic CPU usage simulation suitable for the Docker Compose stack.
+# Produces a sine wave that oscillates between 30% and 70% with a 60-second
+# period. Includes a recurring gap to test pipeline gap-fill behavior.
+#
+# Usage with the CLI:
+#   sonda metrics --scenario examples/docker-metrics.yaml
+#
+# Usage with sonda-server (POST to the running container):
+#   curl -X POST -H "Content-Type: text/yaml" \
+#     --data-binary @examples/docker-metrics.yaml \
+#     http://localhost:8080/scenarios
+
+name: docker_cpu_usage
+rate: 10
+duration: 120s
+
+generator:
+  type: sine
+  amplitude: 20.0
+  period_secs: 60
+  offset: 50.0
+
+gaps:
+  every: 60s
+  for: 5s
+
+labels:
+  host: docker-demo
+  region: us-east-1
+  service: api-gateway
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
