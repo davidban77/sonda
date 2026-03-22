@@ -25,7 +25,9 @@ sonda/                       ← workspace root (you are here)
 │   ├── phase-2-logs-concurrency.md
 │   ├── phase-3-server.md
 │   ├── phase-4-distribution.md
-│   └── phase-5-governance.md
+│   ├── phase-5-governance.md
+│   ├── phase-6-product-polish.md
+│   └── phase-7-alert-triage.md
 └── .claude/
     ├── agents/              ← subagent definitions (see Agent Workflow below)
     │   ├── implementer.md   ← writes production code in isolated worktree
@@ -191,7 +193,7 @@ cargo fmt --all -- --check
 
 ## Phase Overview
 
-Development is split into six phases. Each has a dedicated plan doc in `docs/`:
+Development is split into eight phases. Each has a dedicated plan doc in `docs/`:
 
 - **Phase 0 — MVP**: workspace skeleton, sonda-core engine, Prometheus encoder, stdout sink, scheduler
   with gaps, value generators, CLI, tests, static binary.
@@ -200,6 +202,8 @@ Development is split into six phases. Each has a dedicated plan doc in `docs/`:
 - **Phase 3 — sonda-server**: axum REST API, scenario lifecycle, stats endpoints.
 - **Phase 4 — Distribution**: release binaries, install script, crate publishing on crates.io.
 - **Phase 5 — Governance**: dependabot, PR templates, CODEOWNERS, conventional commit enforcement, release-please, workflow documentation.
+- **Phase 6 — Product Polish**: fix documentation drift, sequence generator, VictoriaMetrics promotion, scrape endpoint, alert testing guide.
+- **Phase 7 — Alert Triage**: Prometheus remote write (protobuf), CSV replay generator, Grafana dashboards, multi-metric correlation.
 
 ## Reference Documents
 
@@ -210,3 +214,5 @@ Development is split into six phases. Each has a dedicated plan doc in `docs/`:
 - `docs/phase-3-server.md` — Phase 3 plan
 - `docs/phase-4-distribution.md` — Phase 4 plan
 - `docs/phase-5-governance.md` — Phase 5 plan
+- `docs/phase-6-product-polish.md` — Phase 6 plan
+- `docs/phase-7-alert-triage.md` — Phase 7 plan
