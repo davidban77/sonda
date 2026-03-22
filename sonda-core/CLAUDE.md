@@ -43,6 +43,7 @@ src/
 │   ├── http.rs         ← HTTP push sink (ureq)
 │   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
+│   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
     ├── mod.rs          ← ScenarioConfig, deserialization

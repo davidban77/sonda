@@ -242,9 +242,9 @@ The API follows the same conceptual model as the CLI. A running scenario in `son
 |----------|-------------|
 | `POST /scenarios` | Start a new scenario. Body is a YAML or JSON scenario definition. Returns a scenario ID. |
 | `GET /scenarios` | List all running scenarios with status and stats. |
-| `GET /scenarios/:id` | Inspect a specific scenario: config, tick count, bytes emitted, errors. |
-| `DELETE /scenarios/:id` | Stop and remove a running scenario. |
-| `GET /scenarios/:id/stats` | Return live stats: current rate, total events, gap/burst state. |
+| `GET /scenarios/{id}` | Inspect a specific scenario: config, tick count, bytes emitted, errors. |
+| `DELETE /scenarios/{id}` | Stop and remove a running scenario. |
+| `GET /scenarios/{id}/stats` | Return live stats: current rate, total events, gap/burst state. |
 
 > **API principle:** The API does not invent new behavior. Every endpoint maps to an operation that is also doable from the CLI. If a scenario cannot be expressed in YAML, it cannot be run via the API either. This constraint keeps the two surfaces in sync.
 

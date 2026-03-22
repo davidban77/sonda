@@ -4,9 +4,9 @@ description: Synthetic telemetry generator for testing observability pipelines
 type: application
 version: 0.1.3
 appVersion: 0.1.3
-home: https://github.com/davidflores77/sonda
+home: https://github.com/davidban77/sonda
 sources:
-  - https://github.com/davidflores77/sonda
+  - https://github.com/davidban77/sonda
 maintainers:
   - name: David Flores
     email: davidflores77@gmail.com
