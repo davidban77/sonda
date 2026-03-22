@@ -115,6 +115,12 @@ fn unprocessable(detail: impl std::fmt::Display) -> Response {
     (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
 }
 
+/// Build a 404 Not Found response with a JSON error body.
+fn not_found(detail: impl std::fmt::Display) -> Response {
+    let body = json!({ "error": "not_found", "detail": detail.to_string() });
+    (StatusCode::NOT_FOUND, Json(body)).into_response()
+}
+
 /// Build a 500 Internal Server Error response with a JSON error body.
 fn internal_error(detail: impl std::fmt::Display) -> Response {
     let body = json!({ "error": "internal_server_error", "detail": detail.to_string() });
@@ -340,13 +346,15 @@ pub async fn list_scenarios(State(state): State<AppState>) -> impl IntoResponse 
 pub async fn get_scenario(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, Response> {
     let scenarios = state
         .scenarios
         .read()
         .expect("AppState RwLock must not be poisoned");
 
-    let handle = scenarios.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let handle = scenarios
+        .get(&id)
+        .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
     let detail = ScenarioDetail {
         id: id.clone(),
