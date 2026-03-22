@@ -4,12 +4,14 @@
 //! - `POST /scenarios` — start a new scenario from a YAML or JSON body.
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/:id` — inspect a single scenario with full detail and stats.
+//! - `DELETE /scenarios/:id` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
 //! plumbing: deserialize → validate → launch → store → respond.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -71,6 +73,17 @@ pub struct ScenarioDetail {
     pub elapsed_secs: f64,
     /// Live statistics from the runner thread.
     pub stats: StatsResponse,
+}
+
+/// Response body for a successfully deleted (stopped) scenario.
+#[derive(Debug, Serialize)]
+pub struct DeletedScenario {
+    /// Unique scenario ID.
+    pub id: String,
+    /// Final status: `"stopped"` or `"force_stopped"` if the join timed out.
+    pub status: String,
+    /// Total number of events emitted over the scenario's lifetime.
+    pub total_events: u64,
 }
 
 /// Stats sub-object within the scenario detail response.
@@ -365,6 +378,60 @@ pub async fn get_scenario(
     };
 
     Ok(Json(detail))
+}
+
+/// `DELETE /scenarios/:id` — stop a running scenario and return final stats.
+///
+/// Signals the scenario to stop via `handle.stop()`, then waits up to 5 seconds
+/// for the thread to exit via `handle.join()`. If the thread does not exit within
+/// the timeout, the response status is `"force_stopped"` and a warning is logged.
+///
+/// Idempotent: deleting an already-stopped scenario returns `200 OK` with
+/// `"stopped"` status. Returns `404 Not Found` for unknown IDs.
+pub async fn delete_scenario(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    // Acquire a write lock so we can mutate the handle (join requires &mut self).
+    let mut scenarios = state
+        .scenarios
+        .write()
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+
+    let handle = scenarios
+        .get_mut(&id)
+        .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
+
+    // Signal the scenario to stop (idempotent — safe to call on already-stopped).
+    handle.stop();
+
+    // Wait for the thread to exit, with a 5-second timeout.
+    let was_running_before_join = handle.is_running();
+    if let Err(e) = handle.join(Some(Duration::from_secs(5))) {
+        warn!(id = %id, error = %e, "DELETE /scenarios/:id: scenario thread returned an error");
+    }
+
+    // Determine the final status based on whether the thread exited in time.
+    let status = if handle.is_running() {
+        warn!(id = %id, "DELETE /scenarios/:id: join timed out after 5s, scenario force-stopped");
+        "force_stopped".to_string()
+    } else if was_running_before_join {
+        "stopped".to_string()
+    } else {
+        // Already stopped before we called delete — still idempotent 200.
+        "stopped".to_string()
+    };
+
+    // Read final stats before responding.
+    let final_stats = handle.stats_snapshot();
+
+    info!(id = %id, status = %status, total_events = final_stats.total_events, "scenario deleted");
+
+    Ok(Json(DeletedScenario {
+        id,
+        status,
+        total_events: final_stats.total_events,
+    }))
 }
 
 #[cfg(test)]

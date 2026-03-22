@@ -22,13 +22,15 @@ src/
 │   ├── mod.rs          ← router() function wires all routes; re-exports submodules
 │   ├── health.rs       ← GET /health → {"status": "ok"}
 │   └── scenarios.rs    ← POST /scenarios (create), GET /scenarios (list),
-│                         GET /scenarios/:id (inspect with stats)
+│                         GET /scenarios/:id (inspect with stats),
+│                         DELETE /scenarios/:id (stop and return final stats)
 │                         parse_body(), parse_yaml_body(), parse_json_body(),
-│                         post_scenario(), list_scenarios(), get_scenario()
+│                         post_scenario(), list_scenarios(), get_scenario(),
+│                         delete_scenario()
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
 ```
 
-## Implemented API Surface (as of Slice 3.3)
+## Implemented API Surface (as of Slice 3.4)
 
 | Method | Path             | Description                                             |
 |--------|------------------|---------------------------------------------------------|
@@ -36,12 +38,12 @@ src/
 | POST   | /scenarios       | Start a new scenario from YAML or JSON body, returns ID |
 | GET    | /scenarios       | List all scenarios with id, name, status, elapsed       |
 | GET    | /scenarios/:id   | Inspect a scenario: detail + live stats                 |
+| DELETE | /scenarios/:id   | Stop a running scenario, return final stats             |
 
-## Planned API Surface (Slices 3.4–3.5)
+## Planned API Surface (Slice 3.5)
 
 | Method | Path                   | Description                                    |
 |--------|------------------------|------------------------------------------------|
-| DELETE | /scenarios/:id         | Stop and remove a running scenario             |
 | GET    | /scenarios/:id/stats   | Live stats: rate, total events, gap/burst state|
 
 ## Concurrency Model
