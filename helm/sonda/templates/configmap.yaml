@@ -1,0 +1,13 @@
+{{- if .Values.scenarios }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sonda.fullname" . }}-scenarios
+  labels:
+    {{- include "sonda.labels" . | nindent 4 }}
+data:
+  {{- range $filename, $content := .Values.scenarios }}
+  {{ $filename }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
+{{- end }}

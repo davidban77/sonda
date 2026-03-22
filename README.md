@@ -1006,6 +1006,82 @@ Two scenario files are provided specifically for the Docker stack:
 
 ---
 
+## Kubernetes Deployment (Helm)
+
+Sonda includes a Helm chart for deploying `sonda-server` to Kubernetes clusters. The chart
+configures liveness and readiness probes using the `/health` endpoint, supports scenario
+injection via ConfigMap, and follows Helm best practices for labels and resource management.
+
+### Installing the chart
+
+```bash
+# Install with default values (port 8080, 1 replica)
+helm install sonda ./helm/sonda
+
+# Install with a custom port
+helm install sonda ./helm/sonda --set server.port=9090
+
+# Install with custom resource limits
+helm install sonda ./helm/sonda \
+  --set resources.requests.cpu=200m \
+  --set resources.limits.cpu=1000m
+```
+
+### Configuring scenarios
+
+Scenarios are injected as a ConfigMap mounted at `/scenarios` inside the container. Define
+them in `values.yaml` under the `scenarios` key:
+
+```yaml
+scenarios:
+  cpu-metrics.yaml: |
+    name: cpu_usage
+    rate: 100
+    duration: 30s
+    generator:
+      type: sine
+      amplitude: 50
+      period_secs: 60
+      offset: 50
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+```
+
+Or pass them at install time:
+
+```bash
+helm install sonda ./helm/sonda -f my-values.yaml
+```
+
+### Health probes
+
+The Deployment configures both liveness and readiness probes using `GET /health` on the
+server port. This endpoint always returns `{"status":"ok"}` with HTTP 200 when the server
+is running, so pods are automatically restarted if the server becomes unresponsive.
+
+### Accessing the server
+
+After installation, use `kubectl port-forward` to access the API:
+
+```bash
+export POD_NAME=$(kubectl get pods -l "app.kubernetes.io/name=sonda" -o jsonpath="{.items[0].metadata.name}")
+kubectl port-forward $POD_NAME 8080:8080
+
+# Then use the API as normal
+curl http://localhost:8080/health
+curl -X POST -H "Content-Type: text/yaml" --data-binary @scenario.yaml http://localhost:8080/scenarios
+```
+
+### Uninstalling
+
+```bash
+helm uninstall sonda
+```
+
+---
+
 ## Development
 
 ```bash
