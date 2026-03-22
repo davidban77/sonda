@@ -485,7 +485,7 @@ will use.
 
 ---
 
-## Slice 3.6 — Static Binary, Docker & Integration Tests
+## Slice 3.6 — Integration Tests & CI
 
 ### Input state
 - Slice 3.5 passes all gates.
@@ -503,64 +503,232 @@ will use.
   - GET /scenarios → shows stopped.
   - Verify both metrics and logs scenarios work through the same API.
 
-- `Dockerfile`:
-  ```dockerfile
-  FROM scratch
-  COPY target/x86_64-unknown-linux-musl/release/sonda /sonda
-  COPY target/x86_64-unknown-linux-musl/release/sonda-server /sonda-server
-  ENTRYPOINT ["/sonda-server"]
-  ```
-
-- `docker-compose.yml` (demo: sonda-server + VictoriaMetrics):
-  ```yaml
-  services:
-    sonda-server:
-      build: .
-      ports: ["8080:8080"]
-    victoriametrics:
-      image: victoriametrics/victoria-metrics
-      ports: ["8428:8428"]
-  ```
-
 **Files to modify:**
-- `README.md` — add server section: API reference, deployment guide, Docker instructions.
 - `.github/workflows/ci.yml` — add sonda-server build and integration test steps.
 
 ### Output files
 | File | Status |
 |------|--------|
 | `sonda-server/tests/integration.rs` | new |
-| `Dockerfile` | new |
-| `docker-compose.yml` | new |
-| `README.md` | modified |
 | `.github/workflows/ci.yml` | modified |
 
 ### Test criteria
 - Integration test: full lifecycle (POST → GET → stats → DELETE) passes for both metrics and logs.
-- Static binary: `cargo build --release --target x86_64-unknown-linux-musl -p sonda-server` succeeds.
-- Binary is statically linked: `file` command confirms.
-- Docker build succeeds: `docker build .` completes.
+- CI builds and tests both `sonda` and `sonda-server`.
 
 ### Review criteria
 - Integration test uses random port (no conflicts in CI).
 - Integration test has reasonable timeouts (not flaky).
 - Integration test covers both metrics and logs scenario types through the API.
-- Dockerfile uses `scratch` base (minimal image).
-- README API reference covers all endpoints with examples.
 - CI builds and tests both `sonda` and `sonda-server`.
 
 ### UAT criteria
-- **Full API lifecycle** via curl:
-  1. Start server.
-  2. POST metrics scenario → get ID.
-  3. POST logs scenario → get ID.
-  4. GET /scenarios → both listed.
-  5. GET /scenarios/:id/stats → events increasing.
-  6. DELETE both → stopped.
-  7. Verify output at sink.
-- **Docker**: `docker compose up` → sonda-server starts, accepts scenarios.
-- **Binary size**: sonda-server musl binary < 15MB.
-- **Memory**: server with 5 concurrent scenarios at 1000/sec each → RSS < 50MB.
+- `cargo test -p sonda-server --test integration` passes locally.
+- CI pipeline passes with the new integration test step.
+
+---
+
+## Slice 3.7 — Dockerfile & Docker Compose
+
+### Input state
+- Slice 3.6 passes all gates.
+
+### Specification
+
+**Files to create:**
+- `Dockerfile`:
+  - Multi-stage build: Rust builder stage + scratch runtime stage.
+  - Static binary via `x86_64-unknown-linux-musl` target.
+  - Both `sonda` and `sonda-server` binaries copied into the final image.
+  - `ENTRYPOINT ["/sonda-server"]` by default, but users can override to run `/sonda` CLI.
+  - Expose port 8080.
+
+- `docker-compose.yml` — realistic observability stack demo:
+  ```yaml
+  services:
+    sonda-server:
+      build: .
+      ports: ["8080:8080"]
+      volumes:
+        - ./examples:/scenarios  # mount scenario YAMLs
+
+    prometheus:
+      image: prom/prometheus:latest
+      ports: ["9090:9090"]
+      volumes:
+        - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+
+    alertmanager:
+      image: prom/alertmanager:latest
+      ports: ["9093:9093"]
+
+    grafana:
+      image: grafana/grafana:latest
+      ports: ["3000:3000"]
+      environment:
+        - GF_SECURITY_ADMIN_PASSWORD=admin
+  ```
+
+- `docker/prometheus.yml` — Prometheus config that scrapes sonda-server metrics (if applicable) or receives remote-write.
+
+- Example scenario YAMLs in `examples/` that exercise realistic patterns:
+  - `examples/docker-metrics.yaml` — metrics scenario suitable for Prometheus ingestion.
+  - `examples/docker-alerts.yaml` — scenario that triggers alert conditions (e.g., values crossing thresholds).
+
+**Files to modify:**
+- `README.md` — add Docker deployment section with:
+  - How to build the image.
+  - How to run with docker-compose.
+  - How to POST scenarios to the running server.
+  - How to view metrics in Grafana.
+
+### Output files
+| File | Status |
+|------|--------|
+| `Dockerfile` | new |
+| `docker-compose.yml` | new |
+| `docker/prometheus.yml` | new |
+| `examples/docker-metrics.yaml` | new |
+| `examples/docker-alerts.yaml` | new |
+| `README.md` | modified |
+
+### Test criteria
+- `docker build .` succeeds and produces a working image.
+- `docker compose up` starts all services without errors.
+- `curl http://localhost:8080/health` returns 200 from the containerized server.
+- POST a scenario → server runs it → metrics are observable in Prometheus/Grafana.
+- sonda-server musl binary < 15MB.
+
+### Review criteria
+- Dockerfile uses scratch base (minimal image).
+- Docker Compose includes a realistic observability stack (not just sonda alone).
+- Volume mounts allow users to bring their own scenario YAMLs.
+- README Docker section covers build, run, and usage with examples.
+- No secrets or credentials in committed files.
+
+### UAT criteria
+- `docker compose up` → sonda-server starts, accepts scenarios.
+- POST scenario via curl → metrics flow through the stack.
+- `docker compose down` → clean shutdown.
+- Image size < 20MB.
+
+---
+
+## Slice 3.8 — Multi-arch Builds
+
+### Input state
+- Slice 3.7 passes all gates.
+
+### Specification
+
+**Files to modify:**
+- `Dockerfile` — update to support multi-arch builds:
+  - Use `--platform` build args or multi-stage with cross-compilation.
+  - Support `linux/amd64` and `linux/arm64` targets.
+  - Use `xx` or `cargo-zigbuild` or separate builder stages per arch.
+
+- `.github/workflows/ci.yml` (or new `.github/workflows/release.yml`):
+  - Add multi-arch Docker build step using `docker buildx`.
+  - Build and push images for `linux/amd64` and `linux/arm64`.
+  - Optionally: build static binaries for both architectures as release artifacts.
+
+- `README.md` — update Docker section to mention multi-arch support and available platforms.
+
+### Output files
+| File | Status |
+|------|--------|
+| `Dockerfile` | modified |
+| `.github/workflows/ci.yml` or `.github/workflows/release.yml` | modified/new |
+| `README.md` | modified |
+
+### Test criteria
+- `docker buildx build --platform linux/amd64,linux/arm64 .` succeeds.
+- amd64 image runs on x86_64 hosts.
+- arm64 image runs on ARM hosts (e.g., Mac M-series with Docker Desktop).
+- Both images produce working `sonda` and `sonda-server` binaries.
+
+### Review criteria
+- Cross-compilation approach is clean (no hacky workarounds).
+- CI builds both architectures without excessive build time.
+- Image manifest lists both platforms.
+
+### UAT criteria
+- Pull image on an amd64 machine → `docker run` → server starts.
+- Pull image on an arm64 machine (or emulated) → `docker run` → server starts.
+- `docker manifest inspect` shows both platforms.
+
+---
+
+## Slice 3.9 — Kubernetes Readiness & Helm Chart
+
+### Input state
+- Slice 3.8 passes all gates.
+
+### Specification
+
+**Files to create:**
+- `helm/sonda/Chart.yaml` — Helm chart metadata.
+- `helm/sonda/values.yaml` — default values:
+  - `image.repository`, `image.tag`
+  - `server.port` (default 8080)
+  - `server.bind` (default 0.0.0.0)
+  - `scenarios` — list of scenario ConfigMap entries
+  - `resources` — CPU/memory requests and limits
+  - `replicaCount` (default 1)
+
+- `helm/sonda/templates/deployment.yaml`:
+  - Deployment with sonda-server container.
+  - Liveness probe: `GET /health` on server port.
+  - Readiness probe: `GET /health` on server port.
+  - ConfigMap volume mount for scenario YAMLs.
+  - Resource requests/limits from values.
+
+- `helm/sonda/templates/service.yaml`:
+  - ClusterIP service exposing the server port.
+
+- `helm/sonda/templates/configmap.yaml`:
+  - ConfigMap holding scenario YAML files from `values.scenarios`.
+
+- `helm/sonda/templates/_helpers.tpl` — standard Helm helpers (fullname, labels, etc.).
+
+**Files to modify:**
+- `README.md` — add Kubernetes deployment section:
+  - How to install the Helm chart.
+  - How to configure scenarios via values.yaml.
+  - How `/health` serves as liveness/readiness probe.
+  - Example: `helm install sonda ./helm/sonda --set server.port=8080`.
+
+### Output files
+| File | Status |
+|------|--------|
+| `helm/sonda/Chart.yaml` | new |
+| `helm/sonda/values.yaml` | new |
+| `helm/sonda/templates/deployment.yaml` | new |
+| `helm/sonda/templates/service.yaml` | new |
+| `helm/sonda/templates/configmap.yaml` | new |
+| `helm/sonda/templates/_helpers.tpl` | new |
+| `README.md` | modified |
+
+### Test criteria
+- `helm lint ./helm/sonda` passes.
+- `helm template ./helm/sonda` renders valid Kubernetes manifests.
+- Rendered Deployment includes liveness and readiness probes pointing to `/health`.
+- Rendered ConfigMap contains scenario YAML from values.
+- Default values produce a valid, deployable chart.
+
+### Review criteria
+- Chart follows Helm best practices (labels, helpers, NOTES.txt).
+- Probes use `/health` endpoint — no custom health logic.
+- Scenarios are configurable via values without rebuilding the image.
+- Resource defaults are reasonable for a synthetic traffic generator.
+- No hardcoded image tags (uses `values.yaml`).
+
+### UAT criteria
+- `helm install sonda ./helm/sonda` in a local cluster (kind/minikube) → pod starts.
+- Pod passes liveness and readiness probes.
+- `kubectl port-forward` → `curl /health` → 200.
+- POST scenario → metrics flow.
+- `helm uninstall sonda` → clean removal.
 
 ---
 
@@ -579,12 +747,17 @@ Slice 3.4 (DELETE)
   ↓
 Slice 3.5 (stats endpoint)
   ↓
-Slice 3.6 (static binary, Docker, integration tests)
+Slice 3.6 (integration tests + CI)
+  ↓
+Slice 3.7 (Dockerfile + Docker Compose)
+  ↓
+Slice 3.8 (multi-arch builds)
+  ↓
+Slice 3.9 (Kubernetes readiness + Helm chart)
 ```
 
-Slice 3.0 is a prerequisite refactor that touches only sonda-core and the CLI. The remaining slices
-(3.1–3.6) touch only sonda-server (plus minor sonda-core re-exports). This separation means the
-server slices are pure HTTP plumbing — no business logic.
+Slices 3.0–3.5 build the server API. Slice 3.6 validates it end-to-end. Slices 3.7–3.9 make it
+deployable in increasingly sophisticated environments: Docker → multi-arch → Kubernetes.
 
 ---
 
@@ -607,10 +780,12 @@ These invariants must hold after Phase 3 is complete:
 
 ## Post-Phase 3
 
-With all four phases complete, Sonda has a CLI, multi-signal support, concurrent execution, and a
-REST API. Future work (not designed here):
+With all slices complete, Sonda has a CLI, multi-signal support, concurrent execution, a REST API,
+Docker packaging, and Kubernetes-ready deployment. Future work (not designed here):
 
 - Prometheus remote-write encoder (protobuf via `prost`)
 - Dynamic label cardinality (rotating hostnames, pod churn simulation)
 - OpenTelemetry encoder (OTLP)
 - Clustering (deferred until single-instance limits are understood)
+- Pre-built scenario library (common failure patterns, alert test scenarios)
+- Grafana dashboard provisioning in Helm chart
