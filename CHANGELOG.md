@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.3](https://github.com/davidban77/sonda/compare/v0.1.2...v0.1.3) (2026-03-22)
+
+
+### Bug Fixes
+
+* **ci:** only dry-run sonda-core in publish workflow ([#18](https://github.com/davidban77/sonda/issues/18)) ([8c68b72](https://github.com/davidban77/sonda/commit/8c68b72f526c9e1aec30da8ee6e5761b02a7ed7a))
+
 ## [0.1.2](https://github.com/davidban77/sonda/compare/v0.1.1...v0.1.2) (2026-03-22)
 
 
