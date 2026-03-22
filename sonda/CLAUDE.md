@@ -40,6 +40,9 @@ The `metrics` subcommand is the MVP entry point. `logs` emits log events. `run` 
 scenarios concurrently from a single YAML file whose `scenarios:` list carries `signal_type: metrics`
 or `signal_type: logs` entries.
 
+All three subcommands now go through the unified `sonda_core::validate_entry` +
+`sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
+
 ## Adding a New Subcommand
 
 1. Add a variant to the `Commands` enum in `cli.rs`.

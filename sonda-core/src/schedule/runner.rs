@@ -5,6 +5,7 @@
 //! tight rate-controlled loop that emits encoded metric events.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent};
+use crate::schedule::stats::ScenarioStats;
 use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
@@ -20,7 +22,7 @@ use crate::SondaError;
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
 ///
 /// This is the primary entry point. It constructs a sink from the config and then
-/// delegates to [`run_with_sink`] with no shutdown flag.
+/// delegates to [`run_with_sink`] with no shutdown flag and no stats collection.
 ///
 /// This function blocks the calling thread until the scenario duration has
 /// elapsed. If no duration is specified in the config it runs indefinitely.
@@ -30,7 +32,7 @@ use crate::SondaError;
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink)?;
-    run_with_sink(config, sink.as_mut(), None)
+    run_with_sink(config, sink.as_mut(), None, None)
 }
 
 /// Run a scenario to completion, writing encoded events into the provided sink.
@@ -46,6 +48,11 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
 /// * `shutdown` — an optional atomic flag; when set to `false` the loop exits
 ///   cleanly after the current tick, flushes the sink, and returns `Ok(())`.
 ///   Pass `None` if no external shutdown signal is needed (e.g., in tests).
+/// * `stats` — an optional shared stats object. When `Some`, the runner updates
+///   `total_events`, `bytes_emitted`, `current_rate`, `in_gap`, `in_burst`, and
+///   `errors` on each tick. The write lock is held only for the brief counter
+///   update, not during encode/write. Pass `None` to skip stats collection with
+///   no overhead (e.g., in direct CLI usage or tests).
 ///
 /// # Steps
 ///
@@ -68,6 +75,7 @@ pub fn run_with_sink(
     config: &ScenarioConfig,
     sink: &mut dyn Sink,
     shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
     // Parse the optional total duration.
     let total_duration: Option<Duration> =
@@ -131,6 +139,11 @@ pub fn run_with_sink(
     let mut next_deadline = start;
     let mut tick: u64 = 0;
 
+    // Stats tracking: snapshot of tick count and wall clock taken once per
+    // second to compute current_rate. Only used when stats is Some.
+    let mut rate_window_tick: u64 = 0;
+    let mut rate_window_start = start;
+
     // Run the event loop, capturing any error so we can still flush before returning.
     let loop_result = (|| -> Result<(), SondaError> {
         loop {
@@ -153,8 +166,15 @@ pub fn run_with_sink(
 
             // Check gap window — sleep through it rather than busy-wait.
             // Gap always takes priority over burst: no events during a gap.
-            if let Some(ref gap) = gap_window {
+            let currently_in_gap = if let Some(ref gap) = gap_window {
                 if is_in_gap(elapsed, gap) {
+                    // Update stats to reflect gap state before sleeping.
+                    if let Some(ref s) = stats {
+                        if let Ok(mut st) = s.write() {
+                            st.in_gap = true;
+                            st.in_burst = false;
+                        }
+                    }
                     let sleep_for = time_until_gap_end(elapsed, gap);
                     if sleep_for > Duration::ZERO {
                         thread::sleep(sleep_for);
@@ -169,21 +189,29 @@ pub fn run_with_sink(
                     tick = (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
                     // Re-check duration before emitting.
                     continue;
+                } else {
+                    false
                 }
-            }
+            } else {
+                false
+            };
 
             // Determine the effective inter-event interval for this tick.
             // During a burst, divide the base interval by the burst multiplier
             // to produce a proportionally shorter interval (higher rate).
             // Outside a burst, use the base interval unchanged.
+            let currently_in_burst;
             let effective_interval = if let Some(ref burst) = burst_window {
                 if let Some(multiplier) = is_in_burst(elapsed, burst) {
+                    currently_in_burst = true;
                     // multiplier is validated to be > 0, so division is safe.
                     Duration::from_secs_f64(base_interval.as_secs_f64() / multiplier)
                 } else {
+                    currently_in_burst = false;
                     base_interval
                 }
             } else {
+                currently_in_burst = false;
                 base_interval
             };
 
@@ -211,7 +239,33 @@ pub fn run_with_sink(
             // Encode and write.
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
+            let bytes_written = buf.len() as u64;
             sink.write(&buf)?;
+
+            // Update live stats (only when a stats arc was provided).
+            if let Some(ref s) = stats {
+                // Compute current_rate from a 1-second window.
+                let window_elapsed = rate_window_start.elapsed();
+                let current_rate = if window_elapsed >= Duration::from_secs(1) {
+                    let events_in_window = tick - rate_window_tick;
+                    let rate = events_in_window as f64 / window_elapsed.as_secs_f64();
+                    rate_window_tick = tick;
+                    rate_window_start = Instant::now();
+                    rate
+                } else {
+                    // Retain the last computed rate until the window rolls over.
+                    // We read the current value from stats to avoid a separate variable.
+                    s.read().map(|st| st.current_rate).unwrap_or(0.0)
+                };
+
+                if let Ok(mut st) = s.write() {
+                    st.total_events += 1;
+                    st.bytes_emitted += bytes_written;
+                    st.current_rate = current_rate;
+                    st.in_gap = currently_in_gap;
+                    st.in_burst = currently_in_burst;
+                }
+            }
 
             // Advance the deadline by one effective interval. This preserves
             // accurate timing even if encode/write takes non-trivial time.
@@ -275,7 +329,7 @@ mod tests {
     fn integration_rate_100_duration_1s_emits_approximately_100_events() {
         let config = make_config(100.0, "1s", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -289,7 +343,7 @@ mod tests {
     fn integration_output_lines_start_with_metric_name() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         for line in output.lines() {
@@ -305,7 +359,7 @@ mod tests {
     fn integration_output_ends_with_newline() {
         let config = make_config(50.0, "200ms", None);
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         assert!(
             sink.buffer.ends_with(b"\n"),
@@ -330,7 +384,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         assert!(
@@ -379,7 +433,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         assert!(
@@ -430,7 +484,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         // Without burst: ~10 events. With 5x burst for entire 1s: ~50 events.
@@ -462,7 +516,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
         // Without any burst: ~200 events. With burst for first 1s: ~600.
@@ -526,7 +580,7 @@ mod tests {
             }),
         );
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
 
         let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
 
@@ -583,7 +637,7 @@ mod tests {
             }),
         );
         let mut sink_no_gap = MemorySink::new();
-        super::run_with_sink(&config_no_gap_burst, &mut sink_no_gap, None)
+        super::run_with_sink(&config_no_gap_burst, &mut sink_no_gap, None, None)
             .expect("run must succeed");
         let events_burst_only = sink_no_gap.buffer.iter().filter(|&&b| b == b'\n').count();
 
@@ -603,7 +657,7 @@ mod tests {
             }),
         );
         let mut sink_gap_burst = MemorySink::new();
-        super::run_with_sink(&config_gap_and_burst, &mut sink_gap_burst, None)
+        super::run_with_sink(&config_gap_and_burst, &mut sink_gap_burst, None, None)
             .expect("run must succeed");
         let events_gap_and_burst = sink_gap_burst
             .buffer
@@ -649,7 +703,7 @@ mod tests {
         });
 
         let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, Some(&shutdown)).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, Some(&shutdown), None).expect("run must succeed");
         handle.join().expect("thread must complete");
 
         // The run stopped after ~200ms due to shutdown flag.

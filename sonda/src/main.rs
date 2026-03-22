@@ -43,56 +43,51 @@ fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Metrics(ref args) => {
             let config = config::load_config(args)?;
-            sonda_core::config::validate::validate_config(&config)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            // Build a sink from the config so we can pass it and the shutdown
-            // flag directly to run_with_sink. This allows Ctrl+C to be checked
-            // on every tick rather than waiting for a blocking sleep to wake up.
-            let mut sink = sonda_core::sink::create_sink(&config.sink)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            sonda_core::schedule::runner::run_with_sink(
-                &config,
-                sink.as_mut(),
-                Some(running.as_ref()),
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let entry = sonda_core::ScenarioEntry::Metrics(config);
+            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let mut handle =
+                sonda_core::launch_scenario("cli-metrics".to_string(), entry, Arc::clone(&running))
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
-            sonda_core::config::validate::validate_log_config(&config)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            // Build a sink from the config so we can pass it and the shutdown
-            // flag directly to run_logs_with_sink.
-            let mut sink = sonda_core::sink::create_sink(&config.sink)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            sonda_core::schedule::log_runner::run_logs_with_sink(
-                &config,
-                sink.as_mut(),
-                Some(running.as_ref()),
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let entry = sonda_core::ScenarioEntry::Logs(config);
+            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let mut handle =
+                sonda_core::launch_scenario("cli-logs".to_string(), entry, Arc::clone(&running))
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
 
-            // Validate each scenario entry before handing off to the runner.
+            // Validate each scenario entry before launching any of them.
             for (i, entry) in config.scenarios.iter().enumerate() {
-                match entry {
-                    sonda_core::ScenarioEntry::Metrics(scenario_config) => {
-                        sonda_core::config::validate::validate_config(scenario_config)
-                            .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
-                    }
-                    sonda_core::ScenarioEntry::Logs(log_config) => {
-                        sonda_core::config::validate::validate_log_config(log_config)
-                            .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
-                    }
+                sonda_core::validate_entry(entry)
+                    .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
+            }
+
+            // Launch all scenarios and collect handles.
+            let mut handles = Vec::with_capacity(config.scenarios.len());
+            for (i, entry) in config.scenarios.into_iter().enumerate() {
+                let id = format!("cli-run-{i}");
+                let handle = sonda_core::launch_scenario(id, entry, Arc::clone(&running))
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                handles.push(handle);
+            }
+
+            // Wait for all scenarios to finish, collecting errors.
+            let mut errors: Vec<String> = Vec::new();
+            for mut handle in handles {
+                if let Err(e) = handle.join(None) {
+                    errors.push(e.to_string());
                 }
             }
 
-            sonda_core::schedule::multi_runner::run_multi(config, Arc::clone(&running))
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if !errors.is_empty() {
+                return Err(anyhow::anyhow!("{}", errors.join("; ")));
+            }
         }
     }
 

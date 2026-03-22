@@ -3,9 +3,12 @@
 //! The scheduler controls *when* events are emitted. It does not know
 //! *what* is being emitted — that is the generator and encoder's job.
 
+pub mod handle;
+pub mod launch;
 pub mod log_runner;
 pub mod multi_runner;
 pub mod runner;
+pub mod stats;
 
 use std::time::Duration;
 

@@ -22,9 +22,12 @@ src/
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
+│   ├── stats.rs        ← ScenarioStats (live telemetry for a running scenario)
+│   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot)
+│   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API)
 │   ├── runner.rs       ← the main event loop (metrics)
 │   ├── log_runner.rs   ← the log event loop (logs)
-│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi)
+│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi, now uses launch_scenario)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format

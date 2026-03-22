@@ -1,21 +1,20 @@
 //! Multi-scenario runner: runs multiple scenarios concurrently on separate threads.
 //!
-//! Each scenario runs on its own OS thread. All threads share a single shutdown
-//! flag so that Ctrl+C (or any external signal) stops all scenarios cleanly.
-//! Thread errors are collected and returned after all threads have finished.
+//! Each scenario runs on its own OS thread via [`launch_scenario`]. All threads
+//! share a single shutdown flag so that Ctrl+C (or any external signal) stops
+//! all scenarios cleanly. Thread errors are collected and returned after all
+//! threads have finished.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::config::{MultiScenarioConfig, ScenarioEntry};
-use crate::schedule::log_runner::run_logs_with_sink;
-use crate::schedule::runner::run_with_sink;
-use crate::sink::create_sink;
+use crate::config::MultiScenarioConfig;
+use crate::schedule::launch::{launch_scenario, validate_entry};
 use crate::SondaError;
 
 /// Run all scenarios in `config` concurrently, one OS thread per scenario.
 ///
-/// Each thread runs until either:
+/// Each scenario thread runs until either:
 /// - The scenario's own duration expires, or
 /// - The shared `shutdown` flag is set to `false`.
 ///
@@ -38,36 +37,23 @@ use crate::SondaError;
 pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
     let mut handles = Vec::with_capacity(config.scenarios.len());
 
-    for entry in config.scenarios {
-        let shutdown_clone = Arc::clone(&shutdown);
+    for (i, entry) in config.scenarios.into_iter().enumerate() {
+        // Validate before spawning so errors are caught synchronously.
+        if let Err(e) = validate_entry(&entry) {
+            return Err(SondaError::Config(format!("scenario[{i}]: {e}")));
+        }
 
-        let handle = std::thread::spawn(move || -> Result<(), SondaError> {
-            match entry {
-                ScenarioEntry::Metrics(scenario_config) => {
-                    let mut sink = create_sink(&scenario_config.sink)?;
-                    run_with_sink(
-                        &scenario_config,
-                        sink.as_mut(),
-                        Some(shutdown_clone.as_ref()),
-                    )
-                }
-                ScenarioEntry::Logs(log_config) => {
-                    let mut sink = create_sink(&log_config.sink)?;
-                    run_logs_with_sink(&log_config, sink.as_mut(), Some(shutdown_clone.as_ref()))
-                }
-            }
-        });
-
+        let id = format!("multi-{i}");
+        let handle = launch_scenario(id, entry, Arc::clone(&shutdown))?;
         handles.push(handle);
     }
 
     // Collect results from all threads.
     let mut errors: Vec<String> = Vec::new();
-    for handle in handles {
-        match handle.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => errors.push(e.to_string()),
-            Err(_) => errors.push("scenario thread panicked".to_string()),
+    for mut handle in handles {
+        match handle.join(None) {
+            Ok(()) => {}
+            Err(e) => errors.push(e.to_string()),
         }
     }
 
