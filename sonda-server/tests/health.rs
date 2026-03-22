@@ -26,11 +26,22 @@ fn spawn_server(port: u16) -> std::process::Child {
         .expect("failed to spawn sonda-server binary")
 }
 
-/// Wait until the server is accepting connections on the given port (or timeout).
+/// Wait until the server is responding to HTTP requests on the given port (or timeout).
+///
+/// A raw TCP connect can succeed before axum is ready to serve, so we poll
+/// the /health endpoint instead.
 fn wait_for_server(port: u16, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .expect("must build reqwest client");
     while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+        if client
+            .get(format!("http://127.0.0.1:{port}/health"))
+            .send()
+            .is_ok()
+        {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
