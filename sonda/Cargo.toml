@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CLI for Sonda synthetic telemetry generator"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "development-tools::testing"]
+description = "CLI for Sonda — synthetic telemetry generator for testing observability pipelines"
+readme = "../README.md"
 
 [[bin]]
 name = "sonda"

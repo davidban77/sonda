@@ -7,12 +7,15 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["David Flores <davidflores77@gmail.com>"]
-license = "MIT"
-repository = "https://github.com/davidflores77/sonda"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davidban77/sonda"
+homepage = "https://github.com/davidban77/sonda"
 description = "Synthetic telemetry generator for testing observability pipelines"
+keywords = ["telemetry", "metrics", "observability", "testing", "synthetic"]
+categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace.dependencies]
-sonda-core = { path = "sonda-core" }
+sonda-core = { path = "sonda-core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"

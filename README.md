@@ -1,5 +1,8 @@
 # Sonda
 
+[![crates.io](https://img.shields.io/crates/v/sonda.svg)](https://crates.io/crates/sonda)
+[![crates.io](https://img.shields.io/crates/v/sonda-core.svg)](https://crates.io/crates/sonda-core)
+
 Sonda is a synthetic telemetry generator written in Rust. It produces realistic observability signals
 — metrics, logs, traces, and flows — for use in lab environments, pipeline validation, load testing,
 and incident simulation.
@@ -70,10 +73,48 @@ See the [Kubernetes Deployment](#kubernetes-deployment-helm) section for configu
 
 ### Cargo install
 
-> Coming soon (Slice 4.1). Once published to crates.io:
-> ```bash
-> cargo install sonda
-> ```
+```bash
+cargo install sonda
+```
+
+### Library usage
+
+Add `sonda-core` as a dependency to use the engine programmatically:
+
+```toml
+[dependencies]
+sonda-core = "0.1"
+```
+
+Example -- create a generator and encode a metric:
+
+```rust
+use sonda_core::generator::{create_generator, GeneratorConfig};
+use sonda_core::encoder::{create_encoder, EncoderConfig};
+use sonda_core::model::metric::MetricEvent;
+
+// Create a sine wave generator
+let gen_config = GeneratorConfig::Sine {
+    amplitude: 5.0,
+    period_secs: 60.0,
+    offset: 50.0,
+};
+let generator = create_generator(&gen_config, 10.0);
+
+// Generate a value at tick 0
+let value = generator.value(0);
+
+// Encode a metric event
+let encoder = create_encoder(&EncoderConfig::PrometheusText);
+let event = MetricEvent {
+    name: "cpu_usage".to_string(),
+    value,
+    labels: Default::default(),
+    timestamp_ms: 1700000000000,
+};
+let mut buf = Vec::new();
+encoder.encode_metric(&event, &mut buf).unwrap();
+```
 
 ### Build from source
 
@@ -1268,4 +1309,9 @@ task stack:down
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
