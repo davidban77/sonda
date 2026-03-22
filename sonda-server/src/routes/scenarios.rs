@@ -3,9 +3,9 @@
 //! Implements:
 //! - `POST /scenarios` — start a new scenario from a YAML or JSON body.
 //! - `GET /scenarios` — list all scenarios with summary information.
-//! - `GET /scenarios/:id` — inspect a single scenario with full detail and stats.
-//! - `GET /scenarios/:id/stats` — return detailed live stats for a scenario.
-//! - `DELETE /scenarios/:id` — stop a running scenario and return final stats.
+//! - `GET /scenarios/{id}` — inspect a single scenario with full detail and stats.
+//! - `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
+//! - `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
 //! plumbing: deserialize → validate → launch → store → respond.
@@ -115,7 +115,7 @@ impl From<ScenarioStats> for StatsResponse {
     }
 }
 
-/// Response body for `GET /scenarios/:id/stats`.
+/// Response body for `GET /scenarios/{id}/stats`.
 ///
 /// Contains all live stats fields plus derived fields (`target_rate`,
 /// `uptime_secs`, `state`) that are computed from the [`ScenarioHandle`] at
@@ -379,7 +379,7 @@ pub async fn list_scenarios(State(state): State<AppState>) -> impl IntoResponse 
     })
 }
 
-/// `GET /scenarios/:id` — inspect a single scenario with full detail.
+/// `GET /scenarios/{id}` — inspect a single scenario with full detail.
 ///
 /// Returns the scenario's ID, name, status, elapsed time, and live stats
 /// (total_events, current_rate, bytes_emitted, errors). Returns 404 if the
@@ -408,7 +408,7 @@ pub async fn get_scenario(
     Ok(Json(detail))
 }
 
-/// `DELETE /scenarios/:id` — stop a running scenario and return final stats.
+/// `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 ///
 /// Signals the scenario to stop via `handle.stop()`, then waits up to 5 seconds
 /// for the thread to exit via `handle.join()`. If the thread does not exit within
@@ -436,12 +436,12 @@ pub async fn delete_scenario(
     // Wait for the thread to exit, with a 5-second timeout.
     let was_running_before_join = handle.is_running();
     if let Err(e) = handle.join(Some(Duration::from_secs(5))) {
-        warn!(id = %id, error = %e, "DELETE /scenarios/:id: scenario thread returned an error");
+        warn!(id = %id, error = %e, "DELETE /scenarios/{id}: scenario thread returned an error");
     }
 
     // Determine the final status based on whether the thread exited in time.
     let status = if handle.is_running() {
-        warn!(id = %id, "DELETE /scenarios/:id: join timed out after 5s, scenario force-stopped");
+        warn!(id = %id, "DELETE /scenarios/{id}: join timed out after 5s, scenario force-stopped");
         "force_stopped".to_string()
     } else if was_running_before_join {
         "stopped".to_string()
@@ -462,7 +462,7 @@ pub async fn delete_scenario(
     }))
 }
 
-/// `GET /scenarios/:id/stats` — return detailed live stats for a scenario.
+/// `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
 ///
 /// Returns all stats fields from the runner thread plus derived fields:
 /// `target_rate` (configured rate from the scenario config), `uptime_secs`
@@ -793,9 +793,9 @@ sink:
         );
     }
 
-    // ---- GET /scenarios/:id: correct name, status, elapsed -------------------
+    // ---- GET /scenarios/{id}: correct name, status, elapsed -------------------
 
-    /// GET /scenarios/:id returns correct name, status, and positive elapsed_secs.
+    /// GET /scenarios/{id} returns correct name, status, and positive elapsed_secs.
     #[tokio::test]
     async fn get_scenario_returns_correct_name_status_elapsed() {
         let h = make_handle(
@@ -832,9 +832,9 @@ sink:
         );
     }
 
-    // ---- GET /scenarios/:id: stats fields present ----------------------------
+    // ---- GET /scenarios/{id}: stats fields present ----------------------------
 
-    /// GET /scenarios/:id response includes stats sub-object with all required fields.
+    /// GET /scenarios/{id} response includes stats sub-object with all required fields.
     #[tokio::test]
     async fn get_scenario_response_has_stats_fields() {
         let h = make_handle(
@@ -870,7 +870,7 @@ sink:
         assert!(stats.get("errors").is_some(), "stats must have errors");
     }
 
-    // ---- GET /scenarios/:id: stats.total_events > 0 after running ------------
+    // ---- GET /scenarios/{id}: stats.total_events > 0 after running ------------
 
     /// After running for a short time, stats.total_events > 0.
     #[tokio::test]
@@ -904,7 +904,7 @@ sink:
 
     // ---- GET /scenarios/nonexistent: 404 -------------------------------------
 
-    /// GET /scenarios/:id with a nonexistent ID returns 404 with a JSON error body.
+    /// GET /scenarios/{id} with a nonexistent ID returns 404 with a JSON error body.
     #[tokio::test]
     async fn get_scenario_nonexistent_returns_404_with_json_body() {
         let app = router_with_handles(vec![]);
@@ -934,7 +934,7 @@ sink:
         );
     }
 
-    /// GET /scenarios/:id 404 response has Content-Type application/json.
+    /// GET /scenarios/{id} 404 response has Content-Type application/json.
     #[tokio::test]
     async fn get_scenario_nonexistent_returns_json_content_type() {
         let app = router_with_handles(vec![]);
@@ -959,7 +959,7 @@ sink:
         );
     }
 
-    // ---- GET /scenarios/:id: stopped scenario reports "stopped" --------------
+    // ---- GET /scenarios/{id}: stopped scenario reports "stopped" --------------
 
     /// A scenario whose thread has exited reports status "stopped".
     #[tokio::test]
@@ -1620,10 +1620,10 @@ sink:
     }
 
     // ========================================================================
-    // DELETE /scenarios/:id tests
+    // DELETE /scenarios/{id} tests
     // ========================================================================
 
-    /// Helper to send a DELETE /scenarios/:id request.
+    /// Helper to send a DELETE /scenarios/{id} request.
     async fn delete_scenario_req(app: axum::Router, id: &str) -> hyper::Response<axum::body::Body> {
         let request = Request::builder()
             .method("DELETE")
@@ -1935,7 +1935,7 @@ sink:
     }
 
     // ========================================================================
-    // GET /scenarios/:id/stats tests (Slice 3.5)
+    // GET /scenarios/{id}/stats tests (Slice 3.5)
     // ========================================================================
 
     /// Helper: build a ScenarioHandle with a custom target_rate and pre-set stats.
@@ -1991,7 +1991,7 @@ sink:
         }
     }
 
-    /// Helper: send a GET /scenarios/:id/stats request.
+    /// Helper: send a GET /scenarios/{id}/stats request.
     async fn get_stats_req(app: axum::Router, id: &str) -> hyper::Response<axum::body::Body> {
         let req = Request::builder()
             .uri(format!("/scenarios/{id}/stats"))
@@ -2002,7 +2002,7 @@ sink:
 
     // ---- Stats endpoint returns all expected fields -------------------------
 
-    /// GET /scenarios/:id/stats returns a JSON body with all expected fields.
+    /// GET /scenarios/{id}/stats returns a JSON body with all expected fields.
     #[tokio::test]
     async fn stats_endpoint_returns_all_expected_fields() {
         let stats = ScenarioStats {
@@ -2154,7 +2154,7 @@ sink:
 
     // ---- After scenario stopped: returns final stats with state "stopped" ----
 
-    /// When a scenario has stopped, GET /scenarios/:id/stats returns state "stopped".
+    /// When a scenario has stopped, GET /scenarios/{id}/stats returns state "stopped".
     #[tokio::test]
     async fn stats_endpoint_returns_stopped_state_for_finished_scenario() {
         let stats = ScenarioStats {
@@ -2195,7 +2195,7 @@ sink:
 
     // ---- Unknown ID returns 404 -----------------------------------------------
 
-    /// GET /scenarios/:id/stats with an unknown ID returns 404.
+    /// GET /scenarios/{id}/stats with an unknown ID returns 404.
     #[tokio::test]
     async fn stats_endpoint_unknown_id_returns_404() {
         let app = router_with_handles(vec![]);
@@ -2217,7 +2217,7 @@ sink:
 
     // ---- Stats 404 returns JSON Content-Type ----------------------------------
 
-    /// GET /scenarios/:id/stats 404 has Content-Type application/json.
+    /// GET /scenarios/{id}/stats 404 has Content-Type application/json.
     #[tokio::test]
     async fn stats_endpoint_404_returns_json_content_type() {
         let app = router_with_handles(vec![]);
@@ -2326,7 +2326,7 @@ sink:
 
     // ---- Stats 200 returns JSON Content-Type ----------------------------------
 
-    /// GET /scenarios/:id/stats success response has Content-Type application/json.
+    /// GET /scenarios/{id}/stats success response has Content-Type application/json.
     #[tokio::test]
     async fn stats_endpoint_success_returns_json_content_type() {
         let h = make_handle_with_stats(

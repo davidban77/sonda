@@ -984,9 +984,9 @@ Error responses:
 | GET    | `/health`              | 3.1   | Health check                               |
 | POST   | `/scenarios`           | 3.2   | Start a new scenario from YAML/JSON body   |
 | GET    | `/scenarios`           | 3.3   | List all running scenarios                 |
-| GET    | `/scenarios/:id`       | 3.3   | Inspect a scenario: config, stats, elapsed |
-| DELETE | `/scenarios/:id`       | 3.4   | Stop and remove a running scenario         |
-| GET    | `/scenarios/:id/stats` | 3.5   | Live stats: rate, events, gap/burst state  |
+| GET    | `/scenarios/{id}`       | 3.3   | Inspect a scenario: config, stats, elapsed |
+| DELETE | `/scenarios/{id}`       | 3.4   | Stop and remove a running scenario         |
+| GET    | `/scenarios/{id}/stats` | 3.5   | Live stats: rate, events, gap/burst state  |
 
 ---
 
