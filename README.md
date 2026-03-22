@@ -728,6 +728,24 @@ is exhausted. Update the `file:` path in the YAML to point to a real log file:
 sonda logs --scenario examples/log-replay.yaml
 ```
 
+### `examples/loki-json-lines.yaml`
+
+Push JSON Lines log events to a Loki instance at 10 events/sec for 60 seconds. Logs are batched
+(batch size 50) and pushed via Loki's HTTP API. Requires the e2e stack (`task stack:up`):
+
+```bash
+sonda logs --scenario examples/loki-json-lines.yaml
+```
+
+### `examples/kafka-json-logs.yaml`
+
+Send JSON Lines log events to a Kafka topic (`sonda-logs`) at 10 events/sec for 60 seconds.
+Requires the e2e stack with Kafka running (`task stack:up`):
+
+```bash
+sonda logs --scenario examples/kafka-json-logs.yaml
+```
+
 ---
 
 ## Output Format

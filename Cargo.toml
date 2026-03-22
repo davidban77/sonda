@@ -5,6 +5,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
 authors = ["David Flores <davidflores77@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/davidflores77/sonda"

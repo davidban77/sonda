@@ -40,6 +40,29 @@ tasks:
       - task: lint
 
   # ---------------------------------------------------------------------------
+  # Utilities
+  # ---------------------------------------------------------------------------
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+
+  audit:
+    desc: Run cargo audit for security vulnerabilities
+    cmds:
+      - cargo audit
+
+  docs:
+    desc: Build and open workspace documentation
+    cmds:
+      - cargo doc --workspace --no-deps --open
+
+  fmt:
+    desc: Auto-format all code
+    cmds:
+      - cargo fmt --all
+
+  # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------
   stack:up:

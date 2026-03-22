@@ -2,11 +2,15 @@
 
 use super::ValueGenerator;
 
+/// A value generator that returns the same value on every tick.
+///
+/// Useful for static metrics like `up` gauges or baseline values.
 pub struct Constant {
     value: f64,
 }
 
 impl Constant {
+    /// Create a new `Constant` generator that always returns `value`.
     pub fn new(value: f64) -> Self {
         Self { value }
     }
