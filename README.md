@@ -1016,14 +1016,41 @@ Error responses:
 
 ### API endpoints
 
-| Method | Path                    | Description                                |
-|--------|-------------------------|--------------------------------------------|
-| GET    | `/health`               | Health check                               |
-| POST   | `/scenarios`            | Start a new scenario from YAML/JSON body   |
-| GET    | `/scenarios`            | List all running scenarios                 |
-| GET    | `/scenarios/{id}`       | Inspect a scenario: config, stats, elapsed |
-| DELETE | `/scenarios/{id}`       | Stop and remove a running scenario         |
-| GET    | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state  |
+| Method | Path                       | Description                                           |
+|--------|----------------------------|-------------------------------------------------------|
+| GET    | `/health`                  | Health check                                          |
+| POST   | `/scenarios`               | Start a new scenario from YAML/JSON body              |
+| GET    | `/scenarios`               | List all running scenarios                            |
+| GET    | `/scenarios/{id}`          | Inspect a scenario: config, stats, elapsed            |
+| DELETE | `/scenarios/{id}`          | Stop and remove a running scenario                    |
+| GET    | `/scenarios/{id}/stats`    | Live stats: rate, events, gap/burst state             |
+| GET    | `/scenarios/{id}/metrics`  | Latest metrics in Prometheus text format (scrapeable) |
+
+### Scrape integration
+
+The `GET /scenarios/{id}/metrics` endpoint returns the most recent metric events
+in Prometheus text exposition format (`text/plain; version=0.0.4; charset=utf-8`).
+This enables pull-based integration: start a metrics scenario via `POST /scenarios`,
+then configure Prometheus or vmagent to scrape the endpoint directly.
+
+**Example Prometheus scrape config:**
+
+```yaml
+scrape_configs:
+  - job_name: sonda
+    scrape_interval: 15s
+    metrics_path: /scenarios/<SCENARIO_ID>/metrics
+    static_configs:
+      - targets: ["localhost:8080"]
+```
+
+Replace `<SCENARIO_ID>` with the ID returned by `POST /scenarios`.
+
+The endpoint accepts an optional `?limit=N` query parameter (default 100, max 1000)
+to control the maximum number of recent events returned per scrape. Each scrape
+drains the buffer, so events are returned once per scrape cycle. If no metrics are
+available yet, the endpoint returns `204 No Content`. For unknown scenario IDs it
+returns `404 Not Found`.
 
 ---
 

@@ -264,6 +264,9 @@ pub fn run_with_sink(
                     st.current_rate = current_rate;
                     st.in_gap = currently_in_gap;
                     st.in_burst = currently_in_burst;
+                    // Buffer the metric event for scrape endpoints. The clone
+                    // cost is bounded by MAX_RECENT_METRICS (default 100).
+                    st.push_metric(event);
                 }
             }
 

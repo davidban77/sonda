@@ -123,6 +123,21 @@ impl ScenarioHandle {
             .expect("ScenarioStats RwLock poisoned")
             .clone()
     }
+
+    /// Drain and return recent metric events from the stats buffer.
+    ///
+    /// Acquires the write lock briefly, drains the buffered events, and
+    /// returns them ordered oldest-first. After this call the buffer is
+    /// empty. Subsequent calls return an empty vec until new events arrive.
+    ///
+    /// This is used by the scrape endpoint (`GET /scenarios/{id}/metrics`)
+    /// to retrieve the latest metric events for Prometheus text encoding.
+    pub fn recent_metrics(&self) -> Vec<crate::model::metric::MetricEvent> {
+        self.stats
+            .write()
+            .expect("ScenarioStats RwLock poisoned")
+            .drain_recent_metrics()
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/{id}` — inspect a single scenario with full detail and stats.
 //! - `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
+//! - `GET /scenarios/{id}/metrics` — return recent metrics in Prometheus text format (scrapeable).
 //! - `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
@@ -14,11 +15,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sonda_core::encoder::prometheus::PrometheusText;
+use sonda_core::encoder::Encoder;
 use sonda_core::ScenarioStats;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -499,6 +502,85 @@ pub async fn get_scenario_stats(
     };
 
     Ok(Json(response))
+}
+
+// ---- Scrape endpoint --------------------------------------------------------
+
+/// Query parameters for `GET /scenarios/{id}/metrics`.
+#[derive(Debug, Deserialize)]
+pub struct MetricsQuery {
+    /// Maximum number of recent metric events to return. Defaults to 100,
+    /// capped at 1000.
+    pub limit: Option<usize>,
+}
+
+/// Prometheus text exposition format content type.
+const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// `GET /scenarios/{id}/metrics` — return recent metrics in Prometheus text format.
+///
+/// Drains the recent metric event buffer from the scenario handle, encodes
+/// each event using the Prometheus text encoder, and returns the result with
+/// `Content-Type: text/plain; version=0.0.4; charset=utf-8`.
+///
+/// This endpoint is designed to be scraped by Prometheus or vmagent. Each
+/// call drains the buffer, so repeated scrapes within the same tick interval
+/// may return fewer events.
+///
+/// # Query parameters
+///
+/// * `limit` — maximum number of events to return (default 100, max 1000).
+///
+/// # Error responses
+///
+/// * `404 Not Found` — scenario ID not found.
+/// * `204 No Content` — scenario exists but no metric events are buffered.
+pub async fn get_scenario_metrics(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<MetricsQuery>,
+) -> Result<Response, Response> {
+    let limit = query.limit.unwrap_or(100).min(1000);
+
+    // Look up the scenario by ID.
+    let scenarios = state
+        .scenarios
+        .read()
+        .expect("AppState RwLock must not be poisoned");
+
+    let handle = scenarios
+        .get(&id)
+        .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
+
+    // Drain recent metric events from the handle's stats buffer.
+    let events = handle.recent_metrics();
+
+    if events.is_empty() {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+
+    // Apply the limit: take at most `limit` events from the end (most recent).
+    let events_to_encode = if events.len() > limit {
+        &events[events.len() - limit..]
+    } else {
+        &events
+    };
+
+    // Encode each event into Prometheus text format.
+    let encoder = PrometheusText::new();
+    let mut buf = Vec::with_capacity(events_to_encode.len() * 128);
+    for event in events_to_encode {
+        if let Err(e) = encoder.encode_metric(event, &mut buf) {
+            warn!(id = %id, error = %e, "GET /scenarios/{id}/metrics: failed to encode metric event");
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
+        buf,
+    )
+        .into_response())
 }
 
 #[cfg(test)]
@@ -1060,6 +1142,7 @@ sink:
             errors: 3,
             in_gap: true,
             in_burst: false,
+            ..Default::default()
         };
         let resp: StatsResponse = stats.into();
         assert_eq!(resp.total_events, 42);
@@ -2012,6 +2095,7 @@ sink:
             errors: 2,
             in_gap: false,
             in_burst: true,
+            ..Default::default()
         };
         let h = make_handle_with_stats("id-stats-all", "all_fields", 100.0, stats, true);
         let app = router_with_handles(vec![h]);
@@ -2132,6 +2216,7 @@ sink:
             errors: 0,
             in_gap: true,
             in_burst: false,
+            ..Default::default()
         };
         let h = make_handle_with_stats("id-stats-gap", "gap_test", 50.0, stats, true);
         let app = router_with_handles(vec![h]);
@@ -2164,6 +2249,7 @@ sink:
             errors: 5,
             in_gap: false,
             in_burst: false,
+            ..Default::default()
         };
         let h = make_handle_with_stats("id-stats-stopped", "stopped_test", 200.0, stats, false);
         let app = router_with_handles(vec![h]);
@@ -2249,6 +2335,7 @@ sink:
             errors: 0,
             in_gap: false,
             in_burst: false,
+            ..Default::default()
         };
         // target_rate = 500.0, but current_rate = 45.0 (different).
         let h = make_handle_with_stats("id-stats-rate", "rate_test", 500.0, stats, true);
