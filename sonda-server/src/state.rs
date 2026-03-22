@@ -33,3 +33,56 @@ impl Default for AppState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A freshly created AppState has an empty scenarios map.
+    #[test]
+    fn new_state_has_empty_scenarios() {
+        let state = AppState::new();
+        let scenarios = state.scenarios.read().expect("RwLock must not be poisoned");
+        assert!(
+            scenarios.is_empty(),
+            "new AppState must have an empty scenarios map"
+        );
+    }
+
+    /// AppState::default produces the same result as AppState::new.
+    #[test]
+    fn default_produces_empty_state() {
+        let state = AppState::default();
+        let scenarios = state.scenarios.read().expect("RwLock must not be poisoned");
+        assert!(
+            scenarios.is_empty(),
+            "default AppState must have an empty scenarios map"
+        );
+    }
+
+    /// Cloning AppState shares the same underlying Arc (not a deep copy).
+    #[test]
+    fn clone_shares_same_arc() {
+        let state1 = AppState::new();
+        let state2 = state1.clone();
+        // Both point to the same Arc.
+        assert!(
+            Arc::ptr_eq(&state1.scenarios, &state2.scenarios),
+            "cloned AppState must share the same Arc<RwLock<...>>"
+        );
+    }
+
+    /// AppState is Send + Sync (required for axum State extractor).
+    #[test]
+    fn app_state_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<AppState>();
+    }
+
+    /// AppState is Clone (required for axum State extractor).
+    #[test]
+    fn app_state_is_clone() {
+        fn assert_clone<T: Clone>() {}
+        assert_clone::<AppState>();
+    }
+}
