@@ -30,4 +30,5 @@ jobs:
             ci
             perf
             build
+            deps
           requireScope: false
