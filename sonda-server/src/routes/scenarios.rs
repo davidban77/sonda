@@ -1549,4 +1549,319 @@ sink:
         assert_eq!(json["name"], "my_scenario");
         assert_eq!(json["status"], "running");
     }
+
+    // ========================================================================
+    // DELETE /scenarios/:id tests
+    // ========================================================================
+
+    /// Helper to send a DELETE /scenarios/:id request.
+    async fn delete_scenario_req(app: axum::Router, id: &str) -> hyper::Response<axum::body::Body> {
+        let request = Request::builder()
+            .method("DELETE")
+            .uri(format!("/scenarios/{id}"))
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(request).await.unwrap()
+    }
+
+    // ---- DELETE running scenario -> thread exits, status "stopped" ----------
+
+    /// Start a running scenario, DELETE it, and verify the thread exits
+    /// with status "stopped".
+    #[tokio::test]
+    async fn delete_running_scenario_returns_stopped_status() {
+        // Thread runs for a long time (1000 events x 50ms = 50s) so it is
+        // definitely running when we hit DELETE.
+        let h = make_handle("id-del-run", "del_running", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-run").await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "DELETE a running scenario must return 200 OK"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["status"].as_str().unwrap(),
+            "stopped",
+            "DELETE a running scenario must return status 'stopped'"
+        );
+    }
+
+    // ---- DELETE returns final stats (total_events) -------------------------
+
+    /// DELETE returns total_events reflecting events emitted before stop.
+    #[tokio::test]
+    async fn delete_returns_final_stats_with_total_events() {
+        // Thread emits events every 10ms. Wait 200ms so some events accumulate.
+        let h = make_handle("id-del-stats", "del_stats", 1000, Duration::from_millis(10));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        // Let events accumulate.
+        thread::sleep(Duration::from_millis(200));
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-stats").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        let total_events = body["total_events"]
+            .as_u64()
+            .expect("total_events must be present and numeric");
+        assert!(
+            total_events > 0,
+            "DELETE must return final stats with total_events > 0, got {total_events}"
+        );
+    }
+
+    // ---- DELETE already-stopped scenario -> 200 OK -------------------------
+
+    /// DELETE on an already-stopped scenario returns 200 OK with status "stopped".
+    #[tokio::test]
+    async fn delete_already_stopped_returns_200_ok() {
+        let h = make_stopped_handle("id-del-stopped", "del_stopped");
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-stopped").await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "DELETE on already-stopped scenario must return 200 OK"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["status"].as_str().unwrap(),
+            "stopped",
+            "DELETE on already-stopped scenario must return status 'stopped'"
+        );
+    }
+
+    // ---- DELETE unknown ID -> 404 ------------------------------------------
+
+    /// DELETE on a nonexistent scenario ID returns 404.
+    #[tokio::test]
+    async fn delete_unknown_scenario_returns_404() {
+        let app = router_with_handles(vec![]);
+        let resp = delete_scenario_req(app, "nonexistent-id").await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "DELETE on unknown scenario ID must return 404"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str().unwrap(),
+            "not_found",
+            "404 response must have error field 'not_found'"
+        );
+        assert!(
+            body["detail"].as_str().unwrap().contains("nonexistent-id"),
+            "404 detail must include the requested ID"
+        );
+    }
+
+    // ---- DELETE response JSON shape: id, status, total_events ---------------
+
+    /// The DELETE response body has exactly three keys: id, status, total_events.
+    #[tokio::test]
+    async fn delete_response_has_expected_json_shape() {
+        let h = make_handle("id-del-shape", "del_shape", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-shape").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        let obj = body
+            .as_object()
+            .expect("response body must be a JSON object");
+
+        assert!(obj.contains_key("id"), "response must contain key 'id'");
+        assert!(
+            obj.contains_key("status"),
+            "response must contain key 'status'"
+        );
+        assert!(
+            obj.contains_key("total_events"),
+            "response must contain key 'total_events'"
+        );
+        assert_eq!(
+            obj.len(),
+            3,
+            "response must contain exactly 3 keys (id, status, total_events), got: {:?}",
+            obj.keys().collect::<Vec<_>>()
+        );
+    }
+
+    // ---- DELETE returns correct id in response ------------------------------
+
+    /// The DELETE response id field matches the requested scenario ID.
+    #[tokio::test]
+    async fn delete_response_id_matches_requested_id() {
+        let h = make_handle("id-del-match", "del_match", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-match").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["id"].as_str().unwrap(),
+            "id-del-match",
+            "response id must match the requested scenario ID"
+        );
+    }
+
+    // ---- DELETE idempotency: DELETE twice on same ID ------------------------
+
+    /// DELETE twice on the same ID returns 200 both times.
+    #[tokio::test]
+    async fn delete_twice_on_same_id_returns_200_both_times() {
+        let h = make_handle("id-del-twice", "del_twice", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        // First DELETE.
+        let app1 = router(state.clone());
+        let resp1 = delete_scenario_req(app1, "id-del-twice").await;
+        assert_eq!(
+            resp1.status(),
+            StatusCode::OK,
+            "first DELETE must return 200 OK"
+        );
+        let body1 = body_json(resp1).await;
+        assert_eq!(body1["status"].as_str().unwrap(), "stopped");
+
+        // Second DELETE on the same (now stopped) ID.
+        let app2 = router(state.clone());
+        let resp2 = delete_scenario_req(app2, "id-del-twice").await;
+        assert_eq!(
+            resp2.status(),
+            StatusCode::OK,
+            "second DELETE on same ID must return 200 OK (idempotent)"
+        );
+        let body2 = body_json(resp2).await;
+        assert_eq!(
+            body2["status"].as_str().unwrap(),
+            "stopped",
+            "second DELETE must also return status 'stopped'"
+        );
+    }
+
+    // ---- Contract: DeletedScenario serializes correctly ---------------------
+
+    /// DeletedScenario serializes to JSON with the expected structure.
+    #[test]
+    fn deleted_scenario_serializes_to_expected_json() {
+        let ds = DeletedScenario {
+            id: "del-123".to_string(),
+            status: "stopped".to_string(),
+            total_events: 42,
+        };
+        let json = serde_json::to_value(&ds).expect("must serialize");
+        assert_eq!(json["id"], "del-123");
+        assert_eq!(json["status"], "stopped");
+        assert_eq!(json["total_events"], 42);
+    }
+
+    /// DeletedScenario with force_stopped status serializes correctly.
+    #[test]
+    fn deleted_scenario_force_stopped_serializes_correctly() {
+        let ds = DeletedScenario {
+            id: "force-123".to_string(),
+            status: "force_stopped".to_string(),
+            total_events: 100,
+        };
+        let json = serde_json::to_value(&ds).expect("must serialize");
+        assert_eq!(json["status"], "force_stopped");
+        assert_eq!(json["total_events"], 100);
+    }
+
+    // ---- DELETE returns Content-Type application/json -----------------------
+
+    /// DELETE response has Content-Type application/json.
+    #[tokio::test]
+    async fn delete_scenario_returns_json_content_type() {
+        let h = make_handle("id-del-ct", "del_ct", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-ct").await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("DELETE response must have Content-Type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "DELETE Content-Type must be application/json, got: {ct}"
+        );
+    }
+
+    // ---- DELETE 404 returns JSON Content-Type ------------------------------
+
+    /// DELETE 404 response has Content-Type application/json.
+    #[tokio::test]
+    async fn delete_unknown_returns_json_content_type() {
+        let app = router_with_handles(vec![]);
+        let resp = delete_scenario_req(app, "missing-id").await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("404 response must have Content-Type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "404 Content-Type must be application/json, got: {ct}"
+        );
+    }
 }
