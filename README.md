@@ -923,6 +923,21 @@ a 10% baseline and a 95% spike, crossing a typical 90% alert threshold:
 sonda metrics --scenario examples/sequence-alert-test.yaml
 ```
 
+### `examples/victoriametrics-metrics.yaml`
+
+Push Prometheus text metrics directly to VictoriaMetrics via the HTTP import API. Requires the
+VictoriaMetrics compose stack (see [VictoriaMetrics Setup](#victoriametrics-setup)):
+
+```bash
+# Via CLI (targeting the exposed VM port on localhost)
+sonda metrics --scenario examples/victoriametrics-metrics.yaml
+
+# Via sonda-server (POST to the running container, which reaches VM on the Docker network)
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @examples/victoriametrics-metrics.yaml \
+  http://localhost:8080/scenarios
+```
+
 ### `examples/multi-scenario.yaml`
 
 Run both metric and log scenarios concurrently:
@@ -1115,6 +1130,87 @@ Two scenario files are provided specifically for the Docker stack:
 - **`examples/docker-alerts.yaml`** -- Sine wave (0-100) that crosses typical warning (70)
   and critical (90) thresholds. Includes bursts for spike simulation. Useful for testing
   alert rules in Prometheus or Alertmanager.
+
+### VictoriaMetrics Setup
+
+A dedicated [VictoriaMetrics compose stack](examples/docker-compose-victoriametrics.yml) is
+provided for evaluating Sonda with VictoriaMetrics as the metrics backend. It includes
+sonda-server, VictoriaMetrics (single-node), vmagent, and Grafana with a pre-provisioned
+datasource.
+
+**Start the stack:**
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml up -d
+```
+
+**Push metrics via sonda-server:**
+
+```bash
+# Verify sonda-server is running
+curl http://localhost:8080/health
+# {"status":"ok"}
+
+# Submit the VictoriaMetrics scenario
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @examples/victoriametrics-metrics.yaml \
+  http://localhost:8080/scenarios
+```
+
+**Push metrics via the CLI (from the host):**
+
+When running the CLI on your host machine (outside Docker), target the VictoriaMetrics port
+exposed at localhost:8428:
+
+```bash
+sonda metrics \
+  --name sonda_demo \
+  --rate 10 \
+  --duration 30s \
+  --value-mode sine \
+  --amplitude 40 \
+  --period-secs 30 \
+  --offset 60 \
+  --encoder prometheus_text \
+  --label job=sonda \
+  --label instance=local \
+  | curl -s --data-binary @- \
+    -H "Content-Type: text/plain" \
+    "http://localhost:8428/api/v1/import/prometheus"
+```
+
+**Verify data arrived in VictoriaMetrics:**
+
+```bash
+# List all Sonda-generated series
+curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
+
+# Query the latest value
+curl "http://localhost:8428/api/v1/query?query=sonda_http_request_duration_ms"
+```
+
+You can also use the VictoriaMetrics built-in UI at http://localhost:8428/vmui or open
+Grafana at http://localhost:3000, go to Explore, select the "VictoriaMetrics" datasource,
+and run PromQL queries.
+
+**Known limitation -- vmagent relay:**
+
+The stack includes vmagent, which can scrape Prometheus targets and relay data to
+VictoriaMetrics. However, vmagent's remote write relay uses the Prometheus remote write
+protocol (protobuf + snappy compression). Sonda does not yet support protobuf remote write
+encoding -- this is planned for Phase 7. For now, push metrics directly to VictoriaMetrics
+using the `http_push` sink with Prometheus text format, which works without vmagent in the
+middle.
+
+**Tear down:**
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml down -v
+```
+
+See [`examples/docker-compose-victoriametrics.yml`](examples/docker-compose-victoriametrics.yml)
+and [`examples/victoriametrics-metrics.yaml`](examples/victoriametrics-metrics.yaml) for the
+full configuration.
 
 ---
 

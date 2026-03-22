@@ -1,0 +1,18 @@
+# Grafana datasource provisioning for the VictoriaMetrics compose stack.
+#
+# This file is mounted into Grafana at:
+#   /etc/grafana/provisioning/datasources/datasources.yml
+#
+# It pre-configures VictoriaMetrics as the default Prometheus-compatible
+# datasource so you can explore Sonda-generated metrics immediately after
+# running `docker compose up`.
+
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    type: prometheus
+    access: proxy
+    url: http://victoriametrics:8428
+    isDefault: true
+    editable: true

@@ -1,0 +1,145 @@
+# VictoriaMetrics + Sonda compose stack
+#
+# A self-contained setup for evaluating Sonda with VictoriaMetrics as the
+# metrics backend and Grafana for visualization.
+#
+# Quick start:
+#
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Then push a scenario via the sonda-server API:
+#
+#   curl -X POST -H "Content-Type: text/yaml" \
+#     --data-binary @examples/victoriametrics-metrics.yaml \
+#     http://localhost:8080/scenarios
+#
+# Verify data arrived in VictoriaMetrics:
+#
+#   curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
+#
+# Open Grafana at http://localhost:3000 (anonymous access, no login required)
+# to explore metrics with the pre-configured VictoriaMetrics datasource.
+#
+# Tear down:
+#
+#   docker compose -f examples/docker-compose-victoriametrics.yml down -v
+
+services:
+  # ---------------------------------------------------------------------------
+  # sonda-server: the Sonda HTTP control plane.
+  #
+  # Accepts scenario YAML via POST /scenarios and runs them in background
+  # threads. Scenario files in ./examples are mounted at /scenarios inside
+  # the container for reference, but scenarios are submitted via the API.
+  # ---------------------------------------------------------------------------
+  sonda-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/scenarios:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/sonda", "metrics", "--name", "healthcheck", "--rate", "1", "--duration", "1ms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # VictoriaMetrics: single-node time series database.
+  #
+  # Accepts Prometheus text exposition format via HTTP import:
+  #   POST http://victoriametrics:8428/api/v1/import/prometheus
+  #
+  # Also accepts InfluxDB line protocol:
+  #   POST http://victoriametrics:8428/write
+  #
+  # Query via the standard Prometheus API:
+  #   GET http://localhost:8428/api/v1/query?query=<expr>
+  #
+  # Built-in UI (vmui) available at:
+  #   http://localhost:8428/vmui
+  #
+  # Data is persisted in the vm-data volume so metrics survive container
+  # restarts. Retention is set to 7 days.
+  # ---------------------------------------------------------------------------
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.108.1
+    ports:
+      - "8428:8428"
+    command:
+      - "--storageDataPath=/storage"
+      - "--httpListenAddr=:8428"
+      - "--retentionPeriod=7d"
+    volumes:
+      - vm-data:/storage
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # vmagent: metrics relay agent from VictoriaMetrics.
+  #
+  # vmagent can scrape Prometheus targets and forward metrics to a remote
+  # backend. Here it is configured to relay incoming data to VictoriaMetrics.
+  #
+  # NOTE: vmagent's remote write relay uses the Prometheus remote write
+  # protocol (protobuf + snappy). Sonda does not yet support protobuf
+  # remote write encoding (planned for Phase 7). For now, push metrics
+  # directly to VictoriaMetrics using the http_push sink with Prometheus
+  # text format -- this works without vmagent in the middle.
+  #
+  # vmagent is included here so you can experiment with scrape configs
+  # and understand the architecture. It will work for scraping targets
+  # that expose /metrics endpoints in Prometheus text format.
+  # ---------------------------------------------------------------------------
+  vmagent:
+    image: victoriametrics/vmagent:v1.108.1
+    ports:
+      - "8429:8429"
+    command:
+      - "--remoteWrite.url=http://victoriametrics:8428/api/v1/write"
+      - "--httpListenAddr=:8429"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8429/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Grafana: dashboards and metric exploration.
+  #
+  # Anonymous access is enabled so you can open http://localhost:3000 without
+  # logging in. The VictoriaMetrics datasource is pre-provisioned -- go to
+  # Explore, select "VictoriaMetrics", and run PromQL queries.
+  #
+  # Admin credentials (if needed): admin / admin
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.5.2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+
+volumes:
+  vm-data:
