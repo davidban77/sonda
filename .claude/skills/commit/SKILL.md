@@ -1,6 +1,6 @@
 # Skill: Commit
 
-Stage and commit changes. Do NOT append a `Co-Authored-By` trailer.
+Stage and commit changes.
 
 ## Steps
 
@@ -21,7 +21,6 @@ Stage and commit changes. Do NOT append a `Co-Authored-By` trailer.
 
 ## Rules
 
-- No `Co-Authored-By` trailer.
 - No `--no-verify` or `--no-gpg-sign`.
 - Never amend unless explicitly asked.
 - Do not push unless explicitly asked.
