@@ -2,7 +2,7 @@
 name: tester
 description: Writes and runs tests for implemented code. Use after the implementer has completed a slice. Focuses on correctness, edge cases, and determinism.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 permissionMode: acceptEdits
 ---
 

@@ -2,7 +2,7 @@
 name: implementer
 description: Implements production code for a single slice. Use when starting work on a new slice. Writes code, does not write tests.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
+model: opus
 permissionMode: acceptEdits
 isolation: worktree
 ---
