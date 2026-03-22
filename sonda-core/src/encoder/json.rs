@@ -18,7 +18,6 @@
 //! pulling in `chrono` — derived directly from [`std::time::SystemTime`] arithmetic.
 
 use std::collections::BTreeMap;
-use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 
@@ -74,56 +73,13 @@ struct JsonLog<'a> {
     fields: BTreeMap<&'a str, &'a str>,
 }
 
-/// Format a [`std::time::SystemTime`] as an RFC 3339 string with millisecond precision.
-///
-/// Produces strings of the form `2026-03-20T12:00:00.000Z`. Computed entirely from
-/// `UNIX_EPOCH` arithmetic — no external crate required.
-///
-/// Returns an error if the timestamp predates the Unix epoch.
-fn format_rfc3339_millis(ts: std::time::SystemTime) -> Result<String, SondaError> {
-    let duration = ts
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?;
-
-    let total_secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-
-    // Decompose total_secs into calendar fields.
-    // Algorithm: Gregorian calendar conversion from Unix timestamp.
-    // Reference: https://howardhinnant.github.io/date_algorithms.html (civil_from_days)
-
-    let days = total_secs / 86400;
-    let time_of_day = total_secs % 86400;
-
-    let hour = time_of_day / 3600;
-    let minute = (time_of_day % 3600) / 60;
-    let second = time_of_day % 60;
-
-    // civil_from_days: converts days since Unix epoch to (year, month, day)
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-
-    Ok(format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hour, minute, second, millis
-    ))
-}
-
 impl Encoder for JsonLines {
     /// Encode a metric event as a JSON object and append it to `buf`, followed by `\n`.
     ///
     /// Uses `serde_json::to_writer` to write directly into the caller-provided buffer,
     /// avoiding an intermediate `String` allocation.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
-        let timestamp = format_rfc3339_millis(event.timestamp)?;
+        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
 
         let labels: BTreeMap<&str, &str> = event
             .labels
@@ -152,7 +108,7 @@ impl Encoder for JsonLines {
     ///
     /// Uses `serde_json::to_writer` to write directly into the caller-provided buffer.
     fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
-        let timestamp = format_rfc3339_millis(event.timestamp)?;
+        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
 
         // Serialize severity to its lowercase string representation using serde.
         let severity_str = match event.severity {
@@ -530,7 +486,7 @@ mod tests {
 
     #[test]
     fn format_rfc3339_millis_epoch_returns_correct_string() {
-        let result = format_rfc3339_millis(UNIX_EPOCH).unwrap();
+        let result = super::super::format_rfc3339_millis(UNIX_EPOCH).unwrap();
         assert_eq!(result, "1970-01-01T00:00:00.000Z");
     }
 
@@ -538,14 +494,14 @@ mod tests {
     fn format_rfc3339_millis_known_timestamp_2026_03_20_returns_correct_string() {
         // 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "2026-03-20T12:00:00.000Z");
     }
 
     #[test]
     fn format_rfc3339_millis_preserves_milliseconds() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_456);
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert!(
             result.ends_with(".456Z"),
             "must end with .456Z but got: {result}"
@@ -556,14 +512,14 @@ mod tests {
     fn format_rfc3339_millis_midnight_boundary() {
         // End of day: 23:59:59.999
         let ts = UNIX_EPOCH + Duration::from_millis(86_399_999);
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "1970-01-01T23:59:59.999Z");
     }
 
     #[test]
     fn format_rfc3339_millis_start_of_day_plus_one_second() {
         let ts = UNIX_EPOCH + Duration::from_secs(86400); // 1970-01-02T00:00:00.000Z
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "1970-01-02T00:00:00.000Z");
     }
 
@@ -573,7 +529,7 @@ mod tests {
         // Days from epoch to 2024-02-29: calculate via known timestamp
         // 2024-02-29T00:00:00Z = 1709164800 seconds
         let ts = UNIX_EPOCH + Duration::from_secs(1_709_164_800);
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "2024-02-29T00:00:00.000Z");
     }
 
@@ -581,7 +537,7 @@ mod tests {
     fn format_rfc3339_millis_end_of_year_dec_31() {
         // 2023-12-31T23:59:59.999Z = 1704067199.999
         let ts = UNIX_EPOCH + Duration::from_millis(1_704_067_199_999);
-        let result = format_rfc3339_millis(ts).unwrap();
+        let result = super::super::format_rfc3339_millis(ts).unwrap();
         assert_eq!(result, "2023-12-31T23:59:59.999Z");
     }
 

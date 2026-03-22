@@ -22,8 +22,6 @@
 //! No external crates are needed — the format is constructed entirely via `write!`
 //! into the caller-provided buffer.
 
-use std::time::UNIX_EPOCH;
-
 use crate::model::log::{LogEvent, Severity};
 use crate::model::metric::MetricEvent;
 use crate::SondaError;
@@ -59,43 +57,6 @@ fn severity_to_syslog(severity: Severity) -> u8 {
         Severity::Debug => 7, // Debug
         Severity::Trace => 7, // Debug (no finer-grained syslog severity)
     }
-}
-
-/// Formats a [`std::time::SystemTime`] as an RFC 3339 timestamp string with millisecond
-/// precision suitable for use in a syslog header.
-///
-/// Returns an error if the timestamp predates the Unix epoch.
-fn format_syslog_timestamp(ts: std::time::SystemTime) -> Result<String, SondaError> {
-    let duration = ts
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?;
-
-    let total_secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-
-    let days = total_secs / 86400;
-    let time_of_day = total_secs % 86400;
-
-    let hour = time_of_day / 3600;
-    let minute = (time_of_day % 3600) / 60;
-    let second = time_of_day % 60;
-
-    // civil_from_days: converts days since Unix epoch to (year, month, day).
-    // Algorithm: https://howardhinnant.github.io/date_algorithms.html
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-
-    Ok(format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z",
-    ))
 }
 
 /// Encodes [`LogEvent`]s in RFC 5424 syslog format.
@@ -153,7 +114,7 @@ impl Encoder for Syslog {
     fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let syslog_severity = severity_to_syslog(event.severity);
         let priority = FACILITY_USER * 8 + syslog_severity;
-        let timestamp = format_syslog_timestamp(event.timestamp)?;
+        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
 
         // RFC 5424 HEADER: <PRI>VERSION SP TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID
         // RFC 5424 MSG: SP [STRUCTURED-DATA] SP MSG
