@@ -14,7 +14,10 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health))
-        .route("/scenarios", get(scenarios::list_scenarios))
+        .route(
+            "/scenarios",
+            get(scenarios::list_scenarios).post(scenarios::post_scenario),
+        )
         .route("/scenarios/:id", get(scenarios::get_scenario))
         .with_state(state)
 }

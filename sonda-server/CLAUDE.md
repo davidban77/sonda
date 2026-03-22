@@ -21,25 +21,26 @@ src/
 ├── routes/
 │   ├── mod.rs          ← router() function wires all routes; re-exports submodules
 │   ├── health.rs       ← GET /health → {"status": "ok"}
-│   └── scenarios.rs    ← GET /scenarios (list), GET /scenarios/:id (inspect)
+│   └── scenarios.rs    ← POST /scenarios (create), GET /scenarios (list),
+│                         GET /scenarios/:id (inspect with stats)
+│                         parse_body(), parse_yaml_body(), parse_json_body(),
+│                         post_scenario(), list_scenarios(), get_scenario()
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
 ```
 
 ## Implemented API Surface (as of Slice 3.3)
 
-| Method | Path             | Description                                    |
-|--------|------------------|------------------------------------------------|
-| GET    | /health          | Health check — always returns 200 OK           |
-| GET    | /scenarios       | List all scenarios with id, name, status, elapsed |
-| GET    | /scenarios/:id   | Inspect a scenario: detail + live stats        |
+| Method | Path             | Description                                             |
+|--------|------------------|---------------------------------------------------------|
+| GET    | /health          | Health check — always returns 200 OK                    |
+| POST   | /scenarios       | Start a new scenario from YAML or JSON body, returns ID |
+| GET    | /scenarios       | List all scenarios with id, name, status, elapsed       |
+| GET    | /scenarios/:id   | Inspect a scenario: detail + live stats                 |
 
-## Planned API Surface (Slices 3.2–3.5)
+## Planned API Surface (Slices 3.4–3.5)
 
 | Method | Path                   | Description                                    |
 |--------|------------------------|------------------------------------------------|
-| POST   | /scenarios             | Start a new scenario from YAML/JSON body       |
-| GET    | /scenarios             | List all running scenarios                     |
-| GET    | /scenarios/:id         | Inspect a scenario: config, tick count, errors |
 | DELETE | /scenarios/:id         | Stop and remove a running scenario             |
 | GET    | /scenarios/:id/stats   | Live stats: rate, total events, gap/burst state|
 
