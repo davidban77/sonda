@@ -10,6 +10,7 @@ pub mod constant;
 pub mod log_replay;
 pub mod log_template;
 pub mod sawtooth;
+pub mod sequence;
 pub mod sine;
 pub mod uniform;
 
@@ -21,6 +22,7 @@ use self::constant::Constant;
 use self::log_replay::LogReplayGenerator;
 use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
+use self::sequence::SequenceGenerator;
 use self::sine::Sine;
 use self::uniform::UniformRandom;
 use crate::model::log::{LogEvent, Severity};
@@ -88,28 +90,49 @@ pub enum GeneratorConfig {
         /// Duration of one full ramp in seconds.
         period_secs: f64,
     },
+    /// A generator that steps through an explicit sequence of values.
+    #[serde(rename = "sequence")]
+    Sequence {
+        /// The ordered list of values to step through. Must not be empty.
+        values: Vec<f64>,
+        /// When true (default), the sequence cycles. When false, the last value
+        /// is returned for all ticks beyond the sequence length.
+        repeat: Option<bool>,
+    },
 }
 
 /// Construct a `Box<dyn ValueGenerator>` from the given configuration.
 ///
 /// The `rate` parameter (events per second) is required by time-based generators
 /// (`Sine`, `Sawtooth`) to convert `period_secs` into period ticks.
-pub fn create_generator(config: &GeneratorConfig, rate: f64) -> Box<dyn ValueGenerator> {
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] if the generator configuration is invalid
+/// (e.g., an empty values list for the sequence generator).
+pub fn create_generator(
+    config: &GeneratorConfig,
+    rate: f64,
+) -> Result<Box<dyn ValueGenerator>, SondaError> {
     match config {
-        GeneratorConfig::Constant { value } => Box::new(Constant::new(*value)),
+        GeneratorConfig::Constant { value } => Ok(Box::new(Constant::new(*value))),
         GeneratorConfig::Uniform { min, max, seed } => {
-            Box::new(UniformRandom::new(*min, *max, seed.unwrap_or(0)))
+            Ok(Box::new(UniformRandom::new(*min, *max, seed.unwrap_or(0))))
         }
         GeneratorConfig::Sine {
             amplitude,
             period_secs,
             offset,
-        } => Box::new(Sine::new(*amplitude, *period_secs, *offset, rate)),
+        } => Ok(Box::new(Sine::new(*amplitude, *period_secs, *offset, rate))),
         GeneratorConfig::Sawtooth {
             min,
             max,
             period_secs,
-        } => Box::new(Sawtooth::new(*min, *max, *period_secs, rate)),
+        } => Ok(Box::new(Sawtooth::new(*min, *max, *period_secs, rate))),
+        GeneratorConfig::Sequence { values, repeat } => Ok(Box::new(SequenceGenerator::new(
+            values.clone(),
+            repeat.unwrap_or(true),
+        )?)),
     }
 }
 
@@ -278,7 +301,7 @@ mod tests {
     #[test]
     fn factory_constant_returns_configured_value() {
         let config = GeneratorConfig::Constant { value: 1.0 };
-        let gen = create_generator(&config, 100.0);
+        let gen = create_generator(&config, 100.0).expect("constant factory");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1_000_000), 1.0);
     }
@@ -290,7 +313,7 @@ mod tests {
             max: 1.0,
             seed: Some(7),
         };
-        let gen = create_generator(&config, 100.0);
+        let gen = create_generator(&config, 100.0).expect("uniform factory");
         for tick in 0..1000 {
             let v = gen.value(tick);
             assert!(
@@ -313,8 +336,8 @@ mod tests {
             max: 1.0,
             seed: Some(0),
         };
-        let gen_none = create_generator(&config_none, 1.0);
-        let gen_zero = create_generator(&config_zero, 1.0);
+        let gen_none = create_generator(&config_none, 1.0).expect("uniform none factory");
+        let gen_zero = create_generator(&config_zero, 1.0).expect("uniform zero factory");
         for tick in 0..100 {
             assert_eq!(
                 gen_none.value(tick),
@@ -331,7 +354,7 @@ mod tests {
             period_secs: 10.0,
             offset: 3.0,
         };
-        let gen = create_generator(&config, 1.0);
+        let gen = create_generator(&config, 1.0).expect("sine factory");
         assert!(
             (gen.value(0) - 3.0).abs() < 1e-10,
             "sine factory: value(0) must equal offset"
@@ -345,12 +368,63 @@ mod tests {
             max: 15.0,
             period_secs: 10.0,
         };
-        let gen = create_generator(&config, 1.0);
+        let gen = create_generator(&config, 1.0).expect("sawtooth factory");
         assert_eq!(
             gen.value(0),
             5.0,
             "sawtooth factory: value(0) must equal min"
         );
+    }
+
+    // ---- Sequence factory tests -----------------------------------------------
+
+    #[test]
+    fn factory_sequence_repeat_true_creates_working_generator() {
+        let config = GeneratorConfig::Sequence {
+            values: vec![1.0, 2.0, 3.0],
+            repeat: Some(true),
+        };
+        let gen = create_generator(&config, 1.0).expect("sequence factory repeat=true");
+        assert_eq!(gen.value(0), 1.0);
+        assert_eq!(gen.value(1), 2.0);
+        assert_eq!(gen.value(2), 3.0);
+        assert_eq!(gen.value(3), 1.0, "should wrap around");
+    }
+
+    #[test]
+    fn factory_sequence_repeat_false_creates_working_generator() {
+        let config = GeneratorConfig::Sequence {
+            values: vec![1.0, 2.0, 3.0],
+            repeat: Some(false),
+        };
+        let gen = create_generator(&config, 1.0).expect("sequence factory repeat=false");
+        assert_eq!(gen.value(0), 1.0);
+        assert_eq!(gen.value(4), 3.0, "should clamp to last value");
+    }
+
+    #[test]
+    fn factory_sequence_repeat_none_defaults_to_true() {
+        let config = GeneratorConfig::Sequence {
+            values: vec![1.0, 2.0],
+            repeat: None,
+        };
+        let gen = create_generator(&config, 1.0).expect("sequence factory repeat=None");
+        // With repeat defaulting to true, tick=2 on a 2-element seq should wrap to index 0
+        assert_eq!(
+            gen.value(2),
+            1.0,
+            "repeat=None should default to true (cycling)"
+        );
+    }
+
+    #[test]
+    fn factory_sequence_empty_values_returns_error() {
+        let config = GeneratorConfig::Sequence {
+            values: vec![],
+            repeat: Some(true),
+        };
+        let result = create_generator(&config, 1.0);
+        assert!(result.is_err(), "empty sequence must return an error");
     }
 
     // ---- Config deserialization tests ----------------------------------------
@@ -432,6 +506,102 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deserialize_sequence_config_with_repeat() {
+        let yaml = "type: sequence\nvalues: [1.0, 2.0, 3.0]\nrepeat: true\n";
+        let config: GeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize sequence with repeat");
+        match config {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values, vec![1.0, 2.0, 3.0]);
+                assert_eq!(repeat, Some(true));
+            }
+            _ => panic!("expected Sequence variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_sequence_config_without_repeat() {
+        let yaml = "type: sequence\nvalues: [10.0, 20.0]\n";
+        let config: GeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize sequence without repeat");
+        match config {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values, vec![10.0, 20.0]);
+                assert_eq!(repeat, None, "repeat should be None when omitted");
+            }
+            _ => panic!("expected Sequence variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_sequence_config_repeat_false() {
+        let yaml = "type: sequence\nvalues: [5.0]\nrepeat: false\n";
+        let config: GeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize sequence repeat=false");
+        match config {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values, vec![5.0]);
+                assert_eq!(repeat, Some(false));
+            }
+            _ => panic!("expected Sequence variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_sequence_config_integer_values() {
+        // YAML integers should coerce to f64
+        let yaml = "type: sequence\nvalues: [10, 20, 30]\nrepeat: true\n";
+        let config: GeneratorConfig =
+            serde_yaml::from_str(yaml).expect("deserialize sequence with integer values");
+        match config {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values, vec![10.0, 20.0, 30.0]);
+                assert_eq!(repeat, Some(true));
+            }
+            _ => panic!("expected Sequence variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_example_yaml_scenario_file() {
+        // Validate the example file from examples/sequence-alert-test.yaml
+        let yaml = "\
+name: cpu_spike_test
+rate: 1
+duration: 80s
+
+generator:
+  type: sequence
+  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+  repeat: true
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+";
+        let config: crate::config::ScenarioConfig =
+            serde_yaml::from_str(yaml).expect("example YAML must deserialize");
+        assert_eq!(config.name, "cpu_spike_test");
+        assert_eq!(config.rate, 1.0);
+        assert_eq!(config.duration, Some("80s".to_string()));
+        match &config.generator {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values.len(), 16);
+                assert_eq!(values[0], 10.0);
+                assert_eq!(values[5], 95.0);
+                assert_eq!(values[10], 10.0);
+                assert_eq!(*repeat, Some(true));
+            }
+            _ => panic!("expected Sequence generator variant in example YAML"),
+        }
+    }
+
     // ---- Send + Sync contract tests ------------------------------------------
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -444,6 +614,7 @@ mod tests {
         assert_send_sync::<crate::generator::sine::Sine>();
         assert_send_sync::<crate::generator::sawtooth::Sawtooth>();
         assert_send_sync::<crate::generator::constant::Constant>();
+        assert_send_sync::<crate::generator::sequence::SequenceGenerator>();
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------
