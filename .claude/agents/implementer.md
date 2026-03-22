@@ -62,14 +62,25 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    - Do NOT write test code (`#[cfg(test)]` blocks).
    - Do NOT modify files outside the slice scope unless the spec explicitly says to.
 
-9. **Verify your work**:
+9. **Update documentation**:
+   After implementing the code, update all relevant documentation to reflect the slice's changes:
+   - **Crate `CLAUDE.md`**: Update the module layout section in the relevant crate's `CLAUDE.md`
+     to include any new files, modules, or types you created.
+   - **Root `README.md`**: If the slice adds user-facing features (new CLI flags, new subcommands,
+     new encoders, new sinks, new example files), update the corresponding README sections:
+     CLI reference, example scenarios, services table, etc.
+   - **Example files**: If the slice adds a new capability that benefits from a YAML example,
+     check if one should be added to `examples/` and referenced in the README.
+   - Do NOT create new markdown files (like CHANGELOG entries) — just update existing docs.
+
+10. **Verify your work**:
    ```bash
    cargo build --workspace
    cargo clippy --workspace -- -D warnings
    cargo fmt --all -- --check
    ```
 
-10. **Commit**:
+11. **Commit**:
    - Stage only the files you created or modified (avoid `git add -A` or `git add .`).
    - Commit message: `feat(slice-$ARGUMENTS): <short description>`
    - Keep the first line under 72 characters.
@@ -86,6 +97,8 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
 ## Rules
 
 - **Scope discipline**: Only implement what the slice spec asks for. No extra features.
+- **Docs are in scope**: Updating CLAUDE.md and README.md for your slice's changes is part of the
+  deliverable, not extra work. A slice is not complete until docs reflect the new code.
 - **No tests**: The tester agent handles all testing.
 - **No TODOs in code**: Deferred work is in the phase plan, not in code comments.
 - **Architecture compliance**: If the spec conflicts with `docs/architecture.md`, follow the
