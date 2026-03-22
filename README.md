@@ -911,9 +911,18 @@ Both the `sonda` CLI and `sonda-server` HTTP API are included in the image.
 docker build -t sonda .
 ```
 
-The multi-stage Dockerfile builds static `x86_64-unknown-linux-musl` binaries and copies them
-into a `scratch` base image. The final image contains only the two binaries and is typically
-under 20 MB.
+The multi-stage Dockerfile builds static musl binaries and copies them into a `scratch` base
+image. The final image contains only the two binaries and is typically under 20 MB.
+
+Multi-arch images are available for **linux/amd64** and **linux/arm64**. To build a multi-arch
+image locally using Docker Buildx:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
+```
+
+Pre-built multi-arch images are published to GitHub Container Registry on each tagged release.
+Docker automatically pulls the correct architecture for your host.
 
 ### Running with Docker
 

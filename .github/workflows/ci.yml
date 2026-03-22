@@ -86,6 +86,26 @@ jobs:
         run: cargo test -p sonda-server --test integration -- --nocapture
         timeout-minutes: 5
 
+  docker-build:
+    name: Docker Build (multi-arch verify)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   no-default-features:
     name: Test sonda-core without default features
     runs-on: ubuntu-latest
