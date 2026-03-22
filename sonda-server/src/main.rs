@@ -1,9 +1,78 @@
-//! sonda-server — HTTP control plane (post-MVP).
+//! sonda-server — HTTP control plane for the Sonda telemetry generator.
 //!
-//! This binary is scaffolded but not implemented until Phase 3.
+//! Exposes a REST API that allows scenarios to be started, inspected, and
+//! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
-fn main() {
-    println!("sonda-server is not yet implemented.");
-    println!("See docs/phase-3-server.md for the implementation plan.");
-    std::process::exit(1);
+mod routes;
+mod state;
+
+use std::net::SocketAddr;
+
+use anyhow::Context;
+use clap::Parser;
+use tracing::info;
+
+use crate::state::AppState;
+
+/// Command-line arguments for sonda-server.
+#[derive(Debug, Parser)]
+#[command(name = "sonda-server", about = "HTTP control plane for Sonda")]
+struct Args {
+    /// Port to listen on.
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+
+    /// Address to bind to.
+    #[arg(long, default_value = "0.0.0.0")]
+    bind: String,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialise structured logging. Respects RUST_LOG env var.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let args = Args::parse();
+
+    let bind_addr: SocketAddr = format!("{}:{}", args.bind, args.port)
+        .parse()
+        .with_context(|| format!("invalid bind address: {}:{}", args.bind, args.port))?;
+
+    let state = AppState::new();
+    let app = routes::router(state.clone());
+
+    let listener = tokio::net::TcpListener::bind(bind_addr)
+        .await
+        .with_context(|| format!("failed to bind to {bind_addr}"))?;
+
+    info!(addr = %bind_addr, "sonda-server listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(state))
+        .await
+        .context("server error")?;
+
+    info!("sonda-server shut down cleanly");
+    Ok(())
+}
+
+/// Wait for Ctrl+C, then stop all running scenarios and signal shutdown.
+async fn shutdown_signal(state: AppState) {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for ctrl_c signal");
+
+    info!("shutdown signal received — stopping all running scenarios");
+
+    // Stop every running scenario so their threads exit cleanly.
+    if let Ok(scenarios) = state.scenarios.read() {
+        for handle in scenarios.values() {
+            handle.stop();
+        }
+    }
 }

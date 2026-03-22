@@ -1,8 +1,5 @@
 # sonda-server — HTTP Control Plane
 
-> **Status: Post-MVP.** This crate is scaffolded but not implemented until Phase 3.
-> Do not add dependencies or code here until Phases 0–2 are complete.
-
 This is the binary crate for the HTTP REST API. It allows scenarios to be started, inspected, and
 stopped over HTTP — enabling integration into CI pipelines, test harnesses, and dashboards.
 
@@ -12,20 +9,28 @@ The API mirrors the CLI. Every endpoint corresponds to an operation that is also
 command line. If a scenario cannot be expressed in YAML, it cannot be run via the API. This keeps the
 two surfaces in sync and prevents behavior drift.
 
-## Planned Module Layout
+No business logic lives in this crate. All scenario validation and launch logic is delegated to
+sonda-core via `validate_entry` and `launch_scenario`. The server crate is pure HTTP plumbing.
+
+## Module Layout
 
 ```
 src/
-├── main.rs             ← entrypoint, axum router setup, tokio runtime
+├── main.rs             ← entrypoint: CLI arg parsing, axum router setup, tokio runtime,
+│                         graceful shutdown (Ctrl+C stops all running scenarios)
 ├── routes/
-│   ├── mod.rs
-│   ├── scenarios.rs    ← POST/GET/DELETE /scenarios, GET /scenarios/:id
-│   └── stats.rs        ← GET /scenarios/:id/stats
-├── state.rs            ← shared app state (running scenarios, handles)
-└── config.rs           ← server config: port, bind address, log level
+│   ├── mod.rs          ← router() function wires all routes; re-exports submodules
+│   └── health.rs       ← GET /health → {"status": "ok"}
+└── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
 ```
 
-## Planned API Surface
+## Implemented API Surface (as of Slice 3.1)
+
+| Method | Path     | Description                          |
+|--------|----------|--------------------------------------|
+| GET    | /health  | Health check — always returns 200 OK |
+
+## Planned API Surface (Slices 3.2–3.5)
 
 | Method | Path                   | Description                                    |
 |--------|------------------------|------------------------------------------------|
@@ -37,23 +42,28 @@ src/
 
 ## Concurrency Model
 
-Each scenario runs on a dedicated thread (spawned via `std::thread::spawn`). The axum handler
-communicates with scenario threads via channels. This keeps sonda-core synchronous while the server
-handles HTTP I/O asynchronously via tokio.
+Each scenario runs on a dedicated thread (spawned by `sonda_core::schedule::launch::launch_scenario`).
+The axum handler stores and queries `ScenarioHandle` instances from sonda-core. This keeps sonda-core
+synchronous while the server handles HTTP I/O asynchronously via tokio.
+
+## Startup
+
+```
+cargo run -p sonda-server -- --port 8080 --bind 0.0.0.0
+```
+
+Respects `RUST_LOG` env var for log level (default: `info`).
 
 ## Dependencies
 
-This crate depends on:
-- `sonda-core` (workspace dependency)
-- `axum` for HTTP routing
-- `tokio` with full features for async runtime
-- `serde` + `serde_json` for request/response bodies
-- `anyhow` for error handling
-
-## When to Start
-
-Do not begin implementation until:
-- sonda-core has stable generator, encoder, and sink traits
-- The scenario runner is working and tested
-- At least two encoders and two sinks are implemented
-- Multi-scenario concurrency (Phase 2) is validated with threads + channels
+| Crate              | Purpose                                                   |
+|--------------------|-----------------------------------------------------------|
+| `sonda-core`       | All scenario lifecycle logic (`launch_scenario`, etc.)    |
+| `axum`             | HTTP routing and handler infrastructure                   |
+| `tokio`            | Async runtime (full features)                             |
+| `serde` + `serde_json` + `serde_yaml` | Request/response serialization       |
+| `anyhow`           | Error handling in binary code                             |
+| `clap`             | CLI argument parsing                                      |
+| `tower-http`       | CORS and trace middleware                                 |
+| `tracing` + `tracing-subscriber` | Structured logging                      |
+| `uuid`             | Generating scenario IDs                                   |

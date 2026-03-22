@@ -803,6 +803,52 @@ sonda/
 
 ---
 
+## sonda-server — HTTP Control Plane
+
+`sonda-server` exposes a REST API for starting, inspecting, and stopping scenarios over HTTP.
+It is useful for integrating Sonda into CI pipelines, test harnesses, or dashboards without shell
+access.
+
+### Starting the server
+
+```bash
+# Build and run on the default port (8080)
+cargo run -p sonda-server
+
+# Specify a custom port and bind address
+cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
+```
+
+The server logs bind address and status to stderr using structured `tracing` output. The log
+level can be controlled via the `RUST_LOG` environment variable (default: `info`):
+
+```bash
+RUST_LOG=debug cargo run -p sonda-server -- --port 8080
+```
+
+Press Ctrl+C for a graceful shutdown — the server signals all running scenarios to stop before
+exiting.
+
+### Health check
+
+```bash
+curl http://localhost:8080/health
+# {"status":"ok"}
+```
+
+### API endpoints (implemented by slice)
+
+| Method | Path                   | Slice | Description                                |
+|--------|------------------------|-------|--------------------------------------------|
+| GET    | `/health`              | 3.1   | Health check                               |
+| POST   | `/scenarios`           | 3.2   | Start a new scenario from YAML/JSON body   |
+| GET    | `/scenarios`           | 3.3   | List all running scenarios                 |
+| GET    | `/scenarios/:id`       | 3.3   | Inspect a scenario: config, stats, elapsed |
+| DELETE | `/scenarios/:id`       | 3.4   | Stop and remove a running scenario         |
+| GET    | `/scenarios/:id/stats` | 3.5   | Live stats: rate, events, gap/burst state  |
+
+---
+
 ## Development
 
 ```bash
