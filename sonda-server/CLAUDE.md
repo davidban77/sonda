@@ -20,15 +20,18 @@ src/
 │                         graceful shutdown (Ctrl+C stops all running scenarios)
 ├── routes/
 │   ├── mod.rs          ← router() function wires all routes; re-exports submodules
-│   └── health.rs       ← GET /health → {"status": "ok"}
+│   ├── health.rs       ← GET /health → {"status": "ok"}
+│   └── scenarios.rs    ← GET /scenarios (list), GET /scenarios/:id (inspect)
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
 ```
 
-## Implemented API Surface (as of Slice 3.1)
+## Implemented API Surface (as of Slice 3.3)
 
-| Method | Path     | Description                          |
-|--------|----------|--------------------------------------|
-| GET    | /health  | Health check — always returns 200 OK |
+| Method | Path             | Description                                    |
+|--------|------------------|------------------------------------------------|
+| GET    | /health          | Health check — always returns 200 OK           |
+| GET    | /scenarios       | List all scenarios with id, name, status, elapsed |
+| GET    | /scenarios/:id   | Inspect a scenario: detail + live stats        |
 
 ## Planned API Surface (Slices 3.2–3.5)
 

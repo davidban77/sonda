@@ -1,6 +1,7 @@
 //! HTTP route definitions for sonda-server.
 
 pub mod health;
+pub mod scenarios;
 
 use axum::{routing::get, Router};
 
@@ -13,6 +14,8 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health))
+        .route("/scenarios", get(scenarios::list_scenarios))
+        .route("/scenarios/{id}", get(scenarios::get_scenario))
         .with_state(state)
 }
 
