@@ -54,6 +54,50 @@ Scope examples: `slice-0.1`, `slice-2.5`, `audit-12`, `core`, `cli`.
 The first line must be 72 characters or fewer. Use the body for context
 when the change is non-obvious.
 
+## Pull Request Process
+
+All changes to `main` go through pull requests. Here is the expected workflow:
+
+1. **Create a feature branch** off `main`:
+
+   ```bash
+   git checkout main && git pull
+   git checkout -b feat/my-new-feature
+   ```
+
+   Use a descriptive branch name prefixed with the change type: `feat/`, `fix/`, `docs/`, etc.
+
+2. **Open a pull request** against `main`. The PR template will pre-fill sections for Summary,
+   Changes, Test plan, and a Checklist. Fill in all sections.
+
+3. **Use a conventional commit as the PR title.** Since PRs are squash-merged, the PR title
+   becomes the commit message on `main`. Examples:
+
+   ```
+   feat(core): add histogram value generator
+   fix: resolve panic in gap scheduler
+   docs: update CLI reference for new flag
+   ```
+
+4. **Wait for CI.** The following checks must pass:
+   - Build, test, clippy, and fmt (from `ci.yml`).
+   - PR title validation (from `commitlint.yml`).
+
+5. **Get a review.** At least one approving review is required.
+
+6. **Squash merge.** Use the "Squash and merge" option in GitHub. The PR title is used as the
+   commit message.
+
+For the full release process (how commits become versions and releases), see
+[docs/release-workflow.md](docs/release-workflow.md).
+
+## Dependency Updates
+
+Dependencies are kept current by [Dependabot](https://docs.github.com/en/code-security/dependabot).
+It opens PRs weekly for Cargo dependencies and GitHub Actions version updates. If CI passes on a
+dependabot PR, review the dependency changelog and merge. See
+[docs/release-workflow.md](docs/release-workflow.md) for details on handling dependency updates.
+
 ## Project Structure
 
 The project is a Cargo workspace with three crates:
