@@ -30,6 +30,8 @@ pub struct ScenarioHandle {
     pub started_at: Instant,
     /// Live statistics updated by the runner thread on each tick.
     pub stats: Arc<RwLock<ScenarioStats>>,
+    /// The configured target rate (events per second) from the scenario config.
+    pub target_rate: f64,
 }
 
 impl ScenarioHandle {
@@ -171,6 +173,7 @@ mod tests {
             thread: Some(thread),
             started_at: Instant::now(),
             stats,
+            target_rate: 100.0,
         }
     }
 

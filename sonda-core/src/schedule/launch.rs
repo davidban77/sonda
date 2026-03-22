@@ -65,10 +65,10 @@ pub fn launch_scenario(
     let stats_for_thread = Arc::clone(&stats);
     let shutdown_for_thread = Arc::clone(&shutdown);
 
-    // Extract the name before moving `entry` into the thread closure.
-    let name = match &entry {
-        ScenarioEntry::Metrics(c) => c.name.clone(),
-        ScenarioEntry::Logs(c) => c.name.clone(),
+    // Extract the name and target rate before moving `entry` into the thread closure.
+    let (name, target_rate) = match &entry {
+        ScenarioEntry::Metrics(c) => (c.name.clone(), c.rate),
+        ScenarioEntry::Logs(c) => (c.name.clone(), c.rate),
     };
 
     let started_at = Instant::now();
@@ -113,6 +113,7 @@ pub fn launch_scenario(
         thread: Some(thread),
         started_at,
         stats,
+        target_rate,
     })
 }
 

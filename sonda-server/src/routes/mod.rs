@@ -22,6 +22,7 @@ pub fn router(state: AppState) -> Router {
             "/scenarios/:id",
             get(scenarios::get_scenario).delete(scenarios::delete_scenario),
         )
+        .route("/scenarios/:id/stats", get(scenarios::get_scenario_stats))
         .with_state(state)
 }
 

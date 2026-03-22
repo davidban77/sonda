@@ -4,6 +4,7 @@
 //! - `POST /scenarios` — start a new scenario from a YAML or JSON body.
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/:id` — inspect a single scenario with full detail and stats.
+//! - `GET /scenarios/:id/stats` — return detailed live stats for a scenario.
 //! - `DELETE /scenarios/:id` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
@@ -112,6 +113,33 @@ impl From<ScenarioStats> for StatsResponse {
             errors: s.errors,
         }
     }
+}
+
+/// Response body for `GET /scenarios/:id/stats`.
+///
+/// Contains all live stats fields plus derived fields (`target_rate`,
+/// `uptime_secs`, `state`) that are computed from the [`ScenarioHandle`] at
+/// request time.
+#[derive(Debug, Serialize)]
+pub struct DetailedStatsResponse {
+    /// Total number of events emitted since the scenario started.
+    pub total_events: u64,
+    /// Measured events per second (from the runner's rate tracker).
+    pub current_rate: f64,
+    /// The configured target rate (events per second) from the scenario config.
+    pub target_rate: f64,
+    /// Total bytes written to the sink.
+    pub bytes_emitted: u64,
+    /// Number of encode or sink write errors encountered.
+    pub errors: u64,
+    /// Seconds elapsed since the scenario was launched.
+    pub uptime_secs: f64,
+    /// Current state: `"running"` or `"stopped"`.
+    pub state: String,
+    /// Whether the scenario is currently in a gap window (no events emitted).
+    pub in_gap: bool,
+    /// Whether the scenario is currently in a burst window (elevated rate).
+    pub in_burst: bool,
 }
 
 // ---- Error helpers ----------------------------------------------------------
@@ -434,6 +462,45 @@ pub async fn delete_scenario(
     }))
 }
 
+/// `GET /scenarios/:id/stats` — return detailed live stats for a scenario.
+///
+/// Returns all stats fields from the runner thread plus derived fields:
+/// `target_rate` (configured rate from the scenario config), `uptime_secs`
+/// (computed from `handle.elapsed()`), and `state` (from `handle.is_running()`).
+///
+/// This is a read-only endpoint that acquires only a read lock on the
+/// scenario map. No write lock is needed.
+///
+/// Returns `404 Not Found` with a JSON error body for unknown IDs.
+pub async fn get_scenario_stats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, Response> {
+    let scenarios = state
+        .scenarios
+        .read()
+        .expect("AppState RwLock must not be poisoned");
+
+    let handle = scenarios
+        .get(&id)
+        .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
+
+    let snap = handle.stats_snapshot();
+    let response = DetailedStatsResponse {
+        total_events: snap.total_events,
+        current_rate: snap.current_rate,
+        target_rate: handle.target_rate,
+        bytes_emitted: snap.bytes_emitted,
+        errors: snap.errors,
+        uptime_secs: handle.elapsed().as_secs_f64(),
+        state: status_string(handle.is_running()),
+        in_gap: snap.in_gap,
+        in_burst: snap.in_burst,
+    };
+
+    Ok(Json(response))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +552,7 @@ mod tests {
             thread: Some(thread),
             started_at: Instant::now(),
             stats,
+            target_rate: 100.0,
         }
     }
 
@@ -513,6 +581,7 @@ mod tests {
             thread: Some(thread),
             started_at: Instant::now(),
             stats,
+            target_rate: 100.0,
         }
     }
 
