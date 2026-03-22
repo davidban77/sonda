@@ -2,10 +2,35 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
     ".": {
-      "release-type": "rust",
+      "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false,
       "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.dependencies.sonda-core.version"
+        },
+        {
+          "type": "toml",
+          "path": "sonda-core/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "sonda/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "sonda-server/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
         {
           "type": "yaml",
           "path": "helm/sonda/Chart.yaml",
@@ -21,7 +46,9 @@
         { "type": "feat", "section": "Features" },
         { "type": "fix", "section": "Bug Fixes" },
         { "type": "docs", "section": "Documentation" },
-        { "type": "chore", "section": "Miscellaneous" }
+        { "type": "chore", "section": "Miscellaneous" },
+        { "type": "ci", "section": "CI/CD" },
+        { "type": "refactor", "section": "Refactoring" }
       ]
     }
   }
