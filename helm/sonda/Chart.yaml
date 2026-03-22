@@ -2,8 +2,8 @@ apiVersion: v2
 name: sonda
 description: Synthetic telemetry generator for testing observability pipelines
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: 0.1.1
 home: https://github.com/davidflores77/sonda
 sources:
   - https://github.com/davidflores77/sonda
