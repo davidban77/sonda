@@ -165,4 +165,248 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ScenarioStats>();
     }
+
+    // ---- recent_metrics buffer: default is empty ----------------------------
+
+    /// Default-constructed stats must have an empty recent_metrics buffer.
+    #[test]
+    fn default_stats_has_empty_recent_metrics_buffer() {
+        let s = ScenarioStats::default();
+        assert!(
+            s.recent_metrics.is_empty(),
+            "recent_metrics buffer must be empty on default construction"
+        );
+    }
+
+    // ---- Helper: build a MetricEvent for testing ----------------------------
+
+    /// Build a MetricEvent with the given name and value for testing.
+    fn make_metric_event(name: &str, value: f64) -> crate::model::metric::MetricEvent {
+        crate::model::metric::MetricEvent::new(
+            name.to_string(),
+            value,
+            crate::model::metric::Labels::default(),
+        )
+        .expect("test metric name must be valid")
+    }
+
+    // ---- push_metric: adds events to the deque ------------------------------
+
+    /// push_metric adds a single event to the buffer.
+    #[test]
+    fn push_metric_adds_event_to_buffer() {
+        let mut s = ScenarioStats::default();
+        let event = make_metric_event("up", 1.0);
+        s.push_metric(event);
+        assert_eq!(
+            s.recent_metrics.len(),
+            1,
+            "buffer must contain exactly 1 event after one push"
+        );
+    }
+
+    /// push_metric preserves insertion order (oldest first).
+    #[test]
+    fn push_metric_preserves_insertion_order() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 10.0));
+        s.push_metric(make_metric_event("up", 20.0));
+        s.push_metric(make_metric_event("up", 30.0));
+
+        assert_eq!(s.recent_metrics.len(), 3);
+        assert_eq!(
+            s.recent_metrics[0].value, 10.0,
+            "first event must be the oldest (value=10.0)"
+        );
+        assert_eq!(
+            s.recent_metrics[1].value, 20.0,
+            "second event must be value=20.0"
+        );
+        assert_eq!(
+            s.recent_metrics[2].value, 30.0,
+            "third event must be the newest (value=30.0)"
+        );
+    }
+
+    /// push_metric can fill the buffer up to MAX_RECENT_METRICS.
+    #[test]
+    fn push_metric_fills_buffer_to_max_capacity() {
+        let mut s = ScenarioStats::default();
+        for i in 0..MAX_RECENT_METRICS {
+            s.push_metric(make_metric_event("up", i as f64));
+        }
+        assert_eq!(
+            s.recent_metrics.len(),
+            MAX_RECENT_METRICS,
+            "buffer must hold exactly MAX_RECENT_METRICS events"
+        );
+    }
+
+    // ---- push_metric: eviction when full ------------------------------------
+
+    /// When the buffer is full, push_metric evicts the oldest event.
+    #[test]
+    fn push_metric_evicts_oldest_when_full() {
+        let mut s = ScenarioStats::default();
+        // Fill to capacity with values 0..MAX_RECENT_METRICS.
+        for i in 0..MAX_RECENT_METRICS {
+            s.push_metric(make_metric_event("up", i as f64));
+        }
+        assert_eq!(s.recent_metrics.len(), MAX_RECENT_METRICS);
+
+        // The oldest event has value 0.0.
+        assert_eq!(
+            s.recent_metrics.front().unwrap().value,
+            0.0,
+            "oldest event before eviction must be value=0.0"
+        );
+
+        // Push one more event.
+        s.push_metric(make_metric_event("up", 999.0));
+
+        // Buffer size must not exceed MAX_RECENT_METRICS.
+        assert_eq!(
+            s.recent_metrics.len(),
+            MAX_RECENT_METRICS,
+            "buffer must not grow beyond MAX_RECENT_METRICS after eviction"
+        );
+
+        // The oldest event (value=0.0) was evicted; now value=1.0 is oldest.
+        assert_eq!(
+            s.recent_metrics.front().unwrap().value,
+            1.0,
+            "oldest event after eviction must be value=1.0"
+        );
+
+        // The newest event is value=999.0.
+        assert_eq!(
+            s.recent_metrics.back().unwrap().value,
+            999.0,
+            "newest event after eviction must be value=999.0"
+        );
+    }
+
+    /// Multiple evictions work correctly: push MAX + 5 events, oldest 5 are gone.
+    #[test]
+    fn push_metric_multiple_evictions_discard_oldest() {
+        let mut s = ScenarioStats::default();
+        let total = MAX_RECENT_METRICS + 5;
+        for i in 0..total {
+            s.push_metric(make_metric_event("up", i as f64));
+        }
+
+        assert_eq!(s.recent_metrics.len(), MAX_RECENT_METRICS);
+
+        // Oldest should be value 5.0 (0..4 evicted).
+        assert_eq!(
+            s.recent_metrics.front().unwrap().value,
+            5.0,
+            "after MAX+5 pushes, oldest event must be value=5.0"
+        );
+
+        // Newest should be value (total-1) = MAX_RECENT_METRICS + 4.
+        assert_eq!(
+            s.recent_metrics.back().unwrap().value,
+            (total - 1) as f64,
+            "newest event must be the last pushed value"
+        );
+    }
+
+    // ---- drain_recent_metrics: returns all and empties ----------------------
+
+    /// drain_recent_metrics returns all buffered events and empties the deque.
+    #[test]
+    fn drain_recent_metrics_returns_all_events_and_empties_buffer() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 1.0));
+        s.push_metric(make_metric_event("up", 2.0));
+        s.push_metric(make_metric_event("up", 3.0));
+
+        let drained = s.drain_recent_metrics();
+        assert_eq!(drained.len(), 3, "drain must return all 3 buffered events");
+        assert!(
+            s.recent_metrics.is_empty(),
+            "buffer must be empty after drain"
+        );
+    }
+
+    /// drain_recent_metrics returns events ordered oldest-first.
+    #[test]
+    fn drain_recent_metrics_returns_oldest_first_order() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 100.0));
+        s.push_metric(make_metric_event("up", 200.0));
+        s.push_metric(make_metric_event("up", 300.0));
+
+        let drained = s.drain_recent_metrics();
+        assert_eq!(drained[0].value, 100.0, "first drained must be oldest");
+        assert_eq!(drained[1].value, 200.0, "second drained must be middle");
+        assert_eq!(drained[2].value, 300.0, "third drained must be newest");
+    }
+
+    /// drain_recent_metrics on an empty buffer returns an empty Vec.
+    #[test]
+    fn drain_recent_metrics_on_empty_buffer_returns_empty_vec() {
+        let mut s = ScenarioStats::default();
+        let drained = s.drain_recent_metrics();
+        assert!(
+            drained.is_empty(),
+            "draining an empty buffer must return an empty Vec"
+        );
+    }
+
+    /// After draining, pushing new events starts fresh.
+    #[test]
+    fn drain_then_push_starts_fresh_buffer() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 1.0));
+        s.push_metric(make_metric_event("up", 2.0));
+
+        let first_drain = s.drain_recent_metrics();
+        assert_eq!(first_drain.len(), 2);
+        assert!(s.recent_metrics.is_empty());
+
+        // Push new events after drain.
+        s.push_metric(make_metric_event("up", 10.0));
+        assert_eq!(s.recent_metrics.len(), 1);
+
+        let second_drain = s.drain_recent_metrics();
+        assert_eq!(second_drain.len(), 1);
+        assert_eq!(
+            second_drain[0].value, 10.0,
+            "new event after drain must be retrievable"
+        );
+    }
+
+    /// Calling drain twice without intermediate pushes returns empty on second call.
+    #[test]
+    fn drain_twice_returns_empty_on_second_call() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 42.0));
+
+        let first = s.drain_recent_metrics();
+        assert_eq!(first.len(), 1);
+
+        let second = s.drain_recent_metrics();
+        assert!(
+            second.is_empty(),
+            "second drain must return empty Vec after first drain consumed all events"
+        );
+    }
+
+    // ---- recent_metrics is not serialized (serde skip) ----------------------
+
+    /// The recent_metrics field is skipped during JSON serialization.
+    #[test]
+    fn recent_metrics_buffer_is_not_serialized_to_json() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_metric_event("up", 1.0));
+        s.push_metric(make_metric_event("up", 2.0));
+
+        let json = serde_json::to_string(&s).expect("must serialize");
+        assert!(
+            !json.contains("recent_metrics"),
+            "recent_metrics must not appear in JSON output (serde skip): {json}"
+        );
+    }
 }

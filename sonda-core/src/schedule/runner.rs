@@ -679,6 +679,75 @@ mod tests {
 
     // ---- Shutdown flag with burst scenario -----------------------------------
 
+    // ---- Integration: stats buffer receives metric events ---------------------
+
+    /// When a stats arc is provided, the runner pushes metric events into the
+    /// recent_metrics buffer.
+    #[test]
+    fn runner_pushes_metric_events_to_stats_buffer() {
+        use std::sync::{Arc, RwLock};
+
+        let config = make_config(50.0, "200ms", None);
+        let mut sink = MemorySink::new();
+        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
+
+        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .expect("run must succeed");
+
+        let st = stats.read().expect("lock must not be poisoned");
+        assert!(
+            !st.recent_metrics.is_empty(),
+            "runner must push events into the stats recent_metrics buffer, got {} events",
+            st.recent_metrics.len()
+        );
+        // The buffer is capped at MAX_RECENT_METRICS, so verify the count
+        // does not exceed that limit.
+        assert!(
+            st.recent_metrics.len() <= crate::schedule::stats::MAX_RECENT_METRICS,
+            "recent_metrics buffer must not exceed MAX_RECENT_METRICS ({}), got {}",
+            crate::schedule::stats::MAX_RECENT_METRICS,
+            st.recent_metrics.len()
+        );
+    }
+
+    /// When no stats arc is provided (None), the runner does not panic and
+    /// still produces output normally.
+    #[test]
+    fn runner_without_stats_does_not_push_metrics() {
+        let config = make_config(50.0, "100ms", None);
+        let mut sink = MemorySink::new();
+
+        // Pass None for stats — should work fine without buffering.
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        assert!(
+            newlines > 0,
+            "runner without stats must still produce output"
+        );
+    }
+
+    /// Stats buffer events have the correct metric name matching the config.
+    #[test]
+    fn runner_stats_buffer_events_have_correct_metric_name() {
+        use std::sync::{Arc, RwLock};
+
+        let config = make_config(50.0, "100ms", None);
+        let mut sink = MemorySink::new();
+        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
+
+        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .expect("run must succeed");
+
+        let st = stats.read().expect("lock must not be poisoned");
+        for event in st.recent_metrics.iter() {
+            assert_eq!(
+                event.name, "up",
+                "all buffered events must have the metric name from config"
+            );
+        }
+    }
+
     /// The shutdown flag stops the runner even during a burst window.
     #[test]
     fn shutdown_flag_stops_run_during_burst() {

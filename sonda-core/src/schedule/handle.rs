@@ -360,6 +360,71 @@ mod tests {
         handle.join(None).ok();
     }
 
+    // ---- recent_metrics: drains from stats buffer ----------------------------
+
+    /// Helper to build a MetricEvent for testing.
+    fn make_metric_event(name: &str, value: f64) -> crate::model::metric::MetricEvent {
+        crate::model::metric::MetricEvent::new(
+            name.to_string(),
+            value,
+            crate::model::metric::Labels::default(),
+        )
+        .expect("test metric name must be valid")
+    }
+
+    /// recent_metrics on a fresh handle returns an empty Vec.
+    #[test]
+    fn recent_metrics_on_fresh_handle_returns_empty() {
+        let handle = make_handle("test-rm-1", "fresh", 0, Duration::ZERO);
+        let events = handle.recent_metrics();
+        assert!(
+            events.is_empty(),
+            "recent_metrics must return empty Vec on a fresh handle"
+        );
+    }
+
+    /// recent_metrics drains events that were pushed to the stats buffer.
+    #[test]
+    fn recent_metrics_drains_pushed_events() {
+        let handle = make_handle("test-rm-2", "drain", 0, Duration::ZERO);
+
+        // Push events directly into the stats buffer.
+        {
+            let mut stats = handle.stats.write().expect("lock must not be poisoned");
+            stats.push_metric(make_metric_event("up", 1.0));
+            stats.push_metric(make_metric_event("up", 2.0));
+        }
+
+        let events = handle.recent_metrics();
+        assert_eq!(
+            events.len(),
+            2,
+            "recent_metrics must return all pushed events"
+        );
+        assert_eq!(events[0].value, 1.0, "first event must be value=1.0");
+        assert_eq!(events[1].value, 2.0, "second event must be value=2.0");
+    }
+
+    /// After calling recent_metrics, the buffer is empty (second call returns empty).
+    #[test]
+    fn recent_metrics_clears_buffer_after_drain() {
+        let handle = make_handle("test-rm-3", "clear", 0, Duration::ZERO);
+
+        {
+            let mut stats = handle.stats.write().expect("lock must not be poisoned");
+            stats.push_metric(make_metric_event("up", 42.0));
+        }
+
+        let first = handle.recent_metrics();
+        assert_eq!(first.len(), 1);
+
+        let second = handle.recent_metrics();
+        assert!(
+            second.is_empty(),
+            "second call to recent_metrics must return empty Vec after drain"
+        );
+    }
+
     // ---- Contract: ScenarioHandle is Send -----------------------------------
 
     /// ScenarioHandle must be Send so it can be stored in server state and
