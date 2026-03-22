@@ -168,7 +168,7 @@ get_latest_version() {
 verify_checksum() {
     dir="$1"
     filename="$2"
-    expected="$(grep "$filename" "${dir}/SHA256SUMS" | awk '{print $1}')"
+    expected="$(grep -F "$filename" "${dir}/SHA256SUMS" | awk '{print $1}')"
 
     if [ -z "$expected" ]; then
         err "checksum not found for ${filename} in SHA256SUMS"
