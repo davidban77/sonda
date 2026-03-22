@@ -23,3 +23,101 @@ pub struct ScenarioStats {
     /// Whether the scenario is currently in a burst window (elevated rate).
     pub in_burst: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Default: all counters zero, all flags false -------------------------
+
+    /// Default-constructed stats must have zero counters and false flags.
+    #[test]
+    fn default_stats_has_zero_counters_and_false_flags() {
+        let s = ScenarioStats::default();
+        assert_eq!(s.total_events, 0, "total_events must start at zero");
+        assert_eq!(s.bytes_emitted, 0, "bytes_emitted must start at zero");
+        assert_eq!(s.current_rate, 0.0, "current_rate must start at zero");
+        assert_eq!(s.errors, 0, "errors must start at zero");
+        assert!(!s.in_gap, "in_gap must start as false");
+        assert!(!s.in_burst, "in_burst must start as false");
+    }
+
+    // ---- Clone: produces an independent copy --------------------------------
+
+    /// Cloning stats produces an independent copy — mutations to the clone
+    /// do not affect the original.
+    #[test]
+    fn clone_produces_independent_copy() {
+        let original = ScenarioStats {
+            total_events: 42,
+            bytes_emitted: 1024,
+            current_rate: 10.5,
+            errors: 3,
+            in_gap: true,
+            in_burst: false,
+        };
+        let mut cloned = original.clone();
+        cloned.total_events = 99;
+        cloned.in_gap = false;
+
+        // Original is unchanged.
+        assert_eq!(original.total_events, 42);
+        assert!(original.in_gap);
+        // Clone holds the new values.
+        assert_eq!(cloned.total_events, 99);
+        assert!(!cloned.in_gap);
+    }
+
+    // ---- Debug: can be formatted without panicking --------------------------
+
+    #[test]
+    fn debug_format_contains_struct_name() {
+        let s = ScenarioStats::default();
+        let debug_str = format!("{s:?}");
+        assert!(
+            debug_str.contains("ScenarioStats"),
+            "Debug output must name the struct, got: {debug_str}"
+        );
+    }
+
+    // ---- Serialize: fields appear in JSON output ----------------------------
+
+    /// Verifying Serialize works by round-tripping through serde_json.
+    #[test]
+    fn serializes_to_json_with_all_fields_present() {
+        let s = ScenarioStats {
+            total_events: 7,
+            bytes_emitted: 512,
+            current_rate: 3.14,
+            errors: 1,
+            in_gap: false,
+            in_burst: true,
+        };
+        let json = serde_json::to_string(&s).expect("ScenarioStats must serialize to JSON");
+        assert!(
+            json.contains("\"total_events\""),
+            "JSON must contain total_events"
+        );
+        assert!(
+            json.contains("\"bytes_emitted\""),
+            "JSON must contain bytes_emitted"
+        );
+        assert!(
+            json.contains("\"current_rate\""),
+            "JSON must contain current_rate"
+        );
+        assert!(json.contains("\"errors\""), "JSON must contain errors");
+        assert!(json.contains("\"in_gap\""), "JSON must contain in_gap");
+        assert!(json.contains("\"in_burst\""), "JSON must contain in_burst");
+    }
+
+    // ---- Contract: Send + Sync ----------------------------------------------
+
+    /// ScenarioStats must be Send + Sync so it can be shared across threads
+    /// via Arc<RwLock<ScenarioStats>>.
+    #[test]
+    fn scenario_stats_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ScenarioStats>();
+    }
+}
