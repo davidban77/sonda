@@ -836,6 +836,39 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
+### Start a scenario (POST /scenarios)
+
+Post a YAML scenario body to start a running scenario. The server accepts both
+`application/x-yaml` (`text/yaml`) and `application/json` content types.
+Bare metrics or logs YAML (without `signal_type`) is also supported.
+
+```bash
+# Start a metrics scenario from an example file
+curl -X POST \
+  -H "Content-Type: text/yaml" \
+  --data-binary @examples/basic-metrics.yaml \
+  http://localhost:8080/scenarios
+# {"id":"550e8400-e29b-41d4-a716-446655440000","name":"interface_oper_state","status":"running"}
+
+# Start a logs scenario
+curl -X POST \
+  -H "Content-Type: text/yaml" \
+  --data-binary @examples/log-template.yaml \
+  http://localhost:8080/scenarios
+# {"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","name":"app_logs_template","status":"running"}
+
+# Use the signal_type tag to specify metrics or logs explicitly
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"signal_type":"metrics","name":"up","rate":10,"generator":{"type":"constant","value":1},"encoder":{"type":"prometheus_text"},"sink":{"type":"stdout"}}' \
+  http://localhost:8080/scenarios
+```
+
+Error responses:
+- `400 Bad Request` — body cannot be parsed as YAML or JSON.
+- `422 Unprocessable Entity` — body is valid YAML/JSON but fails validation (e.g. `rate: 0`).
+- `500 Internal Server Error` — scenario thread could not be spawned.
+
 ### API endpoints (implemented by slice)
 
 | Method | Path                   | Slice | Description                                |

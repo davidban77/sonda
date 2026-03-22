@@ -20,21 +20,23 @@ src/
 │                         graceful shutdown (Ctrl+C stops all running scenarios)
 ├── routes/
 │   ├── mod.rs          ← router() function wires all routes; re-exports submodules
-│   └── health.rs       ← GET /health → {"status": "ok"}
+│   ├── health.rs       ← GET /health → {"status": "ok"}
+│   └── scenarios.rs    ← POST /scenarios — start a scenario from YAML/JSON body
+│                         parse_body(), parse_yaml_body(), parse_json_body(), post_scenario()
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
 ```
 
-## Implemented API Surface (as of Slice 3.1)
+## Implemented API Surface (as of Slice 3.2)
 
-| Method | Path     | Description                          |
-|--------|----------|--------------------------------------|
-| GET    | /health  | Health check — always returns 200 OK |
+| Method | Path        | Description                                             |
+|--------|-------------|---------------------------------------------------------|
+| GET    | /health     | Health check — always returns 200 OK                    |
+| POST   | /scenarios  | Start a new scenario from YAML or JSON body, returns ID |
 
-## Planned API Surface (Slices 3.2–3.5)
+## Planned API Surface (Slices 3.3–3.5)
 
 | Method | Path                   | Description                                    |
 |--------|------------------------|------------------------------------------------|
-| POST   | /scenarios             | Start a new scenario from YAML/JSON body       |
 | GET    | /scenarios             | List all running scenarios                     |
 | GET    | /scenarios/:id         | Inspect a scenario: config, tick count, errors |
 | DELETE | /scenarios/:id         | Stop and remove a running scenario             |
