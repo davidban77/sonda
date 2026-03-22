@@ -1933,4 +1933,423 @@ sink:
             "404 Content-Type must be application/json, got: {ct}"
         );
     }
+
+    // ========================================================================
+    // GET /scenarios/:id/stats tests (Slice 3.5)
+    // ========================================================================
+
+    /// Helper: build a ScenarioHandle with a custom target_rate and pre-set stats.
+    ///
+    /// The thread exits immediately (no background work). Stats are set to the
+    /// provided snapshot before the handle is returned.
+    fn make_handle_with_stats(
+        id: &str,
+        name: &str,
+        target_rate: f64,
+        initial_stats: ScenarioStats,
+        running: bool,
+    ) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(running));
+        let stats = Arc::new(RwLock::new(initial_stats));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let thread = if running {
+            // Long-running thread that waits for shutdown.
+            thread::Builder::new()
+                .name(format!("test-stats-{name}"))
+                .spawn(move || -> Result<(), sonda_core::SondaError> {
+                    while shutdown_clone.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok(())
+                })
+                .expect("thread must spawn")
+        } else {
+            // Thread exits immediately.
+            thread::Builder::new()
+                .name(format!("test-stats-stopped-{name}"))
+                .spawn(move || -> Result<(), sonda_core::SondaError> {
+                    let _ = shutdown_clone.load(Ordering::SeqCst);
+                    Ok(())
+                })
+                .expect("thread must spawn")
+        };
+
+        if !running {
+            // Give the thread time to exit.
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        ScenarioHandle {
+            id: id.to_string(),
+            name: name.to_string(),
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate,
+        }
+    }
+
+    /// Helper: send a GET /scenarios/:id/stats request.
+    async fn get_stats_req(app: axum::Router, id: &str) -> hyper::Response<axum::body::Body> {
+        let req = Request::builder()
+            .uri(format!("/scenarios/{id}/stats"))
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    // ---- Stats endpoint returns all expected fields -------------------------
+
+    /// GET /scenarios/:id/stats returns a JSON body with all expected fields.
+    #[tokio::test]
+    async fn stats_endpoint_returns_all_expected_fields() {
+        let stats = ScenarioStats {
+            total_events: 500,
+            bytes_emitted: 32000,
+            current_rate: 99.5,
+            errors: 2,
+            in_gap: false,
+            in_burst: true,
+        };
+        let h = make_handle_with_stats("id-stats-all", "all_fields", 100.0, stats, true);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-all").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+
+        // Verify all fields are present with correct types.
+        assert_eq!(
+            body["total_events"].as_u64().unwrap(),
+            500,
+            "total_events must be 500"
+        );
+        assert!(
+            (body["current_rate"].as_f64().unwrap() - 99.5).abs() < f64::EPSILON,
+            "current_rate must be 99.5"
+        );
+        assert!(
+            (body["target_rate"].as_f64().unwrap() - 100.0).abs() < f64::EPSILON,
+            "target_rate must be 100.0"
+        );
+        assert_eq!(
+            body["bytes_emitted"].as_u64().unwrap(),
+            32000,
+            "bytes_emitted must be 32000"
+        );
+        assert_eq!(body["errors"].as_u64().unwrap(), 2, "errors must be 2");
+        assert!(
+            body["uptime_secs"].as_f64().unwrap() >= 0.0,
+            "uptime_secs must be non-negative"
+        );
+        assert_eq!(
+            body["state"].as_str().unwrap(),
+            "running",
+            "state must be 'running' for a live scenario"
+        );
+        assert_eq!(
+            body["in_gap"].as_bool().unwrap(),
+            false,
+            "in_gap must be false"
+        );
+        assert_eq!(
+            body["in_burst"].as_bool().unwrap(),
+            true,
+            "in_burst must be true"
+        );
+    }
+
+    // ---- Fields update as scenario progresses --------------------------------
+
+    /// Stats fields update as the scenario background thread emits events.
+    #[tokio::test]
+    async fn stats_endpoint_fields_update_as_scenario_progresses() {
+        // Thread emits events every 10ms.
+        let h = make_handle(
+            "id-stats-progress",
+            "progress",
+            500,
+            Duration::from_millis(10),
+        );
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        // Wait for some events to accumulate.
+        thread::sleep(Duration::from_millis(100));
+
+        // Take a first snapshot via the endpoint.
+        let app1 = router(state.clone());
+        let resp1 = get_stats_req(app1, "id-stats-progress").await;
+        assert_eq!(resp1.status(), StatusCode::OK);
+        let body1 = body_json(resp1).await;
+        let events1 = body1["total_events"].as_u64().unwrap();
+        let bytes1 = body1["bytes_emitted"].as_u64().unwrap();
+
+        assert!(
+            events1 > 0,
+            "total_events must be > 0 after 100ms, got {events1}"
+        );
+
+        // Wait longer for more events.
+        thread::sleep(Duration::from_millis(150));
+
+        // Take a second snapshot.
+        let app2 = router(state.clone());
+        let resp2 = get_stats_req(app2, "id-stats-progress").await;
+        assert_eq!(resp2.status(), StatusCode::OK);
+        let body2 = body_json(resp2).await;
+        let events2 = body2["total_events"].as_u64().unwrap();
+        let bytes2 = body2["bytes_emitted"].as_u64().unwrap();
+
+        assert!(
+            events2 > events1,
+            "total_events must increase over time: first={events1}, second={events2}"
+        );
+        assert!(
+            bytes2 > bytes1,
+            "bytes_emitted must increase over time: first={bytes1}, second={bytes2}"
+        );
+
+        // Clean up: stop the scenario.
+        cleanup_scenarios(&state);
+    }
+
+    // ---- in_gap is true during gap window ------------------------------------
+
+    /// When in_gap is set to true in the stats, the endpoint reflects it.
+    #[tokio::test]
+    async fn stats_endpoint_in_gap_true_when_stats_indicate_gap() {
+        let stats = ScenarioStats {
+            total_events: 10,
+            bytes_emitted: 640,
+            current_rate: 0.0,
+            errors: 0,
+            in_gap: true,
+            in_burst: false,
+        };
+        let h = make_handle_with_stats("id-stats-gap", "gap_test", 50.0, stats, true);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-gap").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["in_gap"].as_bool().unwrap(),
+            true,
+            "in_gap must be true when the scenario is in a gap window"
+        );
+        assert_eq!(
+            body["in_burst"].as_bool().unwrap(),
+            false,
+            "in_burst must be false when only in_gap is set"
+        );
+    }
+
+    // ---- After scenario stopped: returns final stats with state "stopped" ----
+
+    /// When a scenario has stopped, GET /scenarios/:id/stats returns state "stopped".
+    #[tokio::test]
+    async fn stats_endpoint_returns_stopped_state_for_finished_scenario() {
+        let stats = ScenarioStats {
+            total_events: 1000,
+            bytes_emitted: 64000,
+            current_rate: 0.0,
+            errors: 5,
+            in_gap: false,
+            in_burst: false,
+        };
+        let h = make_handle_with_stats("id-stats-stopped", "stopped_test", 200.0, stats, false);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-stopped").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["state"].as_str().unwrap(),
+            "stopped",
+            "state must be 'stopped' for a finished scenario"
+        );
+        assert_eq!(
+            body["total_events"].as_u64().unwrap(),
+            1000,
+            "total_events must reflect final count"
+        );
+        assert_eq!(
+            body["errors"].as_u64().unwrap(),
+            5,
+            "errors must reflect final count"
+        );
+        assert!(
+            (body["target_rate"].as_f64().unwrap() - 200.0).abs() < f64::EPSILON,
+            "target_rate must be preserved even after stop"
+        );
+    }
+
+    // ---- Unknown ID returns 404 -----------------------------------------------
+
+    /// GET /scenarios/:id/stats with an unknown ID returns 404.
+    #[tokio::test]
+    async fn stats_endpoint_unknown_id_returns_404() {
+        let app = router_with_handles(vec![]);
+
+        let resp = get_stats_req(app, "nonexistent-stats-id").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "unknown ID must return 404"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str().unwrap(),
+            "not_found",
+            "404 error body must have error='not_found'"
+        );
+    }
+
+    // ---- Stats 404 returns JSON Content-Type ----------------------------------
+
+    /// GET /scenarios/:id/stats 404 has Content-Type application/json.
+    #[tokio::test]
+    async fn stats_endpoint_404_returns_json_content_type() {
+        let app = router_with_handles(vec![]);
+
+        let resp = get_stats_req(app, "missing-stats-id").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("404 response must have Content-Type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "404 Content-Type must be application/json, got: {ct}"
+        );
+    }
+
+    // ---- Stats endpoint returns correct target_rate ---------------------------
+
+    /// The target_rate field reflects the configured rate on the handle, not measured rate.
+    #[tokio::test]
+    async fn stats_endpoint_target_rate_reflects_configured_rate() {
+        let stats = ScenarioStats {
+            total_events: 0,
+            bytes_emitted: 0,
+            current_rate: 45.0,
+            errors: 0,
+            in_gap: false,
+            in_burst: false,
+        };
+        // target_rate = 500.0, but current_rate = 45.0 (different).
+        let h = make_handle_with_stats("id-stats-rate", "rate_test", 500.0, stats, true);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-rate").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert!(
+            (body["target_rate"].as_f64().unwrap() - 500.0).abs() < f64::EPSILON,
+            "target_rate must be the configured rate (500.0)"
+        );
+        assert!(
+            (body["current_rate"].as_f64().unwrap() - 45.0).abs() < f64::EPSILON,
+            "current_rate must be the measured rate (45.0)"
+        );
+    }
+
+    // ---- Stats endpoint uptime_secs is positive --------------------------------
+
+    /// uptime_secs is positive for a running scenario.
+    #[tokio::test]
+    async fn stats_endpoint_uptime_secs_is_positive() {
+        let h = make_handle_with_stats(
+            "id-stats-uptime",
+            "uptime_test",
+            10.0,
+            ScenarioStats::default(),
+            true,
+        );
+        let app = router_with_handles(vec![h]);
+
+        // Small delay to ensure nonzero uptime.
+        thread::sleep(Duration::from_millis(20));
+
+        let resp = get_stats_req(app, "id-stats-uptime").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        let uptime = body["uptime_secs"].as_f64().unwrap();
+        assert!(
+            uptime > 0.0,
+            "uptime_secs must be positive for a running scenario, got {uptime}"
+        );
+    }
+
+    // ---- DetailedStatsResponse serialization ---------------------------------
+
+    /// DetailedStatsResponse serializes all fields to JSON correctly.
+    #[test]
+    fn detailed_stats_response_serializes_all_fields() {
+        let resp = DetailedStatsResponse {
+            total_events: 42,
+            current_rate: 10.5,
+            target_rate: 100.0,
+            bytes_emitted: 2048,
+            errors: 1,
+            uptime_secs: 3.14,
+            state: "running".to_string(),
+            in_gap: true,
+            in_burst: false,
+        };
+        let json = serde_json::to_value(&resp).expect("must serialize");
+        assert_eq!(json["total_events"], 42);
+        assert_eq!(json["current_rate"], 10.5);
+        assert_eq!(json["target_rate"], 100.0);
+        assert_eq!(json["bytes_emitted"], 2048);
+        assert_eq!(json["errors"], 1);
+        assert_eq!(json["uptime_secs"], 3.14);
+        assert_eq!(json["state"], "running");
+        assert_eq!(json["in_gap"], true);
+        assert_eq!(json["in_burst"], false);
+    }
+
+    // ---- Stats 200 returns JSON Content-Type ----------------------------------
+
+    /// GET /scenarios/:id/stats success response has Content-Type application/json.
+    #[tokio::test]
+    async fn stats_endpoint_success_returns_json_content_type() {
+        let h = make_handle_with_stats(
+            "id-stats-ct",
+            "ct_test",
+            10.0,
+            ScenarioStats::default(),
+            true,
+        );
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-ct").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("200 response must have Content-Type header")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "Content-Type must be application/json, got: {ct}"
+        );
+    }
 }
