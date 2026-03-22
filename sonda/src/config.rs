@@ -1126,7 +1126,7 @@ mod tests {
 
         let config = load_config(&args).expect("round-trip config should load");
         validate_config(&config).expect("round-trip config should validate");
-        let _gen = create_generator(&config.generator, config.rate);
+        let _gen = create_generator(&config.generator, config.rate).expect("generator factory");
         let _enc = create_encoder(&config.encoder);
         let _sink = create_sink(&config.sink).expect("sink factory should succeed");
     }

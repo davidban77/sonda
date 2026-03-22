@@ -107,7 +107,7 @@ pub fn run_with_sink(
         .transpose()?;
 
     // Build generator and encoder from config.
-    let generator = create_generator(&config.generator, config.rate);
+    let generator = create_generator(&config.generator, config.rate)?;
     let encoder = create_encoder(&config.encoder);
 
     // Build the label set from the config's optional HashMap.

@@ -733,7 +733,7 @@ sink:
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok(), "must validate");
 
-        let gen = create_generator(&config.generator, config.rate);
+        let gen = create_generator(&config.generator, config.rate).expect("generator factory");
         // Generator must produce a value at tick 0
         let _ = gen.value(0);
 
@@ -758,7 +758,7 @@ generator:
 "#;
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok());
-        let gen = create_generator(&config.generator, config.rate);
+        let gen = create_generator(&config.generator, config.rate).expect("constant factory");
         assert_eq!(gen.value(0), 42.0);
         assert_eq!(gen.value(999), 42.0);
     }
@@ -778,7 +778,7 @@ generator:
 "#;
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok());
-        let gen = create_generator(&config.generator, config.rate);
+        let gen = create_generator(&config.generator, config.rate).expect("uniform factory");
         for tick in 0..1000 {
             let v = gen.value(tick);
             assert!(

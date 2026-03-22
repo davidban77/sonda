@@ -171,7 +171,7 @@ fn basic_metrics_yaml_factories_all_succeed() {
         serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
 
     // Generator factory must succeed and produce a working generator.
-    let gen = create_generator(&config.generator, config.rate);
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
     let value = gen.value(0);
     // Sine at tick 0 should equal offset (10.0) since sin(0) == 0.
     assert!(
@@ -299,7 +299,7 @@ fn simple_constant_yaml_factories_all_succeed() {
         serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
 
     // Generator factory must succeed and produce a constant value of 1.0.
-    let gen = create_generator(&config.generator, config.rate);
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
     assert_eq!(
         gen.value(0),
         1.0,
@@ -335,7 +335,7 @@ fn both_example_yamls_pass_full_round_trip() {
         let config: ScenarioConfig = serde_yaml::from_str(&contents)
             .unwrap_or_else(|e| panic!("{filename} failed to deserialize: {e}"));
         validate_config(&config).unwrap_or_else(|e| panic!("{filename} failed validation: {e}"));
-        let gen = create_generator(&config.generator, config.rate);
+        let gen = create_generator(&config.generator, config.rate).expect("generator factory");
         // Generator must produce a finite value at tick 0.
         let v = gen.value(0);
         assert!(

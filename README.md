@@ -18,7 +18,7 @@ built on top of it.
 
 ## Features
 
-- **4 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp.
+- **5 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp, sequence.
 - **2 log generators** -- template-based structured logs with field pools, file replay.
 - **4 encoders** -- Prometheus text exposition, InfluxDB line protocol, JSON Lines, RFC 5424 syslog.
 - **9 sinks** -- stdout, file, TCP, UDP, HTTP push, Loki, Kafka, channel (in-memory mpsc), memory buffer.
@@ -38,7 +38,7 @@ built on top of it.
 
 | Component | Options |
 |-----------|---------|
-| **Generators** | `constant`, `uniform`, `sine`, `sawtooth` |
+| **Generators** | `constant`, `uniform`, `sine`, `sawtooth`, `sequence` |
 | **Encoders** | `prometheus_text`, `influx_lp`, `json_lines` |
 | **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `kafka`, `channel` |
 
@@ -124,7 +124,7 @@ let gen_config = GeneratorConfig::Sine {
     period_secs: 60.0,
     offset: 50.0,
 };
-let generator = create_generator(&gen_config, 10.0);
+let generator = create_generator(&gen_config, 10.0).unwrap();
 
 // Generate a value at tick 0
 let value = generator.value(0);
@@ -536,6 +536,7 @@ sonda metrics --scenario examples/basic-metrics.yaml --rate 500
 | `uniform` | `min: f64`, `max: f64`, `seed: u64` (optional) | Uniformly distributed random value in `[min, max]`. Seeded for deterministic replay. |
 | `sine` | `amplitude: f64`, `period_secs: f64`, `offset: f64` | Sine wave: `offset + amplitude * sin(2pi * tick / period_ticks)`. |
 | `sawtooth` | `min: f64`, `max: f64`, `period_secs: f64` | Linear ramp from `min` to `max` that resets at the period boundary. |
+| `sequence` | `values: Vec<f64>`, `repeat: bool` (optional, default `true`) | Steps through an explicit list of values. Cycles when `repeat` is true; clamps to last value when false. Ideal for modeling incident patterns. |
 
 ### Encoder types
 
@@ -911,6 +912,15 @@ Prometheus/Alertmanager alert rules:
 
 ```bash
 sonda metrics --scenario examples/docker-alerts.yaml
+```
+
+### `examples/sequence-alert-test.yaml`
+
+Repeating CPU spike pattern using the sequence generator. The 16-tick pattern alternates between
+a 10% baseline and a 95% spike, crossing a typical 90% alert threshold:
+
+```bash
+sonda metrics --scenario examples/sequence-alert-test.yaml
 ```
 
 ### `examples/multi-scenario.yaml`

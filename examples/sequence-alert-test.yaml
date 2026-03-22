@@ -1,0 +1,28 @@
+# Sequence generator: model a CPU spike crossing a 90% alert threshold.
+#
+# This scenario produces a repeating 16-tick pattern:
+#   - Ticks 0-4:   10% baseline (normal operation)
+#   - Ticks 5-9:   95% spike (above typical 90% alert threshold)
+#   - Ticks 10-15: 10% baseline (recovery)
+#
+# At 1 event/sec with an 80s duration, the pattern repeats 5 times,
+# giving you multiple threshold crossings to validate alert firing
+# and resolution behavior.
+
+name: cpu_spike_test
+rate: 1
+duration: 80s
+
+generator:
+  type: sequence
+  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+  repeat: true
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

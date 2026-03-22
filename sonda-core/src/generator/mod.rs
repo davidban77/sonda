@@ -10,6 +10,7 @@ pub mod constant;
 pub mod log_replay;
 pub mod log_template;
 pub mod sawtooth;
+pub mod sequence;
 pub mod sine;
 pub mod uniform;
 
@@ -21,6 +22,7 @@ use self::constant::Constant;
 use self::log_replay::LogReplayGenerator;
 use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
+use self::sequence::SequenceGenerator;
 use self::sine::Sine;
 use self::uniform::UniformRandom;
 use crate::model::log::{LogEvent, Severity};
@@ -88,28 +90,49 @@ pub enum GeneratorConfig {
         /// Duration of one full ramp in seconds.
         period_secs: f64,
     },
+    /// A generator that steps through an explicit sequence of values.
+    #[serde(rename = "sequence")]
+    Sequence {
+        /// The ordered list of values to step through. Must not be empty.
+        values: Vec<f64>,
+        /// When true (default), the sequence cycles. When false, the last value
+        /// is returned for all ticks beyond the sequence length.
+        repeat: Option<bool>,
+    },
 }
 
 /// Construct a `Box<dyn ValueGenerator>` from the given configuration.
 ///
 /// The `rate` parameter (events per second) is required by time-based generators
 /// (`Sine`, `Sawtooth`) to convert `period_secs` into period ticks.
-pub fn create_generator(config: &GeneratorConfig, rate: f64) -> Box<dyn ValueGenerator> {
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] if the generator configuration is invalid
+/// (e.g., an empty values list for the sequence generator).
+pub fn create_generator(
+    config: &GeneratorConfig,
+    rate: f64,
+) -> Result<Box<dyn ValueGenerator>, SondaError> {
     match config {
-        GeneratorConfig::Constant { value } => Box::new(Constant::new(*value)),
+        GeneratorConfig::Constant { value } => Ok(Box::new(Constant::new(*value))),
         GeneratorConfig::Uniform { min, max, seed } => {
-            Box::new(UniformRandom::new(*min, *max, seed.unwrap_or(0)))
+            Ok(Box::new(UniformRandom::new(*min, *max, seed.unwrap_or(0))))
         }
         GeneratorConfig::Sine {
             amplitude,
             period_secs,
             offset,
-        } => Box::new(Sine::new(*amplitude, *period_secs, *offset, rate)),
+        } => Ok(Box::new(Sine::new(*amplitude, *period_secs, *offset, rate))),
         GeneratorConfig::Sawtooth {
             min,
             max,
             period_secs,
-        } => Box::new(Sawtooth::new(*min, *max, *period_secs, rate)),
+        } => Ok(Box::new(Sawtooth::new(*min, *max, *period_secs, rate))),
+        GeneratorConfig::Sequence { values, repeat } => Ok(Box::new(SequenceGenerator::new(
+            values.clone(),
+            repeat.unwrap_or(true),
+        )?)),
     }
 }
 
@@ -278,7 +301,7 @@ mod tests {
     #[test]
     fn factory_constant_returns_configured_value() {
         let config = GeneratorConfig::Constant { value: 1.0 };
-        let gen = create_generator(&config, 100.0);
+        let gen = create_generator(&config, 100.0).expect("constant factory");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1_000_000), 1.0);
     }
@@ -290,7 +313,7 @@ mod tests {
             max: 1.0,
             seed: Some(7),
         };
-        let gen = create_generator(&config, 100.0);
+        let gen = create_generator(&config, 100.0).expect("uniform factory");
         for tick in 0..1000 {
             let v = gen.value(tick);
             assert!(
@@ -313,8 +336,8 @@ mod tests {
             max: 1.0,
             seed: Some(0),
         };
-        let gen_none = create_generator(&config_none, 1.0);
-        let gen_zero = create_generator(&config_zero, 1.0);
+        let gen_none = create_generator(&config_none, 1.0).expect("uniform none factory");
+        let gen_zero = create_generator(&config_zero, 1.0).expect("uniform zero factory");
         for tick in 0..100 {
             assert_eq!(
                 gen_none.value(tick),
@@ -331,7 +354,7 @@ mod tests {
             period_secs: 10.0,
             offset: 3.0,
         };
-        let gen = create_generator(&config, 1.0);
+        let gen = create_generator(&config, 1.0).expect("sine factory");
         assert!(
             (gen.value(0) - 3.0).abs() < 1e-10,
             "sine factory: value(0) must equal offset"
@@ -345,7 +368,7 @@ mod tests {
             max: 15.0,
             period_secs: 10.0,
         };
-        let gen = create_generator(&config, 1.0);
+        let gen = create_generator(&config, 1.0).expect("sawtooth factory");
         assert_eq!(
             gen.value(0),
             5.0,
