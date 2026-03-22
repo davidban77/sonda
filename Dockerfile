@@ -4,7 +4,7 @@
 #
 # Supports linux/amd64 and linux/arm64 via docker buildx.
 # Uses TARGETARCH (set automatically by buildx) to select the correct
-# Rust target triple and musl toolchain.
+# Rust target triple and cross-compilation toolchain.
 #
 # Usage:
 #   docker build -t sonda .                                              # native arch
@@ -16,36 +16,32 @@ FROM rust:latest AS builder
 # TARGETARCH is set by docker buildx (amd64, arm64, etc.)
 ARG TARGETARCH
 
-# Map TARGETARCH to Rust target triple and musl tools package
-RUN case "${TARGETARCH}" in \
-      amd64) \
-        echo "x86_64-unknown-linux-musl" > /tmp/rust-target && \
-        echo "musl-tools" > /tmp/musl-pkg && \
-        echo "x86_64-linux-musl" > /tmp/musl-prefix ;; \
-      arm64) \
-        echo "aarch64-unknown-linux-musl" > /tmp/rust-target && \
-        echo "musl-tools gcc-aarch64-linux-gnu musl-dev" > /tmp/musl-pkg && \
-        echo "aarch64-linux-musl" > /tmp/musl-prefix ;; \
-      *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
-    esac
-
-# Install musl cross-compilation toolchain
+# Install cross-compilation toolchain based on target architecture.
+# For amd64: musl-tools provides the native musl-gcc wrapper.
+# For arm64: we use gcc-aarch64-linux-gnu as the linker and download
+# musl headers/libs from the official musl.org release (not musl.cc).
 RUN apt-get update && \
-    apt-get install -y $(cat /tmp/musl-pkg) && \
+    apt-get install -y musl-tools && \
+    if [ "${TARGETARCH}" = "arm64" ]; then \
+      apt-get install -y gcc-aarch64-linux-gnu; \
+    fi && \
     rm -rf /var/lib/apt/lists/*
 
-# For arm64 cross-compilation: install the musl cross-compiler and set up the linker
-RUN RUST_TARGET=$(cat /tmp/rust-target) && \
+# Set up Rust target and cross-compilation config
+RUN case "${TARGETARCH}" in \
+      amd64) echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
+      arm64) echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac && \
+    RUST_TARGET=$(cat /tmp/rust-target) && \
     rustup target add "${RUST_TARGET}" && \
     if [ "${TARGETARCH}" = "arm64" ]; then \
-      # Download and install aarch64 musl cross-compiler
-      curl -sSfL "https://musl.cc/aarch64-linux-musl-cross.tgz" | tar xz -C /opt && \
-      # Tell cargo to use the cross-linker for aarch64-unknown-linux-musl
       mkdir -p /root/.cargo && \
-      printf '[target.aarch64-unknown-linux-musl]\nlinker = "/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"\n' \
+      printf '[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
         >> /root/.cargo/config.toml && \
-      # Set CC for ring and other crates that compile C code
-      echo 'CC_aarch64_unknown_linux_musl=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc' > /tmp/cross-env; \
+      echo 'CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc' > /tmp/cross-env && \
+      echo 'AR_aarch64_unknown_linux_musl=aarch64-linux-gnu-ar' >> /tmp/cross-env && \
+      echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc' >> /tmp/cross-env; \
     else \
       touch /tmp/cross-env; \
     fi
