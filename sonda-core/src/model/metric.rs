@@ -44,7 +44,7 @@ pub(crate) fn is_valid_metric_name(s: &str) -> bool {
 /// An ordered, deduplicated set of string label key-value pairs.
 ///
 /// Keys are stored in sorted order (BTreeMap guarantee) and validated at construction time.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Labels {
     inner: BTreeMap<String, String>,
 }
