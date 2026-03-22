@@ -1,0 +1,19 @@
+apiVersion: v2
+name: sonda
+description: Synthetic telemetry generator for testing observability pipelines
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/davidflores77/sonda
+sources:
+  - https://github.com/davidflores77/sonda
+maintainers:
+  - name: David Flores
+    email: davidflores77@gmail.com
+keywords:
+  - observability
+  - telemetry
+  - metrics
+  - logs
+  - testing
+  - synthetic

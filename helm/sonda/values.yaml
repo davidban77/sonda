@@ -1,0 +1,84 @@
+# Default values for sonda Helm chart.
+
+# Number of replicas for the sonda-server Deployment.
+replicaCount: 1
+
+image:
+  # Container image repository.
+  repository: ghcr.io/davidban77/sonda
+  # Image pull policy.
+  pullPolicy: IfNotPresent
+  # Image tag — defaults to the chart appVersion if not set.
+  tag: ""
+
+# Image pull secrets for private registries.
+imagePullSecrets: []
+
+# Override the chart name used in resource names.
+nameOverride: ""
+# Override the full resource name (release-chart).
+fullnameOverride: ""
+
+server:
+  # Port the sonda-server listens on inside the container.
+  port: 8080
+  # Bind address for the sonda-server.
+  bind: "0.0.0.0"
+
+service:
+  # Kubernetes Service type.
+  type: ClusterIP
+  # Service port (maps to server.port on the container).
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Scenario YAML files to mount as a ConfigMap.
+# Each key becomes a file under /scenarios in the container.
+# Example:
+#   scenarios:
+#     basic-metrics.yaml: |
+#       name: cpu_usage
+#       rate: 100
+#       duration: 30s
+#       generator:
+#         type: sine
+#         amplitude: 50
+#         period_secs: 60
+#         offset: 50
+#       encoder:
+#         type: prometheus_text
+#       sink:
+#         type: stdout
+#     app-logs.yaml: |
+#       name: app_logs
+#       rate: 10
+#       duration: 60s
+#       generator:
+#         type: template
+#         templates:
+#           - message: "Request from {ip}"
+#             field_pools:
+#               ip:
+#                 - "10.0.0.1"
+#                 - "10.0.0.2"
+#       encoder:
+#         type: json_lines
+#       sink:
+#         type: stdout
+scenarios: {}
+
+# Node selector for pod scheduling.
+nodeSelector: {}
+
+# Tolerations for pod scheduling.
+tolerations: []
+
+# Affinity rules for pod scheduling.
+affinity: {}

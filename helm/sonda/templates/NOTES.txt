@@ -1,0 +1,34 @@
+Sonda has been deployed successfully.
+
+1. Get the server URL by running:
+
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "sonda.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl port-forward --namespace {{ .Release.Namespace }} $POD_NAME {{ .Values.server.port }}:{{ .Values.server.port }}
+
+2. Verify the server is running:
+
+  curl http://localhost:{{ .Values.server.port }}/health
+  # {"status":"ok"}
+
+3. Start a scenario:
+
+  curl -X POST \
+    -H "Content-Type: text/yaml" \
+    --data-binary @your-scenario.yaml \
+    http://localhost:{{ .Values.server.port }}/scenarios
+
+4. List running scenarios:
+
+  curl http://localhost:{{ .Values.server.port }}/scenarios
+
+5. View live stats for a scenario:
+
+  curl http://localhost:{{ .Values.server.port }}/scenarios/<id>/stats
+
+6. Stop a scenario:
+
+  curl -X DELETE http://localhost:{{ .Values.server.port }}/scenarios/<id>
+{{- if .Values.scenarios }}
+
+Scenario files from values.scenarios are mounted at /scenarios inside the container.
+{{- end }}
