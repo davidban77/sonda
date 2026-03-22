@@ -29,9 +29,14 @@ src/
 │                         post_scenario(), list_scenarios(), get_scenario(),
 │                         get_scenario_stats(), delete_scenario()
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
+
+tests/
+├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
+├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped
+└── scenarios.rs        ← POST /scenarios unit-level tests (valid/invalid YAML, JSON, validation errors)
 ```
 
-## Implemented API Surface (as of Slice 3.5)
+## Implemented API Surface (as of Slice 3.6)
 
 | Method | Path                   | Description                                             |
 |--------|------------------------|---------------------------------------------------------|
