@@ -26,6 +26,55 @@ changes, and pattern-driven value sequences.
 
 ## Installation
 
+### Install script (recommended)
+
+Download and install the latest release for your platform:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+```
+
+Pin a specific version:
+
+```bash
+SONDA_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+```
+
+Install to a custom directory:
+
+```bash
+SONDA_INSTALL_DIR=$HOME/.local/bin curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+```
+
+### GitHub Releases
+
+Download pre-built binaries for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) from the
+[GitHub Releases](https://github.com/davidban77/sonda/releases/latest) page. Each release includes
+SHA256 checksums for verification.
+
+### Docker
+
+```bash
+docker pull ghcr.io/davidban77/sonda:latest
+```
+
+See the [Docker Deployment](#docker-deployment) section for usage details.
+
+### Helm
+
+```bash
+helm install sonda ./helm/sonda
+```
+
+See the [Kubernetes Deployment](#kubernetes-deployment-helm) section for configuration options.
+
+### Cargo install
+
+> Coming soon (Slice 4.1). Once published to crates.io:
+> ```bash
+> cargo install sonda
+> ```
+
 ### Build from source
 
 ```bash

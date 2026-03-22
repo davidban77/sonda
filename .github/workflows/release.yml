@@ -13,10 +13,124 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
+  binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset_name: linux-amd64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset_name: linux-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            asset_name: macos-amd64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            asset_name: macos-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross-compilation tools (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo install cross --locked
+
+      - name: Build binaries (native)
+        if: matrix.target != 'aarch64-unknown-linux-musl'
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p sonda
+          cargo build --release --target ${{ matrix.target }} -p sonda-server
+
+      - name: Build binaries (cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          cross build --release --target ${{ matrix.target }} -p sonda
+          cross build --release --target ${{ matrix.target }} -p sonda-server
+
+      - name: Create tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          TARGET="${{ matrix.target }}"
+          TARBALL="sonda-${VERSION}-${TARGET}.tar.gz"
+
+          # Copy binaries to a staging directory
+          mkdir -p staging
+          cp "target/${TARGET}/release/sonda" staging/
+          cp "target/${TARGET}/release/sonda-server" staging/
+
+          # Create the tarball
+          tar czf "${TARBALL}" -C staging sonda sonda-server
+          echo "TARBALL=${TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.target }}
+          path: ${{ env.TARBALL }}
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: sha256sum sonda-*.tar.gz > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            **Quick install (Linux/macOS):**
+            ```
+            curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+            ```
+
+            **Pin a specific version:**
+            ```
+            SONDA_VERSION=${{ github.ref_name }} curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+            ```
+
+            **Docker:**
+            ```
+            docker pull ghcr.io/davidban77/sonda:${{ github.ref_name }}
+            ```
+
+            See the [README](https://github.com/davidban77/sonda#installation) for all installation methods.
+          files: |
+            sonda-*.tar.gz
+            SHA256SUMS
+
   docker:
     name: Build & Push Multi-arch Docker Image
     runs-on: ubuntu-latest
