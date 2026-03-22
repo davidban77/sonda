@@ -4,26 +4,51 @@
 [![crates.io](https://img.shields.io/crates/v/sonda-core.svg)](https://crates.io/crates/sonda-core)
 
 Sonda is a synthetic telemetry generator written in Rust. It produces realistic observability signals
-— metrics, logs, traces, and flows — for use in lab environments, pipeline validation, load testing,
-and incident simulation.
+-- metrics and logs -- for use in lab environments, pipeline validation, load testing, and incident
+simulation. Traces and flows are on the roadmap but not yet implemented.
 
 Its purpose is not to produce perfectly regular data or pure random noise, but to model the kinds of
 failure patterns that actually break real observability pipelines: gaps, micro-bursts, cardinality
 changes, and pattern-driven value sequences.
 
-**The core library (`sonda-core`) is the product.** The CLI is a delivery mechanism built on top of it.
+**The core library (`sonda-core`) is the product.** The CLI and HTTP server are delivery mechanisms
+built on top of it.
 
 ---
 
 ## Features
 
-- **Multiple value generators** — constant, uniform random (seeded for deterministic replay), sine wave, sawtooth ramp.
-- **Intentional gap windows** — recurring silent periods that test alert flap detection, gap-fill logic, and buffer sizing.
-- **Burst windows** — recurring high-rate periods that simulate micro-bursts and traffic spikes.
-- **Prometheus text exposition format** — output is valid `text/plain 0.0.4` ready for scraping or piping.
-- **Static binary** — statically linked for maximum portability: runs on bare metal, Docker, and CI without a runtime installation.
-- **YAML scenario files** — all runtime behavior is defined in YAML; CLI flags override any value.
-- **Zero C dependencies** — pure Rust throughout; compatible with `x86_64-unknown-linux-musl`.
+- **4 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp.
+- **2 log generators** -- template-based structured logs with field pools, file replay.
+- **4 encoders** -- Prometheus text exposition, InfluxDB line protocol, JSON Lines, RFC 5424 syslog.
+- **9 sinks** -- stdout, file, TCP, UDP, HTTP push, Loki, Kafka, channel (in-memory mpsc), memory buffer.
+- **Gap windows** -- recurring silent periods that test alert flap detection, gap-fill logic, and buffer sizing.
+- **Burst windows** -- recurring high-rate periods that simulate micro-bursts and traffic spikes.
+- **Multi-scenario concurrency** -- run multiple metric and log scenarios simultaneously from a single YAML file.
+- **sonda-server HTTP control plane** -- start, inspect, and stop scenarios via REST API.
+- **YAML scenario files** -- all runtime behavior is defined in YAML; CLI flags override any value.
+- **Static binary** -- statically linked for maximum portability: runs on bare metal, Docker, and CI without a runtime installation.
+- **Zero C dependencies** -- pure Rust throughout; compatible with `x86_64-unknown-linux-musl`.
+
+---
+
+## Supported Signal Types
+
+### Metrics
+
+| Component | Options |
+|-----------|---------|
+| **Generators** | `constant`, `uniform`, `sine`, `sawtooth` |
+| **Encoders** | `prometheus_text`, `influx_lp`, `json_lines` |
+| **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `kafka`, `channel` |
+
+### Logs
+
+| Component | Options |
+|-----------|---------|
+| **Generators** | `template`, `replay` |
+| **Encoders** | `json_lines`, `syslog` |
+| **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `loki`, `kafka`, `channel` |
 
 ---
 
@@ -181,6 +206,19 @@ Run from a YAML scenario file:
 sonda metrics --scenario examples/basic-metrics.yaml
 ```
 
+Pipe output into a pipeline:
+
+```bash
+sonda metrics --scenario examples/basic-metrics.yaml | your-ingest-tool
+```
+
+Count lines produced in 5 seconds at 100 events/sec:
+
+```bash
+sonda metrics --name up --rate 100 --duration 5s | wc -l
+# expect ~500
+```
+
 ---
 
 ## CLI Reference
@@ -272,7 +310,7 @@ Options:
 
       --burst-multiplier <BURST_MULTIPLIER>
           Rate multiplier applied during each burst window (e.g. "5.0").
-          Effective rate during burst = base rate × multiplier.
+          Effective rate during burst = base rate x multiplier.
           Must be strictly positive.
 
       --label <key=value>
@@ -496,7 +534,7 @@ sonda metrics --scenario examples/basic-metrics.yaml --rate 500
 |--------|-----------|-------------|
 | `constant` | `value: f64` | Emits a fixed value every tick. |
 | `uniform` | `min: f64`, `max: f64`, `seed: u64` (optional) | Uniformly distributed random value in `[min, max]`. Seeded for deterministic replay. |
-| `sine` | `amplitude: f64`, `period_secs: f64`, `offset: f64` | Sine wave: `offset + amplitude * sin(2π * tick / period_ticks)`. |
+| `sine` | `amplitude: f64`, `period_secs: f64`, `offset: f64` | Sine wave: `offset + amplitude * sin(2pi * tick / period_ticks)`. |
 | `sawtooth` | `min: f64`, `max: f64`, `period_secs: f64` | Linear ramp from `min` to `max` that resets at the period boundary. |
 
 ### Encoder types
@@ -508,7 +546,7 @@ The `encoder` field selects the wire format. Use a mapping with a `type` key:
 | `prometheus_text` | _(none)_ | Prometheus text exposition format 0.0.4. |
 | `influx_lp` | `field_key: string` (optional, default `"value"`) | InfluxDB line protocol. |
 | `json_lines` | _(none)_ | JSON Lines (NDJSON), one object per line. |
-| `syslog` | `hostname: string` (optional), `app_name: string` (optional) | RFC 5424 syslog format. Log events only — not supported for metrics. |
+| `syslog` | `hostname: string` (optional), `app_name: string` (optional) | RFC 5424 syslog format. Log events only -- not supported for metrics. |
 
 ```yaml
 encoder:
@@ -528,7 +566,7 @@ The `sink` field selects the output destination. Use a mapping with a `type` key
 | `udp` | `address: string` | Send each event as a UDP datagram (e.g. `"127.0.0.1:9999"`). |
 | `http_push` | `url: string`, `content_type: string` (optional), `batch_size: usize` (optional) | POST batches of encoded events to an HTTP endpoint. Retries once on 5xx. |
 | `kafka` | `brokers: string`, `topic: string` | Publish batches of encoded events to a Kafka topic (requires `kafka` feature). `brokers` is a comma-separated list of `host:port` addresses. |
-| `loki` | `url: string`, `labels: map` (optional), `batch_size: usize` (optional) | POST log streams to the Loki push API (`/loki/api/v1/push`). `labels` are static key-value pairs attached to the log stream. Log events only — not supported for metrics. |
+| `loki` | `url: string`, `labels: map` (optional), `batch_size: usize` (optional) | POST log streams to the Loki push API (`/loki/api/v1/push`). `labels` are static key-value pairs attached to the log stream. Log events only -- not supported for metrics. |
 
 ```yaml
 # Write to a file
@@ -576,7 +614,7 @@ gaps:
 ### Burst windows
 
 A burst window defines a recurring high-rate period. During a burst the effective event rate is
-`rate × multiplier`, which increases the emission frequency for the burst duration. Bursts are useful
+`rate x multiplier`, which increases the emission frequency for the burst duration. Bursts are useful
 for simulating traffic spikes, micro-burst patterns, and ingest pipeline stress.
 
 ```yaml
@@ -589,6 +627,27 @@ bursts:
 `for` must be strictly less than `every`. `multiplier` must be strictly positive.
 
 When a gap and a burst would overlap, the gap takes priority and no events are emitted.
+
+### Output format
+
+The default output format is [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+(`text/plain 0.0.4`). Each line is one sample:
+
+```
+metric_name{label1="val1",label2="val2"} value timestamp_ms
+```
+
+- Labels are sorted alphabetically by key.
+- Timestamp is milliseconds since Unix epoch.
+- Label values are escaped (`\`, `"`, and newlines).
+- When there are no labels, the `{}` is omitted.
+
+Example:
+
+```
+cpu_usage{hostname="t0-a1",zone="eu1"} 50.523 1742500001000
+up 1 1742500001000
+```
 
 ---
 
@@ -854,64 +913,17 @@ Prometheus/Alertmanager alert rules:
 sonda metrics --scenario examples/docker-alerts.yaml
 ```
 
----
+### `examples/multi-scenario.yaml`
 
-## Output Format
-
-Output is [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
-(`text/plain 0.0.4`). Each line is one sample:
-
-```
-metric_name{label1="val1",label2="val2"} value timestamp_ms
-```
-
-- Labels are sorted alphabetically by key.
-- Timestamp is milliseconds since Unix epoch.
-- Label values are escaped (`\`, `"`, and newlines).
-- When there are no labels, the `{}` is omitted.
-
-Example:
-
-```
-cpu_usage{hostname="t0-a1",zone="eu1"} 50.523 1742500001000
-up 1 1742500001000
-```
-
----
-
-## Piping and Integration
-
-Count lines produced in 5 seconds at 100 events/sec:
+Run both metric and log scenarios concurrently:
 
 ```bash
-sonda metrics --name up --rate 100 --duration 5s | wc -l
-# expect ~500
-```
-
-Feed into a pipeline:
-
-```bash
-sonda metrics --scenario examples/basic-metrics.yaml | your-ingest-tool
+sonda run --scenario examples/multi-scenario.yaml
 ```
 
 ---
 
-## Workspace Layout
-
-```
-sonda/
-├── sonda-core/     library crate: all engine logic (generators, encoder, scheduler, sinks)
-├── sonda/          binary crate: CLI (thin wrapper over sonda-core)
-├── sonda-server/   binary crate: HTTP API control plane (post-MVP)
-├── examples/       example YAML scenario files
-└── docs/           architecture doc, phase plans
-```
-
-`sonda-core` is the primary product and is designed to be reusable as a library dependency.
-
----
-
-## sonda-server — HTTP Control Plane
+## sonda-server -- HTTP Control Plane
 
 `sonda-server` exposes a REST API for starting, inspecting, and stopping scenarios over HTTP.
 It is useful for integrating Sonda into CI pipelines, test harnesses, or dashboards without shell
@@ -934,7 +946,7 @@ level can be controlled via the `RUST_LOG` environment variable (default: `info`
 RUST_LOG=debug cargo run -p sonda-server -- --port 8080
 ```
 
-Press Ctrl+C for a graceful shutdown — the server signals all running scenarios to stop before
+Press Ctrl+C for a graceful shutdown -- the server signals all running scenarios to stop before
 exiting.
 
 ### Health check
@@ -973,20 +985,20 @@ curl -X POST \
 ```
 
 Error responses:
-- `400 Bad Request` — body cannot be parsed as YAML or JSON.
-- `422 Unprocessable Entity` — body is valid YAML/JSON but fails validation (e.g. `rate: 0`).
-- `500 Internal Server Error` — scenario thread could not be spawned.
+- `400 Bad Request` -- body cannot be parsed as YAML or JSON.
+- `422 Unprocessable Entity` -- body is valid YAML/JSON but fails validation (e.g. `rate: 0`).
+- `500 Internal Server Error` -- scenario thread could not be spawned.
 
-### API endpoints (implemented by slice)
+### API endpoints
 
-| Method | Path                   | Slice | Description                                |
-|--------|------------------------|-------|--------------------------------------------|
-| GET    | `/health`              | 3.1   | Health check                               |
-| POST   | `/scenarios`           | 3.2   | Start a new scenario from YAML/JSON body   |
-| GET    | `/scenarios`           | 3.3   | List all running scenarios                 |
-| GET    | `/scenarios/{id}`       | 3.3   | Inspect a scenario: config, stats, elapsed |
-| DELETE | `/scenarios/{id}`       | 3.4   | Stop and remove a running scenario         |
-| GET    | `/scenarios/{id}/stats` | 3.5   | Live stats: rate, events, gap/burst state  |
+| Method | Path                    | Description                                |
+|--------|-------------------------|--------------------------------------------|
+| GET    | `/health`               | Health check                               |
+| POST   | `/scenarios`            | Start a new scenario from YAML/JSON body   |
+| GET    | `/scenarios`            | List all running scenarios                 |
+| GET    | `/scenarios/{id}`       | Inspect a scenario: config, stats, elapsed |
+| DELETE | `/scenarios/{id}`       | Stop and remove a running scenario         |
+| GET    | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state  |
 
 ---
 
@@ -1172,27 +1184,6 @@ helm uninstall sonda
 
 ---
 
-## Development
-
-```bash
-# Build everything
-cargo build --workspace
-
-# Run all tests
-cargo test --workspace
-
-# Lint
-cargo clippy --workspace -- -D warnings
-
-# Format check
-cargo fmt --all -- --check
-
-# Run the CLI in development
-cargo run -p sonda -- metrics --name up --rate 10 --duration 5s
-```
-
----
-
 ## End-to-End Integration Tests
 
 The `tests/e2e/` directory contains a docker-compose based test suite that validates sonda against
@@ -1201,7 +1192,7 @@ real observability backends and message brokers.
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`)
-- [Task](https://taskfile.dev/) (optional — for convenient task runner commands)
+- [Task](https://taskfile.dev/) (optional -- for convenient task runner commands)
 - `curl` and `python3` in PATH
 - Rust toolchain (for `cargo build`)
 
@@ -1264,9 +1255,9 @@ task demo
 
 Then open the dashboards:
 
-- **Grafana** — http://localhost:3000 (anonymous access, VictoriaMetrics datasource pre-configured). Go to Explore, select VictoriaMetrics, and query `demo_sine_wave`.
-- **Kafka UI** — http://localhost:8080. Browse topics `sonda-e2e-metrics` and `sonda-e2e-json` to see messages.
-- **VictoriaMetrics** — http://localhost:8428/vmui for the built-in query UI.
+- **Grafana** -- http://localhost:3000 (anonymous access, VictoriaMetrics datasource pre-configured). Go to Explore, select VictoriaMetrics, and query `demo_sine_wave`.
+- **Kafka UI** -- http://localhost:8080. Browse topics `sonda-e2e-metrics` and `sonda-e2e-json` to see messages.
+- **VictoriaMetrics** -- http://localhost:8428/vmui for the built-in query UI.
 
 ### Running the automated tests
 
@@ -1303,6 +1294,38 @@ docker exec sonda-e2e-kafka kafka-console-consumer.sh \
 
 # Tear down
 task stack:down
+```
+
+---
+
+## Development
+
+```
+sonda/
+├── sonda-core/     library crate: all engine logic (generators, encoder, scheduler, sinks)
+├── sonda/          binary crate: CLI (thin wrapper over sonda-core)
+├── sonda-server/   binary crate: HTTP API control plane
+├── examples/       example YAML scenario files
+└── docs/           architecture doc, phase plans
+```
+
+`sonda-core` is the primary product and is designed to be reusable as a library dependency.
+
+```bash
+# Build everything
+cargo build --workspace
+
+# Run all tests
+cargo test --workspace
+
+# Lint
+cargo clippy --workspace -- -D warnings
+
+# Format check
+cargo fmt --all -- --check
+
+# Run the CLI in development
+cargo run -p sonda -- metrics --name up --rate 10 --duration 5s
 ```
 
 ---

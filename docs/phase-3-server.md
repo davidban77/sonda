@@ -342,7 +342,7 @@ will use.
     ```
     Status is derived from `handle.is_running()` — no separate status field to maintain.
 
-  - `GET /scenarios/:id`:
+  - `GET /scenarios/{id}`:
     ```json
     {
       "id": "uuid",
@@ -366,8 +366,8 @@ will use.
 
 ### Test criteria
 - Start 2 scenarios → GET /scenarios → both listed.
-- GET /scenarios/:id → correct name, status, elapsed time.
-- GET /scenarios/:id → stats.total_events > 0 after running for 2 seconds.
+- GET /scenarios/{id} → correct name, status, elapsed time.
+- GET /scenarios/{id} → stats.total_events > 0 after running for 2 seconds.
 - GET /scenarios/nonexistent → 404.
 - Stats update frequency: within 1 second of real time.
 
@@ -378,12 +378,12 @@ will use.
 - JSON serialization uses `serde_json`.
 
 ### UAT criteria
-- Start scenario via POST → wait 3 seconds → GET /scenarios/:id → stats.total_events > 0.
+- Start scenario via POST → wait 3 seconds → GET /scenarios/{id} → stats.total_events > 0.
 - GET /scenarios → list includes scenario with correct name.
 
 ---
 
-## Slice 3.4 — DELETE /scenarios/:id
+## Slice 3.4 — DELETE /scenarios/{id}
 
 ### Input state
 - Slice 3.3 passes all gates.
@@ -392,7 +392,7 @@ will use.
 
 **Files to modify:**
 - `sonda-server/src/routes/scenarios.rs` — add:
-  - `DELETE /scenarios/:id`:
+  - `DELETE /scenarios/{id}`:
     - Call `handle.stop()` to signal shutdown.
     - Call `handle.join(Some(Duration::from_secs(5)))` to wait with timeout.
     - Read final stats via `handle.stats_snapshot()`.
@@ -438,7 +438,7 @@ will use.
 
 **Files to modify:**
 - `sonda-server/src/routes/scenarios.rs` — add:
-  - `GET /scenarios/:id/stats`:
+  - `GET /scenarios/{id}/stats`:
     ```json
     {
       "total_events": 45000,
@@ -498,7 +498,7 @@ will use.
   - POST metrics scenario → 201.
   - POST logs scenario → 201.
   - GET /scenarios → both listed.
-  - Wait 3 seconds → GET /scenarios/:id/stats → total_events > 0.
+  - Wait 3 seconds → GET /scenarios/{id}/stats → total_events > 0.
   - DELETE → 200, status "stopped".
   - GET /scenarios → shows stopped.
   - Verify both metrics and logs scenarios work through the same API.
