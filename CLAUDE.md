@@ -33,7 +33,8 @@ sonda/                       ← workspace root (you are here)
     │   ├── implementer.md   ← writes production code in isolated worktree
     │   ├── tester.md        ← writes and runs tests
     │   ├── reviewer.md      ← audits code (read-only)
-    │   └── uat.md           ← validates from a real user's perspective
+    │   ├── uat.md           ← validates from a real user's perspective
+    │   └── docs.md          ← writes/maintains user-facing MkDocs documentation
     └── skills/              ← reusable workflow patterns
         ├── add-generator/   ← how to add a new ValueGenerator
         ├── add-encoder/     ← how to add a new Encoder
@@ -61,6 +62,7 @@ proceeds slice-by-slice, with a human approval gate between slices.
 | **Tester** | `@tester` | sonnet | Reads the slice spec and implemented code, writes unit + integration tests, runs them. |
 | **Reviewer** | `@reviewer` | opus | Audits code against architecture doc and coding conventions. Read-only — reports issues. |
 | **UAT** | `@uat` | opus | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
+| **Doc** | `@doc` | opus | Writes and maintains user-facing MkDocs documentation. Discovery-first — verifies against source code before writing. Also used for ongoing doc updates after new features. |
 
 ### Workflow per Slice
 
