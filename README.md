@@ -30,6 +30,10 @@ built on top of it.
 - **Static binary** -- statically linked for maximum portability: runs on bare metal, Docker, and CI without a runtime installation.
 - **Zero C dependencies** -- pure Rust throughout; compatible with `x86_64-unknown-linux-musl`.
 
+See the [Alert Testing Guide](docs/guide-alert-testing.md) for a complete walkthrough of testing
+Prometheus and VictoriaMetrics alerting rules with Sonda, including sine wave threshold math,
+`for:` duration testing, incident replay, and CI/CD automation.
+
 ---
 
 ## Supported Signal Types
