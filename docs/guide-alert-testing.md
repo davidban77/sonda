@@ -839,6 +839,101 @@ higher resolution. Adjust the `rate` to control replay speed:
 For most alert testing, running at accelerated speed (rate=1) is fine because Prometheus evaluates
 against the most recent data point regardless of when it arrived.
 
+### Preferred Approach: Replaying From a CSV File
+
+If you have production metric values in a CSV file, use the `csv_replay` generator instead of pasting
+values into a sequence list. This is the preferred approach for replaying real data because it keeps
+the YAML scenario clean and makes it easy to update the data independently.
+
+#### Step 1: Export Values to CSV
+
+Export the metric values from Prometheus or VictoriaMetrics into a CSV file. For example, using the
+VictoriaMetrics export API:
+
+```bash
+curl -s "http://your-vm:8428/api/v1/query_range?\
+query=cpu_usage{instance='prod-01'}&\
+start=$(date -d '1 hour ago' +%s)&\
+end=$(date +%s)&\
+step=10s" \
+  | jq -r '["timestamp","cpu_percent"], (.data.result[0].values[] | [.[0], .[1]]) | @csv' \
+  > incident-values.csv
+```
+
+This produces a file like the included [`examples/sample-cpu-values.csv`](../examples/sample-cpu-values.csv):
+
+```csv
+timestamp,cpu_percent
+1700000000,12.3
+1700000010,14.1
+1700000020,13.8
+...
+1700000180,94.8
+1700000190,96.1
+...
+1700000450,14.1
+```
+
+#### Step 2: Build the CSV Replay Scenario
+
+Point the `csv_replay` generator at the CSV file:
+
+```yaml
+# csv-incident-replay.yaml
+# Replay a production CPU spike from a recorded CSV file.
+name: cpu_usage
+rate: 1
+duration: 120s
+
+generator:
+  type: csv_replay
+  file: incident-values.csv
+  column: 1
+  has_header: true
+  repeat: false
+
+labels:
+  instance: replay-01
+  job: incident-test
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+```
+
+The key parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `file` | (required) | Path to the CSV file. Relative paths are resolved from the working directory. |
+| `column` | `0` | Zero-based index of the column containing numeric values. |
+| `has_header` | `true` | Whether the first row is a header (skipped during parsing). |
+| `repeat` | `true` | When true, cycles back to the first value after reaching the end. When false, clamps to the last value. |
+
+With `repeat: false`, the data plays once and then holds the last value -- matching how a real
+incident looks. With `repeat: true`, the pattern loops continuously, which is useful for
+sustained load testing.
+
+#### Why CSV Replay Over Sequence
+
+| Concern | `sequence` | `csv_replay` |
+|---------|-----------|-------------|
+| Data source | Values pasted inline in YAML | Separate CSV file |
+| Data volume | Awkward beyond ~50 values | Handles thousands of rows easily |
+| Updateability | Edit YAML to change values | Replace the CSV file; YAML stays the same |
+| Tooling | Manual copy-paste from TSDB | Direct export from Prometheus/VictoriaMetrics |
+| Version control | Large YAML diffs when values change | Small YAML + separate CSV diffs |
+
+For short, hand-crafted patterns (fewer than ~20 values), the `sequence` generator is still
+convenient. For replaying real production data, `csv_replay` is the better choice.
+
+See [`examples/csv-replay-metrics.yaml`](../examples/csv-replay-metrics.yaml) and
+[`examples/sample-cpu-values.csv`](../examples/sample-cpu-values.csv) for a complete working
+example.
+
 ---
 
 ## Quick Reference: Common Patterns
@@ -849,7 +944,8 @@ against the most recent data point regardless of when it arrived.
 | Alert fires and stays firing | `constant` | `value: <above threshold>` | Simplest sustained breach |
 | Alert resolves during gap | `constant` + gap | `value: 95`, `gaps: {every: 60s, for: 20s}` | Metric disappears during gap |
 | Alert fires after N minutes | `sequence` | N*60 values above threshold, then below | Precise `for:` duration control |
-| CPU spike incident replay | `sequence` | Values from production query, `repeat: false` | One-shot replay |
+| CPU spike incident replay (inline) | `sequence` | Values from production query, `repeat: false` | One-shot replay, small datasets |
+| CPU spike incident replay (file) | `csv_replay` | `file: values.csv`, `repeat: false` | Preferred for real production data |
 | Micro-burst rate alert | `sine` + burst | Base rate + `bursts: {every: 30s, for: 5s, multiplier: 10}` | Tests rate-based alerts |
 | Flapping alert | `sequence` | Alternating above/below threshold | Tests alert grouping and inhibition |
 | Gradual degradation | `sawtooth` | `min: 50`, `max: 99`, `period_secs: 300` | Linear ramp to threshold |
@@ -866,3 +962,6 @@ against the most recent data point regardless of when it arrived.
   sequence generator example.
 - Check [examples/docker-alerts.yaml](../examples/docker-alerts.yaml) for a sine wave alert
   testing example with burst windows.
+- Check [examples/csv-replay-metrics.yaml](../examples/csv-replay-metrics.yaml) and
+  [examples/sample-cpu-values.csv](../examples/sample-cpu-values.csv) for replaying production
+  metric data from a CSV file.
