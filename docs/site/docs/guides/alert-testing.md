@@ -117,10 +117,10 @@ sonda metrics --scenario for-duration-test.yaml
 ```
 
 ```
-cpu_spike_test{instance="server-01",job="node"} 10 1774287178070
-cpu_spike_test{instance="server-01",job="node"} 10 1774287179075
+cpu_usage{instance="server-01",job="node"} 10 1774287178070
+cpu_usage{instance="server-01",job="node"} 10 1774287179075
 ...
-cpu_spike_test{instance="server-01",job="node"} 95 1774287183075
+cpu_usage{instance="server-01",job="node"} 95 1774287183075
 ```
 
 Each value lasts exactly one second at `rate: 1`. Ticks 5-9 are above 90 (5 seconds), then the
@@ -463,9 +463,9 @@ sonda metrics --scenario csv-incident-replay.yaml
 ```
 
 ```
-cpu_replay{instance="prod-server-42",job="node"} 12.3 1774287217908
-cpu_replay{instance="prod-server-42",job="node"} 14.1 1774287218913
-cpu_replay{instance="prod-server-42",job="node"} 13.8 1774287219913
+cpu_usage{instance="replay-01",job="incident-test"} 12.3 1774287217908
+cpu_usage{instance="replay-01",job="incident-test"} 14.1 1774287218913
+cpu_usage{instance="replay-01",job="incident-test"} 13.8 1774287219913
 ...
 ```
 
