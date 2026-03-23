@@ -24,7 +24,7 @@ built on top of it.
 - **10 sinks** -- stdout, file, TCP, UDP, HTTP push, Prometheus remote write (feature-gated), Loki, Kafka, channel (in-memory mpsc), memory buffer.
 - **Gap windows** -- recurring silent periods that test alert flap detection, gap-fill logic, and buffer sizing.
 - **Burst windows** -- recurring high-rate periods that simulate micro-bursts and traffic spikes.
-- **Multi-scenario concurrency** -- run multiple metric and log scenarios simultaneously from a single YAML file.
+- **Multi-scenario concurrency** -- run multiple metric and log scenarios simultaneously from a single YAML file, with optional `phase_offset` for temporal correlation between scenarios.
 - **sonda-server HTTP control plane** -- start, inspect, and stop scenarios via REST API.
 - **YAML scenario files** -- all runtime behavior is defined in YAML; CLI flags override any value.
 - **Static binary** -- statically linked for maximum portability: runs on bare metal, Docker, and CI without a runtime installation.
@@ -488,6 +488,57 @@ scenarios:
 ```
 
 See `examples/multi-scenario.yaml` for a complete example.
+
+### Multi-Metric Correlation
+
+Use `phase_offset` to control the timing relationship between scenarios in a multi-scenario file.
+This enables testing compound alert rules that depend on multiple metrics:
+
+```yaml
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 1
+    duration: 120s
+    phase_offset: "0s"          # starts immediately
+    clock_group: alert-test     # shared timing reference
+    generator:
+      type: sequence
+      values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: memory_usage_percent
+    rate: 1
+    duration: 120s
+    phase_offset: "3s"          # starts 3 seconds after cpu_usage
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+```
+
+The `phase_offset` field accepts any duration string (`"30s"`, `"1m"`, `"500ms"`) and delays the
+scenario's start relative to the group launch time. The `clock_group` field groups scenarios under
+a shared timing reference (currently used for documentation; advanced cross-scenario signaling is
+planned for a future release).
+
+See `examples/multi-metric-correlation.yaml` for a complete example.
 
 ---
 
@@ -997,6 +1048,15 @@ Run both metric and log scenarios concurrently:
 
 ```bash
 sonda run --scenario examples/multi-scenario.yaml
+```
+
+### `examples/multi-metric-correlation.yaml`
+
+Test compound alert rules with correlated multi-metric scenarios. CPU spikes immediately; memory
+follows 3 seconds later via `phase_offset`, creating a controlled overlap window:
+
+```bash
+sonda run --scenario examples/multi-metric-correlation.yaml
 ```
 
 ---

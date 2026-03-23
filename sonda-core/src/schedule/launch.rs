@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::validate::{validate_config, validate_log_config};
 use crate::config::ScenarioEntry;
@@ -50,6 +50,11 @@ pub fn validate_entry(entry: &ScenarioEntry) -> Result<(), SondaError> {
 /// * `shutdown` — shared shutdown flag. Pass `Arc::new(AtomicBool::new(true))`
 ///   for a new scenario. The handle's [`ScenarioHandle::stop`] method sets this
 ///   to `false` to request a clean exit.
+/// * `start_delay` — optional delay before the scenario begins emitting events.
+///   When `Some`, the spawned thread sleeps for this duration before entering the
+///   event loop. This enables temporal correlation in multi-scenario mode: "metric
+///   A starts immediately, metric B starts 30s later". The sleep happens inside
+///   the spawned thread, so it does not block the caller.
 ///
 /// # Errors
 ///
@@ -60,6 +65,7 @@ pub fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
     shutdown: Arc<AtomicBool>,
+    start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
@@ -83,6 +89,25 @@ pub fn launch_scenario(
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
+            // If a start delay is configured, sleep before entering the event
+            // loop. This enables phase-offset correlation between scenarios
+            // launched from the same multi-scenario config. The sleep respects
+            // the shutdown flag so that Ctrl+C during the delay exits promptly.
+            if let Some(delay) = start_delay {
+                let deadline = std::time::Instant::now() + delay;
+                while std::time::Instant::now() < deadline {
+                    if !shutdown_for_thread.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    // Poll every 50ms to keep shutdown responsive.
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    let sleep_chunk = remaining.min(Duration::from_millis(50));
+                    if sleep_chunk > Duration::ZERO {
+                        std::thread::sleep(sleep_chunk);
+                    }
+                }
+            }
+
             match entry {
                 ScenarioEntry::Metrics(config) => {
                     let mut sink = create_sink(&config.sink)?;
@@ -144,6 +169,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -165,6 +192,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -180,6 +209,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -201,6 +232,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -241,6 +274,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -262,6 +297,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -289,6 +326,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -310,6 +349,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -326,8 +367,9 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("launch_metrics");
 
-        let mut handle = launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed for valid metrics entry");
+        let mut handle =
+            launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed for valid metrics entry");
 
         // The thread must be alive immediately after launch.
         assert!(
@@ -352,8 +394,9 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("launch_logs");
 
-        let mut handle = launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed for valid logs entry");
+        let mut handle =
+            launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed for valid logs entry");
 
         assert!(
             handle.is_running(),
@@ -374,8 +417,8 @@ mod tests {
     fn stop_then_join_metrics_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("stop_join_metrics");
-        let mut handle =
-            launch_scenario("id-stop-1".to_string(), entry, shutdown).expect("launch must succeed");
+        let mut handle = launch_scenario("id-stop-1".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
 
         handle.stop();
         let result = handle.join(Some(Duration::from_secs(3)));
@@ -394,8 +437,8 @@ mod tests {
     fn stop_then_join_logs_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("stop_join_logs");
-        let mut handle =
-            launch_scenario("id-stop-2".to_string(), entry, shutdown).expect("launch must succeed");
+        let mut handle = launch_scenario("id-stop-2".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
 
         handle.stop();
         let result = handle.join(Some(Duration::from_secs(3)));
@@ -410,7 +453,7 @@ mod tests {
     fn finite_duration_scenario_exits_naturally_and_join_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry("natural_exit");
-        let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown)
+        let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown, None)
             .expect("launch must succeed");
 
         // 200ms duration — wait for it to finish, then join.
@@ -440,10 +483,13 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
 
-        let mut handle = launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed");
+        let mut handle =
+            launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed");
 
         // Wait long enough for at least a few events to be emitted and stats updated.
         thread::sleep(Duration::from_millis(200));
@@ -486,10 +532,17 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
 
-        let mut handle = launch_scenario("id-log-stats".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed");
+        let mut handle = launch_scenario(
+            "id-log-stats".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            None,
+        )
+        .expect("launch must succeed");
 
         thread::sleep(Duration::from_millis(200));
 
@@ -511,7 +564,7 @@ mod tests {
     fn elapsed_is_positive_after_launch() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("elapsed_test");
-        let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown)
+        let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown, None)
             .expect("launch must succeed");
 
         let d = handle.elapsed();
@@ -534,7 +587,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let entry = metrics_entry_indefinite("flag_reset");
 
-        let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown))
+        let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown), None)
             .expect("launch must succeed");
 
         assert!(
@@ -544,5 +597,207 @@ mod tests {
 
         handle.stop();
         handle.join(None).ok();
+    }
+
+    // ---- start_delay: None starts immediately -------------------------------
+
+    /// launch_scenario with start_delay=None starts emitting events immediately.
+    #[test]
+    fn launch_with_no_start_delay_emits_events_immediately() {
+        use std::thread;
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            name: "no_delay_test".to_string(),
+            rate: 500.0,
+            duration: None,
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        });
+
+        let mut handle =
+            launch_scenario("id-nodelay".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed");
+
+        // Wait briefly and check events have already been emitted.
+        thread::sleep(Duration::from_millis(200));
+        let snap = handle.stats_snapshot();
+        assert!(
+            snap.total_events > 0,
+            "with no start_delay, events should be emitted within 200ms, got {}",
+            snap.total_events
+        );
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    // ---- start_delay: Some(Duration) delays the start -----------------------
+
+    /// launch_scenario with start_delay=Some(500ms) does not emit events for
+    /// the first ~400ms (allowing margin for thread scheduling).
+    #[test]
+    fn launch_with_start_delay_does_not_emit_during_delay() {
+        use std::thread;
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            name: "delay_test".to_string(),
+            rate: 500.0,
+            duration: Some("1s".to_string()),
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        });
+
+        let delay = Duration::from_millis(500);
+        let mut handle = launch_scenario(
+            "id-delay".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            Some(delay),
+        )
+        .expect("launch must succeed");
+
+        // Check after 100ms — should still be in the delay period.
+        thread::sleep(Duration::from_millis(100));
+        let snap_early = handle.stats_snapshot();
+        assert_eq!(
+            snap_early.total_events, 0,
+            "during start_delay, total_events should be 0, got {}",
+            snap_early.total_events
+        );
+
+        // Wait for the delay to expire and some events to be emitted.
+        thread::sleep(Duration::from_millis(600));
+        let snap_after = handle.stats_snapshot();
+        assert!(
+            snap_after.total_events > 0,
+            "after start_delay expires, events should be emitted, got {}",
+            snap_after.total_events
+        );
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    // ---- Shutdown during start_delay exits cleanly --------------------------
+
+    /// Sending shutdown during start_delay causes the thread to exit cleanly
+    /// without hanging.
+    #[test]
+    fn shutdown_during_start_delay_exits_cleanly() {
+        use std::thread;
+        use std::time::Instant;
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = metrics_entry_indefinite("shutdown_delay");
+
+        // Set a long delay (10 seconds) so we can verify the shutdown works.
+        let delay = Duration::from_secs(10);
+        let mut handle = launch_scenario(
+            "id-shutdown-delay".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            Some(delay),
+        )
+        .expect("launch must succeed");
+
+        // Wait 100ms then signal shutdown.
+        thread::sleep(Duration::from_millis(100));
+        handle.stop();
+
+        // Join should succeed quickly, well within 2 seconds.
+        let start = Instant::now();
+        let result = handle.join(Some(Duration::from_secs(2)));
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "join after shutdown during delay must return Ok: {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "thread must exit promptly after shutdown during delay, took {:?}",
+            elapsed
+        );
+
+        // No events should have been emitted since we stopped during the delay.
+        let snap = handle.stats_snapshot();
+        assert_eq!(
+            snap.total_events, 0,
+            "no events should be emitted when shutdown during delay, got {}",
+            snap.total_events
+        );
+    }
+
+    // ---- start_delay with logs scenario -------------------------------------
+
+    /// launch_scenario with start_delay works for logs scenarios too.
+    #[test]
+    fn launch_logs_with_start_delay_does_not_emit_during_delay() {
+        use std::thread;
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = ScenarioEntry::Logs(LogScenarioConfig {
+            name: "log_delay_test".to_string(),
+            rate: 500.0,
+            duration: Some("1s".to_string()),
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "delayed log".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            gaps: None,
+            bursts: None,
+            encoder: EncoderConfig::JsonLines,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        });
+
+        let delay = Duration::from_millis(500);
+        let mut handle = launch_scenario(
+            "id-log-delay".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            Some(delay),
+        )
+        .expect("launch must succeed");
+
+        // Check during the delay.
+        thread::sleep(Duration::from_millis(100));
+        let snap_early = handle.stats_snapshot();
+        assert_eq!(
+            snap_early.total_events, 0,
+            "logs scenario should not emit during start_delay, got {}",
+            snap_early.total_events
+        );
+
+        // Wait for delay to expire.
+        thread::sleep(Duration::from_millis(600));
+        let snap_after = handle.stats_snapshot();
+        assert!(
+            snap_after.total_events > 0,
+            "logs scenario should emit after delay, got {}",
+            snap_after.total_events
+        );
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
     }
 }

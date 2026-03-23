@@ -325,7 +325,7 @@ pub async fn post_scenario(
 
     // 4. Launch the scenario on a new OS thread.
     let shutdown = Arc::new(AtomicBool::new(true));
-    let handle = match launch_scenario(id.clone(), entry, shutdown) {
+    let handle = match launch_scenario(id.clone(), entry, shutdown, None) {
         Ok(h) => h,
         Err(e) => {
             warn!(error = %e, "POST /scenarios: failed to launch scenario");

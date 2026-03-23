@@ -43,8 +43,15 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
             return Err(SondaError::Config(format!("scenario[{i}]: {e}")));
         }
 
+        // Parse the optional phase_offset into a Duration for the launcher.
+        let start_delay = match entry.phase_offset() {
+            Some(offset) => crate::config::validate::parse_phase_offset(offset)
+                .map_err(|e| SondaError::Config(format!("scenario[{i}] phase_offset: {e}")))?,
+            None => None,
+        };
+
         let id = format!("multi-{i}");
-        let handle = launch_scenario(id, entry, Arc::clone(&shutdown))?;
+        let handle = launch_scenario(id, entry, Arc::clone(&shutdown), start_delay)?;
         handles.push(handle);
     }
 
@@ -99,6 +106,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -121,6 +130,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -218,6 +229,8 @@ mod tests {
                     labels: None,
                     encoder: EncoderConfig::PrometheusText,
                     sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
                 }),
                 ScenarioEntry::Logs(LogScenarioConfig {
                     name: "shutdown_test_logs".to_string(),
@@ -235,6 +248,8 @@ mod tests {
                     bursts: None,
                     encoder: EncoderConfig::JsonLines,
                     sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
                 }),
             ],
         };
@@ -292,6 +307,8 @@ mod tests {
                 sink: SinkConfig::File {
                     path: "/proc/sonda_test_cannot_create_this_file_27.txt".to_string(),
                 },
+                phase_offset: None,
+                clock_group: None,
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -324,6 +341,8 @@ mod tests {
                     sink: SinkConfig::File {
                         path: "/proc/sonda_err_a_27.txt".to_string(),
                     },
+                    phase_offset: None,
+                    clock_group: None,
                 }),
                 ScenarioEntry::Metrics(ScenarioConfig {
                     name: "err_b".to_string(),
@@ -337,6 +356,8 @@ mod tests {
                     sink: SinkConfig::File {
                         path: "/proc/sonda_err_b_27.txt".to_string(),
                     },
+                    phase_offset: None,
+                    clock_group: None,
                 }),
             ],
         };
@@ -528,5 +549,310 @@ rate: 10
         );
         assert!(matches!(config.scenarios[0], ScenarioEntry::Metrics(_)));
         assert!(matches!(config.scenarios[1], ScenarioEntry::Logs(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // phase_offset in multi-scenario mode
+    // -----------------------------------------------------------------------
+
+    /// A scenario with a minimal phase_offset ("1ms") emits events almost immediately.
+    #[test]
+    fn run_multi_with_minimal_phase_offset_emits_almost_immediately() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
+                name: "minimal_offset".to_string(),
+                rate: 10.0,
+                duration: Some("200ms".to_string()),
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                gaps: None,
+                bursts: None,
+                labels: None,
+                encoder: EncoderConfig::PrometheusText,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("1ms".to_string()),
+                clock_group: None,
+            })],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let start = Instant::now();
+        let result = run_multi(config, shutdown);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "minimal phase_offset should complete ok");
+        // Should complete roughly within duration + small overhead.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "minimal phase_offset must not add significant delay, took {:?}",
+            elapsed
+        );
+    }
+
+    /// BUG EXPOSURE: phase_offset "0s" fails because parse_duration rejects
+    /// zero-valued durations. The example YAML
+    /// (examples/multi-metric-correlation.yaml) uses phase_offset: "0s" which
+    /// would fail at runtime.
+    #[test]
+    fn run_multi_accepts_zero_phase_offset() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
+                name: "zero_offset".to_string(),
+                rate: 10.0,
+                duration: Some("200ms".to_string()),
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                gaps: None,
+                bursts: None,
+                labels: None,
+                encoder: EncoderConfig::PrometheusText,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("0s".to_string()),
+                clock_group: None,
+            })],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        // "0s" is treated as no delay — parse_phase_offset returns None.
+        assert!(
+            result.is_ok(),
+            "phase_offset '0s' should succeed (treated as no delay): {:?}",
+            result.err()
+        );
+    }
+
+    /// A scenario with no phase_offset (None) preserves existing behavior.
+    #[test]
+    fn run_multi_with_no_phase_offset_preserves_behavior() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![metrics_entry_stdout("no_offset")],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        assert!(
+            result.is_ok(),
+            "scenario without phase_offset should work as before"
+        );
+    }
+
+    /// Two scenarios where the second has a 500ms phase_offset: the second
+    /// starts later, so total run time is at least 500ms.
+    #[test]
+    fn run_multi_respects_phase_offset_between_scenarios() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "first_immediate".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    generator: GeneratorConfig::Constant { value: 1.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
+                }),
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "second_delayed".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    generator: GeneratorConfig::Constant { value: 2.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("500ms".to_string()),
+                    clock_group: None,
+                }),
+            ],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let start = Instant::now();
+        let result = run_multi(config, shutdown);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok(), "phase_offset multi-scenario should succeed");
+        // The second scenario must wait 500ms before its 100ms run, so total
+        // should be at least ~500ms.
+        assert!(
+            elapsed >= Duration::from_millis(400),
+            "total run time must include the phase_offset delay, took {:?}",
+            elapsed
+        );
+    }
+
+    /// Shutdown during phase_offset delay exits all scenarios cleanly.
+    #[test]
+    fn run_multi_shutdown_during_phase_offset_exits_cleanly() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![
+                // First scenario runs indefinitely.
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "immediate_indef".to_string(),
+                    rate: 10.0,
+                    duration: None,
+                    generator: GeneratorConfig::Constant { value: 1.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
+                }),
+                // Second scenario has a long delay — we'll shut down before it starts.
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "long_delay".to_string(),
+                    rate: 10.0,
+                    duration: None,
+                    generator: GeneratorConfig::Constant { value: 2.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("10s".to_string()),
+                    clock_group: None,
+                }),
+            ],
+        };
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let shutdown_for_thread = Arc::clone(&shutdown);
+
+        // Signal shutdown after 100ms.
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            signal_shutdown(&shutdown_for_thread);
+        });
+
+        let start = Instant::now();
+        let result = run_multi(config, shutdown);
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_ok(),
+            "shutdown during phase_offset should not produce an error"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "run_multi must exit promptly when shutdown during phase_offset, took {:?}",
+            elapsed
+        );
+    }
+
+    /// An invalid phase_offset string causes run_multi to return an error
+    /// synchronously before spawning threads.
+    #[test]
+    fn run_multi_rejects_invalid_phase_offset() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
+                name: "bad_offset".to_string(),
+                rate: 10.0,
+                duration: Some("100ms".to_string()),
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                gaps: None,
+                bursts: None,
+                labels: None,
+                encoder: EncoderConfig::PrometheusText,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("not_a_duration".to_string()),
+                clock_group: None,
+            })],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        assert!(
+            result.is_err(),
+            "invalid phase_offset must cause run_multi to return Err"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("phase_offset"),
+            "error message should mention phase_offset, got: {err_msg}"
+        );
+    }
+
+    /// Two correlated scenarios with different phase_offsets run concurrently.
+    /// (Uses "1ms" instead of "0s" to avoid the parse_duration zero-rejection bug.)
+    #[test]
+    fn multi_metric_correlation_example_runs_concurrently() {
+        let yaml = r#"
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 10
+    duration: 200ms
+    phase_offset: "1ms"
+    clock_group: alert-test
+    generator:
+      type: constant
+      value: 95.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - signal_type: metrics
+    name: memory_usage_percent
+    rate: 10
+    duration: 200ms
+    phase_offset: "100ms"
+    clock_group: alert-test
+    generator:
+      type: constant
+      value: 88.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+"#;
+        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        assert!(
+            result.is_ok(),
+            "multi-metric correlation example should run successfully"
+        );
+    }
+
+    /// Scenarios with the same clock_group and different phase_offsets both complete.
+    #[test]
+    fn run_multi_with_clock_group_and_offsets() {
+        let config = MultiScenarioConfig {
+            scenarios: vec![
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "grouped_a".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    generator: GeneratorConfig::Constant { value: 1.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: Some("test-group".to_string()),
+                }),
+                ScenarioEntry::Metrics(ScenarioConfig {
+                    name: "grouped_b".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    generator: GeneratorConfig::Constant { value: 2.0 },
+                    gaps: None,
+                    bursts: None,
+                    labels: None,
+                    encoder: EncoderConfig::PrometheusText,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("200ms".to_string()),
+                    clock_group: Some("test-group".to_string()),
+                }),
+            ],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        assert!(
+            result.is_ok(),
+            "scenarios with clock_group and offsets should complete"
+        );
     }
 }

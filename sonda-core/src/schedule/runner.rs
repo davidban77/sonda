@@ -308,6 +308,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
+            phase_offset: None,
+            clock_group: None,
         }
     }
 
@@ -464,6 +466,8 @@ mod tests {
             labels: None,
             encoder: crate::encoder::EncoderConfig::PrometheusText,
             sink: crate::sink::SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         }
     }
 
