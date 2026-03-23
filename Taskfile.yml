@@ -53,9 +53,56 @@ tasks:
       - cargo audit
 
   docs:
-    desc: Build and open workspace documentation
+    desc: Build and open Rust API documentation
     cmds:
       - cargo doc --workspace --no-deps --open
+
+  # ---------------------------------------------------------------------------
+  # MkDocs Site (user-facing documentation)
+  # ---------------------------------------------------------------------------
+  site:setup:
+    desc: Install MkDocs Material in a local venv (requires uv or pip3)
+    cmds:
+      - |
+        if command -v uv > /dev/null 2>&1; then
+          echo "Using uv to create venv and install dependencies..."
+          uv venv docs/site/.venv
+          uv pip install -r docs/site/requirements.txt --python docs/site/.venv/bin/python
+        elif command -v pip3 > /dev/null 2>&1; then
+          echo "Using pip3 to create venv and install dependencies..."
+          python3 -m venv docs/site/.venv
+          docs/site/.venv/bin/pip install -r docs/site/requirements.txt
+        else
+          echo "ERROR: Neither uv nor pip3 found."
+          echo ""
+          echo "Install one of:"
+          echo "  uv (recommended): curl -LsSf https://astral.sh/uv/install.sh | sh"
+          echo "  pip3: comes with Python 3 (brew install python3)"
+          exit 1
+        fi
+        echo ""
+        echo "Done! Run 'task site:serve' to preview the docs."
+    status:
+      - test -f docs/site/.venv/bin/mkdocs
+
+  site:build:
+    desc: Build the MkDocs site (strict mode)
+    deps: [site:setup]
+    cmds:
+      - docs/site/.venv/bin/mkdocs build --strict -f docs/site/mkdocs.yml
+
+  site:serve:
+    desc: Start local MkDocs dev server with live reload
+    deps: [site:setup]
+    cmds:
+      - |
+        echo "Docs site: http://localhost:8000"
+        docs/site/.venv/bin/mkdocs serve -f docs/site/mkdocs.yml
+
+  site:clean:
+    desc: Remove the MkDocs build output and venv
+    cmds:
+      - rm -rf docs/site/site docs/site/.venv
 
   fmt:
     desc: Auto-format all code
