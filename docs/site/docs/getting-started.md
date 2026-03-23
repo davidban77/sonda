@@ -209,8 +209,13 @@ sonda logs --scenario examples/log-template.yaml --duration 3s
 
 ## What next
 
-- **Configuration reference** -- learn about all generators, encoders, sinks, and CLI flags
-  (coming soon).
-- **Alert testing guide** -- use Sonda to validate your Prometheus/VictoriaMetrics alert rules
-  (coming soon).
-- **Deployment** -- run Sonda in Docker, Kubernetes, or as a long-running server (coming soon).
+- [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario
+  fields, gaps, bursts, and multi-scenario mode.
+- [**Generators**](configuration/generators.md) -- all value generators (constant, sine, sawtooth,
+  uniform, sequence, CSV replay) and log generators.
+- [**Encoders**](configuration/encoders.md) -- output formats: Prometheus text, InfluxDB, JSON,
+  syslog, remote write.
+- [**Sinks**](configuration/sinks.md) -- output destinations: stdout, file, TCP, UDP, HTTP push,
+  remote write, Kafka, Loki.
+- [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and
+  `run` subcommands.

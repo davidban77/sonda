@@ -47,3 +47,9 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Configuration:
+    - Scenario Files: configuration/scenario-file.md
+    - Generators: configuration/generators.md
+    - Encoders: configuration/encoders.md
+    - Sinks: configuration/sinks.md
+    - CLI Reference: configuration/cli-reference.md
