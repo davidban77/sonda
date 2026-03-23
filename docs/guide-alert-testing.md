@@ -416,6 +416,28 @@ sink:
   content_type: "text/plain"
 ```
 
+### Push Metrics via Prometheus Remote Write
+
+For vmagent relay or any remote-write-native receiver (Prometheus, Thanos, Cortex, Mimir, Grafana
+Cloud), use the `remote_write` encoder and sink pair. This requires the `remote-write` feature flag:
+
+```bash
+cargo build --features remote-write -p sonda
+```
+
+```yaml
+encoder:
+  type: remote_write
+sink:
+  type: remote_write
+  url: "http://localhost:8428/api/v1/write"
+  batch_size: 100
+```
+
+The `remote_write` sink automatically batches TimeSeries into a single `WriteRequest`,
+snappy-compresses, and POSTs with the correct protocol headers. See
+[`examples/remote-write-vm.yaml`](../examples/remote-write-vm.yaml) for a complete example.
+
 ### Scrape Endpoint (Pull Model)
 
 If you prefer the Prometheus pull model, sonda-server exposes a scrape endpoint for each running

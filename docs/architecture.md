@@ -142,7 +142,7 @@ Built-in encoder implementations:
 | **PrometheusText** | Prometheus exposition format (`text/plain 0.0.4`). Encodes metric name, labels, value, and optional timestamp. |
 | **InfluxLineProtocol** | InfluxDB line protocol. Tags become measurement tags; value field is mapped to a configurable field key. |
 | **JsonLines** | One JSON object per line. Compatible with Elasticsearch, Loki, and generic HTTP ingest. |
-| **RemoteWrite** | Prometheus remote-write protobuf (planned). Targets VictoriaMetrics, Prometheus, VMAgent. |
+| **RemoteWrite** | Prometheus remote-write protobuf (feature-gated). Encodes each metric as a length-prefixed `TimeSeries` message. Must be paired with the `RemoteWrite` sink, which batches, wraps in a `WriteRequest`, snappy-compresses, and POSTs with the correct protocol headers. Targets VictoriaMetrics, vmagent, Prometheus, Thanos, Cortex, Mimir, and Grafana Cloud. |
 
 Encoders pre-build any invariant content (label serialization prefixes, metric name validation) at construction time to avoid per-event work. The `encode` methods write into a caller-provided `Vec<u8>` buffer to minimize allocations.
 
@@ -164,9 +164,12 @@ Sink implementations follow a natural progression of complexity:
 | **Stdout** | Buffered stdout via `BufWriter`. Default sink. Zero configuration. |
 | **File** | Buffered file writer. Configurable path. Supports rotation (planned). |
 | **Tcp / Udp** | Raw socket delivery. Targets syslog receivers, statsd, and similar line-protocol endpoints. |
-| **HttpPush** | HTTP POST to a configurable endpoint. Supports remote-write protocol for VictoriaMetrics and Prometheus. |
+| **HttpPush** | HTTP POST to a configurable endpoint. Supports custom headers for protocol-specific requirements. Uses `ureq`. |
+| **RemoteWrite** | Prometheus remote write sink (feature-gated). Receives length-prefixed `TimeSeries` from the `RemoteWrite` encoder, batches them into a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs with the correct protocol headers. Requires the `remote-write` Cargo feature. |
 | **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
 | **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
+| **Channel** | In-memory channel sink (`mpsc::Sender<Vec<u8>>`). For testing and inter-thread communication. |
+| **Memory** | In-memory buffer sink (`Vec<Vec<u8>>`). For testing and embedding. |
 
 ---
 
