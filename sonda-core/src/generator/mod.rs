@@ -642,6 +642,7 @@ sink:
         assert_send_sync::<crate::generator::sawtooth::Sawtooth>();
         assert_send_sync::<crate::generator::constant::Constant>();
         assert_send_sync::<crate::generator::sequence::SequenceGenerator>();
+        assert_send_sync::<crate::generator::csv_replay::CsvReplayGenerator>();
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------
