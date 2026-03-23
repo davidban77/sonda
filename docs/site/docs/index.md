@@ -100,7 +100,7 @@ sonda metrics --scenario scenario.yaml
 | Category | Options |
 |----------|---------|
 | **Generators** | constant, sine, sawtooth, uniform random, sequence, CSV replay |
-| **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, Prometheus remote write |
+| **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows |
 | **Signals** | metrics, logs (template and replay modes) |
