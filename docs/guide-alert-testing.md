@@ -368,6 +368,13 @@ This starts:
 | vmagent | 8429 | Metrics relay agent |
 | Grafana | 3000 | Dashboards and metric exploration |
 
+The compose stack auto-provisions a **Sonda Overview** dashboard in Grafana. After starting the
+stack, navigate to **Dashboards > Sonda > Sonda Overview** in Grafana at http://localhost:3000.
+The dashboard shows generated metric values, event rate, active scenario count, and gap/burst
+indicators -- all updated in real time as Sonda pushes data. See
+[`docker/grafana/dashboards/sonda-overview.json`](../docker/grafana/dashboards/sonda-overview.json)
+for the dashboard definition.
+
 ### Push Metrics via sonda-server
 
 Submit a scenario to sonda-server and it runs in the background:
@@ -492,6 +499,15 @@ You can also check alert state in the VictoriaMetrics UI at `http://localhost:84
 
 Recording rules pre-compute expressions and store the result as a new time series. Testing them
 requires pushing known input values and verifying the computed output.
+
+A ready-to-run example is provided in the repository:
+
+- [`examples/recording-rule-test.yaml`](../examples/recording-rule-test.yaml) -- Sonda scenario
+  pushing a constant value of 100 for `http_requests_total`.
+- [`examples/recording-rule-prometheus.yml`](../examples/recording-rule-prometheus.yml) -- Prometheus
+  recording rule config computing `job:http_requests_total:rate5m`.
+
+Run the scenario and load the rule file to see recording rules evaluate against known synthetic data.
 
 ### Push Known Values
 

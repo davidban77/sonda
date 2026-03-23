@@ -19,6 +19,7 @@
 #
 # Open Grafana at http://localhost:3000 (anonymous access, no login required)
 # to explore metrics with the pre-configured VictoriaMetrics datasource.
+# The "Sonda Overview" dashboard is auto-provisioned under Dashboards > Sonda.
 #
 # Tear down:
 #
@@ -130,6 +131,11 @@ services:
   # logging in. The VictoriaMetrics datasource is pre-provisioned -- go to
   # Explore, select "VictoriaMetrics", and run PromQL queries.
   #
+  # The "Sonda Overview" dashboard is auto-provisioned under Dashboards > Sonda.
+  # It shows generated metric values, event rate, active scenario count, and
+  # gap/burst indicators. The dashboard uses template variables ($datasource
+  # and $job) so it works with any Prometheus-compatible datasource.
+  #
   # Admin credentials (if needed): admin / admin
   # ---------------------------------------------------------------------------
   grafana:
@@ -142,6 +148,8 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     volumes:
       - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ../docker/grafana/provisioning/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ../docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       victoriametrics:
         condition: service_healthy

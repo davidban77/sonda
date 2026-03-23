@@ -1,0 +1,39 @@
+# Prometheus recording rule config snippet for testing with Sonda.
+#
+# This file defines a recording rule that computes the per-job 5-minute rate
+# of http_requests_total. When paired with examples/recording-rule-test.yaml,
+# which pushes a constant value of 100 at 1 event/sec, the expected output is
+# a steady rate value (the rate() of a constant gauge depends on the scrape
+# interval and staleness behavior).
+#
+# How to use:
+#
+#   1. Start the VictoriaMetrics compose stack:
+#      docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+#   2. Push known values with Sonda:
+#      sonda metrics --scenario examples/recording-rule-test.yaml
+#
+#   3. Load this rule file into Prometheus or vmalert:
+#      - Prometheus: add to the rule_files list in prometheus.yml
+#      - vmalert: pass as -rule=examples/recording-rule-prometheus.yml
+#
+#   4. Wait at least two evaluation intervals (default 1 minute each).
+#
+#   5. Query the recording rule output:
+#      curl "http://localhost:8428/api/v1/query?query=job:http_requests_total:rate5m"
+#
+#   6. Verify the result:
+#      - With a constant push at 1 event/sec, rate() measures the per-second
+#        rate of change. For a gauge metric pushed at a constant value,
+#        rate() over 5m should return a near-zero value (no change).
+#      - For a counter-like metric that increments by 100 each second,
+#        sum(rate(http_requests_total[5m])) by (job) should return ~100.
+#
+# Adjust the recording rule expression to match your alerting rules under test.
+
+groups:
+  - name: sonda-test-rules
+    rules:
+      - record: job:http_requests_total:rate5m
+        expr: sum(rate(http_requests_total[5m])) by (job)
