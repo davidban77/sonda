@@ -55,3 +55,5 @@ nav:
     - CLI Reference: configuration/cli-reference.md
   - Guides:
     - Alert Testing: guides/alert-testing.md
+    - Pipeline Validation: guides/pipeline-validation.md
+    - Recording Rules: guides/recording-rules.md
