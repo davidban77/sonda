@@ -527,4 +527,103 @@ sink:
             "create_sink should reject an empty broker string"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // SinkConfig::HttpPush with custom headers deserialization
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn sink_config_http_push_with_headers_deserializes() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:8428/api/v1/write"
+headers:
+  Content-Type: "application/x-protobuf"
+  Content-Encoding: "snappy"
+  X-Prometheus-Remote-Write-Version: "0.1.0"
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { url, headers, .. } => {
+                assert_eq!(url, "http://localhost:8428/api/v1/write");
+                let hdr = headers.expect("headers should be Some");
+                assert_eq!(
+                    hdr.get("Content-Type").map(String::as_str),
+                    Some("application/x-protobuf")
+                );
+                assert_eq!(
+                    hdr.get("Content-Encoding").map(String::as_str),
+                    Some("snappy")
+                );
+                assert_eq!(
+                    hdr.get("X-Prometheus-Remote-Write-Version")
+                        .map(String::as_str),
+                    Some("0.1.0")
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_without_headers_is_backward_compatible() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:9090/push"
+content_type: "text/plain"
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush {
+                url,
+                headers,
+                content_type,
+                ..
+            } => {
+                assert_eq!(url, "http://localhost:9090/push");
+                assert_eq!(content_type.as_deref(), Some("text/plain"));
+                assert!(
+                    headers.is_none(),
+                    "headers should default to None when not specified"
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_with_empty_headers_map_deserializes() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:9090/push"
+headers: {}
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { headers, .. } => {
+                let hdr = headers.expect("headers should be Some even when empty");
+                assert!(
+                    hdr.is_empty(),
+                    "empty headers map should deserialize as empty HashMap"
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_with_headers_is_cloneable_and_debuggable() {
+        let mut hdr = HashMap::new();
+        hdr.insert("X-Custom".to_string(), "val".to_string());
+        let config = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            headers: Some(hdr),
+        };
+        let cloned = config.clone();
+        let debug_str = format!("{cloned:?}");
+        assert!(debug_str.contains("HttpPush"));
+        assert!(debug_str.contains("X-Custom"));
+    }
 }

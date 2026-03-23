@@ -747,4 +747,139 @@ batch_size: 8192
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"end-to-end");
     }
+
+    // -------------------------------------------------------------------------
+    // Custom headers support
+    // -------------------------------------------------------------------------
+
+    /// Accept one connection, read the full HTTP request, and return
+    /// (headers_map, body_bytes). Responds with the given status.
+    fn accept_one_capture_headers(
+        listener: &TcpListener,
+        status: u16,
+    ) -> (HashMap<String, String>, Vec<u8>) {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+
+        let mut headers_map = HashMap::new();
+        let mut content_length: usize = 0;
+
+        // Read request line
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .expect("read request line");
+
+        // Read headers until blank line
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read header line");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.trim_end().split_once(':') {
+                let k = key.trim().to_lowercase();
+                let v = value.trim().to_string();
+                if k == "content-length" {
+                    content_length = v.parse().unwrap_or(0);
+                }
+                headers_map.insert(k, v);
+            }
+        }
+
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).expect("read body");
+
+        let response =
+            format!("HTTP/1.1 {status} OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",);
+        stream.write_all(response.as_bytes()).ok();
+
+        (headers_map, body)
+    }
+
+    #[test]
+    fn custom_headers_are_sent_with_request() {
+        let (listener, url) = mock_server_listener();
+
+        let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
+
+        let mut custom = HashMap::new();
+        custom.insert("Content-Encoding".to_string(), "snappy".to_string());
+        custom.insert(
+            "X-Prometheus-Remote-Write-Version".to_string(),
+            "0.1.0".to_string(),
+        );
+
+        let mut sink = HttpPushSink::new(&url, "application/x-protobuf", 10_000, custom)
+            .expect("construct sink");
+        sink.write(b"test-payload").expect("write");
+        sink.flush().expect("flush");
+
+        let (headers, body) = handle.join().expect("mock server thread panicked");
+
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("application/x-protobuf"),
+            "Content-Type header must be set"
+        );
+        assert_eq!(
+            headers.get("content-encoding").map(String::as_str),
+            Some("snappy"),
+            "Content-Encoding custom header must be sent"
+        );
+        assert_eq!(
+            headers
+                .get("x-prometheus-remote-write-version")
+                .map(String::as_str),
+            Some("0.1.0"),
+            "X-Prometheus-Remote-Write-Version custom header must be sent"
+        );
+        assert_eq!(body, b"test-payload");
+    }
+
+    #[test]
+    fn empty_custom_headers_does_not_break_request() {
+        let (listener, url) = mock_server_listener();
+        let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
+
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        sink.write(b"data").expect("write");
+        sink.flush().expect("flush");
+
+        let (headers, body) = handle.join().expect("mock server thread panicked");
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("text/plain"),
+            "Content-Type should still be set with empty custom headers"
+        );
+        assert_eq!(body, b"data");
+    }
+
+    #[test]
+    fn custom_headers_with_factory_config() {
+        let (listener, url) = mock_server_listener();
+        let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
+
+        let mut hdr = HashMap::new();
+        hdr.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+
+        let config = SinkConfig::HttpPush {
+            url,
+            content_type: Some("application/x-protobuf".to_string()),
+            batch_size: Some(10_000),
+            headers: Some(hdr),
+        };
+        let mut sink = create_sink(&config).expect("factory ok");
+        sink.write(b"factory-test").expect("write");
+        sink.flush().expect("flush");
+
+        let (headers, body) = handle.join().expect("mock server thread panicked");
+        assert_eq!(
+            headers.get("x-custom-header").map(String::as_str),
+            Some("custom-value"),
+            "custom header from factory config must be sent"
+        );
+        assert_eq!(body, b"factory-test");
+    }
 }

@@ -387,4 +387,90 @@ mod tests {
             "error must be SondaError::Encoder variant, got: {err:?}"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig::RemoteWrite (feature-gated tests)
+    // ---------------------------------------------------------------------------
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_config_remote_write_deserializes_from_yaml() {
+        let yaml = "type: remote_write";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            matches!(config, EncoderConfig::RemoteWrite),
+            "should deserialize as RemoteWrite variant"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn create_encoder_remote_write_succeeds() {
+        let config = EncoderConfig::RemoteWrite;
+        let _enc = create_encoder(&config);
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_config_remote_write_is_cloneable_and_debuggable() {
+        let config = EncoderConfig::RemoteWrite;
+        let cloned = config.clone();
+        assert!(matches!(cloned, EncoderConfig::RemoteWrite));
+        let s = format!("{config:?}");
+        assert!(
+            s.contains("RemoteWrite"),
+            "debug output should contain 'RemoteWrite', got: {s}"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn remote_write_encoder_produces_valid_output_through_factory() {
+        use crate::model::metric::{Labels, MetricEvent};
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let config = EncoderConfig::RemoteWrite;
+        let enc = create_encoder(&config);
+
+        let labels = Labels::from_pairs(&[("job", "sonda")]).unwrap();
+        let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let event =
+            MetricEvent::with_timestamp("factory_test".to_string(), 10.0, labels, ts).unwrap();
+
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf)
+            .expect("encode through factory should succeed");
+        assert!(
+            !buf.is_empty(),
+            "factory-created encoder should produce output"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn scenario_yaml_with_remote_write_encoder_deserializes() {
+        use crate::config::ScenarioConfig;
+        use crate::sink::SinkConfig;
+
+        let yaml = r#"
+name: rw_test_metric
+rate: 10.0
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: remote_write
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/write"
+  headers:
+    Content-Type: "application/x-protobuf"
+    Content-Encoding: "snappy"
+    X-Prometheus-Remote-Write-Version: "0.1.0"
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.name, "rw_test_metric");
+        assert!(matches!(config.encoder, EncoderConfig::RemoteWrite));
+        assert!(matches!(config.sink, SinkConfig::HttpPush { .. }));
+    }
 }
