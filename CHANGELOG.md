@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0](https://github.com/davidban77/sonda/compare/v0.1.3...v0.2.0) (2026-03-23)
+
+
+### Features
+
+* add CSV/file replay generator for production metric patterns ([#28](https://github.com/davidban77/sonda/issues/28)) ([a55c6ec](https://github.com/davidban77/sonda/commit/a55c6ecfa2fdb0800c3d0da2270c13895973c3dc))
+* add phase_offset for multi-metric correlation ([#30](https://github.com/davidban77/sonda/issues/30)) ([4ed4c4e](https://github.com/davidban77/sonda/commit/4ed4c4ed2c1f3d5bd7eb5b7ec0909b0d001634f6))
+* add Prometheus remote write encoder ([#27](https://github.com/davidban77/sonda/issues/27)) ([c7d7ec6](https://github.com/davidban77/sonda/commit/c7d7ec67cfc9843da89d9fb691f9e6e18e286f4d))
+* add scrape endpoint GET /scenarios/{id}/metrics ([#25](https://github.com/davidban77/sonda/issues/25)) ([60dd1e8](https://github.com/davidban77/sonda/commit/60dd1e8c3469539e07e14e1de6f549d23af27897))
+* add step/sequence value generator for incident pattern modeling ([#23](https://github.com/davidban77/sonda/issues/23)) ([0a0f928](https://github.com/davidban77/sonda/commit/0a0f928fc337408e602b54b6b4c6da6f0518990d))
+* **slice-6.2:** add VictoriaMetrics compose stack and documentation ([#24](https://github.com/davidban77/sonda/issues/24)) ([739c337](https://github.com/davidban77/sonda/commit/739c3371fdc4c2afa9820569e31043ef06269c49))
+* **slice-6.4:** add Alert Testing Guide for SRE adoption ([#26](https://github.com/davidban77/sonda/issues/26)) ([78116ef](https://github.com/davidban77/sonda/commit/78116ef51e3fc34e3b0a555740c696df53d7bfd7))
+* **slice-7.2:** add pre-built Grafana dashboards and recording rule example ([#29](https://github.com/davidban77/sonda/issues/29)) ([34c4e79](https://github.com/davidban77/sonda/commit/34c4e79819657da0fa26f7221079c5bb76dcb977))
+
+
+### Documentation
+
+* add multi-metric correlation section to alert testing guide ([#31](https://github.com/davidban77/sonda/issues/31)) ([4341924](https://github.com/davidban77/sonda/commit/4341924f8befda5deacd6f57ac81d8156162b75a))
+* add Phase 6 and Phase 7 plans ([#20](https://github.com/davidban77/sonda/issues/20)) ([56f4da0](https://github.com/davidban77/sonda/commit/56f4da02d1ba394176a2e79e74371044efda3d89))
+* fix README accuracy and documentation drift ([#22](https://github.com/davidban77/sonda/issues/22)) ([294b680](https://github.com/davidban77/sonda/commit/294b680a8449c5d18431ec144ff8f7e7a903f4c3))
+* improve Phase 8 plan and docs agent with workflow integration ([#32](https://github.com/davidban77/sonda/issues/32)) ([f85ffa4](https://github.com/davidban77/sonda/commit/f85ffa4c2429758ea4fad2a74910ce1b36ba97ed))
+* **slice-8.0:** MkDocs scaffold and landing page ([#33](https://github.com/davidban77/sonda/issues/33)) ([a518c27](https://github.com/davidban77/sonda/commit/a518c27d23541dac1f06195e753e3407ead9874e))
+* **slice-8.1:** add MkDocs scaffold and getting started guide ([#34](https://github.com/davidban77/sonda/issues/34)) ([0066cb7](https://github.com/davidban77/sonda/commit/0066cb77a91ab86d53cfb6e58c3400af85bde608))
+* **slice-8.2:** add configuration reference pages ([#35](https://github.com/davidban77/sonda/issues/35)) ([3bdd64d](https://github.com/davidban77/sonda/commit/3bdd64d59f758aa60d14e3c4427367b339ee9d83))
+* **slice-8.3:** add alert testing guide ([#36](https://github.com/davidban77/sonda/issues/36)) ([15f80a9](https://github.com/davidban77/sonda/commit/15f80a9b84a64ea48d91dd516cb4302b05fe867f))
+* **slice-8.4:** add pipeline validation and recording rules guides ([#37](https://github.com/davidban77/sonda/issues/37)) ([9e3246e](https://github.com/davidban77/sonda/commit/9e3246efc1fcb488fc7747fc506cf56c82d0c8ce))
+
 ## [0.1.3](https://github.com/davidban77/sonda/compare/v0.1.2...v0.1.3) (2026-03-22)
 
 
