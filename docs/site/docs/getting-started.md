@@ -16,7 +16,7 @@ By the end, you will have synthetic telemetry streaming to stdout.
     To pin a specific version:
 
     ```bash
-    SONDA_VERSION=v0.1.3 curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.1.3 sh
     ```
 
 === "Cargo"
@@ -35,11 +35,12 @@ By the end, you will have synthetic telemetry streaming to stdout.
     docker pull ghcr.io/davidban77/sonda:latest
     ```
 
-    Run Sonda inside the container:
+    Run Sonda inside the container (the default entrypoint is `sonda-server`, so
+    override it with `--entrypoint`):
 
     ```bash
-    docker run --rm ghcr.io/davidban77/sonda:latest \
-      /sonda metrics --name cpu_usage --rate 2 --duration 5s
+    docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+      metrics --name cpu_usage --rate 2 --duration 5s
     ```
 
 === "From source"
@@ -73,11 +74,11 @@ sonda metrics --name cpu_usage --rate 2 --duration 5s
 ```
 
 ```text title="Output"
-cpu_usage 0 1711234567000
-cpu_usage 0 1711234567500
-cpu_usage 0 1711234568000
-cpu_usage 0 1711234568500
-cpu_usage 0 1711234569000
+cpu_usage 0 1774277933018
+cpu_usage 0 1774277933522
+cpu_usage 0 1774277934023
+cpu_usage 0 1774277934523
+...
 ```
 
 Each line is Prometheus exposition format: `metric_name value timestamp_ms`.
@@ -92,12 +93,11 @@ sonda metrics --name cpu_usage --rate 2 --duration 5s \
 ```
 
 ```text title="Output"
-cpu_usage{host="web-01"} 50 1711234567000
-cpu_usage{host="web-01"} 65.45 1711234567500
-cpu_usage{host="web-01"} 79.39 1711234568000
-cpu_usage{host="web-01"} 90.45 1711234568500
-cpu_usage{host="web-01"} 97.55 1711234569000
-cpu_usage{host="web-01"} 100 1711234569500
+cpu_usage{host="web-01"} 50 1774277938576
+cpu_usage{host="web-01"} 65.45084971874736 1774277939081
+cpu_usage{host="web-01"} 79.38926261462366 1774277939580
+cpu_usage{host="web-01"} 90.45084971874738 1774277940081
+...
 ```
 
 The sine wave oscillates between 0 and 100 (offset 50 +/- amplitude 50), completing one full
@@ -132,20 +132,20 @@ sink:
 Run it:
 
 ```bash
-sonda metrics --scenario basic-metrics.yaml
+sonda metrics --scenario examples/basic-metrics.yaml --duration 3s
 ```
 
 ```text title="Output"
-interface_oper_state{hostname="t0-a1",zone="eu1"} 10 1711234567000
-interface_oper_state{hostname="t0-a1",zone="eu1"} 10.52 1711234567001
-interface_oper_state{hostname="t0-a1",zone="eu1"} 11.04 1711234567002
+interface_oper_state{hostname="t0-a1",zone="eu1"} 10 1774277944133
+interface_oper_state{hostname="t0-a1",zone="eu1"} 10.00104719754354 1774277944134
+interface_oper_state{hostname="t0-a1",zone="eu1"} 10.002094395041146 1774277944135
 ...
 ```
 
 You can override any field from the command line. CLI flags take precedence over the YAML file:
 
 ```bash
-sonda metrics --scenario basic-metrics.yaml --duration 5s --rate 2
+sonda metrics --scenario examples/basic-metrics.yaml --duration 5s --rate 2
 ```
 
 ## Generating logs
@@ -157,30 +157,39 @@ sonda logs --mode template --rate 2 --duration 3s
 ```
 
 ```json title="Output"
-{"timestamp":"2026-03-23T14:11:57.867Z","severity":"info","message":"synthetic log event","fields":{}}
-{"timestamp":"2026-03-23T14:11:58.369Z","severity":"info","message":"synthetic log event","fields":{}}
-{"timestamp":"2026-03-23T14:11:58.872Z","severity":"info","message":"synthetic log event","fields":{}}
+{"timestamp":"2026-03-23T14:59:04.840Z","severity":"info","message":"synthetic log event","fields":{}}
+{"timestamp":"2026-03-23T14:59:05.345Z","severity":"info","message":"synthetic log event","fields":{}}
+{"timestamp":"2026-03-23T14:59:05.845Z","severity":"info","message":"synthetic log event","fields":{}}
+...
 ```
 
-For richer log output, use a scenario file with templates and field pools:
+For richer log output, use a scenario file with templates and field pools. The repository
+includes `examples/log-template.yaml` with multiple message templates:
 
-```yaml title="log-template.yaml"
+```yaml title="examples/log-template.yaml"
 name: app_logs_template
-rate: 5
-duration: 10s
+rate: 10
+duration: 60s
+
 generator:
   type: template
   templates:
     - message: "Request from {ip} to {endpoint} returned {status}"
       field_pools:
-        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-        endpoint: ["/api/v1/health", "/api/v1/metrics"]
-        status: ["200", "400", "500"]
+        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3", "192.168.1.10"]
+        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs", "/api/v1/users"]
+        status: ["200", "201", "400", "404", "500"]
+    - message: "Service {service} processed {count} events in {duration_ms}ms"
+      field_pools:
+        service: ["ingest", "transform", "export"]
+        count: ["1", "10", "100", "1000"]
+        duration_ms: ["5", "12", "47", "200"]
   severity_weights:
     info: 0.7
     warn: 0.2
     error: 0.1
   seed: 42
+
 encoder:
   type: json_lines
 sink:
@@ -188,12 +197,14 @@ sink:
 ```
 
 ```bash
-sonda logs --scenario log-template.yaml
+sonda logs --scenario examples/log-template.yaml --duration 3s
 ```
 
 ```json title="Output"
-{"timestamp":"2026-03-23T14:14:34.437Z","severity":"info","message":"Request from 10.0.0.3 to /api/v1/users returned 404","fields":{"endpoint":"/api/v1/users","ip":"10.0.0.3","status":"404"}}
-{"timestamp":"2026-03-23T14:14:34.942Z","severity":"error","message":"Service transform processed 100 events in 47ms","fields":{"count":"100","duration_ms":"47","service":"transform"}}
+{"timestamp":"2026-03-23T14:59:08.405Z","severity":"info","message":"Request from 10.0.0.3 to /api/v1/users returned 404","fields":{"endpoint":"/api/v1/users","ip":"10.0.0.3","status":"404"}}
+{"timestamp":"2026-03-23T14:59:08.510Z","severity":"error","message":"Service transform processed 100 events in 47ms","fields":{"count":"100","duration_ms":"47","service":"transform"}}
+{"timestamp":"2026-03-23T14:59:08.610Z","severity":"error","message":"Request from 10.0.0.3 to /api/v1/metrics returned 500","fields":{"endpoint":"/api/v1/metrics","ip":"10.0.0.3","status":"500"}}
+...
 ```
 
 ## What next
