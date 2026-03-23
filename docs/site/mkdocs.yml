@@ -53,3 +53,5 @@ nav:
     - Encoders: configuration/encoders.md
     - Sinks: configuration/sinks.md
     - CLI Reference: configuration/cli-reference.md
+  - Guides:
+    - Alert Testing: guides/alert-testing.md
