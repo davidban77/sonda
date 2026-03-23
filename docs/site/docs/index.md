@@ -18,6 +18,18 @@ micro-bursts, cardinality spikes, and shaped value sequences.
 
 ## Quick install
 
+=== "Install script (recommended)"
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+    ```
+
+    Pin a specific version:
+
+    ```bash
+    SONDA_VERSION=v0.1.3 curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+    ```
+
 === "Cargo"
 
     ```bash
