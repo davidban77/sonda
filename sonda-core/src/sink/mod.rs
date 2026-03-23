@@ -9,6 +9,8 @@ pub mod http;
 pub mod kafka;
 pub mod loki;
 pub mod memory;
+#[cfg(feature = "remote-write")]
+pub mod remote_write;
 pub mod stdout;
 pub mod tcp;
 pub mod udp;
@@ -84,6 +86,37 @@ pub enum SinkConfig {
 
         /// Optional flush threshold in bytes. Defaults to 64 KiB if not specified.
         batch_size: Option<usize>,
+
+        /// Optional extra HTTP headers to send with every POST request.
+        ///
+        /// When provided, these headers are sent in addition to the `Content-Type`
+        /// header. Useful for protocols that require specific headers, such as
+        /// Prometheus remote write (`Content-Encoding: snappy`,
+        /// `X-Prometheus-Remote-Write-Version: 0.1.0`).
+        #[serde(default)]
+        headers: Option<HashMap<String, String>>,
+    },
+
+    /// Batch TimeSeries and deliver them as Prometheus remote write requests.
+    ///
+    /// This sink is designed to be paired with the `remote_write` encoder, which
+    /// produces length-prefixed protobuf `TimeSeries` bytes. The sink accumulates
+    /// TimeSeries entries and, on flush or when `batch_size` is reached, wraps them
+    /// in a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs
+    /// with the correct remote write protocol headers.
+    ///
+    /// Requires the `remote-write` Cargo feature to be enabled.
+    #[cfg(feature = "remote-write")]
+    #[serde(rename = "remote_write")]
+    RemoteWrite {
+        /// Target URL for the remote write endpoint, e.g.
+        /// `"http://localhost:8428/api/v1/write"`.
+        url: String,
+
+        /// Flush threshold in number of TimeSeries entries. Defaults to 100 if
+        /// not specified.
+        #[serde(default)]
+        batch_size: Option<usize>,
     },
 
     /// Batch encoded events and deliver them to a Kafka topic.
@@ -139,12 +172,19 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
             url,
             content_type,
             batch_size,
+            headers,
         } => {
             let ct = content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
-            Ok(Box::new(http::HttpPushSink::new(url, ct, bs)?))
+            let h = headers.clone().unwrap_or_default();
+            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h)?))
+        }
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { url, batch_size } => {
+            let bs = batch_size.unwrap_or(remote_write::DEFAULT_BATCH_SIZE);
+            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs)?))
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, topic } => {
@@ -515,5 +555,104 @@ sink:
             result.is_err(),
             "create_sink should reject an empty broker string"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // SinkConfig::HttpPush with custom headers deserialization
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn sink_config_http_push_with_headers_deserializes() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:8428/api/v1/write"
+headers:
+  Content-Type: "application/x-protobuf"
+  Content-Encoding: "snappy"
+  X-Prometheus-Remote-Write-Version: "0.1.0"
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { url, headers, .. } => {
+                assert_eq!(url, "http://localhost:8428/api/v1/write");
+                let hdr = headers.expect("headers should be Some");
+                assert_eq!(
+                    hdr.get("Content-Type").map(String::as_str),
+                    Some("application/x-protobuf")
+                );
+                assert_eq!(
+                    hdr.get("Content-Encoding").map(String::as_str),
+                    Some("snappy")
+                );
+                assert_eq!(
+                    hdr.get("X-Prometheus-Remote-Write-Version")
+                        .map(String::as_str),
+                    Some("0.1.0")
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_without_headers_is_backward_compatible() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:9090/push"
+content_type: "text/plain"
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush {
+                url,
+                headers,
+                content_type,
+                ..
+            } => {
+                assert_eq!(url, "http://localhost:9090/push");
+                assert_eq!(content_type.as_deref(), Some("text/plain"));
+                assert!(
+                    headers.is_none(),
+                    "headers should default to None when not specified"
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_with_empty_headers_map_deserializes() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:9090/push"
+headers: {}
+"#;
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { headers, .. } => {
+                let hdr = headers.expect("headers should be Some even when empty");
+                assert!(
+                    hdr.is_empty(),
+                    "empty headers map should deserialize as empty HashMap"
+                );
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_config_http_push_with_headers_is_cloneable_and_debuggable() {
+        let mut hdr = HashMap::new();
+        hdr.insert("X-Custom".to_string(), "val".to_string());
+        let config = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            headers: Some(hdr),
+        };
+        let cloned = config.clone();
+        let debug_str = format!("{cloned:?}");
+        assert!(debug_str.contains("HttpPush"));
+        assert!(debug_str.contains("X-Custom"));
     }
 }

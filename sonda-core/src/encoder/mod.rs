@@ -6,6 +6,8 @@
 pub mod influx;
 pub mod json;
 pub mod prometheus;
+#[cfg(feature = "remote-write")]
+pub mod remote_write;
 pub mod syslog;
 
 use serde::Deserialize;
@@ -70,6 +72,15 @@ pub enum EncoderConfig {
         /// The APP-NAME field in the syslog header. Defaults to `"sonda"`.
         app_name: Option<String>,
     },
+    /// Prometheus remote write protobuf format.
+    ///
+    /// Encodes metric events as length-prefixed protobuf `TimeSeries` messages.
+    /// Must be paired with the `remote_write` sink type, which batches TimeSeries
+    /// into a single `WriteRequest`, snappy-compresses, and HTTP POSTs with the
+    /// correct protocol headers. Requires the `remote-write` feature flag.
+    #[cfg(feature = "remote-write")]
+    #[serde(rename = "remote_write")]
+    RemoteWrite,
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
@@ -83,6 +94,8 @@ pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
         EncoderConfig::Syslog { hostname, app_name } => {
             Box::new(syslog::Syslog::new(hostname.clone(), app_name.clone()))
         }
+        #[cfg(feature = "remote-write")]
+        EncoderConfig::RemoteWrite => Box::new(remote_write::RemoteWriteEncoder::new()),
     }
 }
 
@@ -369,5 +382,87 @@ mod tests {
             matches!(err, crate::SondaError::Encoder(_)),
             "error must be SondaError::Encoder variant, got: {err:?}"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig::RemoteWrite (feature-gated tests)
+    // ---------------------------------------------------------------------------
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_config_remote_write_deserializes_from_yaml() {
+        let yaml = "type: remote_write";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            matches!(config, EncoderConfig::RemoteWrite),
+            "should deserialize as RemoteWrite variant"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn create_encoder_remote_write_succeeds() {
+        let config = EncoderConfig::RemoteWrite;
+        let _enc = create_encoder(&config);
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_config_remote_write_is_cloneable_and_debuggable() {
+        let config = EncoderConfig::RemoteWrite;
+        let cloned = config.clone();
+        assert!(matches!(cloned, EncoderConfig::RemoteWrite));
+        let s = format!("{config:?}");
+        assert!(
+            s.contains("RemoteWrite"),
+            "debug output should contain 'RemoteWrite', got: {s}"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn remote_write_encoder_produces_valid_output_through_factory() {
+        use crate::model::metric::{Labels, MetricEvent};
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let config = EncoderConfig::RemoteWrite;
+        let enc = create_encoder(&config);
+
+        let labels = Labels::from_pairs(&[("job", "sonda")]).unwrap();
+        let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let event =
+            MetricEvent::with_timestamp("factory_test".to_string(), 10.0, labels, ts).unwrap();
+
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf)
+            .expect("encode through factory should succeed");
+        assert!(
+            !buf.is_empty(),
+            "factory-created encoder should produce output"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn scenario_yaml_with_remote_write_encoder_deserializes() {
+        use crate::config::ScenarioConfig;
+        use crate::sink::SinkConfig;
+
+        let yaml = r#"
+name: rw_test_metric
+rate: 10.0
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: remote_write
+sink:
+  type: remote_write
+  url: "http://localhost:8428/api/v1/write"
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.name, "rw_test_metric");
+        assert!(matches!(config.encoder, EncoderConfig::RemoteWrite));
+        assert!(matches!(config.sink, SinkConfig::RemoteWrite { .. }));
     }
 }

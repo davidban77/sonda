@@ -34,6 +34,7 @@ src/
 │   ├── prometheus.rs   ← Prometheus text exposition format
 │   ├── influx.rs       ← Influx Line Protocol (post-MVP)
 │   ├── json.rs         ← JSON Lines (post-MVP)
+│   ├── remote_write.rs ← Prometheus remote write protobuf (feature = "remote-write")
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
 │   ├── mod.rs          ← Sink trait + factory
@@ -43,6 +44,7 @@ src/
 │   ├── udp.rs          ← UDP socket (UdpSocket)
 │   ├── http.rs         ← HTTP push sink (ureq)
 │   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
+│   ├── remote_write.rs ← Prometheus remote write sink (batches TimeSeries, snappy, feature = "remote-write")
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")

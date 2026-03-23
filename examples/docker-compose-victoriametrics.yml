@@ -91,15 +91,20 @@ services:
   # vmagent can scrape Prometheus targets and forward metrics to a remote
   # backend. Here it is configured to relay incoming data to VictoriaMetrics.
   #
-  # NOTE: vmagent's remote write relay uses the Prometheus remote write
-  # protocol (protobuf + snappy). Sonda does not yet support protobuf
-  # remote write encoding (planned for Phase 7). For now, push metrics
-  # directly to VictoriaMetrics using the http_push sink with Prometheus
-  # text format -- this works without vmagent in the middle.
+  # vmagent's remote write relay uses the Prometheus remote write protocol
+  # (protobuf + snappy). Sonda supports this via the `remote_write`
+  # encoder + sink pair (requires the `remote-write` feature flag):
   #
-  # vmagent is included here so you can experiment with scrape configs
-  # and understand the architecture. It will work for scraping targets
-  # that expose /metrics endpoints in Prometheus text format.
+  #   cargo build --features remote-write -p sonda
+  #   sonda metrics --scenario examples/remote-write-vm.yaml
+  #
+  # The remote_write sink automatically batches TimeSeries into a single
+  # WriteRequest, snappy-compresses, and POSTs with the correct headers.
+  # Compatible with vmagent, Prometheus, Thanos Receive, Cortex, Mimir,
+  # and Grafana Cloud.
+  #
+  # Alternatively, push metrics directly to VictoriaMetrics using the
+  # http_push sink with Prometheus text format, which bypasses vmagent.
   # ---------------------------------------------------------------------------
   vmagent:
     image: victoriametrics/vmagent:v1.108.1

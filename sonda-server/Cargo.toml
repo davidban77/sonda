@@ -11,6 +11,9 @@ categories = ["web-programming::http-server", "development-tools::testing"]
 description = "HTTP control plane for Sonda — synthetic telemetry generator"
 readme = "../README.md"
 
+[features]
+remote-write = ["sonda-core/remote-write"]
+
 [[bin]]
 name = "sonda-server"
 path = "src/main.rs"

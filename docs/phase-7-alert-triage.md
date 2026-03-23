@@ -21,6 +21,17 @@ patterns and validate them through the same pipeline that production data flows 
 
 ## Slice 7.0 — Prometheus Remote Write (Protobuf) Encoder
 
+> **Implementation note:** The actual implementation diverged from the spec below. Instead of
+> using the `http_push` sink with custom headers, a dedicated `remote_write` sink was created
+> (`sonda-core/src/sink/remote_write.rs`). The `remote_write` encoder produces length-prefixed
+> protobuf `TimeSeries` messages, and the `remote_write` sink batches them into a single
+> `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs with the correct protocol
+> headers automatically. This two-stage design solves the batching corruption problem:
+> individually snappy-compressed protobuf chunks cannot be concatenated. By deferring
+> compression to flush time, each HTTP POST contains exactly one valid snappy-compressed
+> `WriteRequest`. The YAML config uses `encoder: {type: remote_write}` and
+> `sink: {type: remote_write, url: "...", batch_size: 100}`.
+
 ### Motivation
 
 The Prometheus remote write protocol is the standard for pushing metrics to TSDB backends:

@@ -13,6 +13,7 @@ readme = "../README.md"
 
 [features]
 kafka = ["dep:rskafka", "dep:tokio", "dep:chrono"]
+remote-write = ["dep:prost", "dep:snap"]
 
 [dependencies]
 serde = { workspace = true }
@@ -23,6 +24,8 @@ ureq = { workspace = true }
 rskafka = { version = "0.6.0", default-features = false, optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "macros"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+prost = { version = "0.13", optional = true }
+snap = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
