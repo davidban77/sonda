@@ -1,0 +1,55 @@
+# Multi-metric correlation example: testing compound alert rules.
+#
+# Run with:
+#   sonda run --scenario examples/multi-metric-correlation.yaml
+#
+# This scenario models a compound alert rule:
+#   ALERT HighCpuAndMemory
+#   IF cpu_usage > 90 AND memory_usage_percent > 85
+#   FOR 5m
+#
+# CPU spikes to 95% at t=0; memory follows 3 seconds later at 88%.
+# The alert condition (both metrics above threshold) is satisfied
+# starting at t=3s when memory_usage_percent enters its spike phase.
+#
+# The phase_offset on memory_usage_percent delays its start by 3 seconds
+# relative to cpu_usage, creating a controlled window where both
+# conditions overlap. The clock_group groups both scenarios under a
+# shared timing reference.
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 1
+    duration: 120s
+    phase_offset: "0s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: memory_usage_percent
+    rate: 1
+    duration: 120s
+    phase_offset: "3s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

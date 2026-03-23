@@ -61,6 +61,8 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             labels: build_labels(args),
             encoder: parse_encoder_config(args.encoder.as_deref().unwrap_or("prometheus_text"))?,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         }
     };
 
@@ -293,6 +295,8 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
             bursts: build_log_burst_config(args)?,
             encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         }
     };
 

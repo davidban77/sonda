@@ -291,6 +291,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         }
     }
 

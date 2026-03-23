@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::validate::{validate_config, validate_log_config};
 use crate::config::ScenarioEntry;
@@ -50,6 +50,11 @@ pub fn validate_entry(entry: &ScenarioEntry) -> Result<(), SondaError> {
 /// * `shutdown` — shared shutdown flag. Pass `Arc::new(AtomicBool::new(true))`
 ///   for a new scenario. The handle's [`ScenarioHandle::stop`] method sets this
 ///   to `false` to request a clean exit.
+/// * `start_delay` — optional delay before the scenario begins emitting events.
+///   When `Some`, the spawned thread sleeps for this duration before entering the
+///   event loop. This enables temporal correlation in multi-scenario mode: "metric
+///   A starts immediately, metric B starts 30s later". The sleep happens inside
+///   the spawned thread, so it does not block the caller.
 ///
 /// # Errors
 ///
@@ -60,6 +65,7 @@ pub fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
     shutdown: Arc<AtomicBool>,
+    start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
@@ -83,6 +89,25 @@ pub fn launch_scenario(
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
+            // If a start delay is configured, sleep before entering the event
+            // loop. This enables phase-offset correlation between scenarios
+            // launched from the same multi-scenario config. The sleep respects
+            // the shutdown flag so that Ctrl+C during the delay exits promptly.
+            if let Some(delay) = start_delay {
+                let deadline = std::time::Instant::now() + delay;
+                while std::time::Instant::now() < deadline {
+                    if !shutdown_for_thread.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    // Poll every 50ms to keep shutdown responsive.
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    let sleep_chunk = remaining.min(Duration::from_millis(50));
+                    if sleep_chunk > Duration::ZERO {
+                        std::thread::sleep(sleep_chunk);
+                    }
+                }
+            }
+
             match entry {
                 ScenarioEntry::Metrics(config) => {
                     let mut sink = create_sink(&config.sink)?;
@@ -144,6 +169,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -165,6 +192,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -180,6 +209,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -201,6 +232,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -241,6 +274,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -262,6 +297,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -289,6 +326,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -310,6 +349,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -326,8 +367,9 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("launch_metrics");
 
-        let mut handle = launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed for valid metrics entry");
+        let mut handle =
+            launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed for valid metrics entry");
 
         // The thread must be alive immediately after launch.
         assert!(
@@ -352,8 +394,9 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("launch_logs");
 
-        let mut handle = launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed for valid logs entry");
+        let mut handle =
+            launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed for valid logs entry");
 
         assert!(
             handle.is_running(),
@@ -374,8 +417,8 @@ mod tests {
     fn stop_then_join_metrics_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("stop_join_metrics");
-        let mut handle =
-            launch_scenario("id-stop-1".to_string(), entry, shutdown).expect("launch must succeed");
+        let mut handle = launch_scenario("id-stop-1".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
 
         handle.stop();
         let result = handle.join(Some(Duration::from_secs(3)));
@@ -394,8 +437,8 @@ mod tests {
     fn stop_then_join_logs_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("stop_join_logs");
-        let mut handle =
-            launch_scenario("id-stop-2".to_string(), entry, shutdown).expect("launch must succeed");
+        let mut handle = launch_scenario("id-stop-2".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
 
         handle.stop();
         let result = handle.join(Some(Duration::from_secs(3)));
@@ -410,7 +453,7 @@ mod tests {
     fn finite_duration_scenario_exits_naturally_and_join_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry("natural_exit");
-        let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown)
+        let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown, None)
             .expect("launch must succeed");
 
         // 200ms duration — wait for it to finish, then join.
@@ -440,10 +483,13 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
 
-        let mut handle = launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed");
+        let mut handle =
+            launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed");
 
         // Wait long enough for at least a few events to be emitted and stats updated.
         thread::sleep(Duration::from_millis(200));
@@ -486,10 +532,17 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         });
 
-        let mut handle = launch_scenario("id-log-stats".to_string(), entry, Arc::clone(&shutdown))
-            .expect("launch must succeed");
+        let mut handle = launch_scenario(
+            "id-log-stats".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            None,
+        )
+        .expect("launch must succeed");
 
         thread::sleep(Duration::from_millis(200));
 
@@ -511,7 +564,7 @@ mod tests {
     fn elapsed_is_positive_after_launch() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("elapsed_test");
-        let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown)
+        let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown, None)
             .expect("launch must succeed");
 
         let d = handle.elapsed();
@@ -534,7 +587,7 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(false));
         let entry = metrics_entry_indefinite("flag_reset");
 
-        let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown))
+        let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown), None)
             .expect("launch must succeed");
 
         assert!(

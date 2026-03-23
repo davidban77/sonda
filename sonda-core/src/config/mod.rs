@@ -105,6 +105,20 @@ pub struct ScenarioConfig {
     /// Output sink. Defaults to `stdout`.
     #[serde(default = "default_sink")]
     pub sink: SinkConfig,
+    /// Delay before starting this scenario, relative to the group start time.
+    ///
+    /// Only meaningful in multi-scenario mode. Enables temporal correlation
+    /// between scenarios: "metric A starts immediately, metric B starts 30s
+    /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
+    #[serde(default)]
+    pub phase_offset: Option<String>,
+    /// Clock group identifier for multi-scenario correlation.
+    ///
+    /// Scenarios with the same `clock_group` value share a common start time
+    /// reference. For MVP this provides a shared start reference only; advanced
+    /// cross-scenario signaling is deferred to a future phase.
+    #[serde(default)]
+    pub clock_group: Option<String>,
 }
 
 /// A single entry in a multi-scenario configuration.
@@ -121,6 +135,24 @@ pub enum ScenarioEntry {
     /// A logs scenario entry.
     #[serde(rename = "logs")]
     Logs(LogScenarioConfig),
+}
+
+impl ScenarioEntry {
+    /// Return the `phase_offset` duration string, if set on the inner config.
+    pub fn phase_offset(&self) -> Option<&str> {
+        match self {
+            ScenarioEntry::Metrics(c) => c.phase_offset.as_deref(),
+            ScenarioEntry::Logs(c) => c.phase_offset.as_deref(),
+        }
+    }
+
+    /// Return the `clock_group` identifier, if set on the inner config.
+    pub fn clock_group(&self) -> Option<&str> {
+        match self {
+            ScenarioEntry::Metrics(c) => c.clock_group.as_deref(),
+            ScenarioEntry::Logs(c) => c.clock_group.as_deref(),
+        }
+    }
 }
 
 /// Full configuration for running multiple concurrent scenarios.
@@ -210,4 +242,18 @@ pub struct LogScenarioConfig {
     /// Output sink. Defaults to `stdout`.
     #[serde(default = "default_sink")]
     pub sink: SinkConfig,
+    /// Delay before starting this scenario, relative to the group start time.
+    ///
+    /// Only meaningful in multi-scenario mode. Enables temporal correlation
+    /// between scenarios: "metric A starts immediately, metric B starts 30s
+    /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
+    #[serde(default)]
+    pub phase_offset: Option<String>,
+    /// Clock group identifier for multi-scenario correlation.
+    ///
+    /// Scenarios with the same `clock_group` value share a common start time
+    /// reference. For MVP this provides a shared start reference only; advanced
+    /// cross-scenario signaling is deferred to a future phase.
+    #[serde(default)]
+    pub clock_group: Option<String>,
 }

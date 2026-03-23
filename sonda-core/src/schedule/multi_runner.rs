@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::config::validate::parse_duration;
 use crate::config::MultiScenarioConfig;
 use crate::schedule::launch::{launch_scenario, validate_entry};
 use crate::SondaError;
@@ -43,8 +44,15 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
             return Err(SondaError::Config(format!("scenario[{i}]: {e}")));
         }
 
+        // Parse the optional phase_offset into a Duration for the launcher.
+        let start_delay = entry
+            .phase_offset()
+            .map(parse_duration)
+            .transpose()
+            .map_err(|e| SondaError::Config(format!("scenario[{i}] phase_offset: {e}")))?;
+
         let id = format!("multi-{i}");
-        let handle = launch_scenario(id, entry, Arc::clone(&shutdown))?;
+        let handle = launch_scenario(id, entry, Arc::clone(&shutdown), start_delay)?;
         handles.push(handle);
     }
 
@@ -99,6 +107,8 @@ mod tests {
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -121,6 +131,8 @@ mod tests {
             bursts: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         })
     }
 
@@ -218,6 +230,8 @@ mod tests {
                     labels: None,
                     encoder: EncoderConfig::PrometheusText,
                     sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
                 }),
                 ScenarioEntry::Logs(LogScenarioConfig {
                     name: "shutdown_test_logs".to_string(),
@@ -235,6 +249,8 @@ mod tests {
                     bursts: None,
                     encoder: EncoderConfig::JsonLines,
                     sink: SinkConfig::Stdout,
+                    phase_offset: None,
+                    clock_group: None,
                 }),
             ],
         };
@@ -292,6 +308,8 @@ mod tests {
                 sink: SinkConfig::File {
                     path: "/proc/sonda_test_cannot_create_this_file_27.txt".to_string(),
                 },
+                phase_offset: None,
+                clock_group: None,
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -324,6 +342,8 @@ mod tests {
                     sink: SinkConfig::File {
                         path: "/proc/sonda_err_a_27.txt".to_string(),
                     },
+                    phase_offset: None,
+                    clock_group: None,
                 }),
                 ScenarioEntry::Metrics(ScenarioConfig {
                     name: "err_b".to_string(),
@@ -337,6 +357,8 @@ mod tests {
                     sink: SinkConfig::File {
                         path: "/proc/sonda_err_b_27.txt".to_string(),
                     },
+                    phase_offset: None,
+                    clock_group: None,
                 }),
             ],
         };

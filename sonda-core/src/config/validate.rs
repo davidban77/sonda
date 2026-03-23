@@ -1153,6 +1153,8 @@ generator:
             labels: None,
             encoder: EncoderConfig::PrometheusText,
             sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
         }
     }
 

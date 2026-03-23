@@ -26,10 +26,10 @@ src/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
 │   ├── stats.rs        ← ScenarioStats (live telemetry + recent_metrics buffer for scrape endpoints)
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot)
-│   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API)
+│   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API, supports phase_offset)
 │   ├── runner.rs       ← the main event loop (metrics)
 │   ├── log_runner.rs   ← the log event loop (logs)
-│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi, now uses launch_scenario)
+│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi, respects phase_offset per entry)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format
@@ -50,8 +50,8 @@ src/
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
-    ├── mod.rs          ← ScenarioConfig, deserialization
-    └── validate.rs     ← config validation logic
+    ├── mod.rs          ← ScenarioConfig (with phase_offset, clock_group), ScenarioEntry, MultiScenarioConfig
+    └── validate.rs     ← config validation logic, parse_duration
 ```
 
 ## How to Add a New Generator

@@ -45,18 +45,26 @@ fn run() -> anyhow::Result<()> {
             let config = config::load_config(args)?;
             let entry = sonda_core::ScenarioEntry::Metrics(config);
             sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let mut handle =
-                sonda_core::launch_scenario("cli-metrics".to_string(), entry, Arc::clone(&running))
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let mut handle = sonda_core::launch_scenario(
+                "cli-metrics".to_string(),
+                entry,
+                Arc::clone(&running),
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
             handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
             let entry = sonda_core::ScenarioEntry::Logs(config);
             sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let mut handle =
-                sonda_core::launch_scenario("cli-logs".to_string(), entry, Arc::clone(&running))
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let mut handle = sonda_core::launch_scenario(
+                "cli-logs".to_string(),
+                entry,
+                Arc::clone(&running),
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
             handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Run(ref args) => {
@@ -68,12 +76,20 @@ fn run() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
             }
 
-            // Launch all scenarios and collect handles.
+            // Launch all scenarios and collect handles, respecting phase_offset.
             let mut handles = Vec::with_capacity(config.scenarios.len());
             for (i, entry) in config.scenarios.into_iter().enumerate() {
+                // Parse the optional phase_offset into a Duration.
+                let start_delay = entry
+                    .phase_offset()
+                    .map(sonda_core::config::validate::parse_duration)
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e))?;
+
                 let id = format!("cli-run-{i}");
-                let handle = sonda_core::launch_scenario(id, entry, Arc::clone(&running))
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let handle =
+                    sonda_core::launch_scenario(id, entry, Arc::clone(&running), start_delay)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
                 handles.push(handle);
             }
 
