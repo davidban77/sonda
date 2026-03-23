@@ -8,6 +8,7 @@
 //! Encoders under test: prometheus_text, influx_lp, json_lines
 //! Sinks under test:    stdout, file, tcp, udp, http_push, kafka (feature-gated)
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::Path;
@@ -526,9 +527,13 @@ fn prometheus_x_http_push_body_matches_encoded_bytes() {
 
     let server = thread::spawn(move || accept_http_and_respond_ok(&listener));
 
-    let mut sink =
-        sonda_core::sink::http::HttpPushSink::new(&url, "text/plain; version=0.0.4", 10_000)
-            .expect("HttpPushSink must construct");
+    let mut sink = sonda_core::sink::http::HttpPushSink::new(
+        &url,
+        "text/plain; version=0.0.4",
+        10_000,
+        HashMap::new(),
+    )
+    .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
 
@@ -547,8 +552,9 @@ fn influx_x_http_push_body_matches_encoded_bytes() {
 
     let server = thread::spawn(move || accept_http_and_respond_ok(&listener));
 
-    let mut sink = sonda_core::sink::http::HttpPushSink::new(&url, "text/plain", 10_000)
-        .expect("HttpPushSink must construct");
+    let mut sink =
+        sonda_core::sink::http::HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new())
+            .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
 
@@ -567,8 +573,13 @@ fn json_x_http_push_body_matches_encoded_bytes() {
 
     let server = thread::spawn(move || accept_http_and_respond_ok(&listener));
 
-    let mut sink = sonda_core::sink::http::HttpPushSink::new(&url, "application/x-ndjson", 10_000)
-        .expect("HttpPushSink must construct");
+    let mut sink = sonda_core::sink::http::HttpPushSink::new(
+        &url,
+        "application/x-ndjson",
+        10_000,
+        HashMap::new(),
+    )
+    .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
 

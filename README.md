@@ -20,7 +20,7 @@ built on top of it.
 
 - **5 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp, sequence.
 - **2 log generators** -- template-based structured logs with field pools, file replay.
-- **4 encoders** -- Prometheus text exposition, InfluxDB line protocol, JSON Lines, RFC 5424 syslog.
+- **5 encoders** -- Prometheus text exposition, InfluxDB line protocol, JSON Lines, RFC 5424 syslog, Prometheus remote write protobuf (feature-gated).
 - **9 sinks** -- stdout, file, TCP, UDP, HTTP push, Loki, Kafka, channel (in-memory mpsc), memory buffer.
 - **Gap windows** -- recurring silent periods that test alert flap detection, gap-fill logic, and buffer sizing.
 - **Burst windows** -- recurring high-rate periods that simulate micro-bursts and traffic spikes.
@@ -43,8 +43,10 @@ Prometheus and VictoriaMetrics alerting rules with Sonda, including sine wave th
 | Component | Options |
 |-----------|---------|
 | **Generators** | `constant`, `uniform`, `sine`, `sawtooth`, `sequence` |
-| **Encoders** | `prometheus_text`, `influx_lp`, `json_lines` |
+| **Encoders** | `prometheus_text`, `influx_lp`, `json_lines`, `remote_write`* |
 | **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `kafka`, `channel` |
+
+\* `remote_write` requires the `remote-write` feature flag: `cargo build --features remote-write`.
 
 ### Logs
 
@@ -153,6 +155,9 @@ cargo build -p sonda
 
 # Release build
 cargo build --release -p sonda
+
+# With Prometheus remote write support (protobuf + snappy)
+cargo build --release -p sonda --features remote-write
 
 # Fully static musl binary (requires musl target)
 rustup target add x86_64-unknown-linux-musl
@@ -857,6 +862,19 @@ sonda metrics --scenario examples/prometheus-http-push.yaml
 sonda metrics --scenario examples/prometheus-http-push.yaml
 ```
 
+### `examples/remote-write-vm.yaml`
+
+Push metrics via Prometheus remote write protobuf to VictoriaMetrics (or any remote write endpoint).
+Requires the `remote-write` feature flag. The sink is configured with the required remote write
+headers (`Content-Encoding: snappy`, `X-Prometheus-Remote-Write-Version: 0.1.0`):
+
+```bash
+cargo build --features remote-write -p sonda
+sonda metrics --scenario examples/remote-write-vm.yaml
+```
+
+Compatible with VictoriaMetrics, vmagent, Prometheus, Thanos Receive, Cortex, Mimir, and Grafana Cloud.
+
 ### `examples/log-template.yaml`
 
 Template-based log generation at 10 events/sec for 60 seconds. Emits JSON Lines to stdout with
@@ -1224,14 +1242,23 @@ You can also use the VictoriaMetrics built-in UI at http://localhost:8428/vmui o
 Grafana at http://localhost:3000, go to Explore, select the "VictoriaMetrics" datasource,
 and run PromQL queries.
 
-**Known limitation -- vmagent relay:**
+**vmagent relay with remote write:**
 
 The stack includes vmagent, which can scrape Prometheus targets and relay data to
-VictoriaMetrics. However, vmagent's remote write relay uses the Prometheus remote write
-protocol (protobuf + snappy compression). Sonda does not yet support protobuf remote write
-encoding -- this is planned for Phase 7. For now, push metrics directly to VictoriaMetrics
-using the `http_push` sink with Prometheus text format, which works without vmagent in the
-middle.
+VictoriaMetrics. With the `remote-write` feature flag enabled, Sonda supports Prometheus
+remote write (protobuf + snappy compression), which enables pushing through vmagent:
+
+```bash
+cargo build --features remote-write -p sonda
+sonda metrics --scenario examples/remote-write-vm.yaml
+```
+
+The remote write encoder produces Snappy-compressed protobuf compatible with vmagent,
+Prometheus, Thanos Receive, Cortex, Mimir, and Grafana Cloud. See
+[`examples/remote-write-vm.yaml`](examples/remote-write-vm.yaml) for a complete example.
+
+Alternatively, push metrics directly to VictoriaMetrics using the `http_push` sink with
+Prometheus text format, which works without vmagent in the middle.
 
 **Tear down:**
 

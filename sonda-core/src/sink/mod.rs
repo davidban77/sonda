@@ -84,6 +84,15 @@ pub enum SinkConfig {
 
         /// Optional flush threshold in bytes. Defaults to 64 KiB if not specified.
         batch_size: Option<usize>,
+
+        /// Optional extra HTTP headers to send with every POST request.
+        ///
+        /// When provided, these headers are sent in addition to the `Content-Type`
+        /// header. Useful for protocols that require specific headers, such as
+        /// Prometheus remote write (`Content-Encoding: snappy`,
+        /// `X-Prometheus-Remote-Write-Version: 0.1.0`).
+        #[serde(default)]
+        headers: Option<HashMap<String, String>>,
     },
 
     /// Batch encoded events and deliver them to a Kafka topic.
@@ -139,12 +148,14 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
             url,
             content_type,
             batch_size,
+            headers,
         } => {
             let ct = content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
-            Ok(Box::new(http::HttpPushSink::new(url, ct, bs)?))
+            let h = headers.clone().unwrap_or_default();
+            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h)?))
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, topic } => {

@@ -1,0 +1,42 @@
+# Push metrics via Prometheus remote write protocol to VictoriaMetrics.
+#
+# Requires the `remote-write` feature:
+#   cargo build --features remote-write -p sonda
+#
+# Usage:
+#   sonda metrics --scenario examples/remote-write-vm.yaml
+#
+# The encoder produces Snappy-compressed protobuf (WriteRequest), and the
+# sink is configured with the required remote write headers.
+#
+# Compatible targets:
+#   - VictoriaMetrics: http://localhost:8428/api/v1/write
+#   - vmagent: http://localhost:8429/api/v1/write
+#   - Prometheus: http://localhost:9090/api/v1/write
+#   - Thanos Receive: http://localhost:19291/api/v1/receive
+#   - Cortex/Mimir: http://localhost:9009/api/v1/push
+
+name: cpu_usage_rw
+rate: 10
+duration: 60s
+
+generator:
+  type: sine
+  amplitude: 50
+  period_secs: 60
+  offset: 50
+
+labels:
+  instance: server-01
+  job: sonda
+
+encoder:
+  type: remote_write
+
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/write"
+  content_type: "application/x-protobuf"
+  headers:
+    Content-Encoding: "snappy"
+    X-Prometheus-Remote-Write-Version: "0.1.0"

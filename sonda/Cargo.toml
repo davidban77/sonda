@@ -11,6 +11,9 @@ categories = ["command-line-utilities", "development-tools::testing"]
 description = "CLI for Sonda — synthetic telemetry generator for testing observability pipelines"
 readme = "../README.md"
 
+[features]
+remote-write = ["sonda-core/remote-write"]
+
 [[bin]]
 name = "sonda"
 path = "src/main.rs"

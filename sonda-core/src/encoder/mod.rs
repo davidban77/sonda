@@ -6,6 +6,8 @@
 pub mod influx;
 pub mod json;
 pub mod prometheus;
+#[cfg(feature = "remote-write")]
+pub mod remote_write;
 pub mod syslog;
 
 use serde::Deserialize;
@@ -70,6 +72,19 @@ pub enum EncoderConfig {
         /// The APP-NAME field in the syslog header. Defaults to `"sonda"`.
         app_name: Option<String>,
     },
+    /// Prometheus remote write protobuf format.
+    ///
+    /// Encodes metric events as Snappy-compressed protobuf `WriteRequest` messages
+    /// compatible with the Prometheus remote write protocol. Requires the
+    /// `remote-write` feature flag.
+    ///
+    /// The HTTP push sink should be configured with these headers:
+    /// - `Content-Type: application/x-protobuf`
+    /// - `Content-Encoding: snappy`
+    /// - `X-Prometheus-Remote-Write-Version: 0.1.0`
+    #[cfg(feature = "remote-write")]
+    #[serde(rename = "remote_write")]
+    RemoteWrite,
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
@@ -83,6 +98,8 @@ pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
         EncoderConfig::Syslog { hostname, app_name } => {
             Box::new(syslog::Syslog::new(hostname.clone(), app_name.clone()))
         }
+        #[cfg(feature = "remote-write")]
+        EncoderConfig::RemoteWrite => Box::new(remote_write::RemoteWriteEncoder::new()),
     }
 }
 
