@@ -952,6 +952,223 @@ example.
 
 ---
 
+## Section 8: Testing Multi-Metric Alerts
+
+### The Problem
+
+Many production alerts depend on more than one metric. Compound alert rules such as:
+
+```
+ALERT HighCpuAndMemory
+IF cpu_usage > 90 AND memory_usage_percent > 85
+FOR 5m
+```
+
+require **both** conditions to be true simultaneously. Testing these rules is harder than testing
+a single-metric alert because you need two correlated signal streams with a precise timing
+relationship. If you start them independently, you have no control over when the overlap window
+begins or how long it lasts.
+
+Sonda solves this with two multi-scenario configuration fields: `phase_offset` and `clock_group`.
+
+### How It Works
+
+In a multi-scenario YAML file, each scenario entry can include:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `phase_offset` | Duration string | `"0s"` | Delay before this scenario starts emitting, relative to the group launch time. |
+| `clock_group` | String | (none) | Groups scenarios under a shared timing reference. Scenarios in the same clock group are launched together. |
+
+When `sonda run` launches a multi-scenario file:
+
+1. All scenarios are spawned at the same wall-clock time (the group start).
+2. A scenario with `phase_offset: "0s"` (or no offset) begins emitting events immediately.
+3. A scenario with `phase_offset: "3s"` sleeps for 3 seconds inside its spawned thread before
+   entering the event loop.
+4. The `clock_group` field documents which scenarios are temporally related. Scenarios in the same
+   group share a common start time reference.
+
+The `phase_offset` field accepts any duration string: `"500ms"`, `"5s"`, `"1m30s"`, etc.
+
+### Example: CPU + Memory Compound Alert
+
+Consider the compound alert rule above: `cpu_usage > 90 AND memory_usage_percent > 85`. We want
+to test that the alert fires when **both** metrics breach their thresholds at the same time.
+
+Here is the complete scenario file (also available at
+[`examples/multi-metric-correlation.yaml`](../examples/multi-metric-correlation.yaml)):
+
+```yaml
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 1
+    duration: 120s
+    phase_offset: "0s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: memory_usage_percent
+    rate: 1
+    duration: 120s
+    phase_offset: "3s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+```
+
+Run it:
+
+```bash
+sonda run --scenario examples/multi-metric-correlation.yaml
+```
+
+### Understanding the Timing
+
+Here is what happens at each second after launch:
+
+```
+Wall time  cpu_usage (phase_offset=0s)   memory_usage (phase_offset=3s)
+--------   ----------------------------  ------------------------------
+t=0s       starts emitting: 20           sleeping (not started)
+t=1s       20                            sleeping
+t=2s       20                            sleeping
+t=3s       95  (above threshold)         starts emitting: 40
+t=4s       95                            40
+t=5s       95                            40
+t=6s       95                            88  (above threshold)
+t=7s       95                            88
+t=8s       20  (below threshold)         88
+t=9s       20                            88
+...
+```
+
+The CPU sequence `[20, 20, 20, 95, 95, 95, 95, 95, 20, 20]` runs at `rate: 1`, so each value
+lasts one second. Memory uses the same approach but starts 3 seconds later due to its
+`phase_offset`.
+
+### Calculating the Overlap Window
+
+The overlap window -- where **both** metrics are above their respective thresholds simultaneously
+-- determines whether the compound alert fires.
+
+For the example above:
+
+1. **CPU above 90**: ticks 3-7 of its sequence (5 seconds per cycle), starting at wall time
+   t=3s because it has no offset.
+2. **Memory above 85**: ticks 3-7 of its sequence (5 seconds per cycle), starting at wall time
+   t=6s because it has a 3-second offset and its first 3 ticks are below threshold.
+3. **Overlap**: from t=6s (memory crosses threshold) to t=8s (CPU drops below threshold) --
+   a 2-second overlap per cycle.
+
+For an alert with `for: 5m`, a 2-second overlap per 10-second cycle is not enough -- the
+condition is not continuously true for 5 minutes. You would need to adjust the sequences to
+create a longer sustained overlap. For example, extending the above-threshold portion of both
+sequences:
+
+```yaml
+# CPU: 60 ticks above threshold (1 minute at rate=1)
+generator:
+  type: constant
+  value: 95.0
+
+# Memory: starts 10 seconds later, also sustained
+phase_offset: "10s"
+generator:
+  type: constant
+  value: 88.0
+```
+
+With constant generators and a 10-second offset, the overlap starts at t=10s and lasts for the
+remaining duration minus 10 seconds -- easily exceeding the 5-minute `for:` requirement.
+
+### Pushing to VictoriaMetrics
+
+To test with a real TSDB and alerting stack, change the sinks to push to VictoriaMetrics:
+
+```yaml
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 1
+    duration: 600s
+    phase_offset: "0s"
+    clock_group: alert-test
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+
+  - signal_type: metrics
+    name: memory_usage_percent
+    rate: 1
+    duration: 600s
+    phase_offset: "30s"
+    clock_group: alert-test
+    generator:
+      type: constant
+      value: 88.0
+    labels:
+      instance: server-01
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+```
+
+This pushes CPU at 95% immediately and memory at 88% starting 30 seconds later. After 30 seconds,
+both metrics are above threshold simultaneously, and the compound alert's `for:` clock begins.
+
+### Verifying Overlap in VictoriaMetrics
+
+Query both metrics to confirm the overlap:
+
+```bash
+# Check that both metrics exist
+curl "http://localhost:8428/api/v1/query?query=cpu_usage{instance='server-01'}"
+curl "http://localhost:8428/api/v1/query?query=memory_usage_percent{instance='server-01'}"
+
+# Query the compound condition
+curl "http://localhost:8428/api/v1/query?query=cpu_usage{instance='server-01'} > 90 and memory_usage_percent{instance='server-01'} > 85"
+```
+
+The compound query returns results only during the overlap window -- confirming that the alert
+condition would be evaluated as true by Prometheus or vmalert during that period.
+
+---
+
 ## Quick Reference: Common Patterns
 
 | Scenario | Generator | Configuration | Notes |
@@ -965,6 +1182,8 @@ example.
 | Micro-burst rate alert | `sine` + burst | Base rate + `bursts: {every: 30s, for: 5s, multiplier: 10}` | Tests rate-based alerts |
 | Flapping alert | `sequence` | Alternating above/below threshold | Tests alert grouping and inhibition |
 | Gradual degradation | `sawtooth` | `min: 50`, `max: 99`, `period_secs: 300` | Linear ramp to threshold |
+| Multi-metric compound alert | multi-scenario + `phase_offset` | Two scenarios with offset timing | Tests `A > X AND B > Y` rules |
+| Correlated metrics with delay | multi-scenario + `phase_offset` | `phase_offset: "30s"` on second metric | Creates controlled overlap window |
 
 ---
 
@@ -981,3 +1200,5 @@ example.
 - Check [examples/csv-replay-metrics.yaml](../examples/csv-replay-metrics.yaml) and
   [examples/sample-cpu-values.csv](../examples/sample-cpu-values.csv) for replaying production
   metric data from a CSV file.
+- Check [examples/multi-metric-correlation.yaml](../examples/multi-metric-correlation.yaml) for
+  testing compound alert rules with `phase_offset` and `clock_group`.

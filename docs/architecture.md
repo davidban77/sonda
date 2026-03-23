@@ -267,6 +267,8 @@ The MVP runs a single scenario on the main thread. The scheduler loop is synchro
 
 Each scenario runs on a dedicated OS thread. A shared sink (or per-scenario sink) receives encoded buffers via an `mpsc` channel. This avoids async complexity while enabling parallelism. Backpressure is handled by bounded channel capacity.
 
+> **Phase offset and clock groups:** Multi-scenario configs support `phase_offset` (a duration delay before a scenario begins emitting) and `clock_group` (a shared timing reference across scenarios). The phase offset is implemented as a thread sleep before the event loop starts, keeping the scheduler logic unchanged. This enables testing compound alert rules that depend on multiple correlated metrics with precise temporal relationships. See `examples/multi-metric-correlation.yaml` for an example.
+
 ### Phase 3 — Async (tokio, if needed)
 
 If the HTTP server (`sonda-server`) or a high-throughput HTTP sink requires async I/O, tokio will be introduced in `sonda-server` as a dependency. `sonda-core` will remain async-agnostic — it exposes synchronous interfaces that can be called from async contexts via `spawn_blocking`. This keeps the core library portable and avoids tokio becoming a transitive dependency of every consumer.
