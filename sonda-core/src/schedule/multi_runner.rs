@@ -8,7 +8,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::config::validate::parse_duration;
 use crate::config::MultiScenarioConfig;
 use crate::schedule::launch::{launch_scenario, validate_entry};
 use crate::SondaError;
@@ -45,11 +44,11 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
         }
 
         // Parse the optional phase_offset into a Duration for the launcher.
-        let start_delay = entry
-            .phase_offset()
-            .map(parse_duration)
-            .transpose()
-            .map_err(|e| SondaError::Config(format!("scenario[{i}] phase_offset: {e}")))?;
+        let start_delay = match entry.phase_offset() {
+            Some(offset) => crate::config::validate::parse_phase_offset(offset)
+                .map_err(|e| SondaError::Config(format!("scenario[{i}] phase_offset: {e}")))?,
+            None => None,
+        };
 
         let id = format!("multi-{i}");
         let handle = launch_scenario(id, entry, Arc::clone(&shutdown), start_delay)?;
@@ -593,7 +592,7 @@ rate: 10
     /// (examples/multi-metric-correlation.yaml) uses phase_offset: "0s" which
     /// would fail at runtime.
     #[test]
-    fn run_multi_rejects_zero_phase_offset_bug() {
+    fn run_multi_accepts_zero_phase_offset() {
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
                 name: "zero_offset".to_string(),
@@ -611,11 +610,11 @@ rate: 10
         };
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(config, shutdown);
-        // This SHOULD succeed (0s means "no delay"), but parse_duration rejects
-        // "0s". This test documents the current (buggy) behavior.
+        // "0s" is treated as no delay — parse_phase_offset returns None.
         assert!(
-            result.is_err(),
-            "BUG: phase_offset '0s' is rejected by parse_duration"
+            result.is_ok(),
+            "phase_offset '0s' should succeed (treated as no delay): {:?}",
+            result.err()
         );
     }
 

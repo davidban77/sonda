@@ -80,11 +80,11 @@ fn run() -> anyhow::Result<()> {
             let mut handles = Vec::with_capacity(config.scenarios.len());
             for (i, entry) in config.scenarios.into_iter().enumerate() {
                 // Parse the optional phase_offset into a Duration.
-                let start_delay = entry
-                    .phase_offset()
-                    .map(sonda_core::config::validate::parse_duration)
-                    .transpose()
-                    .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e))?;
+                let start_delay = match entry.phase_offset() {
+                    Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
+                        .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e))?,
+                    None => None,
+                };
 
                 let id = format!("cli-run-{i}");
                 let handle =

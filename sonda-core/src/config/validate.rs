@@ -70,6 +70,34 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
     Ok(Duration::from_millis(value * multiplier_ms))
 }
 
+/// Parse an optional phase offset string into a [`Duration`].
+///
+/// Unlike [`parse_duration`], this function accepts zero values (e.g. `"0s"`)
+/// and returns `None` for them, since a zero offset is semantically equivalent
+/// to no offset.
+pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
+    // Try parse_duration first — it handles non-zero values.
+    match parse_duration(s) {
+        Ok(d) => Ok(Some(d)),
+        Err(_) => {
+            // Check if it was rejected because the value is zero.
+            let trimmed = s.trim();
+            let numeric_end = trimmed
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(trimmed.len());
+            if let Ok(0) = trimmed[..numeric_end].parse::<u64>() {
+                Ok(None) // "0s", "0ms", "0m", "0h" all mean no delay
+            } else {
+                Err(SondaError::Config(format!(
+                    "invalid phase_offset {:?}: {}",
+                    s,
+                    parse_duration(s).unwrap_err()
+                )))
+            }
+        }
+    }
+}
+
 /// Validate a [`ScenarioConfig`] for semantic correctness.
 ///
 /// Checks:
