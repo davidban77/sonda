@@ -7,6 +7,7 @@
 //! values. They are constructed via `create_log_generator()`.
 
 pub mod constant;
+pub mod csv_replay;
 pub mod log_replay;
 pub mod log_template;
 pub mod sawtooth;
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use self::constant::Constant;
+use self::csv_replay::CsvReplayGenerator;
 use self::log_replay::LogReplayGenerator;
 use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
@@ -99,6 +101,20 @@ pub enum GeneratorConfig {
         /// is returned for all ticks beyond the sequence length.
         repeat: Option<bool>,
     },
+    /// A generator that replays numeric values from a CSV file.
+    #[serde(rename = "csv_replay")]
+    CsvReplay {
+        /// Path to the CSV file containing numeric values.
+        file: String,
+        /// Zero-based column index to read. Defaults to 0 when absent.
+        column: Option<usize>,
+        /// Whether to skip the first data row as a header. Defaults to true
+        /// when absent.
+        has_header: Option<bool>,
+        /// When true (default), the values cycle. When false, the last value
+        /// is returned for all ticks beyond the file length.
+        repeat: Option<bool>,
+    },
 }
 
 /// Construct a `Box<dyn ValueGenerator>` from the given configuration.
@@ -131,6 +147,17 @@ pub fn create_generator(
         } => Ok(Box::new(Sawtooth::new(*min, *max, *period_secs, rate))),
         GeneratorConfig::Sequence { values, repeat } => Ok(Box::new(SequenceGenerator::new(
             values.clone(),
+            repeat.unwrap_or(true),
+        )?)),
+        GeneratorConfig::CsvReplay {
+            file,
+            column,
+            has_header,
+            repeat,
+        } => Ok(Box::new(CsvReplayGenerator::new(
+            file,
+            column.unwrap_or(0),
+            has_header.unwrap_or(true),
             repeat.unwrap_or(true),
         )?)),
     }

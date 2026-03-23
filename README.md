@@ -18,7 +18,7 @@ built on top of it.
 
 ## Features
 
-- **5 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp, sequence.
+- **6 metric value generators** -- constant, uniform random, sine wave, sawtooth ramp, sequence, CSV replay.
 - **2 log generators** -- template-based structured logs with field pools, file replay.
 - **5 encoders** -- Prometheus text exposition, InfluxDB line protocol, JSON Lines, RFC 5424 syslog, Prometheus remote write protobuf (feature-gated).
 - **10 sinks** -- stdout, file, TCP, UDP, HTTP push, Prometheus remote write (feature-gated), Loki, Kafka, channel (in-memory mpsc), memory buffer.
@@ -42,7 +42,7 @@ Prometheus and VictoriaMetrics alerting rules with Sonda, including sine wave th
 
 | Component | Options |
 |-----------|---------|
-| **Generators** | `constant`, `uniform`, `sine`, `sawtooth`, `sequence` |
+| **Generators** | `constant`, `uniform`, `sine`, `sawtooth`, `sequence`, `csv_replay` |
 | **Encoders** | `prometheus_text`, `influx_lp`, `json_lines`, `remote_write`* |
 | **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `remote_write`*, `kafka`, `channel`, `memory` |
 
@@ -546,6 +546,7 @@ sonda metrics --scenario examples/basic-metrics.yaml --rate 500
 | `sine` | `amplitude: f64`, `period_secs: f64`, `offset: f64` | Sine wave: `offset + amplitude * sin(2pi * tick / period_ticks)`. |
 | `sawtooth` | `min: f64`, `max: f64`, `period_secs: f64` | Linear ramp from `min` to `max` that resets at the period boundary. |
 | `sequence` | `values: Vec<f64>`, `repeat: bool` (optional, default `true`) | Steps through an explicit list of values. Cycles when `repeat` is true; clamps to last value when false. Ideal for modeling incident patterns. |
+| `csv_replay` | `file: string`, `column: usize` (optional, default `0`), `has_header: bool` (optional, default `true`), `repeat: bool` (optional, default `true`) | Replays numeric values from a CSV file. Enables recording production metric values (via Prometheus/VM export) and replaying them to reproduce exact conditions. See `examples/csv-replay-metrics.yaml`. |
 
 ### Encoder types
 
@@ -953,6 +954,15 @@ a 10% baseline and a 95% spike, crossing a typical 90% alert threshold:
 
 ```bash
 sonda metrics --scenario examples/sequence-alert-test.yaml
+```
+
+### `examples/csv-replay-metrics.yaml`
+
+Replay real production CPU values from a CSV file. The sample data models a production incident:
+normal baseline (~14%), spike to ~95%, sustained high load, then recovery back to baseline:
+
+```bash
+sonda metrics --scenario examples/csv-replay-metrics.yaml
 ```
 
 ### `examples/victoriametrics-metrics.yaml`
