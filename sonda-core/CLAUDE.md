@@ -44,6 +44,7 @@ src/
 │   ├── udp.rs          ← UDP socket (UdpSocket)
 │   ├── http.rs         ← HTTP push sink (ureq)
 │   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
+│   ├── remote_write.rs ← Prometheus remote write sink (batches TimeSeries, snappy, feature = "remote-write")
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")

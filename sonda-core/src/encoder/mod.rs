@@ -74,14 +74,10 @@ pub enum EncoderConfig {
     },
     /// Prometheus remote write protobuf format.
     ///
-    /// Encodes metric events as Snappy-compressed protobuf `WriteRequest` messages
-    /// compatible with the Prometheus remote write protocol. Requires the
-    /// `remote-write` feature flag.
-    ///
-    /// The HTTP push sink should be configured with these headers:
-    /// - `Content-Type: application/x-protobuf`
-    /// - `Content-Encoding: snappy`
-    /// - `X-Prometheus-Remote-Write-Version: 0.1.0`
+    /// Encodes metric events as length-prefixed protobuf `TimeSeries` messages.
+    /// Must be paired with the `remote_write` sink type, which batches TimeSeries
+    /// into a single `WriteRequest`, snappy-compresses, and HTTP POSTs with the
+    /// correct protocol headers. Requires the `remote-write` feature flag.
     #[cfg(feature = "remote-write")]
     #[serde(rename = "remote_write")]
     RemoteWrite,
@@ -461,16 +457,12 @@ generator:
 encoder:
   type: remote_write
 sink:
-  type: http_push
+  type: remote_write
   url: "http://localhost:8428/api/v1/write"
-  headers:
-    Content-Type: "application/x-protobuf"
-    Content-Encoding: "snappy"
-    X-Prometheus-Remote-Write-Version: "0.1.0"
 "#;
         let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.name, "rw_test_metric");
         assert!(matches!(config.encoder, EncoderConfig::RemoteWrite));
-        assert!(matches!(config.sink, SinkConfig::HttpPush { .. }));
+        assert!(matches!(config.sink, SinkConfig::RemoteWrite { .. }));
     }
 }

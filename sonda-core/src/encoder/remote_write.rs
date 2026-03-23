@@ -1,9 +1,16 @@
 //! Prometheus remote write protobuf encoder.
 //!
-//! Encodes [`MetricEvent`]s into the Prometheus remote write wire format:
-//! `WriteRequest` -> `TimeSeries` -> (`Label`s + `Sample`s). The output is
-//! Snappy-compressed protobuf, ready for POSTing to any remote write endpoint
-//! (Prometheus, Thanos, Cortex, Mimir, VictoriaMetrics/vmagent, Grafana Cloud).
+//! Encodes [`MetricEvent`]s into individual `TimeSeries` protobuf messages,
+//! length-prefixed with a 4-byte little-endian u32. The [`RemoteWriteSink`]
+//! (see `sink::remote_write`) accumulates these TimeSeries messages, wraps
+//! them in a single `WriteRequest`, prost-encodes, snappy-compresses, and
+//! HTTP POSTs the result to the remote write endpoint.
+//!
+//! This two-stage design (encoder writes raw TimeSeries, sink batches and
+//! compresses) solves the batching problem: concatenating individually
+//! snappy-compressed protobuf blobs produces corrupt input. By deferring
+//! compression to flush time, the sink can build one valid WriteRequest
+//! per HTTP POST.
 //!
 //! Requires the `remote-write` feature flag.
 //!
@@ -81,19 +88,21 @@ pub struct Sample {
 // Encoder implementation
 // ---------------------------------------------------------------------------
 
-/// Encodes [`MetricEvent`]s into the Prometheus remote write protobuf format.
+/// Encodes [`MetricEvent`]s into length-prefixed protobuf `TimeSeries` messages.
 ///
 /// Each call to [`encode_metric`](Encoder::encode_metric) produces one
-/// Snappy-compressed `WriteRequest` containing a single `TimeSeries` with one
-/// `Sample`. The `__name__` label is set to `event.name`, and all event labels
-/// are included sorted alphabetically by name.
+/// prost-encoded `TimeSeries` (NOT a full `WriteRequest`, NOT snappy-compressed),
+/// prefixed with a 4-byte little-endian u32 length. This encoding is designed to
+/// be consumed by [`RemoteWriteSink`](crate::sink::remote_write::RemoteWriteSink),
+/// which batches multiple TimeSeries into a single `WriteRequest`, snappy-compresses,
+/// and HTTP POSTs the result.
 ///
-/// The HTTP push sink should be configured with the following headers when using
-/// this encoder:
+/// The `__name__` label is set to `event.name`, and all event labels are included
+/// sorted alphabetically by name.
 ///
-/// - `Content-Type: application/x-protobuf`
-/// - `Content-Encoding: snappy`
-/// - `X-Prometheus-Remote-Write-Version: 0.1.0`
+/// **Important:** This encoder must be paired with the `remote_write` sink type,
+/// not the generic `http_push` sink. The `remote_write` sink handles WriteRequest
+/// framing and snappy compression at flush time.
 pub struct RemoteWriteEncoder;
 
 impl RemoteWriteEncoder {
@@ -110,15 +119,16 @@ impl Default for RemoteWriteEncoder {
 }
 
 impl Encoder for RemoteWriteEncoder {
-    /// Encode a metric event into Snappy-compressed protobuf (remote write format).
+    /// Encode a metric event as a length-prefixed protobuf `TimeSeries`.
     ///
-    /// Builds a `WriteRequest` with one `TimeSeries` containing:
+    /// Builds a single `TimeSeries` containing:
     /// - A `__name__` label set to `event.name`
     /// - All labels from `event.labels`, sorted alphabetically by name
     /// - One `Sample` with `event.value` and `event.timestamp` (milliseconds)
     ///
-    /// The serialized protobuf is then Snappy-compressed (raw/block format, not
-    /// framed/streaming) and appended to `buf`.
+    /// The serialized protobuf bytes are prefixed with a 4-byte little-endian
+    /// u32 length and appended to `buf`. No snappy compression is applied here;
+    /// that is the responsibility of the `RemoteWriteSink` at flush time.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         // Build the label set: __name__ first, then all event labels sorted by key.
         // The Prometheus convention requires __name__ to be present and labels to be
@@ -153,35 +163,79 @@ impl Encoder for RemoteWriteEncoder {
             .map_err(|e| SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?
             .as_millis() as i64;
 
-        let write_request = WriteRequest {
-            timeseries: vec![TimeSeries {
-                labels,
-                samples: vec![Sample {
-                    value: event.value,
-                    timestamp: timestamp_ms,
-                }],
+        let timeseries = TimeSeries {
+            labels,
+            samples: vec![Sample {
+                value: event.value,
+                timestamp: timestamp_ms,
             }],
         };
 
-        // Serialize to protobuf. A fresh buffer is allocated sized to the encoded
-        // length. The Encoder trait takes &self, so we cannot reuse a mutable buffer
-        // across calls.
-        let encoded_len = write_request.encoded_len();
+        // Serialize the TimeSeries to protobuf bytes.
+        let encoded_len = timeseries.encoded_len();
         let mut proto_bytes = Vec::with_capacity(encoded_len);
-        write_request
+        timeseries
             .encode(&mut proto_bytes)
             .map_err(|e| SondaError::Encoder(format!("protobuf encode error: {e}")))?;
 
-        // Snappy-compress using raw (block) format, not framed (streaming) format.
-        let mut snappy_encoder = snap::raw::Encoder::new();
-        let compressed = snappy_encoder
-            .compress_vec(&proto_bytes)
-            .map_err(|e| SondaError::Encoder(format!("snappy compression error: {e}")))?;
-
-        buf.extend_from_slice(&compressed);
+        // Write a 4-byte little-endian length prefix followed by the protobuf bytes.
+        // The RemoteWriteSink uses this prefix to split the buffer into individual
+        // TimeSeries messages for batching.
+        let len = proto_bytes.len() as u32;
+        buf.extend_from_slice(&len.to_le_bytes());
+        buf.extend_from_slice(&proto_bytes);
 
         Ok(())
     }
+}
+
+/// Parse all length-prefixed `TimeSeries` messages from a byte buffer.
+///
+/// The encoder writes each TimeSeries as a 4-byte little-endian u32 length
+/// prefix followed by that many bytes of prost-encoded protobuf. This function
+/// reads all such messages from `data` and returns the decoded `TimeSeries` structs.
+///
+/// Used by [`RemoteWriteSink`](crate::sink::remote_write::RemoteWriteSink) to
+/// accumulate TimeSeries for batching into a single `WriteRequest`.
+///
+/// # Errors
+///
+/// Returns [`SondaError::Encoder`] if the buffer is truncated or contains
+/// invalid protobuf data.
+pub fn parse_length_prefixed_timeseries(data: &[u8]) -> Result<Vec<TimeSeries>, SondaError> {
+    let mut result = Vec::new();
+    let mut offset = 0;
+
+    while offset < data.len() {
+        if offset + 4 > data.len() {
+            return Err(SondaError::Encoder(
+                "truncated length prefix in TimeSeries buffer".into(),
+            ));
+        }
+
+        let len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+
+        if offset + len > data.len() {
+            return Err(SondaError::Encoder(format!(
+                "truncated TimeSeries protobuf: expected {} bytes, got {}",
+                len,
+                data.len() - offset
+            )));
+        }
+
+        let ts = TimeSeries::decode(&data[offset..offset + len])
+            .map_err(|e| SondaError::Encoder(format!("protobuf decode error: {e}")))?;
+        result.push(ts);
+        offset += len;
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -206,8 +260,36 @@ mod tests {
         MetricEvent::with_timestamp(name.to_string(), value, labels, ts).expect("valid metric name")
     }
 
+    /// Decode a length-prefixed TimeSeries from a buffer.
+    /// Returns the first TimeSeries found (reads 4-byte LE length prefix, then protobuf).
+    fn decode_timeseries(buf: &[u8]) -> TimeSeries {
+        assert!(buf.len() >= 4, "buffer must contain at least length prefix");
+        let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        let proto_bytes = &buf[4..4 + len];
+        TimeSeries::decode(proto_bytes).expect("protobuf decode")
+    }
+
+    /// Decode all length-prefixed TimeSeries from a buffer.
+    fn decode_all_timeseries(buf: &[u8]) -> Vec<TimeSeries> {
+        let mut result = Vec::new();
+        let mut offset = 0;
+        while offset + 4 <= buf.len() {
+            let len = u32::from_le_bytes([
+                buf[offset],
+                buf[offset + 1],
+                buf[offset + 2],
+                buf[offset + 3],
+            ]) as usize;
+            offset += 4;
+            let proto_bytes = &buf[offset..offset + len];
+            result.push(TimeSeries::decode(proto_bytes).expect("protobuf decode"));
+            offset += len;
+        }
+        result
+    }
+
     // -------------------------------------------------------------------------
-    // Happy path: encode produces valid Snappy-compressed protobuf
+    // Happy path: encode produces valid length-prefixed protobuf
     // -------------------------------------------------------------------------
 
     #[test]
@@ -216,31 +298,30 @@ mod tests {
         let event = make_event("cpu_usage", 42.5, &[("host", "server1")], 1_700_000_000_000);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
-        assert!(!buf.is_empty(), "encoded output must not be empty");
+        // At minimum: 4-byte length prefix + at least 1 byte of protobuf
+        assert!(
+            buf.len() > 4,
+            "encoded output must contain length prefix + protobuf"
+        );
     }
 
     #[test]
-    fn snappy_decompression_produces_valid_protobuf() {
+    fn length_prefix_matches_protobuf_length() {
         let encoder = RemoteWriteEncoder::new();
         let event = make_event("test_metric", 99.9, &[("env", "prod")], 1_700_000_000_000);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        // Decompress with Snappy
-        let mut snappy_decoder = snap::raw::Decoder::new();
-        let decompressed = snappy_decoder
-            .decompress_vec(&buf)
-            .expect("snappy decompress should succeed");
-
-        // Decode protobuf
-        let write_request =
-            WriteRequest::decode(decompressed.as_slice()).expect("protobuf decode should succeed");
-
+        let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
         assert_eq!(
-            write_request.timeseries.len(),
-            1,
-            "WriteRequest should contain exactly one TimeSeries"
+            buf.len(),
+            4 + len,
+            "total buffer length must equal 4 (prefix) + declared protobuf length"
         );
+
+        // Decode the protobuf to verify it is valid
+        let ts = TimeSeries::decode(&buf[4..]).expect("protobuf decode should succeed");
+        assert_eq!(ts.samples.len(), 1, "TimeSeries should contain one sample");
     }
 
     // -------------------------------------------------------------------------
@@ -254,8 +335,7 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let ts = &wr.timeseries[0];
+        let ts = decode_timeseries(&buf);
 
         let name_label = ts
             .labels
@@ -286,8 +366,7 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let ts = &wr.timeseries[0];
+        let ts = decode_timeseries(&buf);
         let label_names: Vec<&str> = ts.labels.iter().map(|l| l.name.as_str()).collect();
 
         // __name__ starts with underscore which sorts before ascii letters
@@ -309,8 +388,7 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let ts = &wr.timeseries[0];
+        let ts = decode_timeseries(&buf);
         assert_eq!(ts.samples.len(), 1, "must contain exactly one sample");
 
         let sample = &ts.samples[0];
@@ -345,8 +423,7 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let ts = &wr.timeseries[0];
+        let ts = decode_timeseries(&buf);
 
         // 3 user labels + 1 __name__ = 4 total
         assert_eq!(
@@ -379,8 +456,7 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let ts = &wr.timeseries[0];
+        let ts = decode_timeseries(&buf);
 
         assert_eq!(
             ts.labels.len(),
@@ -446,7 +522,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // Multiple events: buffer accumulates correctly
+    // Multiple events: buffer accumulates correctly with length prefixes
     // -------------------------------------------------------------------------
 
     #[test]
@@ -465,6 +541,10 @@ mod tests {
             buf.len() > len_after_first,
             "second encode should append more bytes"
         );
+
+        // Both should be independently decodeable
+        let all_ts = decode_all_timeseries(&buf);
+        assert_eq!(all_ts.len(), 2, "should have two TimeSeries in buffer");
     }
 
     // -------------------------------------------------------------------------
@@ -478,8 +558,8 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let sample = &wr.timeseries[0].samples[0];
+        let ts = decode_timeseries(&buf);
+        let sample = &ts.samples[0];
         assert_eq!(sample.timestamp, 0, "timestamp at epoch should be 0 ms");
     }
 
@@ -494,8 +574,8 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let sample = &wr.timeseries[0].samples[0];
+        let ts = decode_timeseries(&buf);
+        let sample = &ts.samples[0];
         assert_eq!(sample.value, f64::MAX, "f64::MAX must be preserved");
     }
 
@@ -506,8 +586,8 @@ mod tests {
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
 
-        let wr = decode_write_request(&buf);
-        let sample = &wr.timeseries[0].samples[0];
+        let ts = decode_timeseries(&buf);
+        let sample = &ts.samples[0];
         assert!(
             sample.value == 0.0,
             "zero value must be preserved, got {}",
@@ -542,17 +622,5 @@ mod tests {
             msg.contains("not supported"),
             "error message should contain 'not supported', got: {msg}"
         );
-    }
-
-    // -------------------------------------------------------------------------
-    // Helper: decode a Snappy-compressed protobuf WriteRequest from a buffer
-    // -------------------------------------------------------------------------
-
-    fn decode_write_request(buf: &[u8]) -> WriteRequest {
-        let mut snappy_decoder = snap::raw::Decoder::new();
-        let decompressed = snappy_decoder
-            .decompress_vec(buf)
-            .expect("snappy decompress");
-        WriteRequest::decode(decompressed.as_slice()).expect("protobuf decode")
     }
 }

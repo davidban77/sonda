@@ -44,9 +44,9 @@ Prometheus and VictoriaMetrics alerting rules with Sonda, including sine wave th
 |-----------|---------|
 | **Generators** | `constant`, `uniform`, `sine`, `sawtooth`, `sequence` |
 | **Encoders** | `prometheus_text`, `influx_lp`, `json_lines`, `remote_write`* |
-| **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `kafka`, `channel` |
+| **Sinks** | `stdout`, `file`, `tcp`, `udp`, `http_push`, `remote_write`*, `kafka`, `channel` |
 
-\* `remote_write` requires the `remote-write` feature flag: `cargo build --features remote-write`.
+\* `remote_write` encoder and sink require the `remote-write` feature flag: `cargo build --features remote-write`.
 
 ### Logs
 
@@ -865,8 +865,8 @@ sonda metrics --scenario examples/prometheus-http-push.yaml
 ### `examples/remote-write-vm.yaml`
 
 Push metrics via Prometheus remote write protobuf to VictoriaMetrics (or any remote write endpoint).
-Requires the `remote-write` feature flag. The sink is configured with the required remote write
-headers (`Content-Encoding: snappy`, `X-Prometheus-Remote-Write-Version: 0.1.0`):
+Requires the `remote-write` feature flag. The `remote_write` sink automatically batches TimeSeries
+into a single WriteRequest, snappy-compresses, and POSTs with the correct protocol headers:
 
 ```bash
 cargo build --features remote-write -p sonda
@@ -1253,9 +1253,10 @@ cargo build --features remote-write -p sonda
 sonda metrics --scenario examples/remote-write-vm.yaml
 ```
 
-The remote write encoder produces Snappy-compressed protobuf compatible with vmagent,
-Prometheus, Thanos Receive, Cortex, Mimir, and Grafana Cloud. See
-[`examples/remote-write-vm.yaml`](examples/remote-write-vm.yaml) for a complete example.
+The `remote_write` encoder + sink pair handles protobuf encoding, batching, and snappy
+compression automatically. Compatible with vmagent, Prometheus, Thanos Receive, Cortex,
+Mimir, and Grafana Cloud. See [`examples/remote-write-vm.yaml`](examples/remote-write-vm.yaml)
+for a complete example.
 
 Alternatively, push metrics directly to VictoriaMetrics using the `http_push` sink with
 Prometheus text format, which works without vmagent in the middle.

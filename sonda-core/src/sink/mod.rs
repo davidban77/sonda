@@ -9,6 +9,8 @@ pub mod http;
 pub mod kafka;
 pub mod loki;
 pub mod memory;
+#[cfg(feature = "remote-write")]
+pub mod remote_write;
 pub mod stdout;
 pub mod tcp;
 pub mod udp;
@@ -95,6 +97,28 @@ pub enum SinkConfig {
         headers: Option<HashMap<String, String>>,
     },
 
+    /// Batch TimeSeries and deliver them as Prometheus remote write requests.
+    ///
+    /// This sink is designed to be paired with the `remote_write` encoder, which
+    /// produces length-prefixed protobuf `TimeSeries` bytes. The sink accumulates
+    /// TimeSeries entries and, on flush or when `batch_size` is reached, wraps them
+    /// in a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs
+    /// with the correct remote write protocol headers.
+    ///
+    /// Requires the `remote-write` Cargo feature to be enabled.
+    #[cfg(feature = "remote-write")]
+    #[serde(rename = "remote_write")]
+    RemoteWrite {
+        /// Target URL for the remote write endpoint, e.g.
+        /// `"http://localhost:8428/api/v1/write"`.
+        url: String,
+
+        /// Flush threshold in number of TimeSeries entries. Defaults to 100 if
+        /// not specified.
+        #[serde(default)]
+        batch_size: Option<usize>,
+    },
+
     /// Batch encoded events and deliver them to a Kafka topic.
     ///
     /// Uses [`rskafka`](https://crates.io/crates/rskafka) — a pure-Rust Kafka
@@ -156,6 +180,11 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
             let h = headers.clone().unwrap_or_default();
             Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h)?))
+        }
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { url, batch_size } => {
+            let bs = batch_size.unwrap_or(remote_write::DEFAULT_BATCH_SIZE);
+            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs)?))
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, topic } => {
