@@ -34,7 +34,7 @@ Phase 8 is complete, typically triggered by:
 3. Identify which MkDocs pages need updating (check `docs/site/docs/`).
 4. Update the affected pages. Follow the same writing rules and quality checklist.
 5. Test all modified examples against the actual binary.
-6. Build: `cd docs/site && mkdocs build --strict`
+6. Build: `task site:build` (installs deps automatically if needed).
 7. Create branch `docs/update-<short-description>`, commit, and create a PR.
 
 ---
@@ -94,9 +94,10 @@ For slice-based work (`@doc 8.X`):
 
 5. **Build and verify**:
    ```bash
-   cd docs/site && mkdocs build --strict 2>&1
+   task site:build    # installs venv + deps automatically, builds with --strict
    ```
    Fix any warnings. `--strict` turns warnings into errors.
+   To preview locally: `task site:serve` → http://localhost:8000
 
 6. **Commit**:
    - Stage only docs files.

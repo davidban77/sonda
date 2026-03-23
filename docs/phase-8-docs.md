@@ -96,7 +96,8 @@ CLI/API reference — with zero references to features that don't exist.
 
 **Verification:**
 ```bash
-cd docs/site && pip install mkdocs-material && mkdocs build --strict
+task site:build    # installs deps in venv automatically, then builds with --strict
+task site:serve    # preview at http://localhost:8000
 ```
 
 ### Output files
