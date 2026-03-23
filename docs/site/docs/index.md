@@ -27,7 +27,7 @@ micro-bursts, cardinality spikes, and shaped value sequences.
     Pin a specific version:
 
     ```bash
-    SONDA_VERSION=v0.1.3 curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.1.3 sh
     ```
 
 === "Cargo"
@@ -39,8 +39,8 @@ micro-bursts, cardinality spikes, and shaped value sequences.
 === "Docker"
 
     ```bash
-    docker run --rm ghcr.io/davidban77/sonda:latest \
-      /sonda metrics --name up --rate 5 --duration 10s
+    docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+      metrics --name up --rate 5 --duration 10s
     ```
 
 === "From source"
@@ -68,11 +68,11 @@ sonda metrics \
 ```
 
 ```text title="Output (Prometheus exposition format)"
-cpu_usage{host="web-01"} 50 1711929600000
-cpu_usage{host="web-01"} 85.355 1711929600500
-cpu_usage{host="web-01"} 100 1711929601000
-cpu_usage{host="web-01"} 85.355 1711929601500
-cpu_usage{host="web-01"} 50 1711929602000
+cpu_usage{host="web-01"} 50 1774278042509
+cpu_usage{host="web-01"} 85.35533905932738 1774278043013
+cpu_usage{host="web-01"} 100 1774278043513
+cpu_usage{host="web-01"} 85.35533905932738 1774278044010
+...
 ```
 
 The sine wave oscillates between 0 (`offset - amplitude`) and 100 (`offset + amplitude`) with a
