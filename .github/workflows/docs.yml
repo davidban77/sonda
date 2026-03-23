@@ -1,0 +1,33 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/site/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r docs/site/requirements.txt
+
+      - name: Build site (strict mode)
+        run: mkdocs build --strict -f docs/site/mkdocs.yml
+
+      - name: Deploy to GitHub Pages
+        run: mkdocs gh-deploy --force -f docs/site/mkdocs.yml
