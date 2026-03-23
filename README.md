@@ -965,6 +965,17 @@ normal baseline (~14%), spike to ~95%, sustained high load, then recovery back t
 sonda metrics --scenario examples/csv-replay-metrics.yaml
 ```
 
+### `examples/recording-rule-test.yaml`
+
+Push a constant known value for testing Prometheus recording rules. Pair with
+`examples/recording-rule-prometheus.yml` which defines a recording rule that computes
+`sum(rate(http_requests_total[5m])) by (job)`. See the
+[Alert Testing Guide](docs/guide-alert-testing.md) Section 5 for the full walkthrough:
+
+```bash
+sonda metrics --scenario examples/recording-rule-test.yaml
+```
+
 ### `examples/victoriametrics-metrics.yaml`
 
 Push Prometheus text metrics directly to VictoriaMetrics via the HTTP import API. Requires the
@@ -1261,6 +1272,19 @@ curl "http://localhost:8428/api/v1/query?query=sonda_http_request_duration_ms"
 You can also use the VictoriaMetrics built-in UI at http://localhost:8428/vmui or open
 Grafana at http://localhost:3000, go to Explore, select the "VictoriaMetrics" datasource,
 and run PromQL queries.
+
+**Pre-built Grafana dashboards:**
+
+The compose stack auto-provisions a **Sonda Overview** dashboard in Grafana. After starting
+the stack, navigate to **Dashboards > Sonda > Sonda Overview**. The dashboard shows:
+
+- Generated metric values over time (time series graph)
+- Event rate (events per second)
+- Active scenario count (distinct metric names)
+- Gap/burst indicators (metric absence and rate spikes)
+
+The dashboard uses template variables (`$datasource` and `$job`) so it works with any
+Prometheus-compatible datasource. No manual dashboard setup is required.
 
 **vmagent relay with remote write:**
 

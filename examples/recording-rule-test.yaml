@@ -1,0 +1,35 @@
+# Recording rule test scenario.
+#
+# Pushes a constant known value (100) for http_requests_total so that
+# a recording rule computing rate() or sum() produces a predictable output.
+#
+# Pair this with examples/recording-rule-prometheus.yml which defines a
+# recording rule: job:http_requests_total:rate5m
+#
+# Workflow:
+#   1. Start the VictoriaMetrics compose stack.
+#   2. Run this scenario to push known values.
+#   3. Wait at least two evaluation intervals (default 1m each).
+#   4. Query the recording rule output and verify the computed value.
+#
+# See docs/guide-alert-testing.md Section 5 for a detailed walkthrough.
+
+name: http_requests_total
+rate: 1
+duration: 120s
+
+generator:
+  type: constant
+  value: 100.0
+
+labels:
+  method: GET
+  status: "200"
+  job: api
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
