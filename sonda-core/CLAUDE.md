@@ -19,6 +19,7 @@ src/
 │   ├── sine.rs
 │   ├── sawtooth.rs
 │   ├── sequence.rs     ← explicit value sequence (incident pattern modeling)
+│   ├── csv_replay.rs   ← CSV file-based replay for metric values
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/

@@ -1,0 +1,28 @@
+# CSV Replay Generator Example
+#
+# Replays real CPU usage values from a recorded CSV file. The sample data
+# models a production incident: normal baseline (~14%), spike to ~95%,
+# sustained high load, then recovery back to baseline.
+#
+# Run with:
+#   sonda metrics --scenario examples/csv-replay-metrics.yaml
+
+name: cpu_replay
+rate: 1
+duration: 60s
+
+generator:
+  type: csv_replay
+  file: examples/sample-cpu-values.csv
+  column: 1
+  has_header: true
+  repeat: true
+
+labels:
+  instance: prod-server-42
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

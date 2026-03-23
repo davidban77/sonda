@@ -106,6 +106,8 @@ Built-in generator implementations:
 | **Counter** | Monotonically increasing value with configurable step. Resets on overflow. |
 | **MicroBurst** | Returns the base generator value normally, but spikes to a multiplied value for a configurable window. |
 | **GaugeStyle** | Returns a value that random-walks within bounds — simulates a real gauge metric. |
+| **Sequence** | Steps through an explicit list of `f64` values. Cycles when `repeat` is true; clamps to the last value when false. Useful for replaying short incident patterns inline. |
+| **CsvReplay** | Replays numeric values read from a CSV file at construction time. Supports header rows, column selection, and repeat/clamp behavior. Enables recording production metric values (e.g., via Prometheus or VictoriaMetrics export) and replaying them exactly. |
 
 All generators are constructed via a factory function and stored as `Box<dyn ValueGenerator>`. The caller (the scenario engine) is not aware of the concrete type. New generators can be added without modifying any dispatch code.
 
