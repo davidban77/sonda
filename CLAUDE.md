@@ -113,6 +113,34 @@ tasks:
 - **add-encoder** — step-by-step guide to adding a new `Encoder` implementation
 - **add-sink** — step-by-step guide to adding a new `Sink` implementation
 
+### Worktree Cleanup
+
+Agent worktrees accumulate on disk and are never automatically deleted when they contain changes.
+Each worktree carries its own `target/` directory (~2 GB+), so leftover worktrees from a handful of
+sessions can easily consume 50+ GB.
+
+**Rule: the orchestrating session (human or top-level Claude) must prune worktrees once work is
+complete.** This applies to all workflows — slice development, feature branches, bug fixes, doc
+updates, one-off maintenance — not just the slice pipeline.
+
+After merging or discarding a branch produced by a worktree agent, run:
+
+```bash
+git worktree prune          # removes git's stale worktree references
+rm -rf .claude/worktrees/   # deletes the actual worktree directories and their build artifacts
+```
+
+**When to run cleanup:**
+
+- After completing a slice (step 5 in the Workflow per Slice, once the human approves).
+- After merging any feature branch, bug fix, or doc update produced by a worktree agent.
+- Before starting a new phase or large batch of work.
+- Periodically during long sessions — if more than 5 worktrees exist, prune the completed ones.
+
+**Why not a shared `CARGO_TARGET_DIR`?** Worktree agents often run in parallel on different branches
+with different code. A shared target directory would cause build conflicts and non-deterministic
+failures. Each worktree must keep its own `target/`, which makes cleanup essential.
+
 ---
 
 ## Key Design Decisions
