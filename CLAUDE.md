@@ -54,6 +54,10 @@ No business logic lives outside sonda-core. If the CLI or server needs new behav
 This project is developed by a team of Claude Code agents, each with a specific role. Development
 proceeds slice-by-slice, with a human approval gate between slices.
 
+**All code changes — features, bug fixes, patches, one-offs — must go through the full agent
+workflow: implementer → tester → reviewer + UAT.** This is not limited to numbered slices from phase
+plans. Any change that touches production code follows the same pipeline.
+
 ### Roles
 
 | Role | Subagent | Model | Responsibility |

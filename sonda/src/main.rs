@@ -54,13 +54,14 @@ fn run() -> anyhow::Result<()> {
                 None,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
             status::print_stop(
                 &handle.name,
                 handle.elapsed(),
                 &handle.stats_snapshot(),
                 cli.quiet,
             );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
@@ -74,13 +75,14 @@ fn run() -> anyhow::Result<()> {
                 None,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
             status::print_stop(
                 &handle.name,
                 handle.elapsed(),
                 &handle.stats_snapshot(),
                 cli.quiet,
             );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
