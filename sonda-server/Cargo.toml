@@ -13,6 +13,7 @@ readme = "../README.md"
 
 [features]
 remote-write = ["sonda-core/remote-write"]
+kafka = ["sonda-core/kafka"]
 
 [[bin]]
 name = "sonda-server"

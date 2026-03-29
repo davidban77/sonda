@@ -13,13 +13,14 @@ readme = "../README.md"
 
 [features]
 remote-write = ["sonda-core/remote-write"]
+kafka = ["sonda-core/kafka"]
 
 [[bin]]
 name = "sonda"
 path = "src/main.rs"
 
 [dependencies]
-sonda-core = { workspace = true, features = ["kafka"] }
+sonda-core = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
