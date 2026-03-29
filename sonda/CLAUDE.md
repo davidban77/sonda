@@ -21,20 +21,24 @@ in sonda-core.
 src/
 ├── main.rs             ← entrypoint, clap setup, orchestration
 ├── cli.rs              ← clap arg structs (#[derive(Parser)])
-└── config.rs           ← config loading: YAML file → merge CLI overrides → ScenarioConfig
+├── config.rs           ← config loading: YAML file → merge CLI overrides → ScenarioConfig
+└── status.rs           ← colored lifecycle banners (start/stop) printed to stderr
 ```
 
-This crate should stay small. Three files is the target. If it grows beyond five, something is in the
-wrong crate.
+This crate should stay small. Three to five files is the target. If it grows beyond five, something
+is in the wrong crate.
 
 ## CLI Surface
 
 ```
-sonda metrics --scenario <file.yaml>
-sonda metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--label k=v]...
-sonda logs --scenario <file.yaml>
-sonda run --scenario <multi-scenario.yaml>
+sonda [--quiet] metrics --scenario <file.yaml>
+sonda [--quiet] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--label k=v]...
+sonda [--quiet] logs --scenario <file.yaml>
+sonda [--quiet] run --scenario <multi-scenario.yaml>
 ```
+
+The `--quiet` (`-q`) flag is global and suppresses all status banners (start/stop). Errors are
+still printed to stderr.
 
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `run` runs multiple
 scenarios concurrently from a single YAML file whose `scenarios:` list carries `signal_type: metrics`
@@ -75,5 +79,6 @@ This crate depends on:
 - `clap` with derive feature
 - `serde` + `serde_yaml` for config loading
 - `anyhow` for error handling
+- `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
 
 It should NOT depend on: `axum`, `tokio`, `hyper`, or any server-related crate.

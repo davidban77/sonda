@@ -233,7 +233,7 @@ sonda metrics --name up --rate 100 --duration 5s | wc -l
 ## CLI Reference
 
 ```
-sonda <COMMAND>
+sonda [OPTIONS] <COMMAND>
 
 Commands:
   metrics  Generate synthetic metrics and write them to the configured sink
@@ -242,6 +242,7 @@ Commands:
   help     Print help information
 
 Options:
+  -q, --quiet    Suppress all status output (errors are still printed)
   -h, --help     Print help
   -V, --version  Print version
 ```

@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod status;
 
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +46,7 @@ fn run() -> anyhow::Result<()> {
             let config = config::load_config(args)?;
             let entry = sonda_core::ScenarioEntry::Metrics(config);
             sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+            status::print_start(&entry, cli.quiet);
             let mut handle = sonda_core::launch_scenario(
                 "cli-metrics".to_string(),
                 entry,
@@ -52,12 +54,20 @@ fn run() -> anyhow::Result<()> {
                 None,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
+            status::print_stop(
+                &handle.name,
+                handle.elapsed(),
+                &handle.stats_snapshot(),
+                cli.quiet,
+            );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
             let entry = sonda_core::ScenarioEntry::Logs(config);
             sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+            status::print_start(&entry, cli.quiet);
             let mut handle = sonda_core::launch_scenario(
                 "cli-logs".to_string(),
                 entry,
@@ -65,7 +75,14 @@ fn run() -> anyhow::Result<()> {
                 None,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-            handle.join(None).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
+            status::print_stop(
+                &handle.name,
+                handle.elapsed(),
+                &handle.stats_snapshot(),
+                cli.quiet,
+            );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
@@ -86,6 +103,7 @@ fn run() -> anyhow::Result<()> {
                     None => None,
                 };
 
+                status::print_start(&entry, cli.quiet);
                 let id = format!("cli-run-{i}");
                 let handle =
                     sonda_core::launch_scenario(id, entry, Arc::clone(&running), start_delay)
@@ -99,6 +117,12 @@ fn run() -> anyhow::Result<()> {
                 if let Err(e) = handle.join(None) {
                     errors.push(e.to_string());
                 }
+                status::print_stop(
+                    &handle.name,
+                    handle.elapsed(),
+                    &handle.stats_snapshot(),
+                    cli.quiet,
+                );
             }
 
             if !errors.is_empty() {

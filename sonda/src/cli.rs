@@ -14,6 +14,10 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "sonda", version, about = "Synthetic telemetry generator")]
 pub struct Cli {
+    /// Suppress all status output (errors are still printed).
+    #[arg(short, long, global = true)]
+    pub quiet: bool,
+
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,
