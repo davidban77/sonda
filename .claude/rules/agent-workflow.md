@@ -41,6 +41,37 @@ If any role reports a BLOCKER, the implementer re-runs to fix it before retrying
 - `main` stays clean until the PR merges via GitHub.
 - Ad-hoc fixes go directly on the feature branch.
 
+## Parallel Sessions (Session Worktrees)
+
+For running multiple Claude Code sessions in parallel on the same repo, each session should
+operate in its own **session worktree**. The main checkout stays on `main` permanently.
+
+**The human creates the session worktree before launching Claude Code:**
+
+```bash
+# From the main checkout (always on main):
+git worktree add .claude/sessions/<name> -b feat/<name>
+
+# Launch Claude Code in that session:
+cd .claude/sessions/<name>
+claude
+```
+
+Each session is independent. The Claude instance in each worktree follows the standard feature
+branch workflow above — the orchestrator is already on the feature branch because the worktree
+IS the branch. Agents within the session create their own sub-worktrees as normal.
+
+**Parallel sessions example:**
+```
+.claude/sessions/
+├── feat-status-output/    ← Terminal 1: cd here, run claude
+├── fix-kafka-flag/        ← Terminal 2: cd here, run claude
+└── docs-update-guides/    ← Terminal 3: cd here, run claude
+```
+
+**When NOT to use session worktrees:** if you're only working on one thing at a time, just
+create a branch directly in the main checkout. Session worktrees are for parallelism.
+
 ## Workflow per Slice
 
 Phase-plan slices follow the same feature branch workflow. The slice ID is passed via `$ARGUMENTS`:
@@ -73,8 +104,16 @@ isolation. The slice ID is passed via `$ARGUMENTS`.
 Worktrees carry their own `target/` (~2 GB+). The orchestrator must prune after merging:
 
 ```bash
-rm -rf .claude/worktrees/   # delete worktree directories and build artifacts
+rm -rf .claude/worktrees/   # delete agent worktree directories and build artifacts
 git worktree prune           # remove git's stale references
+```
+
+For session worktrees, clean up after the PR merges:
+
+```bash
+rm -rf .claude/sessions/<name>/   # delete the session worktree
+git worktree prune                 # remove git's stale references
+git branch -d feat/<name>          # delete the merged branch
 ```
 
 Run cleanup after completing a slice, merging a feature branch, or when >5 worktrees exist.
