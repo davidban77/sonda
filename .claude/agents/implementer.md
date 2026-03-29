@@ -40,12 +40,16 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
    - Adding a sink → read `.claude/skills/add-sink/SKILL.md`
    If a skill matches, follow its steps and quality checklist alongside the slice spec.
 
-6. **Sync with main**: If working in a worktree, merge the latest main branch to avoid
-   conflicts when merging back:
+6. **Sync with parent branch**: If working in a worktree, your branch was created off the
+   orchestrator's current branch (a feature branch, not main). Verify you are up to date:
    ```bash
-   git merge main
+   git log --oneline -3
    ```
-   Resolve any conflicts before proceeding. This ensures you have all prior slice changes.
+   If you need the latest changes from the parent branch, merge it:
+   ```bash
+   git merge origin/main
+   ```
+   Resolve any conflicts before proceeding.
 
 7. **Verify input state**: Check prerequisites exist and prior slices compile:
    ```bash

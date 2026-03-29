@@ -68,19 +68,49 @@ plans. Any change that touches production code follows the same pipeline.
 | **UAT** | `@uat` | opus | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
 | **Doc** | `@doc` | opus | Writes and maintains user-facing MkDocs documentation. Discovery-first — verifies against source code before writing. Also used for ongoing doc updates after new features. |
 
-### Workflow per Slice
+### Feature Branch Workflow
 
-Each slice follows this sequence. The human orchestrator spawns each subagent with the slice ID:
+All code changes — features, bug fixes, patches — follow this workflow on a **feature branch**.
+The orchestrator (human or top-level Claude) manages the branch; agents commit to it.
 
 ```
-1. @implementer 0.2   → reads slice spec, writes code in worktree, commits
-2. @tester 0.2        → reads spec + code, writes tests, runs them, commits
-3. @reviewer 0.2      → audits everything, reports PASS/FAIL/PASS WITH NOTES
-4. @uat 0.2           → builds binary, runs user scenarios, validates output
-5. Human reviews results and approves → move to next slice
+0. Create feature branch:  git checkout -b feat/<name> main
+1. @implementer            → worktree off feature branch, commits; orchestrator merges worktree into feature branch
+2. @tester                 → runs on feature branch (no worktree), commits tests
+3. @reviewer               → reads feature branch, reports PASS/FAIL/PASS WITH NOTES
+4. @uat                    → builds feature branch, validates observable behavior
+5. Fix any issues           → orchestrator commits fixes to feature branch
+6. @doc (if needed)        → worktree off feature branch, commits; orchestrator merges worktree into feature branch
+7. Push feature branch, create single PR
+8. Clean up worktrees after PR merges
 ```
 
 If any role reports a BLOCKER, the implementer re-runs to fix it before retrying.
+
+**Key rules:**
+- **The orchestrator MUST be on the feature branch** before invoking any agent.
+- **Never merge worktree branches into `main`** — merge them into the feature branch.
+- **The tester runs directly on the feature branch** (no worktree). It commits wherever the
+  orchestrator is, so the orchestrator's branch must be correct.
+- **The doc agent does NOT create a separate PR** when part of a feature pipeline. It commits
+  to its worktree; the orchestrator merges into the feature branch. Separate PRs are only for
+  standalone doc maintenance.
+- **`main` stays clean** until the PR merges via GitHub.
+- **Ad-hoc fixes** (from UAT findings, reviewer notes) are committed directly to the feature branch.
+
+### Workflow per Slice
+
+Phase-plan slices follow the same feature branch workflow above. The slice ID is passed via
+`$ARGUMENTS`:
+
+```
+0. git checkout -b feat/slice-0.2 main
+1. @implementer 0.2   → worktree, commits; orchestrator merges into feat/slice-0.2
+2. @tester 0.2        → commits to feat/slice-0.2
+3. @reviewer 0.2      → reads feat/slice-0.2, reports
+4. @uat 0.2           → builds feat/slice-0.2, validates
+5. Push and create PR; human reviews and approves
+```
 
 ### Subagent Details
 
