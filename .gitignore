@@ -4,6 +4,7 @@
 *.swo
 .DS_Store
 .claude/worktrees/
+.claude/sessions/
 
 # docker-compose e2e test artifacts
 tests/e2e/.docker-volumes/
