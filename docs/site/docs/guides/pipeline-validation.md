@@ -7,10 +7,10 @@ and verify it arrives correctly at the other end.
 ## Smoke Testing With the CLI
 
 The simplest validation: run Sonda with a known metric, check the exit code, and count
-the output lines.
+the output lines. Use `-q` to suppress status banners in scripts:
 
 ```bash
-sonda metrics --name smoke_test --rate 5 --duration 2s > /tmp/smoke.txt
+sonda -q metrics --name smoke_test --rate 5 --duration 2s > /tmp/smoke.txt
 echo "Exit code: $?"
 wc -l < /tmp/smoke.txt
 ```
@@ -125,7 +125,7 @@ jobs:
 
       - name: Smoke test (Prometheus text)
         run: |
-          sonda metrics --name ci_smoke --rate 10 --duration 5s \
+          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
             --output /tmp/ci-smoke-prom.txt
           LINES=$(wc -l < /tmp/ci-smoke-prom.txt)
           echo "Produced $LINES lines"
@@ -133,7 +133,7 @@ jobs:
 
       - name: Smoke test (JSON Lines)
         run: |
-          sonda metrics --name ci_smoke --rate 10 --duration 5s \
+          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
             --encoder json_lines --output /tmp/ci-smoke-json.txt
           LINES=$(wc -l < /tmp/ci-smoke-json.txt)
           echo "Produced $LINES lines"

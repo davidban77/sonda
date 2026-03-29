@@ -73,7 +73,13 @@ Generate a constant metric at 2 events per second for 5 seconds:
 sonda metrics --name cpu_usage --rate 2 --duration 5s
 ```
 
-```text title="Output"
+You will see a colored start banner on stderr, followed by data on stdout, then a stop banner:
+
+```text title="stderr"
+▶ cpu_usage  signal_type: metrics | rate: 2/s | encoder: prometheus_text | sink: stdout | duration: 5s
+```
+
+```text title="stdout"
 cpu_usage 0 1774277933018
 cpu_usage 0 1774277933522
 cpu_usage 0 1774277934023
@@ -81,7 +87,16 @@ cpu_usage 0 1774277934523
 ...
 ```
 
-Each line is Prometheus exposition format: `metric_name value timestamp_ms`.
+```text title="stderr"
+■ cpu_usage  completed in 5.0s | events: 10 | bytes: 240 B | errors: 0
+```
+
+Each line on stdout is Prometheus exposition format: `metric_name value timestamp_ms`.
+
+!!! tip
+    Status banners go to stderr, data goes to stdout. When you redirect or pipe stdout,
+    only data flows through. Use `--quiet` / `-q` to suppress banners entirely:
+    `sonda -q metrics --name cpu_usage --rate 2 --duration 5s`
 
 The default generator is `constant` with a value of `0.0`. To make it more interesting, use a
 sine wave:

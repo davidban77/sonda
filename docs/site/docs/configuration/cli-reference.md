@@ -9,8 +9,23 @@ Sonda provides three subcommands: `metrics` for metric generation, `logs` for lo
 sonda [OPTIONS] <COMMAND>
 
 Options:
+  -q, --quiet    Suppress status banners (errors still print to stderr)
   -h, --help     Print help
   -V, --version  Print version
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--quiet` | `-q` | Suppress start/stop status banners. Errors still print to stderr. |
+| `--help` | `-h` | Print help information. |
+| `--version` | `-V` | Print version. |
+
+The `--quiet` flag is global and goes **before** the subcommand:
+
+```bash
+sonda -q metrics --name up --rate 1 --duration 5s
+sonda -q logs --mode template --rate 5 --duration 5s
+sonda -q run --scenario multi.yaml
 ```
 
 ```bash
@@ -20,6 +35,53 @@ sonda --version
 ```text title="Output"
 sonda 0.1.3
 ```
+
+## Status output
+
+Sonda prints colored lifecycle banners to stderr when running scenarios. These banners show you
+what is running and how it performed, without interfering with data output on stdout.
+
+### Start banner
+
+Printed when a scenario begins:
+
+```text
+▶ cpu_usage  signal_type: metrics | rate: 1000/s | encoder: prometheus_text | sink: stdout | duration: 30s
+```
+
+### Stop banner
+
+Printed when a scenario completes:
+
+```text
+■ cpu_usage  completed in 30.0s | events: 30000 | bytes: 1.2 MB | errors: 0
+```
+
+### Color behavior
+
+Colors are automatic and require no configuration:
+
+- **Interactive terminal** -- colors are enabled.
+- **Piped output** (`sonda metrics ... | grep foo`) -- colors are disabled on the piped stream. Since banners go to stderr, they stay colored if stderr is still a terminal.
+- **`NO_COLOR` environment variable** -- set `NO_COLOR=1` to disable colors everywhere. Sonda respects the [no-color.org](https://no-color.org) convention.
+- **Non-TTY stderr** -- colors are disabled when stderr is redirected to a file or pipe.
+
+### Suppressing banners
+
+Use `--quiet` / `-q` to suppress all status output. Only errors are printed:
+
+```bash
+# No banners, just data on stdout
+sonda -q metrics --name up --rate 5 --duration 5s
+
+# Useful in scripts and CI pipelines
+sonda -q metrics --name up --rate 5 --duration 5s > /tmp/data.txt
+```
+
+!!! note
+    Status banners go to stderr, data goes to stdout. Even without `--quiet`, you can
+    safely redirect stdout to a file or pipe it to another program -- banners never mix
+    with your data.
 
 ## sonda metrics
 

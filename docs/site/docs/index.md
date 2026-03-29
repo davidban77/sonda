@@ -67,7 +67,7 @@ sonda metrics \
   --label host=web-01
 ```
 
-```text title="Output (Prometheus exposition format)"
+```text title="Output (stdout -- Prometheus exposition format)"
 cpu_usage{host="web-01"} 50 1774278042509
 cpu_usage{host="web-01"} 85.35533905932738 1774278043013
 cpu_usage{host="web-01"} 100 1774278043513
@@ -76,7 +76,8 @@ cpu_usage{host="web-01"} 85.35533905932738 1774278044010
 ```
 
 The sine wave oscillates between 0 (`offset - amplitude`) and 100 (`offset + amplitude`) with a
-4-second period. Each line is a valid Prometheus text exposition sample.
+4-second period. Each line is a valid Prometheus text exposition sample. Sonda also prints colored
+start/stop banners to stderr -- they never mix with your data. Use `-q` to suppress them.
 
 ## Using a scenario file
 
