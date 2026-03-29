@@ -1,11 +1,7 @@
 # Sonda — Synthetic Telemetry Generator
 
-## What is Sonda?
-
 Sonda generates realistic synthetic observability signals — metrics, logs, traces, and flows — for
-testing pipelines, validating ingest paths, and simulating failure scenarios. It models the failure
-patterns that actually break real systems: gaps, micro-bursts, cardinality spikes, and shaped value
-sequences.
+testing pipelines, validating ingest paths, and simulating failure scenarios.
 
 The **core library is the product**. The CLI and HTTP server are delivery mechanisms built on top of it.
 
@@ -13,240 +9,69 @@ The **core library is the product**. The CLI and HTTP server are delivery mechan
 
 This is a Cargo workspace with three crates:
 
-```
-sonda/                       ← workspace root (you are here)
-├── sonda-core/              ← library crate: the engine (all domain logic)
-├── sonda/                   ← binary crate: the CLI (thin layer over core)
-├── sonda-server/            ← binary crate: HTTP API control plane (post-MVP)
-├── docs/                    ← architecture doc, phase plans
-│   ├── architecture.md
-│   ├── phase-0-mvp.md
-│   ├── phase-1-encoders-sinks.md
-│   ├── phase-2-logs-concurrency.md
-│   ├── phase-3-server.md
-│   ├── phase-4-distribution.md
-│   ├── phase-5-governance.md
-│   ├── phase-6-product-polish.md
-│   └── phase-7-alert-triage.md
-└── .claude/
-    ├── agents/              ← subagent definitions (see Agent Workflow below)
-    │   ├── implementer.md   ← writes production code in isolated worktree
-    │   ├── tester.md        ← writes and runs tests
-    │   ├── reviewer.md      ← audits code (read-only)
-    │   ├── uat.md           ← validates from a real user's perspective
-    │   └── docs.md          ← writes/maintains user-facing MkDocs documentation
-    └── skills/              ← reusable workflow patterns
-        ├── add-generator/   ← how to add a new ValueGenerator
-        ├── add-encoder/     ← how to add a new Encoder
-        └── add-sink/        ← how to add a new Sink
-```
-
-**sonda-core** owns: telemetry models, schedules, value generators, encoders, sinks.
-**sonda** (CLI) owns: arg parsing (clap), config loading (YAML + env), invoking core.
-**sonda-server** owns: REST API (axum), scenario lifecycle, stats endpoints.
+- **sonda-core** — library crate: all domain logic (generators, encoders, sinks, schedules).
+- **sonda** — binary crate: CLI (thin layer over core, clap + YAML config).
+- **sonda-server** — binary crate: HTTP API control plane (axum, post-MVP).
 
 No business logic lives outside sonda-core. If the CLI or server needs new behavior, it goes in core.
 
----
+Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions.
 
 ## Agent Workflow
 
-This project is developed by a team of Claude Code agents, each with a specific role. Development
-proceeds slice-by-slice, with a human approval gate between slices.
+See `.claude/rules/agent-workflow.md` for the full agent pipeline, feature branch workflow, and
+worktree cleanup rules.
 
-**All code changes — features, bug fixes, patches, one-offs — must go through the full agent
-workflow: implementer → tester → reviewer + UAT.** This is not limited to numbered slices from phase
-plans. Any change that touches production code follows the same pipeline.
-
-### Roles
-
-| Role | Subagent | Model | Responsibility |
-|------|----------|-------|---------------|
-| **Implementer** | `@implementer` | sonnet | Reads the slice spec, writes production code in an isolated worktree. Does not write tests. |
-| **Tester** | `@tester` | sonnet | Reads the slice spec and implemented code, writes unit + integration tests, runs them. |
-| **Reviewer** | `@reviewer` | opus | Audits code against architecture doc and coding conventions. Read-only — reports issues. |
-| **UAT** | `@uat` | opus | Builds the project, runs the binary as a real user would, validates observable behavior end-to-end. |
-| **Doc** | `@doc` | opus | Writes and maintains user-facing MkDocs documentation. Discovery-first — verifies against source code before writing. Also used for ongoing doc updates after new features. |
-
-### Workflow per Slice
-
-Each slice follows this sequence. The human orchestrator spawns each subagent with the slice ID:
-
-```
-1. @implementer 0.2   → reads slice spec, writes code in worktree, commits
-2. @tester 0.2        → reads spec + code, writes tests, runs them, commits
-3. @reviewer 0.2      → audits everything, reports PASS/FAIL/PASS WITH NOTES
-4. @uat 0.2           → builds binary, runs user scenarios, validates output
-5. Human reviews results and approves → move to next slice
-```
-
-If any role reports a BLOCKER, the implementer re-runs to fix it before retrying.
-
-### Subagent Details
-
-Subagent definitions live in `.claude/agents/`. Each has YAML frontmatter controlling:
-
-- **tools**: which tools the agent can use (e.g., reviewer has no Write/Edit)
-- **model**: sonnet for implementation speed, opus for deep analysis
-- **permissionMode**: `acceptEdits` for code writers, `plan` (read-only) for reviewer
-- **isolation**: `worktree` for implementer (isolated git worktree)
-
-The slice ID is passed via `$ARGUMENTS` — e.g., `@implementer 0.2` sets `$ARGUMENTS=0.2`.
-
-### Rules for All Agents
-
-- **Read the slice spec first.** Every agent starts by reading the current slice from the phase plan
-  in `docs/`. The slice ID is passed as `$ARGUMENTS` (e.g., `@implementer 0.2`).
-- **Read architecture.md.** Every agent must check `docs/architecture.md` for design decisions before
-  writing or reviewing code.
-- **Read the crate CLAUDE.md.** Before modifying a crate, read its `CLAUDE.md` for crate-specific
-  guidance.
-- **One slice at a time.** Never work ahead. Each slice builds on the verified output of the previous
-  slice.
-- **Commit after each role.** The implementer commits code, the tester commits tests. Reviewer and UAT
-  do not commit — they report.
-- **Exit gates are hard.** A slice is not done until all four roles have passed. Failures get fixed
-  by re-running the failing role.
-
-### Skills
-
-Reusable workflow patterns live in `.claude/skills/`. Agents reference these when performing common
-tasks:
-
-- **add-generator** — step-by-step guide to adding a new `ValueGenerator` implementation
-- **add-encoder** — step-by-step guide to adding a new `Encoder` implementation
-- **add-sink** — step-by-step guide to adding a new `Sink` implementation
-
-### Worktree Cleanup
-
-Agent worktrees accumulate on disk and are never automatically deleted when they contain changes.
-Each worktree carries its own `target/` directory (~2 GB+), so leftover worktrees from a handful of
-sessions can easily consume 50+ GB.
-
-**Rule: the orchestrating session (human or top-level Claude) must prune worktrees once work is
-complete.** This applies to all workflows — slice development, feature branches, bug fixes, doc
-updates, one-off maintenance — not just the slice pipeline.
-
-After merging or discarding a branch produced by a worktree agent, run:
-
-```bash
-git worktree prune          # removes git's stale worktree references
-rm -rf .claude/worktrees/   # deletes the actual worktree directories and their build artifacts
-```
-
-**When to run cleanup:**
-
-- After completing a slice (step 5 in the Workflow per Slice, once the human approves).
-- After merging any feature branch, bug fix, or doc update produced by a worktree agent.
-- Before starting a new phase or large batch of work.
-- Periodically during long sessions — if more than 5 worktrees exist, prune the completed ones.
-
-**Why not a shared `CARGO_TARGET_DIR`?** Worktree agents often run in parallel on different branches
-with different code. A shared target directory would cause build conflicts and non-deterministic
-failures. Each worktree must keep its own `target/`, which makes cleanup essential.
-
----
-
-## Key Design Decisions
-
-1. **Cargo workspace over single crate** — parallel compilation, clean dep isolation, independent
-   publishability of sonda-core. See `docs/architecture.md` Section 4 for rationale.
-
-2. **Trait objects for extension points** — generators, encoders, and sinks are `Box<dyn Trait>`.
-   Dynamic dispatch overhead is negligible relative to I/O cost. This keeps core extensible without
-   modifying dispatch logic.
-
-3. **YAML for scenario config** — all runtime behavior (signal shape, rate, labels, encoder, sink) is
-   defined in YAML files. CLI flags and `SONDA_*` env vars override any value. No behavior requires a
-   code change.
-
-4. **Sync-first, async later** — the MVP is synchronous. Concurrency comes via std::thread + mpsc.
-   Tokio is introduced only in sonda-server when HTTP I/O demands it. sonda-core stays async-agnostic.
-
-5. **Static binary (musl)** — primary target is `x86_64-unknown-linux-musl`. No C dependencies in
-   sonda-core. Pure-Rust alternatives only (rustls, not openssl; miniz_oxide, not libz).
-
-## Core Extension Points
-
-All three follow the same pattern: a trait in sonda-core, a factory that returns `Box<dyn Trait>`,
-and config-driven selection via YAML.
-
-- **Generators** — `pub trait ValueGenerator: Send + Sync { fn value(&self, tick: u64) -> f64; }`
-- **Encoders** — `pub trait Encoder: Send + Sync { fn encode_metric(&self, ...) -> Result<()>; }`
-- **Sinks** — `pub trait Sink: Send + Sync { fn write(&mut self, data: &[u8]) -> Result<()>; }`
-
-To add a new implementation: create the struct in the appropriate module, implement the trait, register
-it in the factory function, and add a variant to the YAML config enum. Each crate's CLAUDE.md has
-step-by-step guidance.
+**Quick reference:** all code changes follow: implementer → tester → reviewer + UAT, on a feature
+branch. Never merge worktree branches into `main`.
 
 ## Coding Conventions
 
-- **Error handling**: use `thiserror` for library errors in sonda-core, `anyhow` in the CLI and server.
-  Never `unwrap()` in library code. `expect()` only with a clear message for truly unrecoverable cases.
-- **Allocations**: minimize per-event allocations. Pre-build label prefixes, reuse buffers, write into
-  caller-provided `Vec<u8>`. See `docs/architecture.md` Section 5.4 on encoder pre-building.
-- **Testing**: every generator, encoder, and schedule function gets a unit test. Use deterministic seeds
-  for any RNG-based generator. Tests live in `#[cfg(test)] mod tests` within the same file.
-- **Naming**: snake_case for modules and functions, PascalCase for types and traits. No abbreviations
-  except widely understood ones (e.g., `tcp`, `udp`, `rng`).
+- **Error handling**: `thiserror` in sonda-core, `anyhow` in CLI and server. Never `unwrap()` in
+  library code. `expect()` only with a clear message for truly unrecoverable cases.
+- **Allocations**: minimize per-event allocations. Pre-build label prefixes, reuse buffers, write
+  into caller-provided `Vec<u8>`.
+- **Testing**: every generator, encoder, and schedule function gets a unit test. Deterministic seeds
+  for RNG-based generators. Tests in `#[cfg(test)] mod tests` within the same file.
+- **Naming**: snake_case for modules/functions, PascalCase for types/traits. No abbreviations
+  except widely understood ones (`tcp`, `udp`, `rng`).
 - **Formatting**: `cargo fmt` before every commit. `cargo clippy -- -D warnings` must pass.
-- **Documentation**: public items in sonda-core must have `///` doc comments. Internal items should have
-  comments when the "why" is not obvious from the code.
+- **Docs**: public items in sonda-core must have `///` doc comments.
 
-## Quality Gates (enforced by all agents)
+## Quality Gates
 
 Every commit must pass:
 
 ```bash
-cargo build --workspace                        # compiles
-cargo test --workspace                         # all tests pass
-cargo clippy --workspace -- -D warnings        # no lint warnings
-cargo fmt --all -- --check                     # formatting clean
-```
-
-The UAT agent additionally runs the binary and validates real output.
-
-## How to Build and Test
-
-```bash
-# build everything
 cargo build --workspace
-
-# run tests
 cargo test --workspace
-
-# build static musl binary (requires musl target installed)
-cargo build --release --target x86_64-unknown-linux-musl -p sonda
-
-# run clippy
 cargo clippy --workspace -- -D warnings
-
-# format check
 cargo fmt --all -- --check
 ```
 
-## Phase Overview
+## How to Build
 
-Development is split into eight phases. Each has a dedicated plan doc in `docs/`:
+```bash
+cargo build --workspace                                              # debug build
+cargo build --release --target x86_64-unknown-linux-musl -p sonda    # static musl binary
+```
 
-- **Phase 0 — MVP**: workspace skeleton, sonda-core engine, Prometheus encoder, stdout sink, scheduler
-  with gaps, value generators, CLI, tests, static binary.
-- **Phase 1 — Encoders & Sinks**: Influx LP, JSON Lines, remote-write, file sink, TCP/UDP sink, Kafka sink.
-- **Phase 2 — Logs, Bursts & Concurrency**: log events, burst windows, Loki sink, multi-scenario threading.
-- **Phase 3 — sonda-server**: axum REST API, scenario lifecycle, stats endpoints.
-- **Phase 4 — Distribution**: release binaries, install script, crate publishing on crates.io.
-- **Phase 5 — Governance**: dependabot, PR templates, CODEOWNERS, conventional commit enforcement, release-please, workflow documentation.
-- **Phase 6 — Product Polish**: fix documentation drift, sequence generator, VictoriaMetrics promotion, scrape endpoint, alert testing guide.
-- **Phase 7 — Alert Triage**: Prometheus remote write (protobuf), CSV replay generator, Grafana dashboards, multi-metric correlation.
+## Architecture & Design
 
-## Reference Documents
+Full design rationale is in `docs/architecture.md`. Key decisions:
 
-- `docs/architecture.md` — full architecture design document
-- `docs/phase-0-mvp.md` — Phase 0 MVP implementation plan
-- `docs/phase-1-encoders-sinks.md` — Phase 1 plan
-- `docs/phase-2-logs-concurrency.md` — Phase 2 plan
-- `docs/phase-3-server.md` — Phase 3 plan
-- `docs/phase-4-distribution.md` — Phase 4 plan
-- `docs/phase-5-governance.md` — Phase 5 plan
-- `docs/phase-6-product-polish.md` — Phase 6 plan
-- `docs/phase-7-alert-triage.md` — Phase 7 plan
+- Cargo workspace for parallel compilation and clean dep isolation.
+- Trait objects (`Box<dyn Trait>`) for generators, encoders, sinks — extensible without dispatch changes.
+- YAML for all scenario config; CLI flags and `SONDA_*` env vars override.
+- Sync-first (std::thread + mpsc). Tokio only in sonda-server.
+- Static binary (musl). Pure-Rust deps only (rustls, not openssl).
+
+## Extension Points
+
+To add a generator, encoder, or sink: use the matching skill in `.claude/skills/` (add-generator,
+add-encoder, add-sink). Each crate's `CLAUDE.md` also has step-by-step guidance.
+
+## Phase Plans
+
+Development phases are documented in `docs/phase-{0..7}-*.md`. Read the relevant plan when working
+on a slice.

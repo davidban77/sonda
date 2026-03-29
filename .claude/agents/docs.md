@@ -35,7 +35,11 @@ Phase 8 is complete, typically triggered by:
 4. Update the affected pages. Follow the same writing rules and quality checklist.
 5. Test all modified examples against the actual binary.
 6. Build: `task site:build` (installs deps automatically if needed).
-7. Create branch `docs/update-<short-description>`, commit, and create a PR.
+7. **If part of a feature pipeline** (the orchestrator invoked you alongside implementer/tester):
+   Commit only. Do NOT create a separate branch or PR — the orchestrator will merge your
+   worktree branch into the feature branch and include it in the feature PR.
+8. **If standalone maintenance** (no feature pipeline, just a docs update):
+   Create branch `docs/update-<short-description>`, commit, and create a PR.
 
 ---
 
