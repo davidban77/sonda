@@ -25,6 +25,9 @@ worktree cleanup rules.
 **Quick reference:** all code changes follow: implementer → tester → reviewer + UAT, on a feature
 branch. Never merge worktree branches into `main`.
 
+For parallel sessions, the human creates session worktrees under `.claude/sessions/` and launches
+Claude Code from each one. See the rules file for details.
+
 ## Coding Conventions
 
 - **Error handling**: `thiserror` in sonda-core, `anyhow` in CLI and server. Never `unwrap()` in
