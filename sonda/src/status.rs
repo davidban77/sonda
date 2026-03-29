@@ -161,3 +161,353 @@ fn format_rate(rate: f64) -> String {
         format!("{rate:.1}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use sonda_core::config::{LogScenarioConfig, ScenarioConfig};
+    use sonda_core::encoder::EncoderConfig;
+    use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
+    use sonda_core::schedule::stats::ScenarioStats;
+    use sonda_core::sink::SinkConfig;
+
+    // -----------------------------------------------------------------------
+    // format_bytes: all unit thresholds
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0 B");
+    }
+
+    #[test]
+    fn format_bytes_below_kb() {
+        assert_eq!(format_bytes(500), "500 B");
+    }
+
+    #[test]
+    fn format_bytes_exactly_one_kb() {
+        assert_eq!(format_bytes(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_bytes_one_and_half_kb() {
+        assert_eq!(format_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_bytes_exactly_one_mb() {
+        assert_eq!(format_bytes(1_048_576), "1.0 MB");
+    }
+
+    #[test]
+    fn format_bytes_one_and_half_mb() {
+        assert_eq!(format_bytes(1_572_864), "1.5 MB");
+    }
+
+    #[test]
+    fn format_bytes_exactly_one_gb() {
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn format_bytes_one_byte() {
+        assert_eq!(format_bytes(1), "1 B");
+    }
+
+    #[test]
+    fn format_bytes_max_before_kb() {
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    // -----------------------------------------------------------------------
+    // format_rate: integer vs decimal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_rate_whole_number() {
+        assert_eq!(format_rate(1000.0), "1000");
+    }
+
+    #[test]
+    fn format_rate_fractional() {
+        assert_eq!(format_rate(0.5), "0.5");
+    }
+
+    #[test]
+    fn format_rate_one_point_zero() {
+        assert_eq!(format_rate(1.0), "1");
+    }
+
+    #[test]
+    fn format_rate_ten_and_half() {
+        assert_eq!(format_rate(10.5), "10.5");
+    }
+
+    #[test]
+    fn format_rate_zero() {
+        assert_eq!(format_rate(0.0), "0");
+    }
+
+    // -----------------------------------------------------------------------
+    // sink_display: all SinkConfig variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sink_display_stdout() {
+        assert_eq!(sink_display(&SinkConfig::Stdout), "stdout");
+    }
+
+    #[test]
+    fn sink_display_file() {
+        let config = SinkConfig::File {
+            path: "/tmp/out.txt".to_string(),
+        };
+        assert_eq!(sink_display(&config), "file: /tmp/out.txt");
+    }
+
+    #[test]
+    fn sink_display_tcp() {
+        let config = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+        };
+        assert_eq!(sink_display(&config), "tcp: 127.0.0.1:9999");
+    }
+
+    #[test]
+    fn sink_display_udp() {
+        let config = SinkConfig::Udp {
+            address: "127.0.0.1:8888".to_string(),
+        };
+        assert_eq!(sink_display(&config), "udp: 127.0.0.1:8888");
+    }
+
+    #[test]
+    fn sink_display_http_push() {
+        let config = SinkConfig::HttpPush {
+            url: "http://localhost:9090/write".to_string(),
+            content_type: None,
+            batch_size: None,
+            headers: None,
+        };
+        assert_eq!(sink_display(&config), "http: http://localhost:9090/write");
+    }
+
+    #[test]
+    fn sink_display_loki() {
+        let config = SinkConfig::Loki {
+            url: "http://localhost:3100/loki/api/v1/push".to_string(),
+            labels: HashMap::new(),
+            batch_size: None,
+        };
+        assert_eq!(
+            sink_display(&config),
+            "loki: http://localhost:3100/loki/api/v1/push"
+        );
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn sink_display_remote_write() {
+        let config = SinkConfig::RemoteWrite {
+            url: "http://localhost:8428/api/v1/write".to_string(),
+            batch_size: None,
+        };
+        assert_eq!(
+            sink_display(&config),
+            "remote_write: http://localhost:8428/api/v1/write"
+        );
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn sink_display_kafka() {
+        let config = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-events".to_string(),
+        };
+        assert_eq!(sink_display(&config), "kafka: sonda-events");
+    }
+
+    // -----------------------------------------------------------------------
+    // encoder_display: all EncoderConfig variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn encoder_display_prometheus_text() {
+        assert_eq!(
+            encoder_display(&EncoderConfig::PrometheusText),
+            "prometheus_text"
+        );
+    }
+
+    #[test]
+    fn encoder_display_influx_lp_without_field_key() {
+        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        assert_eq!(encoder_display(&config), "influx_lp");
+    }
+
+    #[test]
+    fn encoder_display_influx_lp_with_field_key() {
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: Some("bytes".to_string()),
+        };
+        assert_eq!(encoder_display(&config), "influx_lp");
+    }
+
+    #[test]
+    fn encoder_display_json_lines() {
+        assert_eq!(encoder_display(&EncoderConfig::JsonLines), "json_lines");
+    }
+
+    #[test]
+    fn encoder_display_syslog() {
+        let config = EncoderConfig::Syslog {
+            hostname: None,
+            app_name: None,
+        };
+        assert_eq!(encoder_display(&config), "syslog");
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_display_remote_write() {
+        assert_eq!(encoder_display(&EncoderConfig::RemoteWrite), "remote_write");
+    }
+
+    // -----------------------------------------------------------------------
+    // print_start: quiet mode is a no-op (does not panic)
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a minimal ScenarioEntry::Metrics for testing.
+    fn make_metrics_entry() -> ScenarioEntry {
+        ScenarioEntry::Metrics(ScenarioConfig {
+            name: "test_metric".to_string(),
+            rate: 10.0,
+            duration: Some("10s".to_string()),
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        })
+    }
+
+    /// Helper: build a minimal ScenarioEntry::Logs for testing.
+    fn make_logs_entry() -> ScenarioEntry {
+        ScenarioEntry::Logs(LogScenarioConfig {
+            name: "test_logs".to_string(),
+            rate: 5.0,
+            duration: Some("5s".to_string()),
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "test message".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            gaps: None,
+            bursts: None,
+            encoder: EncoderConfig::JsonLines,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        })
+    }
+
+    #[test]
+    fn print_start_quiet_mode_does_not_panic_for_metrics() {
+        let entry = make_metrics_entry();
+        // Should return immediately without writing anything.
+        print_start(&entry, true);
+    }
+
+    #[test]
+    fn print_start_quiet_mode_does_not_panic_for_logs() {
+        let entry = make_logs_entry();
+        print_start(&entry, true);
+    }
+
+    #[test]
+    fn print_start_normal_mode_does_not_panic_for_metrics() {
+        let entry = make_metrics_entry();
+        // Output goes to stderr; we just verify no panic.
+        print_start(&entry, false);
+    }
+
+    #[test]
+    fn print_start_normal_mode_does_not_panic_for_logs() {
+        let entry = make_logs_entry();
+        print_start(&entry, false);
+    }
+
+    #[test]
+    fn print_start_metrics_without_duration_does_not_panic() {
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            name: "no_dur".to_string(),
+            rate: 1.0,
+            duration: None,
+            generator: GeneratorConfig::Constant { value: 0.0 },
+            gaps: None,
+            bursts: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        });
+        print_start(&entry, false);
+    }
+
+    // -----------------------------------------------------------------------
+    // print_stop: quiet mode is a no-op (does not panic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_stop_quiet_mode_does_not_panic() {
+        let stats = ScenarioStats::default();
+        print_stop("test", Duration::from_secs(5), &stats, true);
+    }
+
+    #[test]
+    fn print_stop_normal_mode_does_not_panic() {
+        let stats = ScenarioStats::default();
+        print_stop("test", Duration::from_secs(5), &stats, false);
+    }
+
+    #[test]
+    fn print_stop_with_errors_does_not_panic() {
+        let stats = ScenarioStats {
+            total_events: 100,
+            bytes_emitted: 4096,
+            errors: 3,
+            ..Default::default()
+        };
+        // When errors > 0, the stop icon should be yellow and error count red.
+        // We just verify it does not panic.
+        print_stop("error_scenario", Duration::from_secs(10), &stats, false);
+    }
+
+    #[test]
+    fn print_stop_with_zero_duration_does_not_panic() {
+        let stats = ScenarioStats::default();
+        print_stop("zero_dur", Duration::from_secs(0), &stats, false);
+    }
+
+    #[test]
+    fn print_stop_with_large_byte_count_does_not_panic() {
+        let stats = ScenarioStats {
+            bytes_emitted: 2_000_000_000,
+            ..Default::default()
+        };
+        print_stop("big_bytes", Duration::from_secs(60), &stats, false);
+    }
+}
