@@ -1,0 +1,39 @@
+# Cardinality Spike Example
+#
+# Demonstrates cardinality spikes: recurring windows that inject dynamic
+# labels to simulate the kind of label explosions that break real pipelines.
+#
+# This example runs at 10 events/sec for 30 seconds. Every 10 seconds, a
+# 5-second spike window injects a "pod_name" label with one of 100 unique
+# values (counter strategy: pod-0 through pod-99). Outside the spike window,
+# the label is absent.
+#
+# Usage:
+#   cargo run -- metrics --scenario examples/cardinality-spike.yaml
+
+name: cardinality_spike_demo
+rate: 10
+duration: 30s
+
+generator:
+  type: sine
+  amplitude: 5.0
+  period_secs: 30
+  offset: 50.0
+
+labels:
+  hostname: lab-node-01
+  env: staging
+
+cardinality_spikes:
+  - label: pod_name
+    every: 10s
+    for: 5s
+    cardinality: 100
+    strategy: counter
+    prefix: "pod-"
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

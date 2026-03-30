@@ -36,6 +36,8 @@ pub struct ScenarioStats {
     pub in_gap: bool,
     /// Whether the scenario is currently in a burst window (elevated rate).
     pub in_burst: bool,
+    /// Whether the scenario is currently in a cardinality spike window.
+    pub in_cardinality_spike: bool,
     /// Circular buffer of recent metric events for scrape endpoints.
     ///
     /// Bounded by [`MAX_RECENT_METRICS`]. When full, the oldest event is
