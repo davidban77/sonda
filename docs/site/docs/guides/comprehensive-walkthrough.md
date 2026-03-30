@@ -620,20 +620,27 @@ generator:
     warn: 0.2
     error: 0.1
   seed: 42
+labels:
+  device: wlan0
+  hostname: router-01
 encoder:
   type: json_lines
 sink:
   type: stdout
 ```
 
+You can attach static `labels` to every log event in a scenario. Labels appear in both JSON Lines
+and syslog output (as RFC 5424 structured data). This is useful for tagging log streams by source,
+environment, or device.
+
 ```bash
 sonda logs --scenario examples/log-template.yaml --duration 3s
 ```
 
 ```json title="Output (each line is a separate JSON object)"
-{"timestamp":"2026-03-23T20:45:12.020Z","severity":"info","message":"Request from 10.0.0.3 to /api/v1/users returned 404","fields":{"endpoint":"/api/v1/users","ip":"10.0.0.3","status":"404"}}
-{"timestamp":"2026-03-23T20:45:12.122Z","severity":"error","message":"Service transform processed 100 events in 47ms","fields":{"count":"100","duration_ms":"47","service":"transform"}}
-{"timestamp":"2026-03-23T20:45:12.225Z","severity":"error","message":"Request from 10.0.0.3 to /api/v1/metrics returned 500","fields":{"endpoint":"/api/v1/metrics","ip":"10.0.0.3","status":"500"}}
+{"timestamp":"2026-03-23T20:45:12.020Z","severity":"info","message":"Request from 10.0.0.3 to /api/v1/users returned 404","labels":{"device":"wlan0","hostname":"router-01"},"fields":{"endpoint":"/api/v1/users","ip":"10.0.0.3","status":"404"}}
+{"timestamp":"2026-03-23T20:45:12.122Z","severity":"error","message":"Service transform processed 100 events in 47ms","labels":{"device":"wlan0","hostname":"router-01"},"fields":{"count":"100","duration_ms":"47","service":"transform"}}
+{"timestamp":"2026-03-23T20:45:12.225Z","severity":"error","message":"Request from 10.0.0.3 to /api/v1/metrics returned 500","labels":{"device":"wlan0","hostname":"router-01"},"fields":{"endpoint":"/api/v1/metrics","ip":"10.0.0.3","status":"500"}}
 ```
 
 Quick CLI-only log generation:
@@ -845,6 +852,9 @@ scenarios:
         warn: 0.2
         error: 0.1
       seed: 42
+    labels:
+      service: api-gateway
+      env: staging
     encoder:
       type: json_lines
     sink:
