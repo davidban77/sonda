@@ -59,15 +59,31 @@ You are reviewing **Slice $ARGUMENTS**. Audit all code and tests for this slice.
 - [ ] Integration tests in `tests/` cover cross-module or cross-crate scenarios where applicable.
 - [ ] No mocking frameworks used — hand-written mocks only (e.g., `MemorySink`).
 
-### Consistency
+### Consistency (top priority — this is the reviewer's primary mission)
+
+Consistency gaps are **BLOCKERs**, not notes. If a feature works one way via YAML but is
+missing or different via CLI (or vice versa), that is a blocker. Specific checks:
+
 - [ ] New code follows same patterns as existing code.
 - [ ] New config variants follow same serde tagging.
+- [ ] **YAML/CLI parity**: every feature configurable via YAML must also be configurable via
+      CLI flags (and vice versa). If a new YAML field has no corresponding CLI flag, that is
+      a BLOCKER.
+- [ ] **Encoder/generator/sink symmetry**: if a capability is added to one encoder (e.g.,
+      precision), verify it is added to all encoders where it makes sense — or explicitly
+      documented why it does not apply.
 
 ### Documentation
+
+Missing documentation is a **BLOCKER**, not a note. Users cannot adopt features they cannot
+discover. Specific checks:
+
 - [ ] New features are documented in `README.md` (usage, YAML schema, CLI flags).
 - [ ] New CLI flags appear in `--help` text with descriptions.
 - [ ] New config variants (generators, encoders, sinks) are listed in README tables.
-- [ ] Example YAML files in `examples/` cover new features where appropriate.
+- [ ] Example YAML files in `examples/` cover new features — **every user-facing feature
+      must have at least one runnable example**.
+- [ ] MkDocs site pages (`docs/site/`) are updated for new config options.
 - [ ] `docs/architecture.md` is updated if the design changed.
 - [ ] Phase plan docs (`docs/phase-*.md`) use current YAML format (no stale syntax).
 - [ ] Crate `CLAUDE.md` module layout reflects new/renamed files.
