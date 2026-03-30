@@ -76,6 +76,15 @@ Same pattern as generators:
 4. Register in `src/encoder/mod.rs` factory.
 5. Test with known inputs → expected byte output. Use `assert_eq!(String::from_utf8(buf).unwrap(), ...)`.
 
+### Encoder Precision
+
+The `PrometheusText`, `InfluxLineProtocol`, and `JsonLines` encoders support an optional
+`precision: Option<u8>` field that limits decimal places in formatted metric values. When `None`,
+full `f64` precision is preserved (default behavior). When set, values are formatted with the
+specified number of decimal places. Use `write_value()` from `encoder/mod.rs` for text encoders;
+JSON encoders pre-round the value before passing it to serde. Precision is validated in
+`config/validate.rs` (must be 0..=17).
+
 ## How to Add a New Sink
 
 1. Create `src/sink/your_sink.rs` implementing the `Sink` trait.

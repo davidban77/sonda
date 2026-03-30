@@ -150,6 +150,9 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
         )));
     }
 
+    // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
+    validate_encoder_precision(&config.encoder)?;
+
     Ok(())
 }
 
@@ -226,6 +229,38 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
         validate_burst_config(burst)?;
     }
 
+    // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
+    validate_encoder_precision(&config.encoder)?;
+
+    Ok(())
+}
+
+/// Extract the precision value from an [`EncoderConfig`], if present.
+fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
+    match encoder {
+        crate::encoder::EncoderConfig::PrometheusText { precision } => *precision,
+        crate::encoder::EncoderConfig::InfluxLineProtocol { precision, .. } => *precision,
+        crate::encoder::EncoderConfig::JsonLines { precision } => *precision,
+        crate::encoder::EncoderConfig::Syslog { .. } => None,
+        #[cfg(feature = "remote-write")]
+        crate::encoder::EncoderConfig::RemoteWrite => None,
+    }
+}
+
+/// Validate that an encoder's precision (if set) does not exceed 17.
+///
+/// An `f64` has approximately 15-17 significant decimal digits. Precision values
+/// above 17 produce meaningless trailing digits, so they are rejected as a
+/// configuration error.
+fn validate_encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Result<(), SondaError> {
+    if let Some(p) = encoder_precision(encoder) {
+        if p > 17 {
+            return Err(SondaError::Config(format!(
+                "encoder precision must be 0..=17, got {}",
+                p
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -596,7 +631,7 @@ generator:
         let config: ScenarioConfig =
             serde_yaml::from_str(yaml).expect("minimal YAML must deserialize");
         assert!(
-            matches!(config.encoder, EncoderConfig::PrometheusText),
+            matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "default encoder must be PrometheusText"
         );
     }
@@ -658,7 +693,10 @@ sink:
         assert_eq!(labels.get("zone").map(String::as_str), Some("eu1"));
 
         // Check encoder and sink defaults via explicit YAML values
-        assert!(matches!(config.encoder, EncoderConfig::PrometheusText));
+        assert!(matches!(
+            config.encoder,
+            EncoderConfig::PrometheusText { .. }
+        ));
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
@@ -1179,11 +1217,81 @@ generator:
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
         }
+    }
+
+    // ---- validate_config: encoder precision validation ------------------------
+
+    #[test]
+    fn precision_18_rejected() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::PrometheusText {
+            precision: Some(18),
+        };
+        let result = validate_config(&config);
+        assert!(result.is_err(), "precision=18 must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("precision"),
+            "error must mention 'precision', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn precision_17_accepted() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::PrometheusText {
+            precision: Some(17),
+        };
+        assert!(
+            validate_config(&config).is_ok(),
+            "precision=17 must be accepted"
+        );
+    }
+
+    #[test]
+    fn precision_0_accepted() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::PrometheusText { precision: Some(0) };
+        assert!(
+            validate_config(&config).is_ok(),
+            "precision=0 must be accepted"
+        );
+    }
+
+    #[test]
+    fn precision_none_accepted() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::PrometheusText { precision: None };
+        assert!(
+            validate_config(&config).is_ok(),
+            "precision=None must be accepted"
+        );
+    }
+
+    #[test]
+    fn precision_255_rejected() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::JsonLines {
+            precision: Some(255),
+        };
+        let result = validate_config(&config);
+        assert!(result.is_err(), "precision=255 must be rejected");
+    }
+
+    #[test]
+    fn precision_influx_18_rejected() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.encoder = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: Some(18),
+        };
+        let result = validate_config(&config);
+        assert!(result.is_err(), "precision=18 on influx must be rejected");
     }
 
     /// Extract the error message string from a Result.

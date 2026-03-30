@@ -46,22 +46,38 @@ pub trait Encoder: Send + Sync {
 #[serde(tag = "type")]
 pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).
+    ///
+    /// `precision` optionally limits the number of decimal places in metric values.
     #[serde(rename = "prometheus_text")]
-    PrometheusText,
+    PrometheusText {
+        /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
+        #[serde(default)]
+        precision: Option<u8>,
+    },
     /// InfluxDB line protocol.
     ///
     /// `field_key` sets the field key used for the metric value. Defaults to `"value"`.
+    /// `precision` optionally limits the number of decimal places in metric values.
     #[serde(rename = "influx_lp")]
     InfluxLineProtocol {
         /// The InfluxDB field key for the metric value. Defaults to `"value"` if absent.
         field_key: Option<String>,
+        /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
+        #[serde(default)]
+        precision: Option<u8>,
     },
     /// JSON Lines (NDJSON) format.
     ///
     /// Each event is serialized as one JSON object per line. Compatible with Elasticsearch,
     /// Loki, and generic HTTP ingest endpoints.
+    ///
+    /// `precision` optionally rounds the metric value before JSON serialization.
     #[serde(rename = "json_lines")]
-    JsonLines,
+    JsonLines {
+        /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
+        #[serde(default)]
+        precision: Option<u8>,
+    },
     /// RFC 5424 syslog format.
     ///
     /// Encodes log events as syslog lines. `hostname` and `app_name` default to `"sonda"`.
@@ -86,17 +102,36 @@ pub enum EncoderConfig {
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
 pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
     match config {
-        EncoderConfig::PrometheusText => Box::new(prometheus::PrometheusText::new()),
-        EncoderConfig::InfluxLineProtocol { field_key } => {
-            Box::new(influx::InfluxLineProtocol::new(field_key.clone()))
+        EncoderConfig::PrometheusText { precision } => {
+            Box::new(prometheus::PrometheusText::new(*precision))
         }
-        EncoderConfig::JsonLines => Box::new(json::JsonLines::new()),
+        EncoderConfig::InfluxLineProtocol {
+            field_key,
+            precision,
+        } => Box::new(influx::InfluxLineProtocol::new(
+            field_key.clone(),
+            *precision,
+        )),
+        EncoderConfig::JsonLines { precision } => Box::new(json::JsonLines::new(*precision)),
         EncoderConfig::Syslog { hostname, app_name } => {
             Box::new(syslog::Syslog::new(hostname.clone(), app_name.clone()))
         }
         #[cfg(feature = "remote-write")]
         EncoderConfig::RemoteWrite => Box::new(remote_write::RemoteWriteEncoder::new()),
     }
+}
+
+/// Write an f64 value to the buffer, optionally with fixed decimal precision.
+///
+/// When `precision` is `None`, uses Rust's default `Display` formatting for `f64`.
+/// When `precision` is `Some(n)`, formats to exactly `n` decimal places.
+pub(crate) fn write_value(buf: &mut Vec<u8>, value: f64, precision: Option<u8>) {
+    use std::io::Write as _;
+    match precision {
+        None => write!(buf, "{}", value),
+        Some(n) => write!(buf, "{:.1$}", value, n as usize),
+    }
+    .expect("write to Vec<u8> is infallible");
 }
 
 /// Format a [`std::time::SystemTime`] as an RFC 3339 string with millisecond precision.
@@ -155,14 +190,14 @@ mod tests {
     fn encoder_config_prometheus_text_deserializes_with_type_field() {
         let yaml = "type: prometheus_text";
         let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config, EncoderConfig::PrometheusText));
+        assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
     }
 
     #[test]
     fn encoder_config_json_lines_deserializes_with_type_field() {
         let yaml = "type: json_lines";
         let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config, EncoderConfig::JsonLines));
+        assert!(matches!(config, EncoderConfig::JsonLines { .. }));
     }
 
     #[test]
@@ -171,7 +206,10 @@ mod tests {
         let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config,
-            EncoderConfig::InfluxLineProtocol { field_key: None }
+            EncoderConfig::InfluxLineProtocol {
+                field_key: None,
+                precision: None
+            }
         ));
     }
 
@@ -181,7 +219,7 @@ mod tests {
         let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config,
-            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k) } if k == "requests"
+            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k), .. } if k == "requests"
         ));
     }
 
@@ -223,20 +261,23 @@ mod tests {
 
     #[test]
     fn create_encoder_prometheus_text_succeeds() {
-        let config = EncoderConfig::PrometheusText;
+        let config = EncoderConfig::PrometheusText { precision: None };
         // If factory panics the test fails; just ensure it returns without error.
         let _enc = create_encoder(&config);
     }
 
     #[test]
     fn create_encoder_json_lines_succeeds() {
-        let config = EncoderConfig::JsonLines;
+        let config = EncoderConfig::JsonLines { precision: None };
         let _enc = create_encoder(&config);
     }
 
     #[test]
     fn create_encoder_influx_lp_no_field_key_succeeds() {
-        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        };
         let _enc = create_encoder(&config);
     }
 
@@ -244,6 +285,7 @@ mod tests {
     fn create_encoder_influx_lp_with_field_key_succeeds() {
         let config = EncoderConfig::InfluxLineProtocol {
             field_key: Some("bytes".to_string()),
+            precision: None,
         };
         let _enc = create_encoder(&config);
     }
@@ -264,18 +306,18 @@ mod tests {
 
     #[test]
     fn encoder_config_prometheus_text_is_cloneable_and_debuggable() {
-        let config = EncoderConfig::PrometheusText;
+        let config = EncoderConfig::PrometheusText { precision: None };
         let cloned = config.clone();
-        assert!(matches!(cloned, EncoderConfig::PrometheusText));
+        assert!(matches!(cloned, EncoderConfig::PrometheusText { .. }));
         let s = format!("{config:?}");
         assert!(s.contains("PrometheusText"));
     }
 
     #[test]
     fn encoder_config_json_lines_is_cloneable_and_debuggable() {
-        let config = EncoderConfig::JsonLines;
+        let config = EncoderConfig::JsonLines { precision: None };
         let cloned = config.clone();
-        assert!(matches!(cloned, EncoderConfig::JsonLines));
+        assert!(matches!(cloned, EncoderConfig::JsonLines { .. }));
         let s = format!("{config:?}");
         assert!(s.contains("JsonLines"));
     }
@@ -284,11 +326,12 @@ mod tests {
     fn encoder_config_influx_lp_is_cloneable_and_debuggable() {
         let config = EncoderConfig::InfluxLineProtocol {
             field_key: Some("val".to_string()),
+            precision: None,
         };
         let cloned = config.clone();
         assert!(matches!(
             cloned,
-            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k) } if k == "val"
+            EncoderConfig::InfluxLineProtocol { field_key: Some(ref k), .. } if k == "val"
         ));
         let s = format!("{config:?}");
         assert!(s.contains("InfluxLineProtocol"));
@@ -310,7 +353,7 @@ mod tests {
 
     #[test]
     fn prometheus_encoder_encode_log_returns_not_supported_error() {
-        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -328,7 +371,10 @@ mod tests {
 
     #[test]
     fn influx_encoder_encode_log_returns_not_supported_error() {
-        let encoder = create_encoder(&EncoderConfig::InfluxLineProtocol { field_key: None });
+        let encoder = create_encoder(&EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        });
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -347,7 +393,7 @@ mod tests {
     #[test]
     fn json_lines_encoder_encode_log_succeeds() {
         // Slice 2.3: JsonLines now implements encode_log — it must succeed, not return an error.
-        let encoder = create_encoder(&EncoderConfig::JsonLines);
+        let encoder = create_encoder(&EncoderConfig::JsonLines { precision: None });
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -361,7 +407,7 @@ mod tests {
     #[test]
     fn encode_log_default_does_not_write_to_buffer() {
         // The default implementation must not produce partial output in the buffer.
-        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let event = make_log_event();
         let mut buf = Vec::new();
         let _ = encoder.encode_log(&event, &mut buf);
@@ -374,7 +420,7 @@ mod tests {
     #[test]
     fn encode_log_error_is_encoder_variant() {
         // The error must come back as SondaError::Encoder, not some other variant.
-        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -465,5 +511,109 @@ sink:
         assert_eq!(config.name, "rw_test_metric");
         assert!(matches!(config.encoder, EncoderConfig::RemoteWrite));
         assert!(matches!(config.sink, SinkConfig::RemoteWrite { .. }));
+    }
+
+    // ---------------------------------------------------------------------------
+    // write_value: shared helper for formatted f64 output
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn write_value_none_uses_default_display() {
+        let mut buf = Vec::new();
+        write_value(&mut buf, 1.0, None);
+        assert_eq!(String::from_utf8(buf).unwrap(), "1");
+
+        let mut buf = Vec::new();
+        write_value(&mut buf, 3.14159, None);
+        assert_eq!(String::from_utf8(buf).unwrap(), "3.14159");
+    }
+
+    #[test]
+    fn write_value_precision_0() {
+        let mut buf = Vec::new();
+        write_value(&mut buf, 99.6, Some(0));
+        assert_eq!(String::from_utf8(buf).unwrap(), "100");
+    }
+
+    #[test]
+    fn write_value_precision_2() {
+        let mut buf = Vec::new();
+        write_value(&mut buf, 99.60573, Some(2));
+        assert_eq!(String::from_utf8(buf).unwrap(), "99.61");
+
+        let mut buf = Vec::new();
+        write_value(&mut buf, 100.0, Some(2));
+        assert_eq!(String::from_utf8(buf).unwrap(), "100.00");
+    }
+
+    #[test]
+    fn write_value_precision_with_negative() {
+        let mut buf = Vec::new();
+        write_value(&mut buf, -3.14159, Some(2));
+        assert_eq!(String::from_utf8(buf).unwrap(), "-3.14");
+    }
+
+    #[test]
+    fn write_value_precision_4() {
+        let mut buf = Vec::new();
+        write_value(&mut buf, 1.23456789, Some(4));
+        assert_eq!(String::from_utf8(buf).unwrap(), "1.2346");
+    }
+
+    // ---------------------------------------------------------------------------
+    // EncoderConfig deserialization: precision field
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn prometheus_text_with_precision_deserializes() {
+        let yaml = "type: prometheus_text\nprecision: 3";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::PrometheusText { precision: Some(3) }
+        ));
+    }
+
+    #[test]
+    fn prometheus_text_without_precision_defaults_to_none() {
+        let yaml = "type: prometheus_text";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::PrometheusText { precision: None }
+        ));
+    }
+
+    #[test]
+    fn influx_with_precision_and_field_key_deserializes() {
+        let yaml = "type: influx_lp\nfield_key: gauge\nprecision: 2";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::InfluxLineProtocol {
+                field_key: Some(ref k),
+                precision: Some(2)
+            } if k == "gauge"
+        ));
+    }
+
+    #[test]
+    fn json_lines_with_precision_deserializes() {
+        let yaml = "type: json_lines\nprecision: 5";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::JsonLines { precision: Some(5) }
+        ));
+    }
+
+    #[test]
+    fn json_lines_without_precision_defaults_to_none() {
+        let yaml = "type: json_lines";
+        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            EncoderConfig::JsonLines { precision: None }
+        ));
     }
 }

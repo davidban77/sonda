@@ -26,18 +26,27 @@ use super::Encoder;
 /// The timestamp is in milliseconds since the Unix epoch (integer).
 ///
 /// Label values are escaped: `\` → `\\`, `"` → `\"`, newline → `\n`.
-pub struct PrometheusText;
+///
+/// When `precision` is set, metric values are formatted to the specified number
+/// of decimal places (e.g., precision=2 formats `99.60573` as `99.61`).
+pub struct PrometheusText {
+    /// Optional decimal precision for metric values.
+    precision: Option<u8>,
+}
 
 impl PrometheusText {
     /// Create a new `PrometheusText` encoder.
-    pub fn new() -> Self {
-        Self
+    ///
+    /// `precision` optionally limits the number of decimal places in metric values.
+    /// `None` preserves full `f64` precision (default behavior).
+    pub fn new(precision: Option<u8>) -> Self {
+        Self { precision }
     }
 }
 
 impl Default for PrometheusText {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -85,9 +94,8 @@ impl Encoder for PrometheusText {
         // Space before value
         buf.push(b' ');
 
-        // Value: write f64 using write! into the Vec<u8>
-        // write! on Vec<u8> never fails (infallible I/O)
-        write!(buf, "{}", event.value).expect("write to Vec<u8> is infallible");
+        // Value: write f64, optionally with fixed decimal precision
+        super::write_value(buf, event.value, self.precision);
 
         // Timestamp in milliseconds since epoch
         let timestamp_ms = event
@@ -119,7 +127,7 @@ mod tests {
 
     /// Helper: encode one event and return the result as a UTF-8 String.
     fn encode_to_string(event: &MetricEvent) -> String {
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         enc.encode_metric(event, &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
@@ -190,7 +198,7 @@ mod tests {
         let labels = Labels::from_pairs(&[]).unwrap();
         // Timestamp: exactly 1_700_000_000_000 ms (i.e. 1_700_000_000 seconds since epoch)
         let event = make_event("http_requests_total", 123.456, labels, 1_700_000_000_000);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         enc.encode_metric(&event, &mut buf).unwrap();
         assert_eq!(buf, b"http_requests_total 123.456 1700000000000\n");
@@ -200,7 +208,7 @@ mod tests {
     fn regression_anchor_exact_byte_output_with_labels() {
         let labels = Labels::from_pairs(&[("hostname", "t0-a1"), ("zone", "eu1")]).unwrap();
         let event = make_event("interface_oper_state", 1.0, labels, 1_700_000_000_000);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         enc.encode_metric(&event, &mut buf).unwrap();
         assert_eq!(
@@ -281,7 +289,7 @@ mod tests {
     fn label_value_with_newline_is_escaped() {
         let labels = Labels::from_pairs(&[("msg", "line1\nline2")]).unwrap();
         let event = make_event("metric", 1.0, labels, 0);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         enc.encode_metric(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -304,7 +312,7 @@ mod tests {
         let value = "a\\b\"c\nd";
         let labels = Labels::from_pairs(&[("v", value)]).unwrap();
         let event = make_event("metric", 1.0, labels, 0);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         enc.encode_metric(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -334,7 +342,7 @@ mod tests {
         let labels = Labels::from_pairs(&[]).unwrap();
         let event =
             MetricEvent::with_timestamp("up".to_string(), 1.0, labels, before_epoch).unwrap();
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = Vec::new();
         let result = enc.encode_metric(&event, &mut buf);
         assert!(
@@ -349,7 +357,7 @@ mod tests {
     fn encode_appends_to_existing_buffer_content() {
         let labels = Labels::from_pairs(&[]).unwrap();
         let event = make_event("up", 1.0, labels, 0);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         let mut buf = b"existing_content\n".to_vec();
         enc.encode_metric(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -367,7 +375,7 @@ mod tests {
     fn encode_does_not_reallocate_when_buffer_pre_sized() {
         let labels = Labels::from_pairs(&[]).unwrap();
         let event = make_event("up", 1.0, labels, 0);
-        let enc = PrometheusText::new();
+        let enc = PrometheusText::new(None);
         // Pre-allocate well beyond what a single line needs
         let mut buf = Vec::with_capacity(1024);
         let ptr_before = buf.as_ptr();
@@ -405,7 +413,7 @@ mod tests {
     #[test]
     fn create_encoder_returns_working_encoder_for_prometheus_text() {
         use crate::encoder::{create_encoder, EncoderConfig};
-        let enc = create_encoder(&EncoderConfig::PrometheusText);
+        let enc = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let labels = Labels::from_pairs(&[]).unwrap();
         let event = make_event("up", 1.0, labels, 1_000_000);
         let mut buf = Vec::new();
@@ -418,6 +426,57 @@ mod tests {
     fn encoder_config_deserialization_prometheus_text() {
         use crate::encoder::EncoderConfig;
         let config: EncoderConfig = serde_yaml::from_str("type: prometheus_text").unwrap();
-        assert!(matches!(config, EncoderConfig::PrometheusText));
+        assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
+    }
+
+    // --- Precision: None preserves full output ---
+
+    #[test]
+    fn precision_none_preserves_full_output() {
+        let enc = PrometheusText::new(None);
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("cpu", 99.60573506572389, labels, 1_000_000);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.starts_with("cpu 99.60573506572389 "),
+            "full precision must be preserved: {output:?}"
+        );
+    }
+
+    // --- Precision: 2 limits decimal places ---
+
+    #[test]
+    fn precision_two_limits_decimals() {
+        let enc = PrometheusText::new(Some(2));
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("cpu", 99.60573, labels, 1_000_000);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "cpu 99.61 1000000\n");
+    }
+
+    #[test]
+    fn precision_zero_rounds_to_integer() {
+        let enc = PrometheusText::new(Some(0));
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("up", 99.6, labels, 0);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "up 100 0\n");
+    }
+
+    #[test]
+    fn precision_two_preserves_trailing_zeros() {
+        let enc = PrometheusText::new(Some(2));
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("up", 1.0, labels, 0);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(output, "up 1.00 0\n");
     }
 }

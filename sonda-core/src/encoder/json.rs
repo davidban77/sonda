@@ -33,20 +33,29 @@ use super::Encoder;
 /// followed by a newline character to the caller-provided buffer.
 ///
 /// No per-event heap allocations beyond what `serde_json::to_writer` needs internally.
-/// All invariant content is pre-built at construction time — for `JsonLines` this
-/// struct has no per-scenario state, so construction is essentially free.
-pub struct JsonLines;
+/// All invariant content is pre-built at construction time.
+///
+/// When `precision` is set, metric values are pre-rounded before JSON serialization.
+/// Note that JSON has no trailing-zero concept, so `precision: 2` with value `100.0`
+/// produces `100.0` in JSON (not `100.00`), which is semantically correct.
+pub struct JsonLines {
+    /// Optional decimal precision for metric values.
+    precision: Option<u8>,
+}
 
 impl JsonLines {
     /// Create a new `JsonLines` encoder.
-    pub fn new() -> Self {
-        Self
+    ///
+    /// `precision` optionally rounds metric values to the specified number of decimal
+    /// places before JSON serialization. `None` preserves full `f64` precision.
+    pub fn new(precision: Option<u8>) -> Self {
+        Self { precision }
     }
 }
 
 impl Default for JsonLines {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -88,9 +97,17 @@ impl Encoder for JsonLines {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
+        let value = match self.precision {
+            None => event.value,
+            Some(n) => {
+                let factor = 10f64.powi(n as i32);
+                (event.value * factor).round() / factor
+            }
+        };
+
         let record = JsonMetric {
             name: &event.name,
-            value: event.value,
+            value,
             labels,
             timestamp,
         };
@@ -173,7 +190,7 @@ mod tests {
     fn output_is_valid_json_parseable_by_serde_json() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("cpu_usage", 0.75, &[("host", "srv1")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -189,7 +206,7 @@ mod tests {
     fn roundtrip_name_matches_original_event() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("http_requests", 42.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -202,7 +219,7 @@ mod tests {
     fn roundtrip_value_matches_original_event() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("latency", 3.14, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -215,7 +232,7 @@ mod tests {
     fn roundtrip_labels_match_original_event() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("metric", 1.0, &[("env", "prod"), ("host", "srv1")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -230,7 +247,7 @@ mod tests {
         // Unix epoch 1700000000.000 = 2023-11-14T22:13:20.000Z
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -248,7 +265,7 @@ mod tests {
     fn empty_labels_produces_empty_json_object() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -267,7 +284,7 @@ mod tests {
     fn each_encoded_line_ends_with_newline() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -281,7 +298,7 @@ mod tests {
     #[test]
     fn multiple_events_each_end_with_newline() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         for i in 0..3u64 {
             let event = make_event("up", i as f64, &[], ts + Duration::from_millis(i));
@@ -302,7 +319,7 @@ mod tests {
     #[test]
     fn multiple_encodes_accumulate_in_same_buffer() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
 
         let event1 = make_event("metric_a", 1.0, &[], ts);
@@ -327,7 +344,7 @@ mod tests {
     fn timestamp_uses_rfc3339_format_with_millisecond_precision() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -357,7 +374,7 @@ mod tests {
     fn timestamp_at_unix_epoch_formats_correctly() {
         let ts = UNIX_EPOCH;
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -371,7 +388,7 @@ mod tests {
         // Exactly 1 second past epoch, no sub-second component
         let ts = UNIX_EPOCH + Duration::from_secs(1);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -387,7 +404,7 @@ mod tests {
         // Timestamp: 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_event("http_requests", 100.0, &[("endpoint", "api")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -404,7 +421,7 @@ mod tests {
         // 2023-11-14T22:13:20.000Z = 1700000000 seconds
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("up", 1.0, &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -425,7 +442,7 @@ mod tests {
             &[("zone", "eu1"), ("host", "srv1"), ("env", "prod")],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -442,7 +459,7 @@ mod tests {
     fn json_fields_appear_in_consistent_order() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("metric", 1.0, &[("k", "v")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
 
@@ -477,7 +494,7 @@ mod tests {
     fn encoder_config_json_lines_creates_encoder_via_factory() {
         use crate::encoder::{create_encoder, EncoderConfig};
 
-        let config = EncoderConfig::JsonLines;
+        let config = EncoderConfig::JsonLines { precision: None };
         let encoder = create_encoder(&config);
 
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
@@ -580,7 +597,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "hello world", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = String::from_utf8(buf).unwrap();
@@ -597,7 +614,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -613,7 +630,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Warn, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -629,7 +646,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "test message here", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -645,7 +662,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[("ip", "10.0.0.1")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -663,7 +680,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -679,7 +696,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Error, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -692,7 +709,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Warn, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -705,7 +722,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Trace, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -718,7 +735,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Debug, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -731,7 +748,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Fatal, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -746,7 +763,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "Request from 10.0.0.1", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -764,7 +781,7 @@ mod tests {
             &[("ip", "10.0.0.1"), ("endpoint", "/api")],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -779,7 +796,7 @@ mod tests {
         // 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -797,7 +814,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -816,7 +833,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         assert_eq!(
@@ -834,7 +851,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[("k", "v")], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -858,7 +875,7 @@ mod tests {
         // 2026-03-20T12:00:00.000Z
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "Request from 10.0.0.1", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -879,7 +896,7 @@ mod tests {
             &[("endpoint", "/api"), ("ip", "10.0.0.1")],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -926,7 +943,7 @@ mod tests {
             &[],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -947,7 +964,7 @@ mod tests {
             &[],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -972,7 +989,7 @@ mod tests {
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "no labels", &[], ts);
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -995,7 +1012,7 @@ mod tests {
             &[("ip", "10.0.0.1")],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -1016,7 +1033,7 @@ mod tests {
             &[("endpoint", "/api")],
             ts,
         );
-        let encoder = JsonLines::new();
+        let encoder = JsonLines::new(None);
         let mut buf = Vec::new();
         encoder.encode_log(&event, &mut buf).unwrap();
         let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
@@ -1031,7 +1048,7 @@ mod tests {
     #[test]
     fn prometheus_encoder_encode_log_still_returns_not_supported_after_slice_2_3() {
         use crate::encoder::{create_encoder, EncoderConfig};
-        let encoder = create_encoder(&EncoderConfig::PrometheusText);
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(crate::model::log::Severity::Info, "should fail", &[], ts);
         let mut buf = Vec::new();
@@ -1046,5 +1063,55 @@ mod tests {
             "error must mention 'not supported', got: {msg}"
         );
         assert!(buf.is_empty(), "buffer must remain empty on error");
+    }
+
+    // --- Precision: pre-rounding before JSON serialization ---
+
+    #[test]
+    fn precision_two_rounds_json_value() {
+        let encoder = JsonLines::new(Some(2));
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let event = make_event("cpu", 99.60573, &[], ts);
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        let line = line.trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        let value = parsed["value"].as_f64().unwrap();
+        // JSON number should be the pre-rounded value 99.61
+        assert!((value - 99.61).abs() < 1e-10, "expected 99.61, got {value}");
+    }
+
+    #[test]
+    fn precision_none_preserves_full_value_in_json() {
+        let encoder = JsonLines::new(None);
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let event = make_event("cpu", 99.60573506572389, &[], ts);
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        let line = line.trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        let value = parsed["value"].as_f64().unwrap();
+        // f64 round-trips through serde_json may lose the very last ULP.
+        // We verify at least 12 significant digits are preserved.
+        assert!(
+            (value - 99.60573506572389).abs() < 1e-11,
+            "full precision must be preserved: {value}"
+        );
+    }
+
+    #[test]
+    fn precision_zero_rounds_to_whole_number_in_json() {
+        let encoder = JsonLines::new(Some(0));
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let event = make_event("up", 42.9, &[], ts);
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        let line = line.trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        let value = parsed["value"].as_f64().unwrap();
+        assert!((value - 43.0).abs() < 1e-10, "expected 43.0, got {value}");
     }
 }

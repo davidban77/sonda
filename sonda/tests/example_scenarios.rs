@@ -136,7 +136,7 @@ fn basic_metrics_yaml_uses_prometheus_text_encoder() {
     let config: ScenarioConfig =
         serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert!(
-        matches!(config.encoder, EncoderConfig::PrometheusText),
+        matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
         "encoder must be prometheus_text"
     );
 }
@@ -264,7 +264,7 @@ fn simple_constant_yaml_uses_prometheus_text_encoder() {
     let config: ScenarioConfig =
         serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert!(
-        matches!(config.encoder, EncoderConfig::PrometheusText),
+        matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
         "encoder must be prometheus_text"
     );
 }

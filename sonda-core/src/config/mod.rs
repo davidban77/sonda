@@ -40,11 +40,11 @@ pub struct BurstConfig {
 }
 
 fn default_encoder() -> EncoderConfig {
-    EncoderConfig::PrometheusText
+    EncoderConfig::PrometheusText { precision: None }
 }
 
 fn default_log_encoder() -> EncoderConfig {
-    EncoderConfig::JsonLines
+    EncoderConfig::JsonLines { precision: None }
 }
 
 fn default_sink() -> SinkConfig {
@@ -555,7 +555,7 @@ clock_group: compound-alert
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: Some("5s".to_string()),
             clock_group: None,
@@ -574,7 +574,7 @@ clock_group: compound-alert
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -600,7 +600,7 @@ clock_group: compound-alert
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::JsonLines,
+            encoder: EncoderConfig::JsonLines { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: Some("10s".to_string()),
             clock_group: None,
@@ -623,7 +623,7 @@ clock_group: compound-alert
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: Some("my-group".to_string()),
@@ -642,7 +642,7 @@ clock_group: compound-alert
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,

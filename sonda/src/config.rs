@@ -227,9 +227,12 @@ fn build_labels(args: &MetricsArgs) -> Option<HashMap<String, String>> {
 /// Parse the `--encoder` flag value into an [`EncoderConfig`].
 fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
     match encoder {
-        "prometheus_text" => Ok(EncoderConfig::PrometheusText),
-        "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol { field_key: None }),
-        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "prometheus_text" => Ok(EncoderConfig::PrometheusText { precision: None }),
+        "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        }),
+        "json_lines" => Ok(EncoderConfig::JsonLines { precision: None }),
         other => bail!(
             "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
             other
@@ -242,7 +245,7 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
 /// Log encoders are a subset: `json_lines` and `syslog`.
 fn parse_log_encoder_config(encoder: &str) -> Result<EncoderConfig> {
     match encoder {
-        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "json_lines" => Ok(EncoderConfig::JsonLines { precision: None }),
         "syslog" => Ok(EncoderConfig::Syslog {
             hostname: None,
             app_name: None,
@@ -906,7 +909,7 @@ mod tests {
         };
         let config = load_config(&args).expect("prometheus_text encoder should parse");
         assert!(
-            matches!(config.encoder, EncoderConfig::PrometheusText),
+            matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "encoder should be PrometheusText"
         );
     }
@@ -1294,7 +1297,7 @@ mod tests {
 
         let config = load_log_config(&args).expect("json_lines encoder must be accepted");
         assert!(
-            matches!(config.encoder, EncoderConfig::JsonLines),
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "encoder must be JsonLines"
         );
     }
@@ -1363,7 +1366,7 @@ mod tests {
 
         let config = load_log_config(&args).expect("default encoder config must succeed");
         assert!(
-            matches!(config.encoder, EncoderConfig::JsonLines),
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "default encoder for logs must be json_lines, got {:?}",
             config.encoder
         );
