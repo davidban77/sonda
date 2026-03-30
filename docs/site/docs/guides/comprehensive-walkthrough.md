@@ -50,6 +50,25 @@ Verify all services:
 | vmagent | `http://localhost:8429` | Metrics relay agent |
 | Grafana | `http://localhost:3000` | Dashboards (no login required) |
 
+Additional services are available via [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/):
+
+| Service | URL | Profile |
+|---------|-----|---------|
+| Loki | `http://localhost:3100` | `--profile loki` |
+| Kafka (external) | `localhost:9094` | `--profile kafka` |
+| Kafka UI | `http://localhost:8081` | `--profile kafka` |
+
+```bash
+# Start with Loki:
+docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
+
+# Start with Kafka (requires building with the kafka feature):
+docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
+
+# Start everything:
+docker compose -f examples/docker-compose-victoriametrics.yml --profile loki --profile kafka up -d
+```
+
 ```bash
 curl -s http://localhost:8080/health
 ```
@@ -564,9 +583,39 @@ sink:
   batch_size: 50
 ```
 
+Start the Loki service if you haven't already:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
+```
+
+Run the scenario:
+
+```bash
+sonda logs --scenario examples/loki-json-lines.yaml
+```
+
+Verify logs arrived in Loki:
+
+```bash
+curl -s 'http://localhost:3100/loki/api/v1/query?query={job="sonda"}' | python3 -m json.tool
+```
+
+You can also explore logs in Grafana at `http://localhost:3000` by selecting the **Loki** datasource in Explore.
+
 ### Kafka
 
-Publishes to a Kafka topic. Requires a running Kafka broker.
+Publishes to a Kafka topic. The Kafka sink requires the `kafka` feature flag:
+
+```bash
+cargo build --features kafka -p sonda
+```
+
+Start the Kafka service:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
+```
 
 ```yaml title="examples/kafka-sink.yaml"
 name: kafka_constant
@@ -582,11 +631,44 @@ encoder:
   type: prometheus_text
 sink:
   type: kafka
-  brokers: "127.0.0.1:9092"
+  brokers: "localhost:9094"
   topic: sonda-metrics
 ```
 
-The Kafka sink is available in the e2e test stack at `tests/e2e/docker-compose.yml` (broker exposed on port 9094).
+```bash
+sonda metrics --scenario examples/kafka-sink.yaml
+```
+
+For log events over Kafka:
+
+```yaml title="examples/kafka-json-logs.yaml"
+name: app_logs_kafka
+rate: 10
+duration: 60s
+generator:
+  type: template
+  templates:
+    - message: "Event from {service} severity {level}"
+      field_pools:
+        service: ["auth", "api", "worker"]
+        level: ["INFO", "WARN", "ERROR"]
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+encoder:
+  type: json_lines
+sink:
+  type: kafka
+  brokers: "localhost:9094"
+  topic: sonda-logs
+```
+
+```bash
+sonda logs --scenario examples/kafka-json-logs.yaml
+```
+
+Inspect messages in Kafka UI at `http://localhost:8081`.
 
 ---
 
@@ -1512,6 +1594,12 @@ This starts:
 - **VictoriaMetrics** on port 8428
 - **vmagent** on port 8429
 - **Grafana** on port 3000 (with pre-provisioned VictoriaMetrics datasource and Sonda Overview dashboard)
+
+Loki and Kafka are available via profiles:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml --profile loki --profile kafka up -d
+```
 
 Submit scenarios via the API:
 

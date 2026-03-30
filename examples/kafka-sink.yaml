@@ -5,7 +5,7 @@
 # Kafka record when the buffer reaches 64 KiB or when the scenario ends.
 #
 # Prerequisites:
-#   A Kafka broker must be reachable at 127.0.0.1:9092.
+#   A Kafka broker must be reachable at localhost:9094.
 #   The topic "sonda-metrics" must exist (or auto-creation must be enabled).
 #
 # Usage:
@@ -28,5 +28,5 @@ encoder:
 
 sink:
   type: kafka
-  brokers: "127.0.0.1:9092"
+  brokers: "localhost:9094"
   topic: sonda-metrics
