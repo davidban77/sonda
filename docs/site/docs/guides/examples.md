@@ -33,6 +33,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `influx-file.yaml` | sawtooth | influx_lp | file | InfluxDB line protocol to a file |
 | `json-tcp.yaml` | sine | json_lines | tcp | JSON Lines over TCP |
 | `prometheus-http-push.yaml` | sine | prometheus_text | http_push | Prometheus text POSTed in batches |
+| `precision-formatting.yaml` | sine | prom/json/influx | stdout | Demonstrates `precision` field with 3 encoders |
 | `remote-write-vm.yaml` | sine | remote_write | remote_write | Protobuf remote write to VictoriaMetrics* |
 
 *Requires `--features remote-write`. See [Encoders](../configuration/encoders.md) for details.

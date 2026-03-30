@@ -33,6 +33,7 @@ labels:
 
 encoder:
   type: prometheus_text
+  precision: 2          # optional: limit values to 2 decimal places
 
 sink:
   type: stdout
@@ -219,3 +220,10 @@ sonda metrics --scenario scenario.yaml --duration 5s --rate 2
 ```
 
 This loads the file but overrides `duration` and `rate` with the CLI values.
+
+Encoder options like `--precision` also work as overrides. You can add precision to a YAML
+scenario without editing the file:
+
+```bash
+sonda metrics --scenario examples/basic-metrics.yaml --precision 2
+```
