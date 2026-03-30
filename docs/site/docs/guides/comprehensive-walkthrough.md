@@ -62,7 +62,7 @@ Additional services are available via [Docker Compose profiles](https://docs.doc
 # Start with Loki:
 docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
 
-# Start with Kafka (requires building with the kafka feature):
+# Start with Kafka:
 docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
 
 # Start everything:
@@ -614,11 +614,10 @@ You can also explore logs in Grafana at `http://localhost:3000` by selecting the
 
 ### Kafka
 
-Publishes to a Kafka topic. The Kafka sink requires the `kafka` feature flag:
+Publishes to a Kafka topic.
 
-```bash
-cargo build --features kafka -p sonda
-```
+!!! note
+    Pre-built binaries and Docker images include Kafka support. The `--features kafka` flag is only needed when building from source: `cargo build --features kafka -p sonda`.
 
 Start the Kafka service:
 
