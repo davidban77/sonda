@@ -2167,4 +2167,383 @@ mod tests {
             config.encoder
         );
     }
+
+    // =========================================================================
+    // Spike config builder tests (metrics: build_spike_config)
+    // =========================================================================
+
+    #[test]
+    fn spike_all_required_flags_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("all spike flags must succeed");
+        let spikes = config
+            .cardinality_spikes
+            .as_ref()
+            .expect("cardinality_spikes must be set");
+        assert_eq!(spikes.len(), 1, "must produce exactly one spike entry");
+        assert_eq!(spikes[0].label, "pod_name");
+        assert_eq!(spikes[0].every, "2m");
+        assert_eq!(spikes[0].r#for, "30s");
+        assert_eq!(spikes[0].cardinality, 500);
+    }
+
+    #[test]
+    fn spike_no_flags_produces_none() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("no spike flags must succeed");
+        assert!(
+            config.cardinality_spikes.is_none(),
+            "cardinality_spikes must be None when no spike flags are provided"
+        );
+    }
+
+    #[test]
+    fn spike_label_without_spike_every_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--spike-label alone must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_every_without_spike_label_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_every: Some("2m".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--spike-every alone must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_for_without_other_spike_flags_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_for: Some("30s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--spike-for alone must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_cardinality_without_other_spike_flags_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_cardinality: Some(100),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--spike-cardinality alone must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_partial_flags_label_and_every_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("partial spike flags must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_unknown_strategy_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_strategy: Some("fibonacci".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("unknown strategy must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fibonacci"),
+            "error must mention the unknown strategy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_strategy_defaults_to_counter() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            // spike_strategy: None -> defaults to counter
+            ..default_args()
+        };
+        let config = load_config(&args).expect("default strategy must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(
+            spikes[0].strategy,
+            SpikeStrategy::Counter,
+            "strategy must default to Counter when omitted"
+        );
+    }
+
+    #[test]
+    fn spike_explicit_counter_strategy_works() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_strategy: Some("counter".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("explicit counter strategy must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
+    }
+
+    #[test]
+    fn spike_random_strategy_works() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_strategy: Some("random".to_string()),
+            spike_seed: Some(42),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("random strategy must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(spikes[0].strategy, SpikeStrategy::Random);
+        assert_eq!(spikes[0].seed, Some(42));
+    }
+
+    #[test]
+    fn spike_prefix_is_passed_through() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_prefix: Some("node-".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("spike prefix must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(
+            spikes[0].prefix.as_deref(),
+            Some("node-"),
+            "prefix must be passed through"
+        );
+    }
+
+    #[test]
+    fn spike_prefix_defaults_to_none_when_omitted() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("no prefix must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert!(
+            spikes[0].prefix.is_none(),
+            "prefix must be None when not specified"
+        );
+    }
+
+    // =========================================================================
+    // Spike config builder tests (logs: build_log_spike_config)
+    // =========================================================================
+
+    #[test]
+    fn log_spike_all_required_flags_succeeds() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("all log spike flags must succeed");
+        let spikes = config
+            .cardinality_spikes
+            .as_ref()
+            .expect("cardinality_spikes must be set");
+        assert_eq!(spikes.len(), 1);
+        assert_eq!(spikes[0].label, "pod_name");
+        assert_eq!(spikes[0].every, "2m");
+        assert_eq!(spikes[0].r#for, "30s");
+        assert_eq!(spikes[0].cardinality, 500);
+    }
+
+    #[test]
+    fn log_spike_no_flags_produces_none() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("no log spike flags must succeed");
+        assert!(
+            config.cardinality_spikes.is_none(),
+            "cardinality_spikes must be None when no spike flags are provided"
+        );
+    }
+
+    #[test]
+    fn log_spike_partial_flags_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            // missing spike_for and spike_cardinality
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("partial log spike flags must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spike"),
+            "error must mention spike flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn log_spike_unknown_strategy_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_strategy: Some("unknown_strat".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("unknown log spike strategy must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown_strat"),
+            "error must mention the unknown strategy, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn log_spike_strategy_defaults_to_counter() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log spike default strategy must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(
+            spikes[0].strategy,
+            SpikeStrategy::Counter,
+            "log spike strategy must default to Counter"
+        );
+    }
+
+    #[test]
+    fn log_spike_random_strategy_with_seed_works() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("error_msg".to_string()),
+            spike_every: Some("5m".to_string()),
+            spike_for: Some("1m".to_string()),
+            spike_cardinality: Some(1000),
+            spike_strategy: Some("random".to_string()),
+            spike_seed: Some(99),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log spike random strategy must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(spikes[0].strategy, SpikeStrategy::Random);
+        assert_eq!(spikes[0].seed, Some(99));
+        assert_eq!(spikes[0].label, "error_msg");
+    }
+
+    #[test]
+    fn log_spike_prefix_is_passed_through() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            spike_label: Some("pod_name".to_string()),
+            spike_every: Some("2m".to_string()),
+            spike_for: Some("30s".to_string()),
+            spike_cardinality: Some(500),
+            spike_prefix: Some("node-".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log spike prefix must succeed");
+        let spikes = config.cardinality_spikes.as_ref().unwrap();
+        assert_eq!(
+            spikes[0].prefix.as_deref(),
+            Some("node-"),
+            "log spike prefix must be passed through"
+        );
+    }
 }

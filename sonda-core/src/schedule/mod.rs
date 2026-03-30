@@ -145,15 +145,18 @@ impl CardinalitySpikeWindow {
     /// Generate a label value for the given tick.
     ///
     /// For the `Counter` strategy, returns `"{prefix}{tick % cardinality}"`.
-    /// For the `Random` strategy, returns a deterministic 16-char hex string
-    /// derived from `seed ^ tick` using SplitMix64.
+    /// For the `Random` strategy, computes an index as `tick % cardinality`,
+    /// then deterministically maps that index to a 16-char hex string via
+    /// `splitmix64(seed ^ index)`. This ensures exactly `cardinality` unique
+    /// values while keeping them hash-like rather than sequential.
     pub fn label_value_for_tick(&self, tick: u64) -> String {
+        let index = tick % self.cardinality;
         match self.strategy {
             SpikeStrategy::Counter => {
-                format!("{}{}", self.prefix, tick % self.cardinality)
+                format!("{}{}", self.prefix, index)
             }
             SpikeStrategy::Random => {
-                let mixed = splitmix64(self.seed ^ tick);
+                let mixed = splitmix64(self.seed ^ index);
                 format!("{}{:016x}", self.prefix, mixed)
             }
         }
@@ -717,7 +720,8 @@ mod tests {
 
     // ---- label_value_for_tick: random strategy ---------------------------------
 
-    /// Random strategy produces deterministic output for the same seed + tick.
+    /// Random strategy produces deterministic output for the same seed + tick,
+    /// with hardcoded expected values as regression anchors.
     #[test]
     fn label_value_random_is_deterministic() {
         let s = CardinalitySpikeWindow {
@@ -729,9 +733,18 @@ mod tests {
             prefix: "err-".to_string(),
             seed: 42,
         };
-        let v1 = s.label_value_for_tick(0);
-        let v2 = s.label_value_for_tick(0);
-        assert_eq!(v1, v2, "same seed + tick must produce same value");
+        assert_eq!(
+            s.label_value_for_tick(0),
+            "err-bdd732262feb6e95",
+            "tick 0 must produce the known anchored value"
+        );
+        assert_eq!(
+            s.label_value_for_tick(1),
+            "err-ba69ec90eb4fef88",
+            "tick 1 must produce the known anchored value"
+        );
+        // Same tick always produces the same value.
+        assert_eq!(s.label_value_for_tick(0), s.label_value_for_tick(0));
     }
 
     /// Random strategy produces different values for different ticks.
@@ -766,6 +779,52 @@ mod tests {
         assert!(s.label_value_for_tick(0).starts_with("err-"));
     }
 
+    /// Random strategy respects cardinality: ticks beyond cardinality wrap around
+    /// and produce the same values as their modular equivalents.
+    #[test]
+    fn label_value_random_respects_cardinality() {
+        let s = CardinalitySpikeWindow {
+            label: "error_msg".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1000,
+            strategy: SpikeStrategy::Random,
+            prefix: "err-".to_string(),
+            seed: 42,
+        };
+        // tick 1000 wraps to index 0, same as tick 0.
+        assert_eq!(
+            s.label_value_for_tick(0),
+            s.label_value_for_tick(1000),
+            "tick 0 and tick 1000 must produce the same value (cardinality=1000)"
+        );
+        // tick 1001 wraps to index 1, same as tick 1.
+        assert_eq!(
+            s.label_value_for_tick(1),
+            s.label_value_for_tick(1001),
+            "tick 1 and tick 1001 must produce the same value (cardinality=1000)"
+        );
+    }
+
+    /// Random strategy with cardinality=1 always returns the same value.
+    #[test]
+    fn label_value_random_cardinality_one() {
+        let s = CardinalitySpikeWindow {
+            label: "x".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1,
+            strategy: SpikeStrategy::Random,
+            prefix: "v-".to_string(),
+            seed: 99,
+        };
+        assert_eq!(
+            s.label_value_for_tick(0),
+            s.label_value_for_tick(999),
+            "cardinality=1 must always return the same value"
+        );
+    }
+
     // ---- CardinalitySpikeWindow: Clone and Debug contracts --------------------
 
     #[test]
@@ -789,10 +848,16 @@ mod tests {
     /// SplitMix64 produces known output for known input (regression anchor).
     #[test]
     fn splitmix64_produces_known_output() {
-        let result = super::splitmix64(42);
-        // Run the function once to capture the expected value.
-        // This test anchors the implementation to ensure changes are caught.
-        assert_eq!(result, super::splitmix64(42));
+        assert_eq!(
+            super::splitmix64(42),
+            0xbdd732262feb6e95,
+            "splitmix64(42) must return the known constant"
+        );
+        assert_eq!(
+            super::splitmix64(0),
+            0xe220a8397b1dcdaf,
+            "splitmix64(0) must return the known constant"
+        );
         // Different inputs produce different outputs.
         assert_ne!(super::splitmix64(0), super::splitmix64(1));
     }

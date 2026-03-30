@@ -85,6 +85,10 @@ mod tests {
         assert_eq!(s.errors, 0, "errors must start at zero");
         assert!(!s.in_gap, "in_gap must start as false");
         assert!(!s.in_burst, "in_burst must start as false");
+        assert!(
+            !s.in_cardinality_spike,
+            "in_cardinality_spike must start as false"
+        );
     }
 
     // ---- Clone: produces an independent copy --------------------------------
@@ -156,6 +160,10 @@ mod tests {
         assert!(json.contains("\"errors\""), "JSON must contain errors");
         assert!(json.contains("\"in_gap\""), "JSON must contain in_gap");
         assert!(json.contains("\"in_burst\""), "JSON must contain in_burst");
+        assert!(
+            json.contains("\"in_cardinality_spike\""),
+            "JSON must contain in_cardinality_spike"
+        );
     }
 
     // ---- Contract: Send + Sync ----------------------------------------------
