@@ -303,7 +303,7 @@ mod tests {
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::JsonLines,
+            encoder: EncoderConfig::JsonLines { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -478,7 +478,7 @@ sink:
         assert_eq!(config.name, "app_logs_template");
         assert_eq!(config.rate, 10.0);
         assert_eq!(config.duration.as_deref(), Some("60s"));
-        assert!(matches!(config.encoder, EncoderConfig::JsonLines));
+        assert!(matches!(config.encoder, EncoderConfig::JsonLines { .. }));
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
@@ -522,7 +522,7 @@ generator:
         let config: LogScenarioConfig =
             serde_yaml::from_str(yaml).expect("minimal log YAML must deserialize");
         assert!(
-            matches!(config.encoder, EncoderConfig::JsonLines),
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "default encoder must be json_lines, got {:?}",
             config.encoder
         );

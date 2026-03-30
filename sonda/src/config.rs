@@ -59,7 +59,10 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             gaps: build_gap_config(args)?,
             bursts: build_burst_config(args)?,
             labels: build_labels(args),
-            encoder: parse_encoder_config(args.encoder.as_deref().unwrap_or("prometheus_text"))?,
+            encoder: parse_encoder_config(
+                args.encoder.as_deref().unwrap_or("prometheus_text"),
+                args.precision,
+            )?,
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -132,7 +135,25 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     // Because `encoder` is `Option<String>` (no clap default_value), a `None`
     // here means the flag was omitted and the YAML value should be kept as-is.
     if let Some(ref enc) = args.encoder {
-        config.encoder = parse_encoder_config(enc)?;
+        config.encoder = parse_encoder_config(enc, args.precision)?;
+    }
+
+    // Precision: override independently of --encoder. This lets users set
+    // precision on top of a YAML-specified encoder without having to re-specify
+    // the encoder type.
+    if let Some(p) = args.precision {
+        match &mut config.encoder {
+            EncoderConfig::PrometheusText {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            EncoderConfig::InfluxLineProtocol {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            EncoderConfig::JsonLines {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            _ => {} // syslog, remote_write — no precision field
+        }
     }
 
     Ok(())
@@ -225,11 +246,17 @@ fn build_labels(args: &MetricsArgs) -> Option<HashMap<String, String>> {
 }
 
 /// Parse the `--encoder` flag value into an [`EncoderConfig`].
-fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
+///
+/// When `precision` is `Some`, the value is propagated into text-based encoder
+/// variants so the encoder can limit decimal places in formatted metric values.
+fn parse_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderConfig> {
     match encoder {
-        "prometheus_text" => Ok(EncoderConfig::PrometheusText),
-        "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol { field_key: None }),
-        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "prometheus_text" => Ok(EncoderConfig::PrometheusText { precision }),
+        "influx_lp" => Ok(EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision,
+        }),
+        "json_lines" => Ok(EncoderConfig::JsonLines { precision }),
         other => bail!(
             "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
             other
@@ -240,9 +267,11 @@ fn parse_encoder_config(encoder: &str) -> Result<EncoderConfig> {
 /// Parse the `--encoder` flag value into a log-appropriate [`EncoderConfig`].
 ///
 /// Log encoders are a subset: `json_lines` and `syslog`.
-fn parse_log_encoder_config(encoder: &str) -> Result<EncoderConfig> {
+/// When `precision` is `Some`, the value is propagated into text-based encoder
+/// variants so the encoder can limit decimal places in formatted values.
+fn parse_log_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderConfig> {
     match encoder {
-        "json_lines" => Ok(EncoderConfig::JsonLines),
+        "json_lines" => Ok(EncoderConfig::JsonLines { precision }),
         "syslog" => Ok(EncoderConfig::Syslog {
             hostname: None,
             app_name: None,
@@ -294,7 +323,10 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
             gaps: build_gap_config_for_logs(args)?,
             bursts: build_log_burst_config(args)?,
             labels: build_log_labels(args),
-            encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
+            encoder: parse_log_encoder_config(
+                args.encoder.as_deref().unwrap_or("json_lines"),
+                args.precision,
+            )?,
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -368,7 +400,25 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
 
     // Encoder: override when the user explicitly passes --encoder.
     if let Some(ref enc) = args.encoder {
-        config.encoder = parse_log_encoder_config(enc)?;
+        config.encoder = parse_log_encoder_config(enc, args.precision)?;
+    }
+
+    // Precision: override independently of --encoder. This lets users set
+    // precision on top of a YAML-specified encoder without having to re-specify
+    // the encoder type.
+    if let Some(p) = args.precision {
+        match &mut config.encoder {
+            EncoderConfig::PrometheusText {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            EncoderConfig::InfluxLineProtocol {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            EncoderConfig::JsonLines {
+                ref mut precision, ..
+            } => *precision = Some(p),
+            _ => {} // syslog, remote_write — no precision field
+        }
     }
 
     // Labels: merge CLI --label flags into existing labels.
@@ -549,6 +599,7 @@ mod tests {
             burst_multiplier: None,
             labels: vec![],
             encoder: None,
+            precision: None,
             output: None,
         }
     }
@@ -906,7 +957,7 @@ mod tests {
         };
         let config = load_config(&args).expect("prometheus_text encoder should parse");
         assert!(
-            matches!(config.encoder, EncoderConfig::PrometheusText),
+            matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "encoder should be PrometheusText"
         );
     }
@@ -1175,6 +1226,7 @@ mod tests {
             rate: None,
             duration: None,
             encoder: None,
+            precision: None,
             labels: vec![],
             gap_every: None,
             gap_for: None,
@@ -1294,7 +1346,7 @@ mod tests {
 
         let config = load_log_config(&args).expect("json_lines encoder must be accepted");
         assert!(
-            matches!(config.encoder, EncoderConfig::JsonLines),
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "encoder must be JsonLines"
         );
     }
@@ -1363,7 +1415,7 @@ mod tests {
 
         let config = load_log_config(&args).expect("default encoder config must succeed");
         assert!(
-            matches!(config.encoder, EncoderConfig::JsonLines),
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "default encoder for logs must be json_lines, got {:?}",
             config.encoder
         );
@@ -1750,6 +1802,266 @@ mod tests {
         assert!(
             result.is_err(),
             "invalid multi-scenario YAML should return error"
+        );
+    }
+
+    // =========================================================================
+    // --precision flag tests (metrics)
+    // =========================================================================
+
+    #[test]
+    fn cli_precision_flag_sets_encoder_precision() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            precision: Some(2),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("precision flag must produce valid config");
+        match config.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(precision, Some(2), "precision must be Some(2)");
+            }
+            other => panic!("expected PrometheusText encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_precision_overrides_yaml_encoder_precision() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        // YAML has no precision; CLI passes --precision 3.
+        let args = MetricsArgs {
+            scenario: Some(path),
+            precision: Some(3),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("precision override must succeed");
+        match config.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(
+                    precision,
+                    Some(3),
+                    "CLI --precision must override YAML encoder precision"
+                );
+            }
+            other => panic!("expected PrometheusText encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_precision_without_encoder_flag_updates_existing_encoder() {
+        // YAML sets encoder: prometheus_text; CLI passes only --precision 2 (no --encoder).
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            precision: Some(2),
+            // no --encoder flag
+            ..default_args()
+        };
+        let config = load_config(&args).expect("precision-only override must succeed");
+        match config.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(
+                    precision,
+                    Some(2),
+                    "precision must be applied to YAML-specified encoder"
+                );
+            }
+            other => panic!("expected PrometheusText encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_precision_with_encoder_flag() {
+        // --encoder influx_lp --precision 1
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: Some("influx_lp".to_string()),
+            precision: Some(1),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("encoder + precision must produce valid config");
+        match config.encoder {
+            EncoderConfig::InfluxLineProtocol {
+                precision,
+                field_key,
+            } => {
+                assert_eq!(precision, Some(1), "precision must be Some(1)");
+                assert_eq!(field_key, None, "field_key defaults to None from CLI");
+            }
+            other => panic!("expected InfluxLineProtocol encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_no_precision_flag_leaves_precision_none() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("no precision must succeed");
+        match config.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(precision, None, "precision must be None when not specified");
+            }
+            other => panic!("expected PrometheusText encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_precision_zero_is_valid() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            precision: Some(0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("precision=0 must be valid");
+        match config.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(precision, Some(0), "precision=0 must be accepted");
+            }
+            other => panic!("expected PrometheusText encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_precision_with_json_lines_encoder() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: Some("json_lines".to_string()),
+            precision: Some(5),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("json_lines + precision must succeed");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(precision, Some(5), "precision must be Some(5)");
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    // =========================================================================
+    // --precision flag tests (logs)
+    // =========================================================================
+
+    #[test]
+    fn log_cli_precision_flag_sets_encoder_precision() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            precision: Some(2),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log precision flag must produce valid config");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(precision, Some(2), "precision must be Some(2)");
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_cli_precision_overrides_yaml_encoder_precision() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            precision: Some(4),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log precision override must succeed");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(
+                    precision,
+                    Some(4),
+                    "CLI --precision must override YAML encoder precision"
+                );
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_cli_precision_without_encoder_flag_updates_existing_encoder() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            precision: Some(3),
+            // no --encoder flag
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log precision-only override must succeed");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(
+                    precision,
+                    Some(3),
+                    "precision must be applied to YAML-specified encoder"
+                );
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_cli_precision_with_encoder_flag() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            encoder: Some("json_lines".to_string()),
+            precision: Some(1),
+            ..default_logs_args()
+        };
+        let config =
+            load_log_config(&args).expect("log encoder + precision must produce valid config");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(precision, Some(1), "precision must be Some(1)");
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_cli_no_precision_flag_leaves_precision_none() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log no precision must succeed");
+        match config.encoder {
+            EncoderConfig::JsonLines { precision } => {
+                assert_eq!(precision, None, "precision must be None when not specified");
+            }
+            other => panic!("expected JsonLines encoder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_cli_precision_with_syslog_encoder_is_ignored() {
+        // syslog has no precision field; --precision should be silently ignored
+        // (the apply_log_overrides match arm falls through to the _ => {} case).
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            encoder: Some("syslog".to_string()),
+            precision: Some(5),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("syslog + precision must not error");
+        assert!(
+            matches!(config.encoder, EncoderConfig::Syslog { .. }),
+            "encoder must still be Syslog, got {:?}",
+            config.encoder
         );
     }
 }

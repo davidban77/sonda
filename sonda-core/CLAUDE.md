@@ -76,6 +76,11 @@ Same pattern as generators:
 4. Register in `src/encoder/mod.rs` factory.
 5. Test with known inputs → expected byte output. Use `assert_eq!(String::from_utf8(buf).unwrap(), ...)`.
 
+**EncoderConfig precision field:** Text-based encoder variants (`PrometheusText`, `InfluxLineProtocol`,
+`JsonLines`) carry an optional `precision: Option<u8>` field. When constructing these variants in
+tests or default functions, include `precision: None`. The CLI wires `--precision` through to this
+field. Syslog and RemoteWrite do not have a precision field.
+
 ## How to Add a New Sink
 
 1. Create `src/sink/your_sink.rs` implementing the `Sink` trait.

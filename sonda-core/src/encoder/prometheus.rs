@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn create_encoder_returns_working_encoder_for_prometheus_text() {
         use crate::encoder::{create_encoder, EncoderConfig};
-        let enc = create_encoder(&EncoderConfig::PrometheusText);
+        let enc = create_encoder(&EncoderConfig::PrometheusText { precision: None });
         let labels = Labels::from_pairs(&[]).unwrap();
         let event = make_event("up", 1.0, labels, 1_000_000);
         let mut buf = Vec::new();
@@ -418,6 +418,6 @@ mod tests {
     fn encoder_config_deserialization_prometheus_text() {
         use crate::encoder::EncoderConfig;
         let config: EncoderConfig = serde_yaml::from_str("type: prometheus_text").unwrap();
-        assert!(matches!(config, EncoderConfig::PrometheusText));
+        assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
     }
 }

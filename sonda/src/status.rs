@@ -127,9 +127,9 @@ fn sink_display(sink: &SinkConfig) -> String {
 /// Format an encoder config as a human-readable display string.
 fn encoder_display(encoder: &EncoderConfig) -> &'static str {
     match encoder {
-        EncoderConfig::PrometheusText => "prometheus_text",
+        EncoderConfig::PrometheusText { .. } => "prometheus_text",
         EncoderConfig::InfluxLineProtocol { .. } => "influx_lp",
-        EncoderConfig::JsonLines => "json_lines",
+        EncoderConfig::JsonLines { .. } => "json_lines",
         EncoderConfig::Syslog { .. } => "syslog",
         #[cfg(feature = "remote-write")]
         EncoderConfig::RemoteWrite => "remote_write",
@@ -340,14 +340,17 @@ mod tests {
     #[test]
     fn encoder_display_prometheus_text() {
         assert_eq!(
-            encoder_display(&EncoderConfig::PrometheusText),
+            encoder_display(&EncoderConfig::PrometheusText { precision: None }),
             "prometheus_text"
         );
     }
 
     #[test]
     fn encoder_display_influx_lp_without_field_key() {
-        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        };
         assert_eq!(encoder_display(&config), "influx_lp");
     }
 
@@ -355,13 +358,17 @@ mod tests {
     fn encoder_display_influx_lp_with_field_key() {
         let config = EncoderConfig::InfluxLineProtocol {
             field_key: Some("bytes".to_string()),
+            precision: None,
         };
         assert_eq!(encoder_display(&config), "influx_lp");
     }
 
     #[test]
     fn encoder_display_json_lines() {
-        assert_eq!(encoder_display(&EncoderConfig::JsonLines), "json_lines");
+        assert_eq!(
+            encoder_display(&EncoderConfig::JsonLines { precision: None }),
+            "json_lines"
+        );
     }
 
     #[test]
@@ -393,7 +400,7 @@ mod tests {
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -417,7 +424,7 @@ mod tests {
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::JsonLines,
+            encoder: EncoderConfig::JsonLines { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
@@ -460,7 +467,7 @@ mod tests {
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,

@@ -103,7 +103,7 @@ fn log_template_yaml_has_json_lines_encoder() {
     let config: LogScenarioConfig =
         serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
     assert!(
-        matches!(config.encoder, EncoderConfig::JsonLines),
+        matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
     );
 }
@@ -221,7 +221,7 @@ fn log_replay_yaml_has_json_lines_encoder() {
     let config: LogScenarioConfig =
         serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
     assert!(
-        matches!(config.encoder, EncoderConfig::JsonLines),
+        matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
     );
 }

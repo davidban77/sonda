@@ -596,7 +596,7 @@ generator:
         let config: ScenarioConfig =
             serde_yaml::from_str(yaml).expect("minimal YAML must deserialize");
         assert!(
-            matches!(config.encoder, EncoderConfig::PrometheusText),
+            matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "default encoder must be PrometheusText"
         );
     }
@@ -658,7 +658,10 @@ sink:
         assert_eq!(labels.get("zone").map(String::as_str), Some("eu1"));
 
         // Check encoder and sink defaults via explicit YAML values
-        assert!(matches!(config.encoder, EncoderConfig::PrometheusText));
+        assert!(matches!(
+            config.encoder,
+            EncoderConfig::PrometheusText { .. }
+        ));
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
@@ -1179,7 +1182,7 @@ generator:
             gaps: None,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,

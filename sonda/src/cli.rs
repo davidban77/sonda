@@ -167,6 +167,14 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub encoder: Option<String>,
 
+    /// Decimal precision for metric values (0--17).
+    ///
+    /// Limits the number of decimal places in formatted metric values.
+    /// When absent, full f64 precision is used. Applies to text-based
+    /// encoders (`prometheus_text`, `influx_lp`, `json_lines`).
+    #[arg(long)]
+    pub precision: Option<u8>,
+
     /// Write output to a file at this path instead of stdout.
     ///
     /// Shorthand for `sink: file` in a YAML scenario. Parent directories are
@@ -221,6 +229,14 @@ pub struct LogsArgs {
     /// Accepted values: `json_lines`, `syslog`. Default: `json_lines`.
     #[arg(long)]
     pub encoder: Option<String>,
+
+    /// Decimal precision for metric values (0--17).
+    ///
+    /// Limits the number of decimal places in formatted metric values.
+    /// When absent, full f64 precision is used. Applies to text-based
+    /// encoders (`json_lines`).
+    #[arg(long)]
+    pub precision: Option<u8>,
 
     /// Static label attached to every emitted event (repeatable).
     ///

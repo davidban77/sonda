@@ -481,7 +481,10 @@ mod tests {
 
     #[test]
     fn create_encoder_returns_working_influx_encoder_with_default_field_key() {
-        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        };
         let enc = create_encoder(&config);
         let labels = Labels::from_pairs(&[]).unwrap();
         let ts = UNIX_EPOCH + Duration::from_nanos(1_000_000_000);
@@ -496,6 +499,7 @@ mod tests {
     fn create_encoder_returns_working_influx_encoder_with_custom_field_key() {
         let config = EncoderConfig::InfluxLineProtocol {
             field_key: Some("count".to_string()),
+            precision: None,
         };
         let enc = create_encoder(&config);
         let labels = Labels::from_pairs(&[]).unwrap();
@@ -516,7 +520,10 @@ mod tests {
             serde_yaml::from_str("type: influx_lp\nfield_key: null").unwrap();
         assert!(matches!(
             config,
-            EncoderConfig::InfluxLineProtocol { field_key: None }
+            EncoderConfig::InfluxLineProtocol {
+                field_key: None,
+                precision: None,
+            }
         ));
     }
 
@@ -527,7 +534,8 @@ mod tests {
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {
-                field_key: Some(ref k)
+                field_key: Some(ref k),
+                precision: None,
             } if k == "requests"
         ));
     }
