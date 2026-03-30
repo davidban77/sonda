@@ -36,7 +36,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `precision-formatting.yaml` | sine | prom/json/influx | stdout | Demonstrates `precision` field with 3 encoders |
 | `remote-write-vm.yaml` | sine | remote_write | remote_write | Protobuf remote write to VictoriaMetrics* |
 
-*Requires `--features remote-write`. See [Encoders](../configuration/encoders.md) for details.
+*Pre-built binaries include remote-write support. When building from source, add `--features remote-write`. See [Encoders](../configuration/encoders.md) for details.
 
 ## Scheduling
 

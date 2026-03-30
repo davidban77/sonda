@@ -62,7 +62,7 @@ Additional services are available via [Docker Compose profiles](https://docs.doc
 # Start with Loki:
 docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
 
-# Start with Kafka (requires building with the kafka feature):
+# Start with Kafka:
 docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
 
 # Start everything:
@@ -381,11 +381,8 @@ sonda logs \
 
 ### Remote Write (Prometheus protobuf)
 
-Requires the `remote-write` feature flag:
-
-```bash
-cargo build --features remote-write -p sonda
-```
+!!! note
+    Pre-built binaries and Docker images include remote-write support. The `--features remote-write` flag is only needed when building from source: `cargo build --features remote-write -p sonda`.
 
 Used with the `remote_write` sink for pushing to Prometheus, VictoriaMetrics, Thanos Receive, Cortex, or Mimir.
 
@@ -407,6 +404,18 @@ sink:
   type: remote_write
   url: "http://localhost:8428/api/v1/write"
   batch_size: 100
+```
+
+Run the scenario (assumes VictoriaMetrics is listening on `localhost:8428`):
+
+```bash
+sonda metrics --scenario examples/remote-write-vm.yaml
+```
+
+Verify the metric arrived:
+
+```bash
+curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_rw' | python3 -m json.tool
 ```
 
 ---
@@ -605,11 +614,10 @@ You can also explore logs in Grafana at `http://localhost:3000` by selecting the
 
 ### Kafka
 
-Publishes to a Kafka topic. The Kafka sink requires the `kafka` feature flag:
+Publishes to a Kafka topic.
 
-```bash
-cargo build --features kafka -p sonda
-```
+!!! note
+    Pre-built binaries and Docker images include Kafka support. The `--features kafka` flag is only needed when building from source: `cargo build --features kafka -p sonda`.
 
 Start the Kafka service:
 
@@ -1295,11 +1303,8 @@ sink:
 
 ### Remote Write to vmagent
 
-For the Prometheus remote write protocol (protobuf + snappy), build with the feature flag:
-
-```bash
-cargo build --features remote-write -p sonda
-```
+!!! note
+    Pre-built binaries and Docker images include remote-write support. The `--features remote-write` flag is only needed when building from source: `cargo build --features remote-write -p sonda`.
 
 ```yaml title="examples/remote-write-vm.yaml"
 encoder:
@@ -1311,6 +1316,12 @@ sink:
 ```
 
 Compatible targets: VictoriaMetrics, vmagent, Prometheus, Thanos Receive, Cortex, Mimir, Grafana Cloud.
+
+Run the scenario:
+
+```bash
+sonda metrics --scenario examples/remote-write-vm.yaml
+```
 
 ### Scrape-Based via sonda-server
 

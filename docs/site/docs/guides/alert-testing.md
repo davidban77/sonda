@@ -230,8 +230,9 @@ For vmagent relay or any remote-write-compatible receiver (Prometheus, Thanos, C
 Grafana Cloud), use the `remote_write` encoder and sink pair:
 
 !!! note
-    The remote write feature requires the `remote-write` feature flag:
-    `cargo build --features remote-write -p sonda`
+    Pre-built binaries and Docker images include remote-write support. The
+    `--features remote-write` flag is only needed when building from source:
+    `cargo build --features remote-write -p sonda`.
 
 ```yaml title="remote-write-scenario.yaml"
 name: cpu_usage
