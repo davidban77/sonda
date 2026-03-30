@@ -10,8 +10,8 @@ micro-bursts, cardinality spikes, and shaped value sequences.
   trigger thresholds and verify `for:` duration behavior.
 - **Smoke-test ingest pipelines** -- push Prometheus, InfluxDB, or JSON-encoded telemetry to any
   backend and confirm it arrives correctly.
-- **Simulate failure modes** -- introduce intentional gaps and bursts to test gap-fill logic, alert
-  flap detection, and buffer sizing.
+- **Simulate failure modes** -- introduce intentional gaps, bursts, and cardinality spikes to test
+  gap-fill logic, alert flap detection, buffer sizing, and cardinality-limiting rules.
 - **Test recording rules** -- push known constant values and verify computed outputs.
 - **Load-test backends** -- generate thousands of events per second in a static binary with zero
   runtime dependencies.
@@ -115,7 +115,7 @@ sonda metrics --scenario scenario.yaml
 | **Generators** | constant, sine, sawtooth, uniform random, sequence, CSV replay |
 | **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki |
-| **Scheduling** | configurable rate, duration, gap windows, burst windows |
+| **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes |
 | **Signals** | metrics, logs (template and replay modes) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 

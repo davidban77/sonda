@@ -403,6 +403,50 @@ The overlap window -- where **both** metrics are above threshold -- runs from t=
 (2 seconds per cycle). For a `for: 5m` alert, extend the above-threshold sequences or use
 constant generators with a longer duration.
 
+## Cardinality Explosion Alerts
+
+Many monitoring stacks alert when series cardinality crosses a threshold (e.g.,
+`count(up) > 10000`). Use cardinality spikes to generate a controlled burst of unique label
+values and verify your cardinality-limiting rules fire correctly.
+
+```yaml title="cardinality-alert-test.yaml"
+name: http_requests_total
+rate: 10
+duration: 120s
+
+generator:
+  type: constant
+  value: 1.0
+
+labels:
+  job: web
+  env: staging
+
+cardinality_spikes:
+  - label: pod_name
+    every: 30s
+    for: 10s
+    cardinality: 500
+    strategy: counter
+    prefix: "pod-"
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+```
+
+```bash
+sonda metrics --scenario cardinality-alert-test.yaml
+```
+
+During the 10-second spike window, each tick injects a `pod_name` label with one of 500 unique
+values (`pod-0` through `pod-499`), producing 500 distinct series. Outside the window the label
+is absent and only one series is emitted. This on/off pattern lets you verify that alerts fire
+during the spike and resolve after it ends.
+
 ## Sequence and CSV Replay Generators
 
 ### Sequence Generator
@@ -572,4 +616,5 @@ docker compose -f examples/docker-compose-victoriametrics.yml down -v
 | Incident replay (inline) | `sequence` | `repeat: false` for one-shot |
 | Incident replay (file) | `csv_replay` | `file: values.csv`, `repeat: false` |
 | Compound alert | multi-scenario | `phase_offset` + `clock_group` |
+| Cardinality explosion | any + `cardinality_spikes` | `label: pod_name`, `cardinality: 500` |
 | Gradual degradation | `sawtooth` | `min: 50`, `max: 99`, `period_secs: 300` |
