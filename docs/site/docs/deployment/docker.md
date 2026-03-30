@@ -134,6 +134,6 @@ Explore metrics in the VictoriaMetrics UI at [http://localhost:8428/vmui](http:/
 or open Grafana and navigate to **Dashboards > Sonda > Sonda Overview**.
 
 !!! tip
-    The stack includes vmagent for remote write relay. If you build Sonda with
-    `--features remote-write`, you can push protobuf metrics through vmagent using
-    `examples/remote-write-vm.yaml`. See [Encoders](../configuration/encoders.md) for details.
+    The stack includes vmagent for remote write relay. You can push protobuf metrics
+    through vmagent using `examples/remote-write-vm.yaml`.
+    See [Encoders](../configuration/encoders.md) for details.
