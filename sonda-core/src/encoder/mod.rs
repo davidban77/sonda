@@ -303,6 +303,7 @@ mod tests {
         crate::model::log::LogEvent::new(
             crate::model::log::Severity::Info,
             "test message".to_string(),
+            crate::model::metric::Labels::default(),
             BTreeMap::new(),
         )
     }

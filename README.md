@@ -755,6 +755,10 @@ generator:
     error: 0.1
   seed: 42
 
+labels:
+  device: wlan0
+  hostname: router-01
+
 gaps:
   every: 2m
   for: 20s
@@ -793,6 +797,7 @@ sonda logs --scenario examples/log-template.yaml
 | `generator` | `object` | required | Log generator configuration. See log generator types above. |
 | `gaps` | `object` | none | Optional gap window: `every` and `for` duration strings. |
 | `bursts` | `object` | none | Optional burst window: `every`, `for`, and `multiplier`. |
+| `labels` | `map` | none | Static labels attached to every emitted log event. Keys must match `[a-zA-Z_][a-zA-Z0-9_]*`. |
 | `encoder` | `object` | `{type: json_lines}` | Output encoder. Accepted values: `json_lines`, `syslog`. |
 | `sink` | `object` | `{type: stdout}` | Output sink. Any sink type supported by metric scenarios. |
 

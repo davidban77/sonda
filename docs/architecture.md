@@ -80,7 +80,7 @@ The telemetry model defines the canonical in-memory representation of a signal e
 Key types:
 
 - **MetricEvent** — a single timestamped metric sample with a name, `f64` value, and a set of string label pairs.
-- **LogEvent** — a structured log line with a timestamp, severity, message, and arbitrary key-value fields.
+- **LogEvent** — a structured log line with a timestamp, severity, message, static labels (scenario-level key-value pairs), and arbitrary key-value fields.
 - **Labels** — an ordered, deduplicated map of string key-value pairs. Pre-validated at construction time.
 
 > **Design note:** The model layer avoids `String` allocations where possible. Label keys are interned. Values are represented as `f64` for metrics (no integer/histogram distinction at this layer — that is an encoder concern).

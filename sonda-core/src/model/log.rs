@@ -9,6 +9,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::metric::Labels;
+
 /// The severity level of a log event.
 ///
 /// Variants map to the conventional log severity ladder. Serializes to and from
@@ -30,10 +32,11 @@ pub enum Severity {
     Fatal,
 }
 
-/// A structured log entry with a timestamp, severity, message, and arbitrary fields.
+/// A structured log entry with a timestamp, severity, message, labels, and arbitrary fields.
 ///
-/// Fields are stored in a [`BTreeMap`] so that key order is deterministic across
-/// platforms and serialization round-trips.
+/// Labels are scenario-level key-value pairs (injected by the log runner).
+/// Fields are event-level key-value metadata (produced by the generator).
+/// Both are stored in sorted containers for deterministic serialization.
 #[derive(Debug, Clone)]
 pub struct LogEvent {
     /// The time at which the event was generated.
@@ -42,6 +45,8 @@ pub struct LogEvent {
     pub severity: Severity,
     /// The human-readable log message.
     pub message: String,
+    /// Scenario-level static labels attached to every event in this scenario.
+    pub labels: Labels,
     /// Arbitrary key-value metadata attached to the event.
     pub fields: BTreeMap<String, String>,
 }
@@ -53,12 +58,19 @@ impl LogEvent {
     ///
     /// * `severity` — The severity level.
     /// * `message` — The human-readable message.
+    /// * `labels` — Scenario-level static labels.
     /// * `fields` — Arbitrary key-value metadata.
-    pub fn new(severity: Severity, message: String, fields: BTreeMap<String, String>) -> Self {
+    pub fn new(
+        severity: Severity,
+        message: String,
+        labels: Labels,
+        fields: BTreeMap<String, String>,
+    ) -> Self {
         Self {
             timestamp: SystemTime::now(),
             severity,
             message,
+            labels,
             fields,
         }
     }
@@ -73,17 +85,20 @@ impl LogEvent {
     /// * `timestamp` — The exact timestamp to record.
     /// * `severity` — The severity level.
     /// * `message` — The human-readable message.
+    /// * `labels` — Scenario-level static labels.
     /// * `fields` — Arbitrary key-value metadata.
     pub fn with_timestamp(
         timestamp: SystemTime,
         severity: Severity,
         message: String,
+        labels: Labels,
         fields: BTreeMap<String, String>,
     ) -> Self {
         Self {
             timestamp,
             severity,
             message,
+            labels,
             fields,
         }
     }
@@ -102,7 +117,12 @@ mod tests {
     #[test]
     fn new_uses_current_timestamp() {
         let before = SystemTime::now();
-        let event = LogEvent::new(Severity::Info, "hello".to_string(), BTreeMap::new());
+        let event = LogEvent::new(
+            Severity::Info,
+            "hello".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
         let after = SystemTime::now();
 
         assert!(
@@ -120,7 +140,12 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("host".to_string(), "web-01".to_string());
 
-        let event = LogEvent::new(Severity::Error, "connection failed".to_string(), fields);
+        let event = LogEvent::new(
+            Severity::Error,
+            "connection failed".to_string(),
+            Labels::default(),
+            fields,
+        );
 
         assert_eq!(event.severity, Severity::Error);
         assert_eq!(event.message, "connection failed");
@@ -129,7 +154,12 @@ mod tests {
 
     #[test]
     fn new_with_empty_fields_succeeds() {
-        let event = LogEvent::new(Severity::Debug, "empty".to_string(), BTreeMap::new());
+        let event = LogEvent::new(
+            Severity::Debug,
+            "empty".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
         assert!(event.fields.is_empty());
     }
 
@@ -144,6 +174,7 @@ mod tests {
             ts,
             Severity::Warn,
             "test message".to_string(),
+            Labels::default(),
             BTreeMap::new(),
         );
 
@@ -160,8 +191,13 @@ mod tests {
         fields.insert("service".to_string(), "api".to_string());
         fields.insert("region".to_string(), "us-east-1".to_string());
 
-        let event =
-            LogEvent::with_timestamp(ts, Severity::Fatal, "system crash".to_string(), fields);
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Fatal,
+            "system crash".to_string(),
+            Labels::default(),
+            fields,
+        );
 
         assert_eq!(event.timestamp, ts);
         assert_eq!(event.severity, Severity::Fatal);
@@ -179,6 +215,7 @@ mod tests {
             UNIX_EPOCH,
             Severity::Trace,
             "epoch".to_string(),
+            Labels::default(),
             BTreeMap::new(),
         );
         assert_eq!(event.timestamp, UNIX_EPOCH);
@@ -195,7 +232,12 @@ mod tests {
         fields.insert("alpha".to_string(), "a".to_string());
         fields.insert("mango".to_string(), "m".to_string());
 
-        let event = LogEvent::new(Severity::Info, "sorted".to_string(), fields);
+        let event = LogEvent::new(
+            Severity::Info,
+            "sorted".to_string(),
+            Labels::default(),
+            fields,
+        );
 
         let keys: Vec<&str> = event.fields.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["alpha", "mango", "zebra"]);
@@ -342,7 +384,13 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("k".to_string(), "v".to_string());
 
-        let original = LogEvent::with_timestamp(ts, Severity::Info, "msg".to_string(), fields);
+        let original = LogEvent::with_timestamp(
+            ts,
+            Severity::Info,
+            "msg".to_string(),
+            Labels::default(),
+            fields,
+        );
         let mut cloned = original.clone();
 
         cloned.message = "different".to_string();
@@ -350,5 +398,74 @@ mod tests {
 
         assert_eq!(original.message, "msg");
         assert_eq!(original.fields.get("k").map(String::as_str), Some("v"));
+    }
+
+    // -----------------------------------------------------------------------
+    // LogEvent: labels field — stores scenario-level static labels
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_stores_labels_correctly() {
+        let labels = Labels::from_pairs(&[("device", "wlan0"), ("hostname", "router-01")]).unwrap();
+        let event = LogEvent::new(Severity::Info, "test".to_string(), labels, BTreeMap::new());
+
+        assert_eq!(event.labels.len(), 2);
+        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0.as_str(), "device");
+        assert_eq!(label_pairs[0].1.as_str(), "wlan0");
+        assert_eq!(label_pairs[1].0.as_str(), "hostname");
+        assert_eq!(label_pairs[1].1.as_str(), "router-01");
+    }
+
+    #[test]
+    fn with_timestamp_stores_labels_correctly() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let labels = Labels::from_pairs(&[("env", "staging"), ("region", "us_west")]).unwrap();
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Warn,
+            "warning event".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        assert_eq!(event.labels.len(), 2);
+        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0.as_str(), "env");
+        assert_eq!(label_pairs[0].1.as_str(), "staging");
+        assert_eq!(label_pairs[1].0.as_str(), "region");
+        assert_eq!(label_pairs[1].1.as_str(), "us_west");
+    }
+
+    #[test]
+    fn log_event_clone_preserves_labels() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1000);
+        let labels = Labels::from_pairs(&[("service", "api"), ("zone", "eu1")]).unwrap();
+        let original = LogEvent::with_timestamp(
+            ts,
+            Severity::Error,
+            "cloned".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        let cloned = original.clone();
+
+        assert_eq!(cloned.labels.len(), 2);
+        let original_pairs: Vec<(&String, &String)> = original.labels.iter().collect();
+        let cloned_pairs: Vec<(&String, &String)> = cloned.labels.iter().collect();
+        assert_eq!(original_pairs, cloned_pairs);
+    }
+
+    #[test]
+    fn new_with_empty_labels_has_no_labels() {
+        let event = LogEvent::new(
+            Severity::Info,
+            "no labels".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        assert!(event.labels.is_empty());
+        assert_eq!(event.labels.len(), 0);
     }
 }

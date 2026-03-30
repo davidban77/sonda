@@ -293,6 +293,7 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
             generator,
             gaps: build_gap_config_for_logs(args)?,
             bursts: build_log_burst_config(args)?,
+            labels: build_log_labels(args),
             encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
             sink: SinkConfig::Stdout,
             phase_offset: None,
@@ -370,7 +371,33 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
         config.encoder = parse_log_encoder_config(enc)?;
     }
 
+    // Labels: merge CLI --label flags into existing labels.
+    if !args.labels.is_empty() {
+        let mut label_map = config.labels.take().unwrap_or_default();
+        for (k, v) in &args.labels {
+            label_map.insert(k.clone(), v.clone());
+        }
+        config.labels = Some(label_map);
+    }
+
     Ok(())
+}
+
+/// Build a labels map from CLI `--label` flags for a log scenario.
+///
+/// Returns `None` if no labels were provided (so the config field stays `None`
+/// rather than `Some(empty_map)`), matching the metrics pattern.
+fn build_log_labels(args: &LogsArgs) -> Option<HashMap<String, String>> {
+    if args.labels.is_empty() {
+        None
+    } else {
+        Some(
+            args.labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
+    }
 }
 
 /// Parse a `--severity-weights` string (e.g. `"info=0.7,warn=0.2,error=0.1"`) into a
@@ -1539,6 +1566,113 @@ mod tests {
         assert!(
             matches!(config.encoder, EncoderConfig::Syslog { .. }),
             "CLI --encoder must override YAML encoder to syslog"
+        );
+    }
+
+    // ---- CLI --label flags for logs -----------------------------------------
+
+    #[test]
+    fn load_log_config_from_flags_includes_labels() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            duration: Some("1s".to_string()),
+            labels: vec![
+                ("device".to_string(), "wlan0".to_string()),
+                ("hostname".to_string(), "router_01".to_string()),
+            ],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("config with labels must build");
+        let labels = config.labels.as_ref().expect("labels must be Some");
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router_01")
+        );
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn load_log_config_from_flags_no_labels_produces_none() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            labels: vec![],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("config without labels must build");
+        assert!(
+            config.labels.is_none(),
+            "labels must be None when no --label flags are provided"
+        );
+    }
+
+    #[test]
+    fn load_log_config_yaml_with_labels_deserializes() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("YAML with labels must load");
+        assert_eq!(config.name, "test_log_template_labels");
+        let labels = config
+            .labels
+            .as_ref()
+            .expect("labels must be present from YAML");
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router-01")
+        );
+    }
+
+    #[test]
+    fn load_log_config_cli_labels_merge_onto_yaml_labels() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        // YAML has device and hostname; CLI adds a new label.
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            labels: vec![("env".to_string(), "prod".to_string())],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("label merge must succeed");
+        let labels = config.labels.as_ref().expect("labels must exist");
+        // Original YAML labels must be preserved
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router-01")
+        );
+        // CLI label must be added
+        assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
+        assert_eq!(labels.len(), 3);
+    }
+
+    #[test]
+    fn load_log_config_cli_label_overrides_same_key_in_yaml() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        // Override the "device" label from YAML
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            labels: vec![("device".to_string(), "eth0".to_string())],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("label override must succeed");
+        let labels = config.labels.as_ref().expect("labels must exist");
+        assert_eq!(
+            labels.get("device").map(String::as_str),
+            Some("eth0"),
+            "CLI --label must override YAML label with same key"
         );
     }
 

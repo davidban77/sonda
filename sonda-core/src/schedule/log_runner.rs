@@ -12,6 +12,7 @@ use crate::config::validate::parse_duration;
 use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
+use crate::model::metric::Labels;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
 use crate::sink::{create_sink, Sink};
@@ -108,6 +109,17 @@ pub fn run_logs_with_sink(
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;
     let encoder = create_encoder(&config.encoder);
+
+    // Build labels from config, mirroring the metrics runner pattern.
+    let labels: Labels = if let Some(ref label_map) = config.labels {
+        let pairs: Vec<(&str, &str)> = label_map
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        Labels::from_pairs(&pairs)?
+    } else {
+        Labels::default()
+    };
 
     // The base inter-event interval (at normal rate, no burst).
     let base_interval = Duration::from_secs_f64(1.0 / config.rate);
@@ -208,8 +220,9 @@ pub fn run_logs_with_sink(
                 thread::sleep(next_deadline - now);
             }
 
-            // Generate the log event.
-            let event = generator.generate(tick);
+            // Generate the log event and inject scenario-level labels.
+            let mut event = generator.generate(tick);
+            event.labels = labels.clone();
 
             // Encode and write.
             buf.clear();
@@ -289,6 +302,7 @@ mod tests {
             },
             gaps: None,
             bursts: None,
+            labels: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
             phase_offset: None,
@@ -570,6 +584,98 @@ sink:
         assert_eq!(bursts.every, "5s");
         assert_eq!(bursts.r#for, "1s");
         assert_eq!(bursts.multiplier, 10.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Contract: LogScenarioConfig is Clone + Debug
+    // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // Labels: scenario-level labels appear in encoded JSON output
+    // -------------------------------------------------------------------------
+
+    /// When labels are configured, every emitted JSON line must include the
+    /// labels object with the correct key-value pairs.
+    #[test]
+    fn run_logs_with_sink_labels_appear_in_json_output() {
+        let mut config = make_config(10.0, Some("1s"));
+        let mut label_map = HashMap::new();
+        label_map.insert("device".to_string(), "wlan0".to_string());
+        label_map.insert("hostname".to_string(), "router_01".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            !lines.is_empty(),
+            "runner must produce at least one line of output"
+        );
+
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert_eq!(
+                parsed["labels"]["device"], "wlan0",
+                "every JSON line must contain label device=wlan0; line: {line}"
+            );
+            assert_eq!(
+                parsed["labels"]["hostname"], "router_01",
+                "every JSON line must contain label hostname=router_01; line: {line}"
+            );
+        }
+    }
+
+    /// When no labels are configured, the labels object in JSON output must be
+    /// empty (not absent).
+    #[test]
+    fn run_logs_with_sink_no_labels_produces_empty_labels_object() {
+        let config = make_config(10.0, Some("500ms"));
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert_eq!(
+                parsed["labels"],
+                serde_json::json!({}),
+                "when no labels configured, labels must be empty object; line: {line}"
+            );
+        }
+    }
+
+    /// Labels in syslog encoder should appear as structured data.
+    #[test]
+    fn run_logs_with_sink_labels_appear_in_syslog_output() {
+        let mut config = make_config(10.0, Some("500ms"));
+        config.encoder = EncoderConfig::Syslog {
+            hostname: None,
+            app_name: None,
+        };
+        let mut label_map = HashMap::new();
+        label_map.insert("env".to_string(), "prod".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            !lines.is_empty(),
+            "runner must produce at least one syslog line"
+        );
+
+        for line in &lines {
+            assert!(
+                line.contains("[sonda env=\"prod\"]"),
+                "every syslog line must contain structured data with labels; line: {line}"
+            );
+        }
     }
 
     // -------------------------------------------------------------------------

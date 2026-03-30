@@ -11,7 +11,7 @@
 //!
 //! Log output format:
 //! ```text
-//! {"timestamp":"2026-03-20T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.1","fields":{"ip":"10.0.0.1","endpoint":"/api"}}
+//! {"timestamp":"2026-03-20T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.1","labels":{"device":"wlan0"},"fields":{"ip":"10.0.0.1","endpoint":"/api"}}
 //! ```
 //!
 //! Timestamp uses RFC 3339 / ISO 8601 format with millisecond precision. Formatted without
@@ -63,13 +63,14 @@ struct JsonMetric<'a> {
 
 /// Intermediate serde-serializable representation of a log event.
 ///
-/// Field order matches the spec: timestamp, severity, message, fields.
-/// Uses `BTreeMap` for fields so the JSON field order is consistent and deterministic.
+/// Field order matches the spec: timestamp, severity, message, labels, fields.
+/// Uses `BTreeMap` for labels and fields so the JSON field order is consistent and deterministic.
 #[derive(Serialize)]
 struct JsonLog<'a> {
     timestamp: String,
     severity: &'a str,
     message: &'a str,
+    labels: BTreeMap<&'a str, &'a str>,
     fields: BTreeMap<&'a str, &'a str>,
 }
 
@@ -120,6 +121,12 @@ impl Encoder for JsonLines {
             crate::model::log::Severity::Fatal => "fatal",
         };
 
+        let labels: BTreeMap<&str, &str> = event
+            .labels
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
         let fields: BTreeMap<&str, &str> = event
             .fields
             .iter()
@@ -130,6 +137,7 @@ impl Encoder for JsonLines {
             timestamp,
             severity: severity_str,
             message: &event.message,
+            labels,
             fields,
         };
 
@@ -556,7 +564,13 @@ mod tests {
         for (k, v) in fields {
             map.insert(k.to_string(), v.to_string());
         }
-        crate::model::log::LogEvent::with_timestamp(ts, severity, message.to_string(), map)
+        crate::model::log::LogEvent::with_timestamp(
+            ts,
+            severity,
+            message.to_string(),
+            crate::model::metric::Labels::default(),
+            map,
+        )
     }
 
     // --- encode_log: output is valid JSON ---
@@ -816,7 +830,7 @@ mod tests {
 
     #[test]
     fn encode_log_fields_appear_in_spec_order() {
-        // Spec: timestamp, severity, message, fields
+        // Spec: timestamp, severity, message, labels, fields
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[("k", "v")], ts);
@@ -828,10 +842,12 @@ mod tests {
         let ts_pos = line.find("\"timestamp\"").unwrap();
         let sev_pos = line.find("\"severity\"").unwrap();
         let msg_pos = line.find("\"message\"").unwrap();
+        let labels_pos = line.find("\"labels\"").unwrap();
         let fields_pos = line.find("\"fields\"").unwrap();
         assert!(ts_pos < sev_pos, "timestamp must come before severity");
         assert!(sev_pos < msg_pos, "severity must come before message");
-        assert!(msg_pos < fields_pos, "message must come before fields");
+        assert!(msg_pos < labels_pos, "message must come before labels");
+        assert!(labels_pos < fields_pos, "labels must come before fields");
     }
 
     // --- encode_log: regression anchor — exact byte output ---
@@ -848,7 +864,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"fields\":{}}\n"
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"labels\":{},\"fields\":{}}\n"
         );
     }
 
@@ -869,8 +885,145 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"error\",\"message\":\"db timeout\",\"fields\":{\"endpoint\":\"/api\",\"ip\":\"10.0.0.1\"}}\n"
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"error\",\"message\":\"db timeout\",\"labels\":{},\"fields\":{\"endpoint\":\"/api\",\"ip\":\"10.0.0.1\"}}\n"
         );
+    }
+
+    // --- encode_log: prometheus encoder still returns "not supported" error ---
+
+    // --- encode_log: labels in JSON output ---
+
+    /// Build a LogEvent with labels and a fixed timestamp for deterministic tests.
+    fn make_log_event_with_labels(
+        severity: crate::model::log::Severity,
+        message: &str,
+        labels: &[(&str, &str)],
+        fields: &[(&str, &str)],
+        ts: std::time::SystemTime,
+    ) -> crate::model::log::LogEvent {
+        let mut field_map = std::collections::BTreeMap::new();
+        for (k, v) in fields {
+            field_map.insert(k.to_string(), v.to_string());
+        }
+        let label_set = crate::model::metric::Labels::from_pairs(labels).unwrap();
+        crate::model::log::LogEvent::with_timestamp(
+            ts,
+            severity,
+            message.to_string(),
+            label_set,
+            field_map,
+        )
+    }
+
+    #[test]
+    fn encode_log_with_labels_includes_labels_in_json() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "labeled event",
+            &[("device", "wlan0"), ("hostname", "router_01")],
+            &[],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(parsed["labels"]["device"], "wlan0");
+        assert_eq!(parsed["labels"]["hostname"], "router_01");
+    }
+
+    #[test]
+    fn encode_log_labels_are_sorted_by_key() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        // Labels inserted in reverse alphabetical order; BTreeMap must sort them.
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "sorted labels",
+            &[("zone", "eu1"), ("env", "prod"), ("app", "sonda")],
+            &[],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let line = output.trim_end_matches('\n');
+
+        // Verify key order in the raw JSON string (BTreeMap guarantees sort)
+        let app_pos = line.find("\"app\"").unwrap();
+        let env_pos = line.find("\"env\"").unwrap();
+        let zone_pos = line.find("\"zone\"").unwrap();
+        assert!(
+            app_pos < env_pos,
+            "app must come before env in sorted labels"
+        );
+        assert!(
+            env_pos < zone_pos,
+            "env must come before zone in sorted labels"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_empty_labels_produces_empty_labels_object() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "no labels", &[], ts);
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            parsed["labels"],
+            serde_json::json!({}),
+            "empty labels must serialize as empty JSON object"
+        );
+    }
+
+    #[test]
+    fn encode_log_regression_anchor_with_labels_exact_output() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "Request from 10.0.0.1",
+            &[("device", "wlan0")],
+            &[("ip", "10.0.0.1")],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"labels\":{\"device\":\"wlan0\"},\"fields\":{\"ip\":\"10.0.0.1\"}}\n"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_labels_and_fields_both_present() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Error,
+            "timeout",
+            &[("env", "prod")],
+            &[("endpoint", "/api")],
+            ts,
+        );
+        let encoder = JsonLines::new();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        // Both labels and fields must be present and correct
+        assert_eq!(parsed["labels"]["env"], "prod");
+        assert_eq!(parsed["fields"]["endpoint"], "/api");
     }
 
     // --- encode_log: prometheus encoder still returns "not supported" error ---

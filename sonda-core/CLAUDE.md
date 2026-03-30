@@ -11,7 +11,7 @@ src/
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← MetricEvent, Labels
-│   └── log.rs          ← LogEvent (post-MVP)
+│   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels)
 ├── generator/
 │   ├── mod.rs          ← ValueGenerator trait + factory
 │   ├── constant.rs
