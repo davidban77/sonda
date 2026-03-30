@@ -62,7 +62,7 @@ RUN mkdir -p sonda-core/src sonda/src sonda-server/src && \
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
-    cargo build --release --target "${RUST_TARGET}" -p sonda -p sonda-server 2>/dev/null || true
+    cargo build --release --target "${RUST_TARGET}" --features remote-write,kafka -p sonda -p sonda-server 2>/dev/null || true
 
 # Copy real source and build
 COPY sonda-core/ sonda-core/
@@ -74,7 +74,7 @@ RUN touch sonda-core/src/lib.rs sonda/src/main.rs sonda-server/src/main.rs
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
-    cargo build --release --target "${RUST_TARGET}" -p sonda -p sonda-server
+    cargo build --release --target "${RUST_TARGET}" --features remote-write,kafka -p sonda -p sonda-server
 
 # Copy binaries to a known location regardless of target triple
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
