@@ -16,7 +16,7 @@ By the end, you will have synthetic telemetry streaming to stdout.
     To pin a specific version:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.1.3 sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.3.0 sh
     ```
 
 === "Cargo"
@@ -62,7 +62,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.1.3
+sonda 0.3.0
 ```
 
 ## Your first metric
@@ -234,3 +234,6 @@ sonda logs --scenario examples/log-template.yaml --duration 3s
   remote write, Kafka, Loki.
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and
   `run` subcommands.
+- [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose.
+- [**Kubernetes**](deployment/kubernetes.md) -- deploy with Helm.
+- [**Server API**](deployment/sonda-server.md) -- start and manage scenarios over HTTP.

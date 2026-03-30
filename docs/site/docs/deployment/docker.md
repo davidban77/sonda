@@ -28,6 +28,7 @@ docker pull ghcr.io/davidban77/sonda:latest
 ## Running with Docker
 
 The default entrypoint is `sonda-server`, which starts the HTTP API on port 8080.
+See [Server API](sonda-server.md) for the full endpoint reference.
 
 ```bash
 # Start the server
@@ -116,7 +117,8 @@ curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-You can also push from the host CLI using a pipe to VictoriaMetrics:
+You can also push from the host CLI using a pipe to VictoriaMetrics.
+See [Sinks](../configuration/sinks.md) for all available sink types (`http_push`, `remote_write`, `loki`, etc.).
 
 ```bash
 sonda metrics \

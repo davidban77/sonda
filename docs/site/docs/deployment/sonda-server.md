@@ -13,6 +13,7 @@ cargo run -p sonda-server
 cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
 ```
 
+See [CLI Reference](../configuration/cli-reference.md) for all `sonda-server` flags.
 Control log verbosity with the `RUST_LOG` environment variable (default: `info`):
 
 ```bash
@@ -32,7 +33,8 @@ curl http://localhost:8080/health
 ## Start a Scenario
 
 Post a YAML or JSON scenario body to `POST /scenarios`. The server accepts both
-`text/yaml` and `application/json` content types.
+`text/yaml` and `application/json` content types. See [Scenario Files](../configuration/scenario-file.md)
+for the full YAML schema.
 
 === "YAML"
 
