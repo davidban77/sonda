@@ -22,6 +22,73 @@ pub struct GapConfig {
     pub r#for: String,
 }
 
+/// Strategy for generating unique label values during a cardinality spike.
+///
+/// Determines how the spike window produces distinct values for the injected
+/// label key on each tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpikeStrategy {
+    /// Sequential counter: `prefix + (tick % cardinality)`.
+    ///
+    /// Produces deterministic, predictable label values without needing a seed.
+    #[default]
+    Counter,
+    /// Deterministic random: SplitMix64 hash of `seed ^ tick`, formatted as hex.
+    ///
+    /// Produces label values that look random but are reproducible given the
+    /// same seed.
+    Random,
+}
+
+/// Configuration for a cardinality spike — a recurring window that injects
+/// dynamic label values to simulate cardinality explosions.
+///
+/// During the spike window, a label key is injected with one of `cardinality`
+/// unique values per tick. Outside the window, the label key is absent.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// cardinality_spikes:
+///   - label: pod_name
+///     every: 2m
+///     for: 30s
+///     cardinality: 500
+///     strategy: counter
+///     prefix: "pod-"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct CardinalitySpikeConfig {
+    /// The label key to inject during the spike window.
+    ///
+    /// Must be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.
+    pub label: String,
+    /// How often the spike recurs (e.g. `"2m"`).
+    pub every: String,
+    /// How long each spike lasts (e.g. `"30s"`). Must be less than `every`.
+    pub r#for: String,
+    /// Number of unique label values generated during the spike.
+    ///
+    /// Must be greater than zero.
+    pub cardinality: u64,
+    /// Strategy for generating unique label values.
+    ///
+    /// Defaults to `counter` if not specified.
+    #[serde(default)]
+    pub strategy: SpikeStrategy,
+    /// Optional prefix for generated label values.
+    ///
+    /// Defaults to `"{label}_"` when not specified.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Optional RNG seed for the `random` strategy.
+    ///
+    /// Ignored for the `counter` strategy.
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
 /// Burst window configuration — a recurring high-rate period within a scenario.
 ///
 /// During a burst the event rate is multiplied by `multiplier`. The burst
@@ -96,6 +163,10 @@ pub struct ScenarioConfig {
     /// When both a gap and a burst overlap in time, the gap takes priority.
     #[serde(default)]
     pub bursts: Option<BurstConfig>,
+    /// Optional cardinality spikes: recurring windows that inject dynamic
+    /// labels to simulate cardinality explosions.
+    #[serde(default)]
+    pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
     /// Static labels attached to every emitted event.
     #[serde(default)]
     pub labels: Option<HashMap<String, String>>,
@@ -236,6 +307,10 @@ pub struct LogScenarioConfig {
     /// Optional burst window: recurring high-rate periods.
     #[serde(default)]
     pub bursts: Option<BurstConfig>,
+    /// Optional cardinality spikes: recurring windows that inject dynamic
+    /// labels to simulate cardinality explosions.
+    #[serde(default)]
+    pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
     /// Static labels attached to every emitted log event.
     #[serde(default)]
     pub labels: Option<HashMap<String, String>>,
@@ -554,6 +629,7 @@ clock_group: compound-alert
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
@@ -573,6 +649,7 @@ clock_group: compound-alert
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
@@ -599,6 +676,7 @@ clock_group: compound-alert
             },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
             sink: SinkConfig::Stdout,
@@ -622,6 +700,7 @@ clock_group: compound-alert
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
@@ -641,6 +720,7 @@ clock_group: compound-alert
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
@@ -785,5 +865,130 @@ phase_offset: "3s"
         let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
         let dur = parse_duration(config.phase_offset.as_deref().unwrap()).unwrap();
         assert_eq!(dur, std::time::Duration::from_secs(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // cardinality_spikes deserialization
+    // -----------------------------------------------------------------------
+
+    /// YAML with cardinality_spikes deserializes into Some(Vec).
+    #[test]
+    fn scenario_config_cardinality_spikes_deserializes_from_yaml() {
+        let yaml = r#"
+name: spike_test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+cardinality_spikes:
+  - label: pod_name
+    every: 2m
+    for: 30s
+    cardinality: 500
+    strategy: counter
+    prefix: "pod-"
+  - label: error_msg
+    every: 5m
+    for: 1m
+    cardinality: 1000
+    strategy: random
+    seed: 42
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let spikes = config
+            .cardinality_spikes
+            .as_ref()
+            .expect("cardinality_spikes must be Some");
+        assert_eq!(spikes.len(), 2);
+        assert_eq!(spikes[0].label, "pod_name");
+        assert_eq!(spikes[0].cardinality, 500);
+        assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
+        assert_eq!(spikes[0].prefix.as_deref(), Some("pod-"));
+        assert_eq!(spikes[1].label, "error_msg");
+        assert_eq!(spikes[1].strategy, SpikeStrategy::Random);
+        assert_eq!(spikes[1].seed, Some(42));
+    }
+
+    /// YAML without cardinality_spikes defaults to None.
+    #[test]
+    fn scenario_config_cardinality_spikes_defaults_to_none() {
+        let yaml = r#"
+name: no_spike
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            config.cardinality_spikes.is_none(),
+            "cardinality_spikes must be None when absent from YAML"
+        );
+    }
+
+    /// SpikeStrategy defaults to Counter when not specified in YAML.
+    #[test]
+    fn spike_strategy_defaults_to_counter() {
+        let yaml = r#"
+name: default_strategy
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+cardinality_spikes:
+  - label: pod_name
+    every: 1m
+    for: 10s
+    cardinality: 10
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let spikes = config.cardinality_spikes.unwrap();
+        assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
+    }
+
+    /// LogScenarioConfig also supports cardinality_spikes.
+    #[test]
+    fn log_scenario_config_cardinality_spikes_deserializes() {
+        let yaml = r#"
+name: log_spike
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+cardinality_spikes:
+  - label: pod_name
+    every: 1m
+    for: 10s
+    cardinality: 100
+"#;
+        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let spikes = config.cardinality_spikes.unwrap();
+        assert_eq!(spikes.len(), 1);
+        assert_eq!(spikes[0].label, "pod_name");
+    }
+
+    /// Backward compatibility: existing YAML without cardinality_spikes still works.
+    #[test]
+    fn backward_compatible_yaml_without_spikes() {
+        let yaml = r#"
+name: compat_test
+rate: 100
+generator:
+  type: sine
+  amplitude: 5.0
+  period_secs: 30
+  offset: 10.0
+labels:
+  hostname: t0-a1
+gaps:
+  every: 2m
+  for: 20s
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.cardinality_spikes.is_none());
+        assert!(config.gaps.is_some());
+        assert_eq!(config.name, "compat_test");
     }
 }

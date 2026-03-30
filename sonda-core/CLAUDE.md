@@ -23,7 +23,7 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
-│   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow
+│   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike
 │   ├── stats.rs        ← ScenarioStats (live telemetry + recent_metrics buffer for scrape endpoints)
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot)
 │   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API, supports phase_offset)
@@ -50,8 +50,8 @@ src/
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
-    ├── mod.rs          ← ScenarioConfig (with phase_offset, clock_group), ScenarioEntry, MultiScenarioConfig
-    └── validate.rs     ← config validation logic, parse_duration
+    ├── mod.rs          ← ScenarioConfig (with phase_offset, clock_group, cardinality_spikes), ScenarioEntry, MultiScenarioConfig, CardinalitySpikeConfig, SpikeStrategy
+    └── validate.rs     ← config validation logic, parse_duration, validate_cardinality_spike_config
 ```
 
 ## How to Add a New Generator

@@ -27,6 +27,14 @@ bursts:
   for: 2s
   multiplier: 5.0
 
+cardinality_spikes:
+  - label: pod_name
+    every: 2m
+    for: 30s
+    cardinality: 500
+    strategy: counter
+    prefix: "pod-"
+
 labels:
   hostname: web-01
   zone: us-east-1
@@ -97,6 +105,41 @@ bursts:
 ```
 
 At a base rate of 100 events/sec, this produces 500 events/sec for 2 seconds out of every 10.
+
+### Cardinality spike window
+
+Cardinality spikes create recurring windows that inject dynamic label values, simulating the label
+explosions that break real pipelines. During a spike window, a configured label key is added with
+one of `cardinality` unique values. Outside the window, the label is absent.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `cardinality_spikes[].label` | string | yes | -- | Label key to inject during the spike. |
+| `cardinality_spikes[].every` | string | yes | -- | Recurrence interval (e.g. `"2m"`). |
+| `cardinality_spikes[].for` | string | yes | -- | Duration of each spike. Must be less than `every`. |
+| `cardinality_spikes[].cardinality` | integer | yes | -- | Number of unique label values. Must be > 0. |
+| `cardinality_spikes[].strategy` | string | no | `counter` | Value generation strategy: `counter` or `random`. |
+| `cardinality_spikes[].prefix` | string | no | `"{label}_"` | Prefix for generated label values. |
+| `cardinality_spikes[].seed` | integer | no | `0` | RNG seed for the `random` strategy. |
+
+```yaml title="Cardinality spike example"
+cardinality_spikes:
+  - label: pod_name
+    every: 2m
+    for: 30s
+    cardinality: 500
+    strategy: counter
+    prefix: "pod-"
+```
+
+**Strategies:**
+
+- **`counter`** -- Generates sequential values: `{prefix}0`, `{prefix}1`, ..., `{prefix}{cardinality-1}`, then wraps around. Deterministic without a seed.
+- **`random`** -- Generates hash-like hex values via SplitMix64: `{prefix}{hex}`. Produces exactly `cardinality` unique values. Requires a `seed` for reproducibility.
+
+!!! note
+    Gap windows take priority over spikes. If a gap and spike overlap, the gap suppresses all
+    output including spike labels.
 
 ### Multi-scenario fields
 

@@ -10,7 +10,7 @@ use crate::SondaError;
 /// Returns `true` if `s` is a valid Prometheus label key.
 ///
 /// Valid label keys match `[a-zA-Z_][a-zA-Z0-9_]*` and must not be empty.
-fn is_valid_label_key(s: &str) -> bool {
+pub(crate) fn is_valid_label_key(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
@@ -93,6 +93,17 @@ impl Labels {
     /// Returns `true` if this label set contains no labels.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// Insert a key-value pair into this label set without validation.
+    ///
+    /// The caller is responsible for ensuring the key is a valid Prometheus
+    /// label key. This method is intended for use by the schedule runner
+    /// when injecting spike labels from pre-validated config.
+    ///
+    /// If the key already exists, its value is overwritten.
+    pub fn insert(&mut self, key: String, value: String) {
+        self.inner.insert(key, value);
     }
 }
 
@@ -420,6 +431,43 @@ mod tests {
             event.timestamp > UNIX_EPOCH,
             "timestamp should be after UNIX_EPOCH"
         );
+    }
+
+    // --- Labels::insert ---
+
+    #[test]
+    fn insert_adds_new_key() {
+        let mut labels = Labels::from_pairs(&[("host", "server1")]).unwrap();
+        labels.insert("zone".to_string(), "eu1".to_string());
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn insert_overwrites_existing_key() {
+        let mut labels = Labels::from_pairs(&[("host", "server1")]).unwrap();
+        labels.insert("host".to_string(), "server2".to_string());
+        assert_eq!(labels.len(), 1);
+        let (_, v) = labels.iter().next().unwrap();
+        assert_eq!(v, "server2");
+    }
+
+    #[test]
+    fn insert_maintains_sorted_order() {
+        let mut labels = Labels::from_pairs(&[("b", "2")]).unwrap();
+        labels.insert("a".to_string(), "1".to_string());
+        labels.insert("c".to_string(), "3".to_string());
+        let keys: Vec<&str> = labels.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn insert_into_empty_labels() {
+        let mut labels = Labels::default();
+        labels.insert("key".to_string(), "value".to_string());
+        assert_eq!(labels.len(), 1);
+        let (k, v) = labels.iter().next().unwrap();
+        assert_eq!(k, "key");
+        assert_eq!(v, "value");
     }
 
     // --- Send + Sync contract tests ---

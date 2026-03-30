@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use crate::model::metric::is_valid_metric_name;
+use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
 use crate::SondaError;
 
-use super::{BurstConfig, LogScenarioConfig, ScenarioConfig};
+use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConfig};
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
@@ -98,6 +98,44 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
     }
 }
 
+/// Validate a single [`CardinalitySpikeConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `label` is a valid Prometheus label key.
+/// - `every` and `for` are parseable duration strings.
+/// - `for` is strictly less than `every`.
+/// - `cardinality` is greater than zero.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_cardinality_spike_config(spike: &CardinalitySpikeConfig) -> Result<(), SondaError> {
+    if !is_valid_label_key(&spike.label) {
+        return Err(SondaError::Config(format!(
+            "invalid cardinality_spikes label {:?}: must match [a-zA-Z_][a-zA-Z0-9_]*",
+            spike.label
+        )));
+    }
+
+    let every = parse_duration(&spike.every)
+        .map_err(|e| prepend_context("invalid cardinality_spikes.every", &spike.every, e))?;
+    let for_dur = parse_duration(&spike.r#for)
+        .map_err(|e| prepend_context("invalid cardinality_spikes.for", &spike.r#for, e))?;
+
+    if for_dur >= every {
+        return Err(SondaError::Config(format!(
+            "cardinality_spikes.for ({:?}) must be less than cardinality_spikes.every ({:?})",
+            spike.r#for, spike.every
+        )));
+    }
+
+    if spike.cardinality == 0 {
+        return Err(SondaError::Config(
+            "cardinality_spikes.cardinality must be greater than zero".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Validate a [`ScenarioConfig`] for semantic correctness.
 ///
 /// Checks:
@@ -140,6 +178,13 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Burst consistency: multiplier > 0, burst.for < burst.every.
     if let Some(ref burst) = config.bursts {
         validate_burst_config(burst)?;
+    }
+
+    // Cardinality spike consistency: valid label key, parseable durations, for < every, cardinality > 0.
+    if let Some(ref spikes) = config.cardinality_spikes {
+        for spike in spikes {
+            validate_cardinality_spike_config(spike)?;
+        }
     }
 
     // Metric name must be a valid Prometheus metric name.
@@ -227,6 +272,13 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
 
     if let Some(ref burst) = config.bursts {
         validate_burst_config(burst)?;
+    }
+
+    // Cardinality spike consistency: valid label key, parseable durations, for < every, cardinality > 0.
+    if let Some(ref spikes) = config.cardinality_spikes {
+        for spike in spikes {
+            validate_cardinality_spike_config(spike)?;
+        }
     }
 
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
@@ -1216,6 +1268,7 @@ generator:
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout,
@@ -1300,5 +1353,179 @@ generator:
             Err(e) => e.to_string(),
             Ok(()) => panic!("expected Err but got Ok"),
         }
+    }
+
+    // ---- validate_cardinality_spike_config: happy path -----------------------
+
+    #[test]
+    fn valid_spike_config_counter_returns_ok() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "2m".to_string(),
+            r#for: "30s".to_string(),
+            cardinality: 500,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_ok());
+    }
+
+    #[test]
+    fn valid_spike_config_random_returns_ok() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "error_msg".to_string(),
+            every: "5m".to_string(),
+            r#for: "1m".to_string(),
+            cardinality: 1000,
+            strategy: crate::config::SpikeStrategy::Random,
+            prefix: None,
+            seed: Some(42),
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_ok());
+    }
+
+    // ---- validate_cardinality_spike_config: error cases ----------------------
+
+    #[test]
+    fn spike_config_invalid_label_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "123-bad".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        let result = validate_cardinality_spike_config(&spike);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("123-bad"),
+            "error should mention bad label: {msg}"
+        );
+    }
+
+    #[test]
+    fn spike_config_empty_label_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_err());
+    }
+
+    #[test]
+    fn spike_config_unparseable_every_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "bad".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_err());
+    }
+
+    #[test]
+    fn spike_config_unparseable_for_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "1m".to_string(),
+            r#for: "bad".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_err());
+    }
+
+    #[test]
+    fn spike_config_for_not_less_than_every_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "1m".to_string(),
+            r#for: "2m".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_err());
+    }
+
+    #[test]
+    fn spike_config_for_equal_to_every_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "1m".to_string(),
+            r#for: "1m".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        assert!(validate_cardinality_spike_config(&spike).is_err());
+    }
+
+    #[test]
+    fn spike_config_zero_cardinality_returns_error() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 0,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        };
+        let result = validate_cardinality_spike_config(&spike);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("cardinality"),
+            "error should mention cardinality: {msg}"
+        );
+    }
+
+    // ---- validate_config with cardinality_spikes ----
+
+    #[test]
+    fn validate_config_with_valid_spike_returns_ok() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.cardinality_spikes = Some(vec![crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "2m".to_string(),
+            r#for: "30s".to_string(),
+            cardinality: 500,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        }]);
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_config_with_invalid_spike_returns_error() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.cardinality_spikes = Some(vec![crate::config::CardinalitySpikeConfig {
+            label: "123bad".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        }]);
+        assert!(validate_config(&config).is_err());
     }
 }

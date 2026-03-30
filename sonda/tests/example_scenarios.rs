@@ -320,6 +320,75 @@ fn simple_constant_yaml_factories_all_succeed() {
 }
 
 // ---------------------------------------------------------------------------
+// examples/cardinality-spike.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cardinality_spike_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/cardinality-spike.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml::from_str::<ScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("cardinality-spike.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn cardinality_spike_yaml_has_correct_metric_name() {
+    let path = workspace_file("examples/cardinality-spike.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+    assert_eq!(
+        config.name, "cardinality_spike_demo",
+        "metric name must match"
+    );
+}
+
+#[test]
+fn cardinality_spike_yaml_has_spike_config() {
+    let path = workspace_file("examples/cardinality-spike.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+    let spikes = config
+        .cardinality_spikes
+        .as_ref()
+        .expect("cardinality_spikes must be present");
+    assert_eq!(spikes.len(), 1, "must have exactly one spike entry");
+    assert_eq!(spikes[0].label, "pod_name");
+    assert_eq!(spikes[0].cardinality, 100);
+}
+
+#[test]
+fn cardinality_spike_yaml_passes_validate_config() {
+    let path = workspace_file("examples/cardinality-spike.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+    validate_config(&config)
+        .unwrap_or_else(|e| panic!("cardinality-spike.yaml failed validation: {e}"));
+}
+
+#[test]
+fn cardinality_spike_yaml_factories_all_succeed() {
+    let path = workspace_file("examples/cardinality-spike.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
+    let value = gen.value(0);
+    assert!(
+        value.is_finite(),
+        "generator.value(0) must be finite, got {value}"
+    );
+
+    let _enc = create_encoder(&config.encoder);
+    let _sink = create_sink(&config.sink)
+        .unwrap_or_else(|e| panic!("sink factory failed for cardinality-spike.yaml: {e}"));
+}
+
+// ---------------------------------------------------------------------------
 // Cross-file sanity: both examples produce valid configs that pass validation
 // ---------------------------------------------------------------------------
 
@@ -328,6 +397,7 @@ fn both_example_yamls_pass_full_round_trip() {
     for filename in &[
         "examples/basic-metrics.yaml",
         "examples/simple-constant.yaml",
+        "examples/cardinality-spike.yaml",
     ] {
         let path = workspace_file(filename);
         let contents = std::fs::read_to_string(&path)

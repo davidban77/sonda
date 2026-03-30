@@ -12,6 +12,8 @@ pub mod stats;
 
 use std::time::Duration;
 
+use crate::config::SpikeStrategy;
+
 /// Configuration for a gap window (intentional silent period).
 #[derive(Debug, Clone)]
 pub struct GapWindow {
@@ -115,6 +117,78 @@ pub fn is_in_gap(elapsed: Duration, gap: &GapWindow) -> bool {
     let cycle_pos = elapsed.as_secs_f64() % every_secs;
     // Gap occupies the end of each cycle: [every - duration, every).
     cycle_pos >= every_secs - duration_secs
+}
+
+/// Resolved configuration for a cardinality spike window.
+///
+/// Built from a [`CardinalitySpikeConfig`](crate::config::CardinalitySpikeConfig)
+/// at runner initialization time, after durations have been parsed.
+#[derive(Debug, Clone)]
+pub struct CardinalitySpikeWindow {
+    /// The label key to inject during the spike window.
+    pub label: String,
+    /// How often the spike recurs.
+    pub every: Duration,
+    /// How long each spike lasts. Must be less than `every`.
+    pub duration: Duration,
+    /// Number of unique label values generated during the spike.
+    pub cardinality: u64,
+    /// Strategy for generating unique label values.
+    pub strategy: SpikeStrategy,
+    /// Prefix for generated label values.
+    pub prefix: String,
+    /// RNG seed for the `Random` strategy.
+    pub seed: u64,
+}
+
+impl CardinalitySpikeWindow {
+    /// Generate a label value for the given tick.
+    ///
+    /// For the `Counter` strategy, returns `"{prefix}{tick % cardinality}"`.
+    /// For the `Random` strategy, computes an index as `tick % cardinality`,
+    /// then deterministically maps that index to a 16-char hex string via
+    /// `splitmix64(seed ^ index)`. This ensures exactly `cardinality` unique
+    /// values while keeping them hash-like rather than sequential.
+    pub fn label_value_for_tick(&self, tick: u64) -> String {
+        let index = tick % self.cardinality;
+        match self.strategy {
+            SpikeStrategy::Counter => {
+                format!("{}{}", self.prefix, index)
+            }
+            SpikeStrategy::Random => {
+                let mixed = splitmix64(self.seed ^ index);
+                format!("{}{:016x}", self.prefix, mixed)
+            }
+        }
+    }
+}
+
+/// SplitMix64 mixing function — deterministic hash of a u64 input.
+///
+/// Produces a well-distributed output from any input. Used by the `Random`
+/// spike strategy to generate deterministic label values.
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e3779b97f4a7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+/// Returns `true` if the scheduler should be in a cardinality spike at the
+/// given elapsed time.
+///
+/// Spike windows are periodic. The spike occupies the **start** of each cycle:
+/// from `0` to `duration` — matching the burst convention.
+///
+/// # Arguments
+///
+/// * `elapsed` — time since the scenario started.
+/// * `spike` — the spike window configuration.
+pub fn is_in_spike(elapsed: Duration, spike: &CardinalitySpikeWindow) -> bool {
+    let every_secs = spike.every.as_secs_f64();
+    let duration_secs = spike.duration.as_secs_f64();
+    let cycle_pos = elapsed.as_secs_f64() % every_secs;
+    cycle_pos < duration_secs
 }
 
 /// Returns how long until the current gap ends.
@@ -555,5 +629,236 @@ mod tests {
             diff < 0.001,
             "in second cycle at 10.5s expected ~1.5s remaining, got {remaining:?}"
         );
+    }
+
+    // ---- CardinalitySpikeWindow: helper and tests ----------------------------
+
+    /// Helper to build a CardinalitySpikeWindow for testing.
+    fn spike(every_secs: u64, duration_secs: u64, cardinality: u64) -> CardinalitySpikeWindow {
+        CardinalitySpikeWindow {
+            label: "pod_name".to_string(),
+            every: Duration::from_secs(every_secs),
+            duration: Duration::from_secs(duration_secs),
+            cardinality,
+            strategy: SpikeStrategy::Counter,
+            prefix: "pod-".to_string(),
+            seed: 0,
+        }
+    }
+
+    // ---- is_in_spike: mirroring is_in_burst patterns -------------------------
+
+    /// At elapsed=0s the spike occupies [0, duration) — should be active.
+    #[test]
+    fn is_in_spike_at_zero_is_true() {
+        let s = spike(10, 2, 100);
+        assert!(is_in_spike(Duration::ZERO, &s));
+    }
+
+    /// At 0.5s we are inside the 2s spike window.
+    #[test]
+    fn is_in_spike_at_0_5s_is_true() {
+        let s = spike(10, 2, 100);
+        assert!(is_in_spike(Duration::from_millis(500), &s));
+    }
+
+    /// At exactly 2.0s the spike window ends (spike occupies [0, 2)).
+    #[test]
+    fn is_in_spike_at_spike_end_boundary_is_false() {
+        let s = spike(10, 2, 100);
+        assert!(!is_in_spike(Duration::from_secs(2), &s));
+    }
+
+    /// At 5s we are mid-cycle, outside the spike window.
+    #[test]
+    fn is_in_spike_at_5s_is_false() {
+        let s = spike(10, 2, 100);
+        assert!(!is_in_spike(Duration::from_secs(5), &s));
+    }
+
+    /// At 10s we are at the start of cycle 2 — spike is active again.
+    #[test]
+    fn is_in_spike_at_10s_second_cycle_start_is_true() {
+        let s = spike(10, 2, 100);
+        assert!(is_in_spike(Duration::from_secs(10), &s));
+    }
+
+    /// At 12.5s we are 2.5s into cycle 2, past the spike window.
+    #[test]
+    fn is_in_spike_at_12_5s_second_cycle_is_false() {
+        let s = spike(10, 2, 100);
+        assert!(!is_in_spike(Duration::from_millis(12500), &s));
+    }
+
+    // ---- label_value_for_tick: counter strategy --------------------------------
+
+    /// Counter strategy produces prefix + (tick % cardinality).
+    #[test]
+    fn label_value_counter_at_tick_zero() {
+        let s = spike(10, 2, 100);
+        assert_eq!(s.label_value_for_tick(0), "pod-0");
+    }
+
+    /// Counter wraps around at cardinality boundary.
+    #[test]
+    fn label_value_counter_wraps_at_cardinality() {
+        let s = spike(10, 2, 3);
+        assert_eq!(s.label_value_for_tick(0), "pod-0");
+        assert_eq!(s.label_value_for_tick(1), "pod-1");
+        assert_eq!(s.label_value_for_tick(2), "pod-2");
+        assert_eq!(s.label_value_for_tick(3), "pod-0");
+        assert_eq!(s.label_value_for_tick(4), "pod-1");
+    }
+
+    /// Counter with cardinality=1 always produces the same value.
+    #[test]
+    fn label_value_counter_cardinality_one() {
+        let s = spike(10, 2, 1);
+        assert_eq!(s.label_value_for_tick(0), "pod-0");
+        assert_eq!(s.label_value_for_tick(999), "pod-0");
+    }
+
+    // ---- label_value_for_tick: random strategy ---------------------------------
+
+    /// Random strategy produces deterministic output for the same seed + tick,
+    /// with hardcoded expected values as regression anchors.
+    #[test]
+    fn label_value_random_is_deterministic() {
+        let s = CardinalitySpikeWindow {
+            label: "error_msg".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1000,
+            strategy: SpikeStrategy::Random,
+            prefix: "err-".to_string(),
+            seed: 42,
+        };
+        assert_eq!(
+            s.label_value_for_tick(0),
+            "err-bdd732262feb6e95",
+            "tick 0 must produce the known anchored value"
+        );
+        assert_eq!(
+            s.label_value_for_tick(1),
+            "err-ba69ec90eb4fef88",
+            "tick 1 must produce the known anchored value"
+        );
+        // Same tick always produces the same value.
+        assert_eq!(s.label_value_for_tick(0), s.label_value_for_tick(0));
+    }
+
+    /// Random strategy produces different values for different ticks.
+    #[test]
+    fn label_value_random_differs_across_ticks() {
+        let s = CardinalitySpikeWindow {
+            label: "error_msg".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1000,
+            strategy: SpikeStrategy::Random,
+            prefix: "".to_string(),
+            seed: 42,
+        };
+        let v0 = s.label_value_for_tick(0);
+        let v1 = s.label_value_for_tick(1);
+        assert_ne!(v0, v1, "different ticks should produce different values");
+    }
+
+    /// Random strategy output starts with the configured prefix.
+    #[test]
+    fn label_value_random_starts_with_prefix() {
+        let s = CardinalitySpikeWindow {
+            label: "error_msg".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1000,
+            strategy: SpikeStrategy::Random,
+            prefix: "err-".to_string(),
+            seed: 42,
+        };
+        assert!(s.label_value_for_tick(0).starts_with("err-"));
+    }
+
+    /// Random strategy respects cardinality: ticks beyond cardinality wrap around
+    /// and produce the same values as their modular equivalents.
+    #[test]
+    fn label_value_random_respects_cardinality() {
+        let s = CardinalitySpikeWindow {
+            label: "error_msg".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1000,
+            strategy: SpikeStrategy::Random,
+            prefix: "err-".to_string(),
+            seed: 42,
+        };
+        // tick 1000 wraps to index 0, same as tick 0.
+        assert_eq!(
+            s.label_value_for_tick(0),
+            s.label_value_for_tick(1000),
+            "tick 0 and tick 1000 must produce the same value (cardinality=1000)"
+        );
+        // tick 1001 wraps to index 1, same as tick 1.
+        assert_eq!(
+            s.label_value_for_tick(1),
+            s.label_value_for_tick(1001),
+            "tick 1 and tick 1001 must produce the same value (cardinality=1000)"
+        );
+    }
+
+    /// Random strategy with cardinality=1 always returns the same value.
+    #[test]
+    fn label_value_random_cardinality_one() {
+        let s = CardinalitySpikeWindow {
+            label: "x".to_string(),
+            every: Duration::from_secs(10),
+            duration: Duration::from_secs(2),
+            cardinality: 1,
+            strategy: SpikeStrategy::Random,
+            prefix: "v-".to_string(),
+            seed: 99,
+        };
+        assert_eq!(
+            s.label_value_for_tick(0),
+            s.label_value_for_tick(999),
+            "cardinality=1 must always return the same value"
+        );
+    }
+
+    // ---- CardinalitySpikeWindow: Clone and Debug contracts --------------------
+
+    #[test]
+    fn spike_window_is_cloneable() {
+        let s = spike(10, 2, 100);
+        let cloned = s.clone();
+        assert_eq!(cloned.label, "pod_name");
+        assert_eq!(cloned.every, Duration::from_secs(10));
+        assert_eq!(cloned.cardinality, 100);
+    }
+
+    #[test]
+    fn spike_window_is_debuggable() {
+        let s = spike(10, 2, 100);
+        let debug = format!("{s:?}");
+        assert!(debug.contains("CardinalitySpikeWindow"));
+    }
+
+    // ---- splitmix64: determinism anchor --------------------------------------
+
+    /// SplitMix64 produces known output for known input (regression anchor).
+    #[test]
+    fn splitmix64_produces_known_output() {
+        assert_eq!(
+            super::splitmix64(42),
+            0xbdd732262feb6e95,
+            "splitmix64(42) must return the known constant"
+        );
+        assert_eq!(
+            super::splitmix64(0),
+            0xe220a8397b1dcdaf,
+            "splitmix64(0) must return the known constant"
+        );
+        // Different inputs produce different outputs.
+        assert_ne!(super::splitmix64(0), super::splitmix64(1));
     }
 }
