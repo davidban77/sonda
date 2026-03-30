@@ -33,7 +33,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.1.3
+sonda 0.3.0
 ```
 
 ## Status output

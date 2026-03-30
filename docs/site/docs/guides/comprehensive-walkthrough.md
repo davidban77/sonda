@@ -1,7 +1,7 @@
 # Comprehensive Walkthrough
 
 A hands-on tour of every Sonda capability. Work through each section in order, or jump to the
-part you need. Every command and YAML snippet has been tested against Sonda v0.1.3.
+part you need. Every command and YAML snippet has been tested against Sonda v0.3.0.
 
 ---
 
@@ -30,7 +30,7 @@ cargo run -p sonda -- --version
 ```
 
 ```text title="Output"
-sonda 0.1.3
+sonda 0.3.0
 ```
 
 ### Start the observability stack
@@ -987,6 +987,8 @@ scenarios:
 
 ## Part 8: sonda-server REST API
 
+> For the complete reference, see [Server API](../deployment/sonda-server.md).
+
 The sonda-server provides an HTTP control plane for managing scenarios programmatically.
 
 ### Start the Server
@@ -1175,6 +1177,8 @@ curl -s http://localhost:8080/scenarios | python3 -m json.tool
 ---
 
 ## Part 9: Pushing to VictoriaMetrics
+
+> For Docker Compose stacks with VictoriaMetrics, see [Docker deployment](../deployment/docker.md#victoriametrics-stack).
 
 Three ways to get Sonda data into VictoriaMetrics.
 
@@ -1486,6 +1490,8 @@ For the server, `DELETE /scenarios/{id}` stops a specific scenario. Server shutd
 
 ## Part 13: Docker and Kubernetes Deployment
 
+> For the complete references, see [Docker](../deployment/docker.md) and [Kubernetes](../deployment/kubernetes.md).
+
 ### Docker Run (Single Metric)
 
 ```bash
@@ -1527,7 +1533,7 @@ The Helm chart deploys sonda-server to Kubernetes:
 
 ```bash
 helm install sonda helm/sonda \
-  --set image.tag=0.1.3 \
+  --set image.tag=0.3.0 \
   --set server.port=8080
 ```
 
@@ -1548,7 +1554,7 @@ spec:
     spec:
       containers:
         - name: sonda
-          image: ghcr.io/davidban77/sonda:0.1.3
+          image: ghcr.io/davidban77/sonda:0.3.0
           args: ["--port", "8080", "--bind", "0.0.0.0"]
           ports:
             - name: http
@@ -1581,6 +1587,8 @@ scenarios:
 ---
 
 ## Part 14: CI/CD Integration
+
+> For running Sonda in containers, see [Docker deployment](../deployment/docker.md).
 
 ### GitHub Actions Example
 

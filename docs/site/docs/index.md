@@ -27,7 +27,7 @@ micro-bursts, cardinality spikes, and shaped value sequences.
     Pin a specific version:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.1.3 sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.3.0 sh
     ```
 
 === "Cargo"
@@ -118,3 +118,10 @@ sonda metrics --scenario scenario.yaml
 | **Scheduling** | configurable rate, duration, gap windows, burst windows |
 | **Signals** | metrics, logs (template and replay modes) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
+
+## What next
+
+- [**Getting Started**](getting-started.md) -- install Sonda, generate your first metric and log
+- **Configuration** -- [scenario files](configuration/scenario-file.md), [generators](configuration/generators.md), [encoders](configuration/encoders.md), [sinks](configuration/sinks.md), [CLI reference](configuration/cli-reference.md)
+- **Deployment** -- [Docker](deployment/docker.md), [Kubernetes](deployment/kubernetes.md), [Server API](deployment/sonda-server.md)
+- **Guides** -- [alert testing](guides/alert-testing.md), [pipeline validation](guides/pipeline-validation.md), [example scenarios](guides/examples.md)
