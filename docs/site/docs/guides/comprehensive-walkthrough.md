@@ -275,25 +275,47 @@ sink:
   type: stdout
 ```
 
-The sample CSV contains a real incident pattern: baseline (~14%), spike to ~95%, recovery:
+The sample CSV contains a real incident pattern: baseline (~14%), spike to ~95%, recovery.
+Run it with the scenario's default `duration: 60s` to see the full cycle:
 
 ```bash
-sonda metrics --scenario examples/csv-replay-metrics.yaml --duration 10s
+sonda metrics --scenario examples/csv-replay-metrics.yaml
 ```
 
-```text title="Output"
+```text title="Output (truncated)"
 cpu_replay{instance="prod-server-42",job="node"} 12.3 1774298673121
 cpu_replay{instance="prod-server-42",job="node"} 14.1 1774298674126
 cpu_replay{instance="prod-server-42",job="node"} 13.8 1774298675123
 cpu_replay{instance="prod-server-42",job="node"} 15.2 1774298676123
-cpu_replay{instance="prod-server-42",job="node"} 14.7 1774298677123
-cpu_replay{instance="prod-server-42",job="node"} 13.5 1774298678124
-cpu_replay{instance="prod-server-42",job="node"} 14.9 1774298679123
-cpu_replay{instance="prod-server-42",job="node"} 15 1774298680126
-cpu_replay{instance="prod-server-42",job="node"} 16.1 1774298681122
-cpu_replay{instance="prod-server-42",job="node"} 18.4 1774298682122
-cpu_replay{instance="prod-server-42",job="node"} 24.7 1774298683126
+...
+cpu_replay{instance="prod-server-42",job="node"} 56.2 1774298685123
+cpu_replay{instance="prod-server-42",job="node"} 71.8 1774298686123
+cpu_replay{instance="prod-server-42",job="node"} 83.4 1774298687123
+cpu_replay{instance="prod-server-42",job="node"} 89.1 1774298688123
+cpu_replay{instance="prod-server-42",job="node"} 92.7 1774298689123
+cpu_replay{instance="prod-server-42",job="node"} 95.3 1774298690123
+...
+cpu_replay{instance="prod-server-42",job="node"} 15.8 1774298709123
+cpu_replay{instance="prod-server-42",job="node"} 14.6 1774298710123
+cpu_replay{instance="prod-server-42",job="node"} 13.9 1774298711123
+cpu_replay{instance="prod-server-42",job="node"} 14.2 1774298712123
 ```
+
+!!! tip "How CSV replay maps ticks to rows"
+
+    Each event tick reads the next CSV row in order. At `rate: 1` (one event per second), each
+    row takes one second to emit. At `rate: 10`, the same CSV replays 10x faster.
+
+    **Duration vs CSV size**: The sample file has 50 data rows. At `rate: 1`, you need at least
+    `duration: 50s` to emit every row once. The scenario uses `duration: 60s` with `repeat: true`,
+    so it wraps around and replays the first 10 rows again after the initial pass.
+
+    **Replay real incidents**: Export real data from VictoriaMetrics (`/api/v1/export`) or
+    Prometheus, save it as CSV, and replay it through your pipeline. This lets you validate
+    alerting rules, dashboard thresholds, or ingest capacity without waiting for a real incident.
+
+    **Tuning replay speed**: Increase `rate` to compress long incidents into short runs. A
+    1440-row CSV (one row per minute over 24 hours) at `rate: 100` replays in ~14 seconds.
 
 ---
 
