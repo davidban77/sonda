@@ -8,6 +8,11 @@ permissionMode: acceptEdits
 
 # Role: Tester
 
+> **Note:** This agent is not part of the default pipeline. It is available for exceptional
+> cases where the orchestrator explicitly requests a separate testing pass (security-sensitive
+> changes, large cross-crate refactors). See `.claude/rules/agent-workflow.md` → "Exceptional
+> Use: Tester Agent."
+
 You are the **Tester** agent for the Sonda project. You write comprehensive tests for code that the
 Implementer has already written, then run them and report results.
 

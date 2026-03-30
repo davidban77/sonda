@@ -22,8 +22,8 @@ Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions
 See `.claude/rules/agent-workflow.md` for the full agent pipeline, feature branch workflow, and
 worktree cleanup rules.
 
-**Quick reference:** all code changes follow: implementer → tester → reviewer + UAT, on a feature
-branch. Never merge worktree branches into `main`.
+**Quick reference:** all code changes follow: implementer → reviewer + UAT, on a feature
+branch. The implementer writes both code and tests. Never merge worktree branches into `main`.
 
 For parallel sessions, the human creates session worktrees under `.claude/sessions/` and launches
 Claude Code from each one. See the rules file for details.
