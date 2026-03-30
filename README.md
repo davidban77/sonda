@@ -88,6 +88,7 @@ labels:
   zone: eu1
 encoder:
   type: prometheus_text
+  precision: 2          # optional: limit metric values to 2 decimal places
 sink:
   type: stdout
 ```

@@ -90,7 +90,7 @@ fn read_http_body(stream: &mut TcpStream) -> Vec<u8> {
 
 #[test]
 fn prometheus_x_memory_produces_nonempty_output() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -106,7 +106,7 @@ fn prometheus_x_memory_produces_nonempty_output() {
 
 #[test]
 fn prometheus_x_memory_output_contains_metric_name() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -122,7 +122,7 @@ fn prometheus_x_memory_output_contains_metric_name() {
 
 #[test]
 fn prometheus_x_memory_output_ends_with_newline() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -138,7 +138,7 @@ fn prometheus_x_memory_output_ends_with_newline() {
 
 #[test]
 fn prometheus_x_memory_no_labels_omits_braces() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event_no_labels();
     let bytes = encode_event(&config, &event);
 
@@ -156,7 +156,10 @@ fn prometheus_x_memory_no_labels_omits_braces() {
 
 #[test]
 fn influx_x_memory_produces_nonempty_output() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -172,7 +175,10 @@ fn influx_x_memory_produces_nonempty_output() {
 
 #[test]
 fn influx_x_memory_output_contains_measurement_name() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -188,7 +194,10 @@ fn influx_x_memory_output_contains_measurement_name() {
 
 #[test]
 fn influx_x_memory_output_has_nanosecond_timestamp() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -209,6 +218,7 @@ fn influx_x_memory_output_has_nanosecond_timestamp() {
 fn influx_x_memory_custom_field_key_appears_in_output() {
     let config = EncoderConfig::InfluxLineProtocol {
         field_key: Some("requests".to_string()),
+        precision: None,
     };
     let event = test_event();
     let bytes = encode_event(&config, &event);
@@ -227,7 +237,7 @@ fn influx_x_memory_custom_field_key_appears_in_output() {
 
 #[test]
 fn json_x_memory_produces_nonempty_output() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -243,7 +253,7 @@ fn json_x_memory_produces_nonempty_output() {
 
 #[test]
 fn json_x_memory_output_is_valid_json() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -260,7 +270,7 @@ fn json_x_memory_output_is_valid_json() {
 
 #[test]
 fn json_x_memory_output_contains_all_expected_fields() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -296,7 +306,7 @@ fn prometheus_x_file_write_and_read_back_matches() {
     let _ = std::fs::remove_file(&path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -316,7 +326,10 @@ fn influx_x_file_write_and_read_back_matches() {
     let _ = std::fs::remove_file(&path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -336,7 +349,7 @@ fn json_x_file_write_and_read_back_matches() {
     let _ = std::fs::remove_file(&path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -367,7 +380,7 @@ fn tcp_matrix_server() -> (TcpListener, String) {
 fn prometheus_x_tcp_data_arrives_at_listener() {
     let (listener, addr) = tcp_matrix_server();
 
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -392,7 +405,10 @@ fn prometheus_x_tcp_data_arrives_at_listener() {
 fn influx_x_tcp_data_arrives_at_listener() {
     let (listener, addr) = tcp_matrix_server();
 
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -417,7 +433,7 @@ fn influx_x_tcp_data_arrives_at_listener() {
 fn json_x_tcp_data_arrives_at_listener() {
     let (listener, addr) = tcp_matrix_server();
 
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -457,7 +473,7 @@ fn udp_matrix_receiver() -> (UdpSocket, String) {
 fn prometheus_x_udp_datagram_arrives_at_receiver() {
     let (receiver, addr) = udp_matrix_receiver();
 
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -473,7 +489,10 @@ fn prometheus_x_udp_datagram_arrives_at_receiver() {
 fn influx_x_udp_datagram_arrives_at_receiver() {
     let (receiver, addr) = udp_matrix_receiver();
 
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -489,7 +508,7 @@ fn influx_x_udp_datagram_arrives_at_receiver() {
 fn json_x_udp_datagram_arrives_at_receiver() {
     let (receiver, addr) = udp_matrix_receiver();
 
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -520,7 +539,7 @@ fn http_matrix_server() -> (TcpListener, String) {
 fn prometheus_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
 
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -545,7 +564,10 @@ fn prometheus_x_http_push_body_matches_encoded_bytes() {
 fn influx_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
 
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -566,7 +588,7 @@ fn influx_x_http_push_body_matches_encoded_bytes() {
 fn json_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
 
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
     let expected = bytes.clone();
@@ -599,7 +621,7 @@ fn json_x_http_push_body_matches_encoded_bytes() {
 
 #[test]
 fn prometheus_x_stdout_write_and_flush_succeed() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -610,7 +632,10 @@ fn prometheus_x_stdout_write_and_flush_succeed() {
 
 #[test]
 fn influx_x_stdout_write_and_flush_succeed() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -621,7 +646,7 @@ fn influx_x_stdout_write_and_flush_succeed() {
 
 #[test]
 fn json_x_stdout_write_and_flush_succeed() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let event = test_event();
     let bytes = encode_event(&config, &event);
 
@@ -655,7 +680,7 @@ mod kafka_matrix {
 
     #[test]
     fn prometheus_x_kafka_encoded_bytes_are_nonempty() {
-        let config = EncoderConfig::PrometheusText;
+        let config = EncoderConfig::PrometheusText { precision: None };
         let event = test_event();
         let bytes = encode_event(&config, &event);
         assert!(
@@ -666,7 +691,10 @@ mod kafka_matrix {
 
     #[test]
     fn influx_x_kafka_encoded_bytes_are_nonempty() {
-        let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: None,
+        };
         let event = test_event();
         let bytes = encode_event(&config, &event);
         assert!(
@@ -677,7 +705,7 @@ mod kafka_matrix {
 
     #[test]
     fn json_x_kafka_encoded_bytes_are_nonempty() {
-        let config = EncoderConfig::JsonLines;
+        let config = EncoderConfig::JsonLines { precision: None };
         let event = test_event();
         let bytes = encode_event(&config, &event);
         assert!(
@@ -707,7 +735,7 @@ mod kafka_matrix {
 
 #[test]
 fn prometheus_multi_event_pipeline_accumulates_correct_lines() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let encoder = create_encoder(&config);
     let mut sink = MemorySink::new();
 
@@ -735,7 +763,10 @@ fn prometheus_multi_event_pipeline_accumulates_correct_lines() {
 
 #[test]
 fn influx_multi_event_pipeline_accumulates_correct_lines() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let encoder = create_encoder(&config);
     let mut sink = MemorySink::new();
 
@@ -763,7 +794,7 @@ fn influx_multi_event_pipeline_accumulates_correct_lines() {
 
 #[test]
 fn json_multi_event_pipeline_accumulates_correct_lines() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let encoder = create_encoder(&config);
     let mut sink = MemorySink::new();
 
@@ -819,7 +850,7 @@ fn base_yaml(encoder_block: &str, sink_block: &str) -> String {
 #[test]
 fn yaml_prometheus_x_stdout_deserializes() {
     let scenario = parse_scenario(&base_yaml("  type: prometheus_text", "  type: stdout"));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::Stdout));
 }
 
@@ -829,7 +860,7 @@ fn yaml_prometheus_x_file_deserializes() {
         "  type: prometheus_text",
         "  type: file\n  path: /tmp/prom-file.txt",
     ));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::File { .. }));
 }
 
@@ -839,7 +870,7 @@ fn yaml_prometheus_x_tcp_deserializes() {
         "  type: prometheus_text",
         "  type: tcp\n  address: \"127.0.0.1:9001\"",
     ));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::Tcp { .. }));
 }
 
@@ -849,7 +880,7 @@ fn yaml_prometheus_x_udp_deserializes() {
         "  type: prometheus_text",
         "  type: udp\n  address: \"127.0.0.1:9001\"",
     ));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::Udp { .. }));
 }
 
@@ -859,7 +890,7 @@ fn yaml_prometheus_x_http_push_deserializes() {
         "  type: prometheus_text",
         "  type: http_push\n  url: \"http://localhost:9090/push\"",
     ));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::HttpPush { .. }));
 }
 
@@ -870,7 +901,7 @@ fn yaml_prometheus_x_kafka_deserializes() {
         "  type: prometheus_text",
         "  type: kafka\n  brokers: \"127.0.0.1:9092\"\n  topic: sonda-test",
     ));
-    assert!(matches!(scenario.encoder, EC::PrometheusText));
+    assert!(matches!(scenario.encoder, EC::PrometheusText { .. }));
     assert!(matches!(scenario.sink, SC::Kafka { .. }));
 }
 
@@ -939,7 +970,7 @@ fn yaml_influx_x_kafka_deserializes() {
 #[test]
 fn yaml_json_x_stdout_deserializes() {
     let scenario = parse_scenario(&base_yaml("  type: json_lines", "  type: stdout"));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::Stdout));
 }
 
@@ -949,7 +980,7 @@ fn yaml_json_x_file_deserializes() {
         "  type: json_lines",
         "  type: file\n  path: /tmp/json-file.txt",
     ));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::File { .. }));
 }
 
@@ -959,7 +990,7 @@ fn yaml_json_x_tcp_deserializes() {
         "  type: json_lines",
         "  type: tcp\n  address: \"127.0.0.1:9003\"",
     ));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::Tcp { .. }));
 }
 
@@ -969,7 +1000,7 @@ fn yaml_json_x_udp_deserializes() {
         "  type: json_lines",
         "  type: udp\n  address: \"127.0.0.1:9003\"",
     ));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::Udp { .. }));
 }
 
@@ -979,7 +1010,7 @@ fn yaml_json_x_http_push_deserializes() {
         "  type: json_lines",
         "  type: http_push\n  url: \"http://localhost:9200/_bulk\"",
     ));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::HttpPush { .. }));
 }
 
@@ -990,7 +1021,7 @@ fn yaml_json_x_kafka_deserializes() {
         "  type: json_lines",
         "  type: kafka\n  brokers: \"127.0.0.1:9092\"\n  topic: sonda-json",
     ));
-    assert!(matches!(scenario.encoder, EC::JsonLines));
+    assert!(matches!(scenario.encoder, EC::JsonLines { .. }));
     assert!(matches!(scenario.sink, SC::Kafka { .. }));
 }
 
@@ -1020,24 +1051,28 @@ fn assert_encoder_produces_output(config: &EncoderConfig) {
 
 #[test]
 fn factory_prometheus_text_produces_output() {
-    assert_encoder_produces_output(&EncoderConfig::PrometheusText);
+    assert_encoder_produces_output(&EncoderConfig::PrometheusText { precision: None });
 }
 
 #[test]
 fn factory_influx_lp_default_field_key_produces_output() {
-    assert_encoder_produces_output(&EncoderConfig::InfluxLineProtocol { field_key: None });
+    assert_encoder_produces_output(&EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    });
 }
 
 #[test]
 fn factory_influx_lp_custom_field_key_produces_output() {
     assert_encoder_produces_output(&EncoderConfig::InfluxLineProtocol {
         field_key: Some("count".to_string()),
+        precision: None,
     });
 }
 
 #[test]
 fn factory_json_lines_produces_output() {
-    assert_encoder_produces_output(&EncoderConfig::JsonLines);
+    assert_encoder_produces_output(&EncoderConfig::JsonLines { precision: None });
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,7 +1085,7 @@ fn factory_json_lines_produces_output() {
 
 #[test]
 fn regression_prometheus_x_memory_exact_bytes() {
-    let config = EncoderConfig::PrometheusText;
+    let config = EncoderConfig::PrometheusText { precision: None };
     let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
     let labels = Labels::from_pairs(&[("host", "srv1")]).unwrap();
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
@@ -1069,7 +1104,10 @@ fn regression_prometheus_x_memory_exact_bytes() {
 
 #[test]
 fn regression_influx_x_memory_exact_bytes() {
-    let config = EncoderConfig::InfluxLineProtocol { field_key: None };
+    let config = EncoderConfig::InfluxLineProtocol {
+        field_key: None,
+        precision: None,
+    };
     let ts = UNIX_EPOCH + Duration::from_nanos(1_700_000_000_000_000_000);
     let labels = Labels::from_pairs(&[("host", "srv1")]).unwrap();
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
@@ -1088,7 +1126,7 @@ fn regression_influx_x_memory_exact_bytes() {
 
 #[test]
 fn regression_json_x_memory_exact_bytes() {
-    let config = EncoderConfig::JsonLines;
+    let config = EncoderConfig::JsonLines { precision: None };
     let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
     let labels = Labels::from_pairs(&[("host", "srv1")]).unwrap();
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();

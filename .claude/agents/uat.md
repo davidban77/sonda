@@ -58,7 +58,24 @@ You are running user acceptance testing for **Slice $ARGUMENTS**.
    - Ctrl+C → flushes and exits cleanly?
    - Pipe to `wc -l` → line count matches expected?
 
-8. **Report**:
+8. **Validate developer/user experience completeness**:
+
+   UX gaps are **BLOCKERs**. The UAT agent's top goal is ensuring the best possible
+   developer and user experience. Specific checks:
+
+   - **YAML/CLI parity**: if a feature is configurable via YAML, verify it also works via
+     CLI flags. If the CLI has no way to set a new option, that is a BLOCKER. Test both
+     paths and confirm they produce identical behavior.
+   - **Example coverage**: every user-facing feature must have at least one runnable example
+     in `examples/`. If no example exists, that is a BLOCKER.
+   - **Docs coverage**: check that MkDocs site pages and README mention the new feature. If
+     a user cannot discover the feature from docs, that is a BLOCKER.
+   - **Error message quality**: invalid values for new options must produce clear, actionable
+     error messages that name the field and valid range. Generic or confusing errors are a
+     BLOCKER.
+   - **Discoverability**: new options should appear in `--help` output. Verify.
+
+9. **Report**:
 
 ```
 ## UAT: Slice $ARGUMENTS

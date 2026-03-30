@@ -567,7 +567,7 @@ pub async fn get_scenario_metrics(
     };
 
     // Encode each event into Prometheus text format.
-    let encoder = PrometheusText::new();
+    let encoder = PrometheusText::new(None);
     let mut buf = Vec::with_capacity(events_to_encode.len() * 128);
     for event in events_to_encode {
         if let Err(e) = encoder.encode_metric(event, &mut buf) {

@@ -306,7 +306,7 @@ mod tests {
             gaps,
             bursts: None,
             labels: None,
-            encoder: EncoderConfig::PrometheusText,
+            encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
             phase_offset: None,
             clock_group: None,
@@ -464,7 +464,7 @@ mod tests {
             gaps,
             bursts,
             labels: None,
-            encoder: crate::encoder::EncoderConfig::PrometheusText,
+            encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
             sink: crate::sink::SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,

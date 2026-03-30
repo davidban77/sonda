@@ -406,7 +406,7 @@ sink:
         assert_eq!(config.name, "test_metric");
         assert!(matches!(
             config.encoder,
-            crate::encoder::EncoderConfig::PrometheusText
+            crate::encoder::EncoderConfig::PrometheusText { .. }
         ));
         assert!(
             matches!(config.sink, SinkConfig::Tcp { ref address } if address == "127.0.0.1:4321")
@@ -432,7 +432,7 @@ sink:
         let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.encoder,
-            crate::encoder::EncoderConfig::JsonLines
+            crate::encoder::EncoderConfig::JsonLines { .. }
         ));
         assert!(
             matches!(config.sink, SinkConfig::File { ref path } if path == "/tmp/sonda-file-json-test.txt")
@@ -459,7 +459,7 @@ sink:
         let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(
             config.encoder,
-            crate::encoder::EncoderConfig::InfluxLineProtocol { field_key: Some(ref k) } if k == "bytes"
+            crate::encoder::EncoderConfig::InfluxLineProtocol { field_key: Some(ref k), .. } if k == "bytes"
         ));
         assert!(
             matches!(config.sink, SinkConfig::Udp { ref address } if address == "127.0.0.1:5555")

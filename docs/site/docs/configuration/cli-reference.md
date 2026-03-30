@@ -132,6 +132,7 @@ sonda metrics [OPTIONS]
 |------|------|---------|-------------|
 | `--label <KEY=VALUE>` | string | none | Static label (repeatable). |
 | `--encoder <FORMAT>` | string | `prometheus_text` | Output format: `prometheus_text`, `influx_lp`, `json_lines`. |
+| `--precision <INT>` | integer | full f64 | Decimal places for metric values (0--17). See [Encoders - Value precision](encoders.md#value-precision). |
 | `--output <FILE>` | path | stdout | Write to file instead of stdout. |
 
 ### Examples
@@ -155,6 +156,20 @@ InfluxDB format to file:
 ```bash
 sonda metrics --name cpu --rate 10 --duration 10s \
   --encoder influx_lp --output /tmp/metrics.influx
+```
+
+Limit metric values to 2 decimal places:
+
+```bash
+sonda metrics --name cpu --rate 2 --duration 2s \
+  --value-mode sine --amplitude 50 --period-secs 10 --offset 50 \
+  --label host=web-01 --precision 2
+```
+
+Override precision on an existing YAML scenario:
+
+```bash
+sonda metrics --scenario examples/basic-metrics.yaml --precision 2 --duration 5s
 ```
 
 Scenario file with overrides:
@@ -200,6 +215,7 @@ sonda logs [OPTIONS]
 |------|------|---------|-------------|
 | `--label <KEY=VALUE>` | string | none | Static label (repeatable). |
 | `--encoder <FORMAT>` | string | `json_lines` | Output format: `json_lines`, `syslog`. |
+| `--precision <INT>` | integer | full f64 | Decimal places for numeric values (0--17). Only applies to `json_lines`. |
 | `--output <FILE>` | path | stdout | Write to file instead of stdout. |
 
 ### Gaps and bursts
