@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Audits code against architecture doc and quality standards. Use after both implementer and tester have completed a slice. Read-only — reports findings, does not modify code.
+description: Audits code and tests against architecture doc and quality standards. Use after the implementer has completed a slice. Read-only — reports findings, does not modify code.
 tools: Read, Glob, Grep, Bash
 model: opus
 permissionMode: plan
@@ -51,8 +51,13 @@ You are reviewing **Slice $ARGUMENTS**. Audit all code and tests for this slice.
 
 ### Test Quality
 - [ ] Every public function has at least one test.
-- [ ] Edge cases covered. Error paths tested.
-- [ ] Encoder tests include hardcoded regression anchors.
+- [ ] Edge cases covered: zero values, empty inputs, boundary conditions.
+- [ ] Error paths tested: every `Err` variant returned by public functions has a test.
+- [ ] Encoder tests include hardcoded regression anchors (exact expected byte strings).
+- [ ] Deterministic: no test depends on timing, network, or unseeded randomness.
+- [ ] Test names are descriptive (`sine_at_tick_zero_returns_offset`, not `test1`).
+- [ ] Integration tests in `tests/` cover cross-module or cross-crate scenarios where applicable.
+- [ ] No mocking frameworks used — hand-written mocks only (e.g., `MemorySink`).
 
 ### Consistency
 - [ ] New code follows same patterns as existing code.
