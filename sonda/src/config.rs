@@ -136,12 +136,10 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     // here means the flag was omitted and the YAML value should be kept as-is.
     if let Some(ref enc) = args.encoder {
         config.encoder = parse_encoder_config(enc, args.precision)?;
-    }
-
-    // Precision: override independently of --encoder. This lets users set
-    // precision on top of a YAML-specified encoder without having to re-specify
-    // the encoder type.
-    if let Some(p) = args.precision {
+    } else if let Some(p) = args.precision {
+        // Precision without --encoder: update the existing encoder's precision.
+        // This lets users set precision on top of a YAML-specified encoder
+        // without having to re-specify the encoder type.
         match &mut config.encoder {
             EncoderConfig::PrometheusText {
                 ref mut precision, ..
@@ -401,12 +399,8 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
     // Encoder: override when the user explicitly passes --encoder.
     if let Some(ref enc) = args.encoder {
         config.encoder = parse_log_encoder_config(enc, args.precision)?;
-    }
-
-    // Precision: override independently of --encoder. This lets users set
-    // precision on top of a YAML-specified encoder without having to re-specify
-    // the encoder type.
-    if let Some(p) = args.precision {
+    } else if let Some(p) = args.precision {
+        // Precision without --encoder: update the existing encoder's precision.
         match &mut config.encoder {
             EncoderConfig::PrometheusText {
                 ref mut precision, ..

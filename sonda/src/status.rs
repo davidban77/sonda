@@ -125,14 +125,20 @@ fn sink_display(sink: &SinkConfig) -> String {
 }
 
 /// Format an encoder config as a human-readable display string.
-fn encoder_display(encoder: &EncoderConfig) -> &'static str {
-    match encoder {
-        EncoderConfig::PrometheusText { .. } => "prometheus_text",
-        EncoderConfig::InfluxLineProtocol { .. } => "influx_lp",
-        EncoderConfig::JsonLines { .. } => "json_lines",
-        EncoderConfig::Syslog { .. } => "syslog",
+///
+/// Includes the precision suffix when set (e.g. `"prometheus_text (precision: 2)"`).
+fn encoder_display(encoder: &EncoderConfig) -> String {
+    let (name, precision) = match encoder {
+        EncoderConfig::PrometheusText { precision } => ("prometheus_text", *precision),
+        EncoderConfig::InfluxLineProtocol { precision, .. } => ("influx_lp", *precision),
+        EncoderConfig::JsonLines { precision } => ("json_lines", *precision),
+        EncoderConfig::Syslog { .. } => ("syslog", None),
         #[cfg(feature = "remote-write")]
-        EncoderConfig::RemoteWrite => "remote_write",
+        EncoderConfig::RemoteWrite => ("remote_write", None),
+    };
+    match precision {
+        Some(p) => format!("{name} (precision: {p})"),
+        None => name.to_string(),
     }
 }
 
@@ -346,6 +352,14 @@ mod tests {
     }
 
     #[test]
+    fn encoder_display_prometheus_text_with_precision() {
+        assert_eq!(
+            encoder_display(&EncoderConfig::PrometheusText { precision: Some(2) }),
+            "prometheus_text (precision: 2)"
+        );
+    }
+
+    #[test]
     fn encoder_display_influx_lp_without_field_key() {
         let config = EncoderConfig::InfluxLineProtocol {
             field_key: None,
@@ -364,10 +378,27 @@ mod tests {
     }
 
     #[test]
+    fn encoder_display_influx_lp_with_precision() {
+        let config = EncoderConfig::InfluxLineProtocol {
+            field_key: None,
+            precision: Some(4),
+        };
+        assert_eq!(encoder_display(&config), "influx_lp (precision: 4)");
+    }
+
+    #[test]
     fn encoder_display_json_lines() {
         assert_eq!(
             encoder_display(&EncoderConfig::JsonLines { precision: None }),
             "json_lines"
+        );
+    }
+
+    #[test]
+    fn encoder_display_json_lines_with_precision() {
+        assert_eq!(
+            encoder_display(&EncoderConfig::JsonLines { precision: Some(3) }),
+            "json_lines (precision: 3)"
         );
     }
 

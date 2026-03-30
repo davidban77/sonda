@@ -230,11 +230,11 @@ pub struct LogsArgs {
     #[arg(long)]
     pub encoder: Option<String>,
 
-    /// Decimal precision for metric values (0--17).
+    /// Decimal precision for numeric values in log fields (0--17).
     ///
-    /// Limits the number of decimal places in formatted metric values.
-    /// When absent, full f64 precision is used. Applies to text-based
-    /// encoders (`json_lines`).
+    /// Limits the number of decimal places when the encoder formats
+    /// numeric values. When absent, full f64 precision is used.
+    /// Only applies to `json_lines`; ignored for `syslog`.
     #[arg(long)]
     pub precision: Option<u8>,
 
