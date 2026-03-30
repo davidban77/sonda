@@ -432,6 +432,94 @@ generator:
     }
 
     // -----------------------------------------------------------------------
+    // LogScenarioConfig: labels deserialization
+    // -----------------------------------------------------------------------
+
+    /// YAML with labels section deserializes into Some(HashMap).
+    #[test]
+    fn log_scenario_config_labels_deserialize_from_yaml() {
+        let yaml = r#"
+name: labeled_logs
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+labels:
+  device: wlan0
+  hostname: router-01
+"#;
+        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let labels = config.labels.as_ref().expect("labels must be Some");
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router-01")
+        );
+        assert_eq!(labels.len(), 2);
+    }
+
+    /// YAML without labels field deserializes with labels: None.
+    #[test]
+    fn log_scenario_config_labels_default_to_none() {
+        let yaml = r#"
+name: no_labels_logs
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+"#;
+        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            config.labels.is_none(),
+            "labels must default to None when not in YAML"
+        );
+    }
+
+    /// YAML with empty labels section deserializes as Some(empty HashMap).
+    #[test]
+    fn log_scenario_config_empty_labels_deserializes_as_some_empty_map() {
+        let yaml = r#"
+name: empty_labels
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+labels: {}
+"#;
+        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let labels = config
+            .labels
+            .as_ref()
+            .expect("labels must be Some for explicit empty map");
+        assert!(labels.is_empty(), "labels must be an empty map");
+    }
+
+    /// ScenarioConfig (metrics) also supports labels deserialization.
+    #[test]
+    fn scenario_config_labels_deserialize_from_yaml() {
+        let yaml = r#"
+name: metric_with_labels
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+labels:
+  zone: eu1
+  env: production
+"#;
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let labels = config.labels.as_ref().expect("labels must be Some");
+        assert_eq!(labels.get("zone").map(String::as_str), Some("eu1"));
+        assert_eq!(labels.get("env").map(String::as_str), Some("production"));
+    }
+
+    // -----------------------------------------------------------------------
     // Both phase_offset and clock_group together
     // -----------------------------------------------------------------------
 

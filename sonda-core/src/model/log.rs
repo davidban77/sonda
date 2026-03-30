@@ -399,4 +399,73 @@ mod tests {
         assert_eq!(original.message, "msg");
         assert_eq!(original.fields.get("k").map(String::as_str), Some("v"));
     }
+
+    // -----------------------------------------------------------------------
+    // LogEvent: labels field — stores scenario-level static labels
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_stores_labels_correctly() {
+        let labels = Labels::from_pairs(&[("device", "wlan0"), ("hostname", "router-01")]).unwrap();
+        let event = LogEvent::new(Severity::Info, "test".to_string(), labels, BTreeMap::new());
+
+        assert_eq!(event.labels.len(), 2);
+        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0.as_str(), "device");
+        assert_eq!(label_pairs[0].1.as_str(), "wlan0");
+        assert_eq!(label_pairs[1].0.as_str(), "hostname");
+        assert_eq!(label_pairs[1].1.as_str(), "router-01");
+    }
+
+    #[test]
+    fn with_timestamp_stores_labels_correctly() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let labels = Labels::from_pairs(&[("env", "staging"), ("region", "us_west")]).unwrap();
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Warn,
+            "warning event".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        assert_eq!(event.labels.len(), 2);
+        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0.as_str(), "env");
+        assert_eq!(label_pairs[0].1.as_str(), "staging");
+        assert_eq!(label_pairs[1].0.as_str(), "region");
+        assert_eq!(label_pairs[1].1.as_str(), "us_west");
+    }
+
+    #[test]
+    fn log_event_clone_preserves_labels() {
+        let ts = UNIX_EPOCH + Duration::from_secs(1000);
+        let labels = Labels::from_pairs(&[("service", "api"), ("zone", "eu1")]).unwrap();
+        let original = LogEvent::with_timestamp(
+            ts,
+            Severity::Error,
+            "cloned".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        let cloned = original.clone();
+
+        assert_eq!(cloned.labels.len(), 2);
+        let original_pairs: Vec<(&String, &String)> = original.labels.iter().collect();
+        let cloned_pairs: Vec<(&String, &String)> = cloned.labels.iter().collect();
+        assert_eq!(original_pairs, cloned_pairs);
+    }
+
+    #[test]
+    fn new_with_empty_labels_has_no_labels() {
+        let event = LogEvent::new(
+            Severity::Info,
+            "no labels".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        assert!(event.labels.is_empty());
+        assert_eq!(event.labels.len(), 0);
+    }
 }

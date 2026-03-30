@@ -1569,6 +1569,113 @@ mod tests {
         );
     }
 
+    // ---- CLI --label flags for logs -----------------------------------------
+
+    #[test]
+    fn load_log_config_from_flags_includes_labels() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            duration: Some("1s".to_string()),
+            labels: vec![
+                ("device".to_string(), "wlan0".to_string()),
+                ("hostname".to_string(), "router_01".to_string()),
+            ],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("config with labels must build");
+        let labels = config.labels.as_ref().expect("labels must be Some");
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router_01")
+        );
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn load_log_config_from_flags_no_labels_produces_none() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(10.0),
+            labels: vec![],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("config without labels must build");
+        assert!(
+            config.labels.is_none(),
+            "labels must be None when no --label flags are provided"
+        );
+    }
+
+    #[test]
+    fn load_log_config_yaml_with_labels_deserializes() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("YAML with labels must load");
+        assert_eq!(config.name, "test_log_template_labels");
+        let labels = config
+            .labels
+            .as_ref()
+            .expect("labels must be present from YAML");
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router-01")
+        );
+    }
+
+    #[test]
+    fn load_log_config_cli_labels_merge_onto_yaml_labels() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        // YAML has device and hostname; CLI adds a new label.
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            labels: vec![("env".to_string(), "prod".to_string())],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("label merge must succeed");
+        let labels = config.labels.as_ref().expect("labels must exist");
+        // Original YAML labels must be preserved
+        assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
+        assert_eq!(
+            labels.get("hostname").map(String::as_str),
+            Some("router-01")
+        );
+        // CLI label must be added
+        assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
+        assert_eq!(labels.len(), 3);
+    }
+
+    #[test]
+    fn load_log_config_cli_label_overrides_same_key_in_yaml() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/log-template-with-labels.yaml");
+        // Override the "device" label from YAML
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            labels: vec![("device".to_string(), "eth0".to_string())],
+            ..default_logs_args()
+        };
+
+        let config = load_log_config(&args).expect("label override must succeed");
+        let labels = config.labels.as_ref().expect("labels must exist");
+        assert_eq!(
+            labels.get("device").map(String::as_str),
+            Some("eth0"),
+            "CLI --label must override YAML label with same key"
+        );
+    }
+
     // ---- load_multi_config --------------------------------------------------
 
     fn default_run_args(path: PathBuf) -> crate::cli::RunArgs {

@@ -587,6 +587,190 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // encode_log: labels in structured data section
+    // -----------------------------------------------------------------------
+
+    /// Build a LogEvent with labels for testing structured data output.
+    fn make_log_event_with_labels(
+        severity: Severity,
+        message: &str,
+        labels: &[(&str, &str)],
+        fields: &[(&str, &str)],
+        ts: std::time::SystemTime,
+    ) -> LogEvent {
+        let mut field_map = BTreeMap::new();
+        for (k, v) in fields {
+            field_map.insert(k.to_string(), v.to_string());
+        }
+        let label_set = crate::model::metric::Labels::from_pairs(labels).unwrap();
+        LogEvent::with_timestamp(ts, severity, message.to_string(), label_set, field_map)
+    }
+
+    #[test]
+    fn encode_log_with_labels_includes_structured_data() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "labeled event",
+            &[("device", "wlan0")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("[sonda device=\"wlan0\"]"),
+            "syslog line must contain structured data [sonda device=\"wlan0\"]: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_multiple_labels_includes_all_in_structured_data() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "multi-label event",
+            &[("device", "wlan0"), ("hostname", "router_01")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // Labels are sorted by key (BTreeMap), so device comes before hostname
+        assert!(
+            line.contains("[sonda device=\"wlan0\" hostname=\"router_01\"]"),
+            "syslog line must contain sorted labels in structured data: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_without_labels_uses_nil_structured_data() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event(Severity::Info, "no labels", &[], ts);
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // Without labels, SD should be nil: "- - -" pattern (PROCID MSGID SD)
+        assert!(
+            line.contains("- - -"),
+            "syslog line without labels must use nil SD (- - -): {line}"
+        );
+        assert!(
+            !line.contains("[sonda"),
+            "syslog line without labels must not contain [sonda: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_labels_escapes_backslash_in_value() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "escape test",
+            &[("path", "C:\\Users\\admin")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // Backslashes in values must be escaped to \\ per RFC 5424 §6.3.3
+        assert!(
+            line.contains("path=\"C:\\\\Users\\\\admin\""),
+            "backslashes in label values must be escaped: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_labels_escapes_closing_bracket_in_value() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "bracket test",
+            &[("tag", "foo]bar")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // Closing brackets must be escaped to \] per RFC 5424 §6.3.3
+        assert!(
+            line.contains("tag=\"foo\\]bar\""),
+            "closing bracket in label value must be escaped: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_labels_escapes_double_quote_in_value() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "quote test",
+            &[("desc", "it said \"hello\"")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // Double quotes must be escaped to \" per RFC 5424 §6.3.3
+        assert!(
+            line.contains("desc=\"it said \\\"hello\\\"\""),
+            "double quotes in label value must be escaped: {line}"
+        );
+    }
+
+    #[test]
+    fn encode_log_with_labels_escapes_all_special_characters_combined() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "combined escape",
+            &[("mixed", "a\\b]c\"d")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::default();
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        // All three special chars must be escaped
+        assert!(
+            line.contains("mixed=\"a\\\\b\\]c\\\"d\""),
+            "all special characters must be escaped: {line}"
+        );
+    }
+
+    #[test]
+    fn regression_anchor_info_severity_with_labels_exact_output() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let event = make_log_event_with_labels(
+            Severity::Info,
+            "Request from 10.0.0.1",
+            &[("device", "wlan0"), ("hostname", "router_01")],
+            &[],
+            ts,
+        );
+        let encoder = Syslog::new(Some("sonda".to_string()), Some("sonda".to_string()));
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            output,
+            "<14>1 2026-03-20T12:00:00.000Z sonda sonda - - [sonda device=\"wlan0\" hostname=\"router_01\"] Request from 10.0.0.1\n"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Send + Sync contract
     // -----------------------------------------------------------------------
 
