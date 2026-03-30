@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0](https://github.com/davidban77/sonda/compare/v0.2.0...v0.3.0) (2026-03-30)
+
+
+### Features
+
+* add parallel session worktrees to agent workflow ([#48](https://github.com/davidban77/sonda/issues/48)) ([97c51af](https://github.com/davidban77/sonda/commit/97c51af343d6fbcc6bbd3ad5bc2a5cc6cf90659a))
+* add static labels support to log events ([#49](https://github.com/davidban77/sonda/issues/49)) ([9621c49](https://github.com/davidban77/sonda/commit/9621c49efbd7a46b85c0740fb681a20157c6e1c4))
+* **cli:** add colored status output with --quiet flag ([#46](https://github.com/davidban77/sonda/issues/46)) ([7e42f68](https://github.com/davidban77/sonda/commit/7e42f6833b892597fb3137aa7072eb59f099a23c))
+
+
+### Bug Fixes
+
+* make kafka an opt-in feature flag instead of always-on ([#44](https://github.com/davidban77/sonda/issues/44)) ([1bf3fe1](https://github.com/davidban77/sonda/commit/1bf3fe137aee499193618585a461d946a94ab95a))
+
+
+### Documentation
+
+* add comprehensive walkthrough and improvement recommendations ([#38](https://github.com/davidban77/sonda/issues/38)) ([72d718e](https://github.com/davidban77/sonda/commit/72d718efd86b83651551c87849b9b8d300a337a0))
+* add worktree cleanup rules to CLAUDE.md ([#39](https://github.com/davidban77/sonda/issues/39)) ([aa8a327](https://github.com/davidban77/sonda/commit/aa8a3272ad31fedf2e6807b160367674a30e4c4c))
+
+
+### Miscellaneous
+
+* add feature branch workflow for agent pipeline ([#47](https://github.com/davidban77/sonda/issues/47)) ([49b6462](https://github.com/davidban77/sonda/commit/49b6462b603fe8158b025b705b268acee3c8039c))
+
+
+### CI/CD
+
+* bump actions/setup-python from 5 to 6 ([#41](https://github.com/davidban77/sonda/issues/41)) ([62c628c](https://github.com/davidban77/sonda/commit/62c628c8d0a9ea138f557bc9201445150e14ef94))
+
 ## [0.2.0](https://github.com/davidban77/sonda/compare/v0.1.3...v0.2.0) (2026-03-23)
 
 
