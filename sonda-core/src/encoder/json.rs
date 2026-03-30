@@ -11,7 +11,7 @@
 //!
 //! Log output format:
 //! ```text
-//! {"timestamp":"2026-03-20T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.1","fields":{"ip":"10.0.0.1","endpoint":"/api"}}
+//! {"timestamp":"2026-03-20T12:00:00.000Z","severity":"info","message":"Request from 10.0.0.1","labels":{"device":"wlan0"},"fields":{"ip":"10.0.0.1","endpoint":"/api"}}
 //! ```
 //!
 //! Timestamp uses RFC 3339 / ISO 8601 format with millisecond precision. Formatted without
@@ -63,13 +63,14 @@ struct JsonMetric<'a> {
 
 /// Intermediate serde-serializable representation of a log event.
 ///
-/// Field order matches the spec: timestamp, severity, message, fields.
-/// Uses `BTreeMap` for fields so the JSON field order is consistent and deterministic.
+/// Field order matches the spec: timestamp, severity, message, labels, fields.
+/// Uses `BTreeMap` for labels and fields so the JSON field order is consistent and deterministic.
 #[derive(Serialize)]
 struct JsonLog<'a> {
     timestamp: String,
     severity: &'a str,
     message: &'a str,
+    labels: BTreeMap<&'a str, &'a str>,
     fields: BTreeMap<&'a str, &'a str>,
 }
 
@@ -120,6 +121,12 @@ impl Encoder for JsonLines {
             crate::model::log::Severity::Fatal => "fatal",
         };
 
+        let labels: BTreeMap<&str, &str> = event
+            .labels
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
         let fields: BTreeMap<&str, &str> = event
             .fields
             .iter()
@@ -130,6 +137,7 @@ impl Encoder for JsonLines {
             timestamp,
             severity: severity_str,
             message: &event.message,
+            labels,
             fields,
         };
 
@@ -556,7 +564,13 @@ mod tests {
         for (k, v) in fields {
             map.insert(k.to_string(), v.to_string());
         }
-        crate::model::log::LogEvent::with_timestamp(ts, severity, message.to_string(), map)
+        crate::model::log::LogEvent::with_timestamp(
+            ts,
+            severity,
+            message.to_string(),
+            crate::model::metric::Labels::default(),
+            map,
+        )
     }
 
     // --- encode_log: output is valid JSON ---
@@ -816,7 +830,7 @@ mod tests {
 
     #[test]
     fn encode_log_fields_appear_in_spec_order() {
-        // Spec: timestamp, severity, message, fields
+        // Spec: timestamp, severity, message, labels, fields
         use crate::model::log::Severity;
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "msg", &[("k", "v")], ts);
@@ -828,10 +842,12 @@ mod tests {
         let ts_pos = line.find("\"timestamp\"").unwrap();
         let sev_pos = line.find("\"severity\"").unwrap();
         let msg_pos = line.find("\"message\"").unwrap();
+        let labels_pos = line.find("\"labels\"").unwrap();
         let fields_pos = line.find("\"fields\"").unwrap();
         assert!(ts_pos < sev_pos, "timestamp must come before severity");
         assert!(sev_pos < msg_pos, "severity must come before message");
-        assert!(msg_pos < fields_pos, "message must come before fields");
+        assert!(msg_pos < labels_pos, "message must come before labels");
+        assert!(labels_pos < fields_pos, "labels must come before fields");
     }
 
     // --- encode_log: regression anchor — exact byte output ---
@@ -848,7 +864,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"fields\":{}}\n"
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"info\",\"message\":\"Request from 10.0.0.1\",\"labels\":{},\"fields\":{}}\n"
         );
     }
 
@@ -869,7 +885,7 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(
             output,
-            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"error\",\"message\":\"db timeout\",\"fields\":{\"endpoint\":\"/api\",\"ip\":\"10.0.0.1\"}}\n"
+            "{\"timestamp\":\"2026-03-20T12:00:00.000Z\",\"severity\":\"error\",\"message\":\"db timeout\",\"labels\":{},\"fields\":{\"endpoint\":\"/api\",\"ip\":\"10.0.0.1\"}}\n"
         );
     }
 

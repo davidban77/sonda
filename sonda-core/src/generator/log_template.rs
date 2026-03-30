@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::model::log::{LogEvent, Severity};
+use crate::model::metric::Labels;
 
 use super::LogGenerator;
 
@@ -149,14 +150,19 @@ impl LogGenerator for LogTemplateGenerator {
     /// severity are selected via deterministic hash of `(seed, tick, name)`.
     fn generate(&self, tick: u64) -> LogEvent {
         if self.templates.is_empty() {
-            return LogEvent::new(Severity::Info, String::new(), BTreeMap::new());
+            return LogEvent::new(
+                Severity::Info,
+                String::new(),
+                Labels::default(),
+                BTreeMap::new(),
+            );
         }
 
         let template = &self.templates[(tick as usize) % self.templates.len()];
         let severity = self.select_severity(tick);
         let (message, fields) = self.resolve_template(template, tick);
 
-        LogEvent::new(severity, message, fields)
+        LogEvent::new(severity, message, Labels::default(), fields)
     }
 }
 

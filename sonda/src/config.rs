@@ -293,6 +293,7 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
             generator,
             gaps: build_gap_config_for_logs(args)?,
             bursts: build_log_burst_config(args)?,
+            labels: build_log_labels(args),
             encoder: parse_log_encoder_config(args.encoder.as_deref().unwrap_or("json_lines"))?,
             sink: SinkConfig::Stdout,
             phase_offset: None,
@@ -370,7 +371,33 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
         config.encoder = parse_log_encoder_config(enc)?;
     }
 
+    // Labels: merge CLI --label flags into existing labels.
+    if !args.labels.is_empty() {
+        let mut label_map = config.labels.take().unwrap_or_default();
+        for (k, v) in &args.labels {
+            label_map.insert(k.clone(), v.clone());
+        }
+        config.labels = Some(label_map);
+    }
+
     Ok(())
+}
+
+/// Build a labels map from CLI `--label` flags for a log scenario.
+///
+/// Returns `None` if no labels were provided (so the config field stays `None`
+/// rather than `Some(empty_map)`), matching the metrics pattern.
+fn build_log_labels(args: &LogsArgs) -> Option<HashMap<String, String>> {
+    if args.labels.is_empty() {
+        None
+    } else {
+        Some(
+            args.labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
+    }
 }
 
 /// Parse a `--severity-weights` string (e.g. `"info=0.7,warn=0.2,error=0.1"`) into a

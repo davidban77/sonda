@@ -12,6 +12,7 @@ use crate::config::validate::parse_duration;
 use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
+use crate::model::metric::Labels;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
 use crate::sink::{create_sink, Sink};
@@ -108,6 +109,17 @@ pub fn run_logs_with_sink(
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;
     let encoder = create_encoder(&config.encoder);
+
+    // Build labels from config, mirroring the metrics runner pattern.
+    let labels: Labels = if let Some(ref label_map) = config.labels {
+        let pairs: Vec<(&str, &str)> = label_map
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        Labels::from_pairs(&pairs)?
+    } else {
+        Labels::default()
+    };
 
     // The base inter-event interval (at normal rate, no burst).
     let base_interval = Duration::from_secs_f64(1.0 / config.rate);
@@ -208,8 +220,9 @@ pub fn run_logs_with_sink(
                 thread::sleep(next_deadline - now);
             }
 
-            // Generate the log event.
-            let event = generator.generate(tick);
+            // Generate the log event and inject scenario-level labels.
+            let mut event = generator.generate(tick);
+            event.labels = labels.clone();
 
             // Encode and write.
             buf.clear();
@@ -289,6 +302,7 @@ mod tests {
             },
             gaps: None,
             bursts: None,
+            labels: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
             phase_offset: None,

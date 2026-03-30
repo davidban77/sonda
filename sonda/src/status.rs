@@ -416,6 +416,7 @@ mod tests {
             },
             gaps: None,
             bursts: None,
+            labels: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
             phase_offset: None,

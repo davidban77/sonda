@@ -8,16 +8,25 @@
 //! <priority>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [STRUCTURED-DATA] MSG
 //! ```
 //!
-//! Example output:
+//! Example output (no labels):
 //! ```text
 //! <14>1 2026-03-20T12:00:00.000Z sonda sonda - - - Request from 10.0.0.1\n
+//! ```
+//!
+//! Example output (with labels):
+//! ```text
+//! <14>1 2026-03-20T12:00:00.000Z sonda sonda - - [sonda device="wlan0" hostname="router-01"] Request from 10.0.0.1\n
 //! ```
 //!
 //! Priority is computed as `(facility * 8) + severity`. This encoder uses facility 1
 //! (user-level messages) per RFC 5424 §6.2.1.
 //!
-//! The structured data section is always the nil value (`-`) — no structured data is
-//! emitted. The PROCID and MSGID fields are also nil (`-`).
+//! When labels are present, the structured data section contains a `[sonda ...]`
+//! element with label key-value pairs. When labels are empty, the structured data
+//! section is the nil value (`-`). The PROCID and MSGID fields are always nil (`-`).
+//!
+//! Param-values are escaped per RFC 5424 §6.3.3: `\`, `]`, and `"` are prefixed
+//! with a backslash.
 //!
 //! No external crates are needed — the format is constructed entirely via `write!`
 //! into the caller-provided buffer.
@@ -108,7 +117,8 @@ impl Encoder for Syslog {
 
     /// Encode a log event as an RFC 5424 syslog line appended to `buf`.
     ///
-    /// Format: `<priority>1 timestamp hostname app-name - - - message\n`
+    /// Format (no labels): `<priority>1 timestamp hostname app-name - - - message\n`
+    /// Format (with labels): `<priority>1 timestamp hostname app-name - - [sonda k="v" ...] message\n`
     ///
     /// Priority = (facility * 8) + syslog_severity. Facility 1 (user-level) is used.
     fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
@@ -116,9 +126,31 @@ impl Encoder for Syslog {
         let priority = FACILITY_USER * 8 + syslog_severity;
         let timestamp = super::format_rfc3339_millis(event.timestamp)?;
 
-        // RFC 5424 HEADER: <PRI>VERSION SP TIMESTAMP SP HOSTNAME SP APP-NAME SP PROCID SP MSGID
-        // RFC 5424 MSG: SP [STRUCTURED-DATA] SP MSG
-        // We use nil values for PROCID, MSGID, and STRUCTURED-DATA.
+        // Build structured data section: nil when no labels, [sonda k="v" ...]
+        // when labels are present.
+        let sd = if event.labels.is_empty() {
+            NILVALUE.to_string()
+        } else {
+            let mut sd_buf = String::from("[sonda");
+            for (k, v) in event.labels.iter() {
+                sd_buf.push(' ');
+                sd_buf.push_str(k);
+                sd_buf.push_str("=\"");
+                // Escape \, ], " per RFC 5424 §6.3.3
+                for ch in v.chars() {
+                    match ch {
+                        '\\' => sd_buf.push_str("\\\\"),
+                        ']' => sd_buf.push_str("\\]"),
+                        '"' => sd_buf.push_str("\\\""),
+                        _ => sd_buf.push(ch),
+                    }
+                }
+                sd_buf.push('"');
+            }
+            sd_buf.push(']');
+            sd_buf
+        };
+
         use std::io::Write;
         writeln!(
             buf,
@@ -130,7 +162,7 @@ impl Encoder for Syslog {
             app_name = self.app_name,
             procid = NILVALUE,
             msgid = NILVALUE,
-            sd = NILVALUE,
+            sd = sd,
             message = event.message,
         )
         .map_err(|e| SondaError::Encoder(format!("syslog format error: {e}")))?;
@@ -159,7 +191,13 @@ mod tests {
         for (k, v) in fields {
             map.insert(k.to_string(), v.to_string());
         }
-        LogEvent::with_timestamp(ts, severity, message.to_string(), map)
+        LogEvent::with_timestamp(
+            ts,
+            severity,
+            message.to_string(),
+            crate::model::metric::Labels::default(),
+            map,
+        )
     }
 
     // -----------------------------------------------------------------------

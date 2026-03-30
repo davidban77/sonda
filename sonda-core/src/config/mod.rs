@@ -236,6 +236,9 @@ pub struct LogScenarioConfig {
     /// Optional burst window: recurring high-rate periods.
     #[serde(default)]
     pub bursts: Option<BurstConfig>,
+    /// Static labels attached to every emitted log event.
+    #[serde(default)]
+    pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `json_lines`.
     #[serde(default = "default_log_encoder")]
     pub encoder: EncoderConfig,
@@ -508,6 +511,7 @@ clock_group: compound-alert
             },
             gaps: None,
             bursts: None,
+            labels: None,
             encoder: EncoderConfig::JsonLines,
             sink: SinkConfig::Stdout,
             phase_offset: Some("10s".to_string()),

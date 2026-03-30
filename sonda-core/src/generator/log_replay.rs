@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::model::log::{LogEvent, Severity};
+use crate::model::metric::Labels;
 use crate::SondaError;
 
 use super::LogGenerator;
@@ -72,7 +73,12 @@ impl LogGenerator for LogReplayGenerator {
     /// and `fields` is empty — the full log context is in the message.
     fn generate(&self, tick: u64) -> LogEvent {
         let line = &self.lines[(tick as usize) % self.lines.len()];
-        LogEvent::new(Severity::Info, line.clone(), BTreeMap::new())
+        LogEvent::new(
+            Severity::Info,
+            line.clone(),
+            Labels::default(),
+            BTreeMap::new(),
+        )
     }
 }
 
