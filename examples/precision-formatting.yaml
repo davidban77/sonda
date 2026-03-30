@@ -1,0 +1,72 @@
+# Encoder precision control: rounding metric values to a fixed number of decimal places.
+#
+# Run with:
+#   sonda run --scenario examples/precision-formatting.yaml
+#
+# Each scenario uses a sine generator to produce values with many decimal
+# digits, then limits the output via the encoder's `precision` field.
+#
+# Scenario 1: Prometheus text with precision 2 (the most common use case).
+#   Output:  cpu_temperature{location="rack-a"} 45.00 <timestamp_ms>
+#
+# Scenario 2: InfluxDB line protocol with precision 1 and a custom field key.
+#   Output:  memory_usage,host=web-01 percent=72.3 <timestamp_ns>
+#
+# Scenario 3: JSON Lines with precision 3 for higher-fidelity structured logs.
+#   Output:  {"name":"disk_iops","value":500.000,...}
+
+scenarios:
+  # -- Prometheus text: 2 decimal places ----------------------------------
+  - signal_type: metrics
+    name: cpu_temperature
+    rate: 2
+    duration: 15s
+    generator:
+      type: sine
+      amplitude: 10.0
+      period_secs: 30
+      offset: 45.0
+    labels:
+      location: rack-a
+    encoder:
+      type: prometheus_text
+      precision: 2
+    sink:
+      type: stdout
+
+  # -- InfluxDB line protocol: 1 decimal place, custom field key ----------
+  - signal_type: metrics
+    name: memory_usage
+    rate: 2
+    duration: 15s
+    generator:
+      type: sine
+      amplitude: 20.0
+      period_secs: 20
+      offset: 72.0
+    labels:
+      host: web-01
+    encoder:
+      type: influx_lp
+      field_key: percent
+      precision: 1
+    sink:
+      type: stdout
+
+  # -- JSON Lines: 3 decimal places for structured ingest -----------------
+  - signal_type: metrics
+    name: disk_iops
+    rate: 2
+    duration: 15s
+    generator:
+      type: sine
+      amplitude: 200.0
+      period_secs: 15
+      offset: 500.0
+    labels:
+      device: nvme0n1
+    encoder:
+      type: json_lines
+      precision: 3
+    sink:
+      type: stdout
