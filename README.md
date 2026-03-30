@@ -57,7 +57,7 @@ sonda metrics \
   --label host=web-01
 ```
 
-```
+```text
 cpu_usage{host="web-01"} 50 1774872730347
 cpu_usage{host="web-01"} 85.35533905932738 1774872730852
 cpu_usage{host="web-01"} 100 1774872731351
@@ -80,6 +80,9 @@ generator:
   amplitude: 5.0
   period_secs: 30
   offset: 10.0
+gaps:
+  every: 2m
+  for: 20s
 labels:
   hostname: t0-a1
   zone: eu1
@@ -113,9 +116,9 @@ sonda-core = "0.3"
 
 See the [sonda-core docs on docs.rs](https://docs.rs/sonda-core) for API details.
 
-## Development
+## Contributing
 
-```
+```text
 sonda/
 ├── sonda-core/     library crate: generators, encoders, schedulers, sinks
 ├── sonda/          binary crate: CLI
@@ -126,10 +129,6 @@ sonda/
 ```bash
 cargo build --workspace && cargo test --workspace
 ```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for coding conventions and the pull request process.
-
-## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding
 conventions, and the pull request process.
