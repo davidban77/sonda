@@ -1,0 +1,67 @@
+# Demonstrates the `precision` field on metric encoders.
+#
+# The precision field controls how many decimal places appear in
+# formatted metric values. Omit it to keep full f64 precision.
+#
+# Run individual scenarios:
+#   sonda metrics --scenario examples/precision-formatting.yaml
+#
+# Or run all three together:
+#   sonda run --scenario examples/precision-formatting.yaml
+
+scenarios:
+  # Prometheus text: rounds to 2 decimal places.
+  # 99.60573 becomes "99.61", and trailing zeros are preserved (100.0 -> "100.00").
+  - signal_type: metrics
+    name: cpu_usage_prom
+    rate: 2
+    duration: 5s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 10
+      offset: 50.0
+    labels:
+      host: web-01
+    encoder:
+      type: prometheus_text
+      precision: 2
+    sink:
+      type: stdout
+
+  # JSON Lines: rounds to 3 decimal places before JSON serialization.
+  # Note: JSON has no trailing-zero concept, so 100.0 stays "100.0" (not "100.000").
+  - signal_type: metrics
+    name: cpu_usage_json
+    rate: 2
+    duration: 5s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 10
+      offset: 50.0
+    labels:
+      host: web-01
+    encoder:
+      type: json_lines
+      precision: 3
+    sink:
+      type: stdout
+
+  # InfluxDB line protocol: rounds to 4 decimal places.
+  - signal_type: metrics
+    name: cpu_usage_influx
+    rate: 2
+    duration: 5s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 10
+      offset: 50.0
+    labels:
+      host: web-01
+    encoder:
+      type: influx_lp
+      precision: 4
+    sink:
+      type: stdout
