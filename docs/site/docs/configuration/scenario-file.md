@@ -171,8 +171,10 @@ Log scenarios use a different generator section but share the same structure for
 encoder, and sink. The key differences:
 
 - The `generator` uses log-specific types (`template` or `replay`).
-- There is no `labels` field on log scenarios.
 - The default encoder is `json_lines` instead of `prometheus_text`.
+- The optional `labels` field works the same way as for metrics: static key-value pairs attached
+  to every event. Labels appear in JSON Lines output and are used as Loki stream labels when
+  sending to a Loki sink.
 
 ```yaml title="log-scenario.yaml"
 name: app_logs
@@ -192,6 +194,9 @@ generator:
     error: 0.1
   seed: 42
 
+labels:
+  job: sonda
+  env: dev
 encoder:
   type: json_lines
 sink:
