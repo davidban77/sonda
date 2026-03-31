@@ -4,7 +4,7 @@ duration: 30s
 
 generator:
   type: replay
-  file: /var/log/app.log
+  file: examples/sample-app.log
 
 encoder:
   type: json_lines

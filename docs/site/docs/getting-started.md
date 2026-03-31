@@ -224,6 +224,8 @@ sonda logs --scenario examples/log-template.yaml --duration 3s
 
 ## What next
 
+- [**Tutorial**](guides/tutorial.md) -- continue the hands-on walkthrough with generators,
+  encoders, sinks, log generation, and multi-scenario runs.
 - [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario
   fields, gaps, bursts, and multi-scenario mode.
 - [**Generators**](configuration/generators.md) -- all value generators (constant, sine, sawtooth,

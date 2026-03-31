@@ -58,9 +58,9 @@ nav:
     - Kubernetes: deployment/kubernetes.md
     - Server API: deployment/sonda-server.md
   - Guides:
+    - Tutorial: guides/tutorial.md
     - Alert Testing: guides/alert-testing.md
     - Pipeline Validation: guides/pipeline-validation.md
     - Recording Rules: guides/recording-rules.md
     - Example Scenarios: guides/examples.md
     - E2E Testing: guides/e2e-testing.md
-    - Tutorial: guides/tutorial.md

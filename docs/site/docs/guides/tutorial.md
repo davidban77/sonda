@@ -1,60 +1,52 @@
 # Tutorial
 
 This tutorial walks you through Sonda's features step by step, starting with a single CLI
-command and building up to multi-scenario runs, log generation, and pushing to backends.
+command and building up to multi-scenario runs, log generation, and pushing to real backends.
 
 **What you need:**
 
 - Sonda installed ([Getting Started](../getting-started.md) covers installation)
-- Docker and Docker Compose (for backend sections only)
+- Docker and Docker Compose (needed for [The Server API](#the-server-api) and [Pushing to a Backend](#pushing-to-a-backend) sections only)
 
 ---
 
 ## Your First Metric
 
-Generate a constant metric with a single command:
+If you haven't installed Sonda yet, follow the [Getting Started](../getting-started.md) guide
+first. It covers the basics of installation and running `sonda metrics`. Here we will pick up
+with something more interesting.
 
-```bash
-sonda metrics --name my_metric --rate 1 --duration 5s
-```
-
-You will see output like this:
-
-```
-▶ my_metric  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 5s
-my_metric 0 1711900000000
-my_metric 0 1711900001000
-my_metric 0 1711900002000
-```
-
-Each line has three parts: **metric name**, **value**, and **timestamp** (Unix milliseconds).
-
-Set a specific value with `--offset`:
-
-```bash
-sonda metrics --name cpu_idle --rate 1 --duration 5s --offset 99.5
-```
-
-Add labels to match real Prometheus metrics:
+Set a specific value with `--offset` and add labels to match real Prometheus metrics:
 
 ```bash
 sonda metrics --name http_requests_total --rate 1 --duration 5s \
   --offset 1 --label env=prod --label region=us-east
 ```
 
-```
+```text
+▶ http_requests_total  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 5s
 http_requests_total{env="prod",region="us-east"} 1 1711900000000
+http_requests_total{env="prod",region="us-east"} 1 1711900001000
+http_requests_total{env="prod",region="us-east"} 1 1711900002000
 ```
+
+Each line has three parts: **metric name** (with labels), **value**, and **timestamp** in Unix milliseconds.
 
 !!! tip "Status lines"
     Lines starting with `▶` and `■` are status output printed to stderr. Pipe stdout freely --
     status messages will not interfere. Use `--quiet` to suppress them entirely.
 
+Now that you can generate a basic metric, let's explore the different value shapes Sonda can produce.
+
 ---
 
-## Signal Shapes -- Generators
+## Generators
 
-Generators control the **value** of each emitted data point. Sonda ships six generators:
+A metric that always outputs zero isn't very useful for testing. Generators let you shape
+the values Sonda emits -- smooth waves for latency simulation, random noise for jitter,
+or exact sequences to trigger alert thresholds.
+
+Sonda ships six generators:
 
 | Generator | Description | Best for |
 |-----------|-------------|----------|
@@ -64,6 +56,10 @@ Generators control the **value** of each emitted data point. Sonda ships six gen
 | `uniform` | Random value in [min, max] | Jitter, noisy signals |
 | `sequence` | Cycles through an explicit list | Alert threshold testing |
 | `csv_replay` | Replays values from a CSV file | Reproducing real incidents |
+
+!!! note "YAML-only generators"
+    Sequence and csv_replay require a scenario file -- they have no CLI flag equivalents. All
+    other generators are available via `--value-mode`.
 
 ### constant
 
@@ -88,30 +84,10 @@ This oscillates between 10 and 90, centered on 50, completing one cycle every 30
     The formula is: `value = offset + amplitude * sin(2 * pi * elapsed / period)`.
     At t=0 the value equals offset. It peaks at offset + amplitude after one quarter period.
 
-### sawtooth
-
-A linear ramp from 0 to 1 that resets every period:
-
-```bash
-sonda metrics --name queue_depth --rate 2 --duration 10s \
-  --value-mode sawtooth --period-secs 5
-```
-
-### uniform
-
-Random values drawn uniformly between `--min` and `--max`:
-
-```bash
-sonda metrics --name jitter_ms --rate 2 --duration 5s \
-  --value-mode uniform --min 1 --max 100
-```
-
-!!! tip "Deterministic replay"
-    Pass `--seed 42` to get the same random sequence every run. Useful for reproducible tests.
-
 ### sequence
 
-Cycles through an explicit list of values. Only available via YAML:
+For testing alert thresholds, you often need values that cross a specific boundary at a
+specific time. Sequence gives you that exact control:
 
 ```bash
 sonda metrics --scenario examples/sequence-alert-test.yaml --duration 10s
@@ -134,40 +110,60 @@ sink:
   type: stdout
 ```
 
-### csv_replay
+??? tip "More generators: sawtooth, uniform, csv_replay"
+    **sawtooth** -- A linear ramp from 0 to 1 that resets every period. Useful for simulating
+    queue fill and drain cycles:
 
-Replays recorded values from a CSV file. Only available via YAML:
+    ```bash
+    sonda metrics --name queue_depth --rate 2 --duration 10s \
+      --value-mode sawtooth --period-secs 5
+    ```
 
-```bash
-sonda metrics --scenario examples/csv-replay-metrics.yaml
-```
+    **uniform** -- Random values drawn uniformly between `--min` and `--max`. Pass `--seed 42`
+    for deterministic replay:
 
-```yaml title="examples/csv-replay-metrics.yaml"
-name: cpu_replay
-rate: 1
-duration: 60s
-generator:
-  type: csv_replay
-  file: examples/sample-cpu-values.csv
-  column: 1
-  has_header: true
-  repeat: true
-labels:
-  instance: prod-server-42
-  job: node
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
-```
+    ```bash
+    sonda metrics --name jitter_ms --rate 2 --duration 5s \
+      --value-mode uniform --min 1 --max 100
+    ```
 
-For full generator configuration details, see [Generators](../configuration/generators.md).
+    **csv_replay** -- Replays recorded values from a CSV file. Point it at real incident data
+    to reproduce production behavior:
+
+    ```bash
+    sonda metrics --scenario examples/csv-replay-metrics.yaml
+    ```
+
+    ```yaml title="examples/csv-replay-metrics.yaml"
+    name: cpu_replay
+    rate: 1
+    duration: 60s
+    generator:
+      type: csv_replay
+      file: examples/sample-cpu-values.csv
+      column: 1
+      has_header: true
+      repeat: true
+    labels:
+      instance: prod-server-42
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    For full generator configuration details, see [Generators](../configuration/generators.md).
+
+You've seen what values Sonda can generate. Next, let's look at how those values get formatted on the wire.
 
 ---
 
-## Output Formats -- Encoders
+## Encoders
 
-Encoders control **how** each data point is serialized. The same metric looks different in each format:
+Your monitoring backend expects data in a specific wire format. Sonda can speak all of them.
+
+The same metric looks different in each format:
 
 === "prometheus_text (default)"
 
@@ -176,7 +172,7 @@ Encoders control **how** each data point is serialized. The same metric looks di
       --offset 42 --label env=prod
     ```
 
-    ```
+    ```text
     http_rps{env="prod"} 42 1711900000000
     ```
 
@@ -187,7 +183,7 @@ Encoders control **how** each data point is serialized. The same metric looks di
       --offset 42 --label env=prod --encoder influx_lp
     ```
 
-    ```
+    ```text
     http_rps,env=prod value=42 1711900000000000000
     ```
 
@@ -209,20 +205,27 @@ Encoders control **how** each data point is serialized. The same metric looks di
       --encoder syslog --label app=myservice
     ```
 
-    ```
-    <14>1 2026-03-31T20:00:00.000Z sonda sonda - - [sonda app="myservice"] synthetic log event
+    ```text
+    <14>1 2026-03-31T21:40:38.941Z sonda sonda - - [sonda app="myservice"] synthetic log event
     ```
 
-!!! info "remote_write encoder"
+!!! warning "remote_write encoder"
     The `remote_write` encoder produces Prometheus remote write protobuf format. It requires
-    the `remote-write` feature flag when building from source. Pre-built binaries and Docker
-    images include it by default. See [Encoders](../configuration/encoders.md) for details.
+    the `remote-write` feature flag when building from source (`cargo build --features remote-write`).
+    Pre-built binaries and Docker images include it by default. If you build without this flag and
+    try to use `remote_write`, you will get a compilation error.
+    See [Encoders](../configuration/encoders.md) for details.
+
+With the right format chosen, the next question is: where should the data go?
 
 ---
 
-## Destinations -- Sinks
+## Sinks
 
-Sinks control **where** data is sent. Sonda supports eight sinks:
+So far everything has gone to stdout. In production testing, you need data flowing to
+real backends -- over HTTP, TCP, or directly into Kafka or Loki.
+
+Sonda supports eight sinks:
 
 | Sink | Description | CLI flag |
 |------|-------------|----------|
@@ -251,19 +254,36 @@ Write to a file with `--output`:
 sonda metrics --name up --rate 10 --duration 5s --output /tmp/metrics.txt
 ```
 
-### tcp
+### http_push
 
-Stream metrics over TCP. Start a listener first, then run the scenario:
+POST batched data to any HTTP endpoint. This is the most universal YAML-only sink -- it
+works with any backend that accepts HTTP imports:
 
 ```bash
-sonda metrics --scenario examples/tcp-sink.yaml
+sonda metrics --scenario examples/http-push-sink.yaml
 ```
 
+```yaml title="examples/http-push-sink.yaml (key fields)"
+sink:
+  type: http_push
+  url: "http://localhost:9090/api/v1/push"
+  content_type: "text/plain; version=0.0.4"
+  batch_size: 65536
+```
+
+The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered before each POST).
+
 ??? example "TCP sink setup"
-    Start a listener in another terminal:
+    Stream metrics over TCP. Start a listener in another terminal:
 
     ```bash
     nc -lk 9999
+    ```
+
+    Then run:
+
+    ```bash
+    sonda metrics --scenario examples/tcp-sink.yaml
     ```
 
     ```yaml title="examples/tcp-sink.yaml"
@@ -285,19 +305,17 @@ sonda metrics --scenario examples/tcp-sink.yaml
       address: "127.0.0.1:9999"
     ```
 
-### udp
-
-Send metrics over UDP:
-
-```bash
-sonda metrics --scenario examples/udp-sink.yaml
-```
-
 ??? example "UDP sink setup"
-    Start a listener in another terminal:
+    Send metrics over UDP. Start a listener in another terminal:
 
     ```bash
     nc -lu 9998
+    ```
+
+    Then run:
+
+    ```bash
+    sonda metrics --scenario examples/udp-sink.yaml
     ```
 
     ```yaml title="examples/udp-sink.yaml"
@@ -316,129 +334,133 @@ sonda metrics --scenario examples/udp-sink.yaml
       address: "127.0.0.1:9998"
     ```
 
-### http_push
+??? example "Loki sink setup"
+    Push JSON logs to Grafana Loki:
 
-POST batched data to any HTTP endpoint:
+    ```bash
+    sonda logs --scenario examples/loki-json-lines.yaml
+    ```
 
-```bash
-sonda metrics --scenario examples/http-push-sink.yaml
-```
+    ```yaml title="examples/loki-json-lines.yaml"
+    name: app_logs_loki
+    rate: 10
+    duration: 60s
+    generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+            endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+    labels:
+      job: sonda
+      env: dev
+    encoder:
+      type: json_lines
+    sink:
+      type: loki
+      url: http://localhost:3100
+      batch_size: 50
+    ```
 
-The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered before each POST).
+??? example "Kafka sink setup"
+    Publish metrics to a Kafka topic. Requires a Kafka broker reachable at the configured address:
 
-### loki
+    ```bash
+    sonda metrics --scenario examples/kafka-sink.yaml
+    ```
 
-Push JSON logs to Grafana Loki:
+    ```yaml title="examples/kafka-sink.yaml (key fields)"
+    sink:
+      type: kafka
+      brokers: "localhost:9094"
+      topic: sonda-metrics
+    ```
 
-```bash
-sonda logs --scenario examples/loki-json-lines.yaml
-```
-
-```yaml title="examples/loki-json-lines.yaml"
-name: app_logs_loki
-rate: 10
-duration: 60s
-generator:
-  type: template
-  templates:
-    - message: "Request from {ip} to {endpoint}"
-      field_pools:
-        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
-  severity_weights:
-    info: 0.7
-    warn: 0.2
-    error: 0.1
-labels:
-  job: sonda
-  env: dev
-encoder:
-  type: json_lines
-sink:
-  type: loki
-  url: http://localhost:3100
-  batch_size: 50
-```
-
-### kafka
-
-Publish to a Kafka topic:
-
-```bash
-sonda metrics --scenario examples/kafka-sink.yaml
-```
-
-The key sink fields are `brokers` and `topic`. See `examples/kafka-sink.yaml` for a complete example.
+    See `examples/kafka-sink.yaml` for the complete example with generator and encoder config.
 
 For full sink configuration details, see [Sinks](../configuration/sinks.md).
+
+So far we've focused on metrics. Sonda also generates structured log events.
 
 ---
 
 ## Generating Logs
 
-Sonda generates structured log events with two modes: **template** and **replay**.
+Need to test your log pipeline? Sonda generates structured log events in two modes:
+**template** for synthetic messages with randomized fields, and **replay** for re-emitting
+lines from an existing log file.
 
-### Template mode
+=== "Template mode"
 
-From the CLI, generate simple logs:
+    From the CLI, generate simple logs:
 
-```bash
-sonda logs --mode template --rate 5 --duration 5s \
-  --message "User logged in from {ip}"
-```
+    ```bash
+    sonda logs --mode template --rate 5 --duration 5s \
+      --message "User logged in from {ip}"
+    ```
 
-For rich logs with field pools and severity weights, use a YAML scenario:
+    !!! note "Field pools require YAML"
+        The `--message` CLI flag supports template syntax, but placeholder tokens like `{ip}`
+        render as literal text unless you define `field_pools` in a YAML scenario. For dynamic
+        log messages, use a scenario file.
 
-```bash
-sonda logs --scenario examples/log-template.yaml --duration 10s
-```
+    For rich logs with field pools and severity weights, use a YAML scenario:
 
-```yaml title="examples/log-template.yaml (excerpt)"
-generator:
-  type: template
-  templates:
-    - message: "Request from {ip} to {endpoint} returned {status}"
-      field_pools:
-        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3", "192.168.1.10"]
-        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
-        status: ["200", "201", "400", "404", "500"]
-    - message: "Service {service} processed {count} events in {duration_ms}ms"
-      field_pools:
-        service: ["ingest", "transform", "export"]
-        count: ["1", "10", "100", "1000"]
-        duration_ms: ["5", "12", "47", "200"]
-  severity_weights:
-    info: 0.7
-    warn: 0.2
-    error: 0.1
-```
+    ```bash
+    sonda logs --scenario examples/log-template.yaml --duration 10s
+    ```
 
-!!! note "Field pools require YAML"
-    The `--message` CLI flag accepts a single template, but `{placeholder}` tokens are not
-    resolved without field pools. Use a YAML scenario for realistic log generation.
+    ```yaml title="examples/log-template.yaml (excerpt)"
+    generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint} returned {status}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3", "192.168.1.10"]
+            endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+            status: ["200", "201", "400", "404", "500"]
+        - message: "Service {service} processed {count} events in {duration_ms}ms"
+          field_pools:
+            service: ["ingest", "transform", "export"]
+            count: ["1", "10", "100", "1000"]
+            duration_ms: ["5", "12", "47", "200"]
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+    ```
 
-### Replay mode
+=== "Replay mode"
 
-Replay lines from an existing log file:
+    Replay lines from an existing log file:
 
-```bash
-sonda logs --scenario examples/log-replay.yaml
-```
+    ```bash
+    sonda logs --scenario examples/log-replay.yaml
+    ```
 
-```yaml title="examples/log-replay.yaml"
-name: app_logs_replay
-rate: 5
-duration: 30s
-generator:
-  type: replay
-  file: /var/log/app.log
-encoder:
-  type: json_lines
-sink:
-  type: stdout
-```
+    ```yaml title="examples/log-replay.yaml"
+    name: app_logs_replay
+    rate: 5
+    duration: 30s
+    generator:
+      type: replay
+      file: examples/sample-app.log
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+    ```
 
-Lines are replayed in order and cycle back to the start when the file is exhausted.
+    Lines are replayed in order and cycle back to the start when the file is exhausted.
+
+    !!! tip "Bring your own log file"
+        The example uses `examples/sample-app.log` which ships with Sonda. To replay your
+        own logs, point `file:` at any text file -- one log line per line.
 
 ### Syslog output
 
@@ -448,11 +470,15 @@ Combine template logs with the syslog encoder for RFC 5424 output:
 sonda logs --mode template --rate 2 --duration 5s --encoder syslog
 ```
 
+Your metrics and logs are flowing, but real telemetry has irregularities. Let's add some.
+
 ---
 
 ## Scheduling -- Gaps and Bursts
 
-Gaps and bursts simulate real-world irregularities in telemetry streams.
+Real telemetry is messy -- networks drop packets, services restart, traffic spikes hit.
+Gaps and bursts let you inject those irregularities into your synthetic data, so you can
+test how your pipeline and alerts behave under imperfect conditions.
 
 ### Gaps
 
@@ -516,11 +542,14 @@ sink:
     Gaps and bursts work with any generator. A sine wave with periodic gaps creates realistic
     "flapping service" patterns for alert testing.
 
+Running one scenario at a time is great for exploration, but production systems emit multiple signals simultaneously.
+
 ---
 
 ## Multi-Scenario Runs
 
-Run metrics and logs concurrently from a single file using `sonda run`:
+Production systems emit multiple signals simultaneously. `sonda run` lets you orchestrate
+several scenarios concurrently from a single YAML file, each on its own thread.
 
 ```bash
 sonda run --scenario examples/multi-scenario.yaml
@@ -609,28 +638,43 @@ scenarios:
     # ...
 ```
 
+Here is how the phase offset creates an overlapping window for compound alert testing:
+
+```text
+t=0s    cpu_usage starts        (values: 20 -> 95)
+t=3s    memory_usage starts     (3s phase offset, values: 40 -> 88)
+t=5s    Both above threshold    compound alert fires (cpu > 90 AND memory > 85)
+```
+
 CPU spikes at t=0, memory follows 3 seconds later -- testing compound alert rules like
 `cpu > 90 AND memory > 85`.
 
 For more on alert testing patterns, see [Alert Testing](alert-testing.md).
 
+For long-running or programmatic use, Sonda includes an HTTP API.
+
 ---
 
 ## The Server API
 
-`sonda-server` provides an HTTP API for managing scenarios programmatically.
+For long-running or programmatic use, Sonda includes an HTTP API that lets you submit,
+monitor, and stop scenarios without touching the CLI.
 
 ### Start the server
 
-```bash
-cargo run -p sonda-server
-```
+=== "Docker (recommended)"
 
-Or with Docker:
+    Already running if you started the stack in the prerequisites. Otherwise:
 
-```bash
-docker run -p 8080:8080 ghcr.io/davidban77/sonda-server:latest
-```
+    ```bash
+    docker run -p 8080:8080 ghcr.io/davidban77/sonda-server:latest
+    ```
+
+=== "From source"
+
+    ```bash
+    cargo run -p sonda-server
+    ```
 
 ### Submit a scenario
 
@@ -642,8 +686,20 @@ curl -X POST \
 ```
 
 ```json
-{"id":"<uuid>","name":"up","status":"running"}
+{"id":"a1b2c3d4-...","name":"up","status":"running"}
 ```
+
+!!! tip "Using the scenario ID"
+    The `POST` response includes an `id` field (a UUID). Use this ID in all subsequent
+    requests to check status, scrape metrics, or stop the scenario. The examples below
+    use `<id>` as a placeholder -- replace it with the actual UUID from your response.
+    You can also pipe through `jq` to extract it:
+
+    ```bash
+    ID=$(curl -s -X POST -H "Content-Type: text/yaml" \
+      --data-binary @examples/simple-constant.yaml \
+      http://localhost:8080/scenarios | jq -r '.id')
+    ```
 
 ### List scenarios
 
@@ -654,25 +710,25 @@ curl http://localhost:8080/scenarios
 ### Get scenario details
 
 ```bash
-curl http://localhost:8080/scenarios/<id>
+curl http://localhost:8080/scenarios/$ID
 ```
 
 ### Get live stats
 
 ```bash
-curl http://localhost:8080/scenarios/<id>/stats
+curl http://localhost:8080/scenarios/$ID/stats
 ```
 
 ### Scrape metrics (Prometheus format)
 
 ```bash
-curl http://localhost:8080/scenarios/<id>/metrics
+curl http://localhost:8080/scenarios/$ID/metrics
 ```
 
 ### Stop a scenario
 
 ```bash
-curl -X DELETE http://localhost:8080/scenarios/<id>
+curl -X DELETE http://localhost:8080/scenarios/$ID
 ```
 
 ### Long-running scenarios
@@ -703,16 +759,24 @@ curl -X POST -H "Content-Type: text/yaml" \
   http://localhost:8080/scenarios
 
 # Stop later
-curl -X DELETE http://localhost:8080/scenarios/<id>
+curl -X DELETE http://localhost:8080/scenarios/$ID
 ```
 
 For the full API reference, see [Server API](../deployment/sonda-server.md).
+
+The final step is getting your synthetic data into a real monitoring backend.
 
 ---
 
 ## Pushing to a Backend
 
-Three ways to get data into a monitoring backend:
+The final step is getting your synthetic data into a real monitoring backend for
+end-to-end validation. Sonda supports three approaches.
+
+!!! info "Complete backend examples"
+    For complete Docker Compose setups with VictoriaMetrics, Prometheus, and Grafana,
+    see [Alert Testing](alert-testing.md) and [Docker Deployment](../deployment/docker.md).
+    This section covers the Sonda-specific configuration.
 
 ### 1. HTTP Push (import API)
 
@@ -751,7 +815,7 @@ Compatible targets include VictoriaMetrics, Prometheus, Thanos Receive, and Cort
 
 ### 3. Scrape via sonda-server
 
-Point Prometheus at sonda-server's `/scenarios/<id>/metrics` endpoint:
+Point Prometheus at sonda-server's metrics endpoint:
 
 ```yaml title="prometheus.yml (scrape config)"
 scrape_configs:
@@ -760,6 +824,10 @@ scrape_configs:
       - targets: ["sonda-server:8080"]
     metrics_path: /scenarios/<id>/metrics
 ```
+
+!!! tip "Scrape path"
+    Replace `<id>` with the scenario ID returned by `POST /scenarios`. Each running
+    scenario exposes its own metrics endpoint.
 
 ### Verify data arrived
 
@@ -771,15 +839,16 @@ curl "http://localhost:8428/api/v1/query?query=sonda_http_request_duration_ms"
 curl "http://localhost:9090/api/v1/query?query=sonda_http_request_duration_ms"
 ```
 
-For Docker Compose setups with VictoriaMetrics and Grafana, see [Docker Deployment](../deployment/docker.md).
-
 ---
 
 ## Next Steps
 
-- [Alert Testing](alert-testing.md) -- validate Prometheus alert rules with controlled threshold crossings
-- [Pipeline Validation](pipeline-validation.md) -- test ingest pipelines with known data patterns
-- [Recording Rules](recording-rules.md) -- verify recording rule correctness with synthetic inputs
-- [Example Scenarios](examples.md) -- browse the full collection of ready-to-use YAML scenarios
-- [Docker Deployment](../deployment/docker.md) -- run Sonda with VictoriaMetrics and Grafana
-- [Server API](../deployment/sonda-server.md) -- full HTTP API reference for sonda-server
+**Testing alert rules?** Start with [Alert Testing](alert-testing.md).
+
+**Validating a pipeline change?** See [Pipeline Validation](pipeline-validation.md).
+
+**Verifying recording rules?** Check [Recording Rules](recording-rules.md).
+
+**Running Sonda in production?** See [Docker Deployment](../deployment/docker.md) or [Server API](../deployment/sonda-server.md).
+
+**Browsing ready-to-use scenarios?** See [Example Scenarios](examples.md).
