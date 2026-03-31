@@ -64,8 +64,8 @@ Error responses:
 !!! tip "Long-running scenarios"
     Omit the `duration` field from your scenario body to create a scenario that runs
     indefinitely. Stop it later with `DELETE /scenarios/{id}`. See the
-    [walkthrough](../guides/comprehensive-walkthrough.md#long-running-scenarios-start-stop-pattern)
-    for a full start → monitor → stop example.
+    [tutorial](../guides/comprehensive-walkthrough.md#long-running-scenarios)
+    for a full start and stop example.
 
 ## API Endpoints
 
