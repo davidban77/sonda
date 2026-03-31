@@ -4,7 +4,6 @@ description: Documentation agent. Discovers project state, writes and maintains 
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
 permissionMode: acceptEdits
-isolation: worktree
 ---
 
 # Role: Documentation Agent

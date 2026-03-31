@@ -61,6 +61,12 @@ Error responses:
 - **422 Unprocessable Entity** -- valid YAML/JSON but fails validation (e.g., `rate: 0`).
 - **500 Internal Server Error** -- scenario thread could not be spawned.
 
+!!! tip "Long-running scenarios"
+    Omit the `duration` field from your scenario body to create a scenario that runs
+    indefinitely. Stop it later with `DELETE /scenarios/{id}`. See the
+    [walkthrough](../guides/comprehensive-walkthrough.md#long-running-scenarios-start-stop-pattern)
+    for a full start → monitor → stop example.
+
 ## API Endpoints
 
 | Method | Path | Description |
