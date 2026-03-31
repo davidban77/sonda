@@ -64,7 +64,14 @@ impl KafkaSink {
     /// Returns [`SondaError::Sink`] if:
     /// - The broker addresses cannot be parsed.
     /// - A TCP connection to a broker cannot be established.
-    /// - The topic cannot be resolved (metadata lookup fails).
+    /// - The topic metadata lookup fails after retries.
+    ///
+    /// # Note
+    ///
+    /// The constructor retries metadata lookups for the target topic, so
+    /// broker-side auto-topic-creation (`auto.create.topics.enable=true`)
+    /// works out of the box. This may cause the constructor to briefly block
+    /// while the broker creates the topic.
     pub fn new(brokers: &str, topic: &str) -> Result<Self, SondaError> {
         // Build a minimal single-threaded tokio runtime. This drives all
         // async rskafka calls without making the Sink trait async.
@@ -115,7 +122,7 @@ impl KafkaSink {
                 .partition_client(
                     topic_str.clone(),
                     0, // partition 0
-                    UnknownTopicHandling::Error,
+                    UnknownTopicHandling::Retry,
                 )
                 .await
                 .map_err(|e| {

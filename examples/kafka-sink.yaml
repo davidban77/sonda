@@ -6,7 +6,8 @@
 #
 # Prerequisites:
 #   A Kafka broker must be reachable at localhost:9094.
-#   The topic "sonda-metrics" must exist (or auto-creation must be enabled).
+#   The topic "sonda-metrics" is auto-created by the broker if
+#   auto.create.topics.enable=true (the default for most Kafka distributions).
 #
 # Usage:
 #   sonda metrics --scenario examples/kafka-sink.yaml
