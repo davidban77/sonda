@@ -166,7 +166,9 @@ sink:
 ```
 
 Events are buffered until 64 KiB is accumulated, then published as a single Kafka record to
-partition 0 of the configured topic.
+partition 0 of the configured topic. Broker-side auto-topic-creation is supported: the sink
+retries metadata lookups, giving the broker time to create the topic if
+`auto.create.topics.enable=true`.
 
 ## loki
 
