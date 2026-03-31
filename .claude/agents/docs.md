@@ -97,10 +97,15 @@ For slice-based work (`@doc 8.X`):
 
 5. **Build and verify**:
    ```bash
-   task site:build    # installs venv + deps automatically, builds with --strict
+   task site:build    # installs venv + deps automatically via uv, builds with --strict
    ```
    Fix any warnings. `--strict` turns warnings into errors.
    To preview locally: `task site:serve` → http://localhost:8000
+
+   **IMPORTANT — Python tooling**: This project uses `uv` for all Python tasks.
+   **Never** run `pip install`, `pip3`, or `python3` directly. The `task site:build` /
+   `task site:serve` commands handle everything automatically, including in worktrees
+   where the venv doesn't exist yet.
 
 6. **Commit**:
    - Stage only docs files.
