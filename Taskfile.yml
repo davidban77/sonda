@@ -61,25 +61,12 @@ tasks:
   # MkDocs Site (user-facing documentation)
   # ---------------------------------------------------------------------------
   site:setup:
-    desc: Install MkDocs Material in a local venv (requires uv or pip3)
+    desc: Install MkDocs Material in a local venv (requires uv)
     cmds:
       - |
-        if command -v uv > /dev/null 2>&1; then
-          echo "Using uv to create venv and install dependencies..."
-          uv venv docs/site/.venv
-          uv pip install -r docs/site/requirements.txt --python docs/site/.venv/bin/python
-        elif command -v pip3 > /dev/null 2>&1; then
-          echo "Using pip3 to create venv and install dependencies..."
-          python3 -m venv docs/site/.venv
-          docs/site/.venv/bin/pip install -r docs/site/requirements.txt
-        else
-          echo "ERROR: Neither uv nor pip3 found."
-          echo ""
-          echo "Install one of:"
-          echo "  uv (recommended): curl -LsSf https://astral.sh/uv/install.sh | sh"
-          echo "  pip3: comes with Python 3 (brew install python3)"
-          exit 1
-        fi
+        echo "Using uv to create venv and install dependencies..."
+        uv venv docs/site/.venv
+        uv pip install -r docs/site/requirements.txt --python docs/site/.venv/bin/python
         echo ""
         echo "Done! Run 'task site:serve' to preview the docs."
     status:
