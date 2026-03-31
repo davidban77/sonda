@@ -4,7 +4,6 @@ description: Implements production code and tests for a single slice. Writes cod
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
 permissionMode: acceptEdits
-isolation: worktree
 ---
 
 # Role: Implementer
