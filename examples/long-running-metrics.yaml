@@ -1,0 +1,16 @@
+# Long-running scenario — no duration, runs until stopped.
+# Use with sonda-server: POST to start, DELETE to stop.
+name: continuous_cpu
+rate: 10
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+labels:
+  instance: api-server-01
+  job: sonda
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

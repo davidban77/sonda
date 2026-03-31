@@ -1264,6 +1264,82 @@ curl -s -X DELETE http://localhost:8080/scenarios/656e067f-... | python3 -m json
 }
 ```
 
+### Long-Running Scenarios (Start / Stop Pattern)
+
+Every example above includes a `duration` field, so scenarios auto-terminate after a few
+seconds. For continuous synthetic load — alert-rule testing, dashboard demos, pipeline
+soak tests — **omit `duration`** and the scenario runs indefinitely until you stop it.
+
+**1. Start** — POST a scenario without `duration`:
+
+```bash
+curl -s -X POST \
+  -H "Content-Type: text/yaml" \
+  -d '
+name: continuous_cpu
+rate: 10
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+labels:
+  instance: api-server-01
+  job: sonda
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+' http://localhost:8080/scenarios | python3 -m json.tool
+```
+
+```json title="Response (201 Created)"
+{
+    "id": "a1b2c3d4-...",
+    "name": "continuous_cpu",
+    "status": "running"
+}
+```
+
+**2. Monitor** — check live stats while it runs:
+
+```bash
+curl -s http://localhost:8080/scenarios/a1b2c3d4-.../stats | python3 -m json.tool
+```
+
+```json title="Response"
+{
+    "total_events": 1200,
+    "current_rate": 10.01,
+    "target_rate": 10.0,
+    "bytes_emitted": 62400,
+    "errors": 0,
+    "uptime_secs": 120.03,
+    "state": "running",
+    "in_gap": false,
+    "in_burst": false
+}
+```
+
+**3. Stop** — DELETE when you are done:
+
+```bash
+curl -s -X DELETE http://localhost:8080/scenarios/a1b2c3d4-... | python3 -m json.tool
+```
+
+```json title="Response"
+{
+    "id": "a1b2c3d4-...",
+    "status": "stopped",
+    "total_events": 1200
+}
+```
+
+!!! tip
+    The same pattern works for log scenarios — just add `signal_type: logs` and use a
+    log generator/encoder. See [Scenario File reference](../configuration/scenario-file.md)
+    for the full schema.
+
 ### Multiple Concurrent Scenarios
 
 Post several scenarios, each gets its own thread:
