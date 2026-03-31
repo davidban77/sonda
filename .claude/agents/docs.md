@@ -102,10 +102,10 @@ For slice-based work (`@doc 8.X`):
    Fix any warnings. `--strict` turns warnings into errors.
    To preview locally: `task site:serve` → http://localhost:8000
 
-   **IMPORTANT — Python tooling**: This project uses `uv` for all Python tasks. See
-   `.claude/rules/python-tooling.md`. **Never** run `pip install`, `pip3`, or `python3`
-   directly. The `task site:build` / `task site:serve` commands handle everything
-   automatically, including in worktrees where the venv doesn't exist yet.
+   **IMPORTANT — Python tooling**: This project uses `uv` for all Python tasks.
+   **Never** run `pip install`, `pip3`, or `python3` directly. The `task site:build` /
+   `task site:serve` commands handle everything automatically, including in worktrees
+   where the venv doesn't exist yet.
 
 6. **Commit**:
    - Stage only docs files.
