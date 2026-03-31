@@ -152,6 +152,42 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub burst_multiplier: Option<f64>,
 
+    /// Label key for a cardinality spike (e.g. `"pod_name"`).
+    ///
+    /// Together with `--spike-every`, `--spike-for`, and `--spike-cardinality`,
+    /// defines a recurring window that injects dynamic label values to simulate
+    /// cardinality explosions. All four `--spike-*` flags must be provided together.
+    #[arg(long)]
+    pub spike_label: Option<String>,
+
+    /// Spike recurrence interval (e.g. `"2m"`).
+    #[arg(long)]
+    pub spike_every: Option<String>,
+
+    /// Spike duration within each cycle (e.g. `"30s"`).
+    ///
+    /// Must be strictly less than `--spike-every`.
+    #[arg(long)]
+    pub spike_for: Option<String>,
+
+    /// Number of unique label values during the spike.
+    #[arg(long)]
+    pub spike_cardinality: Option<u64>,
+
+    /// Spike strategy: `counter` or `random`. Default: `counter`.
+    #[arg(long)]
+    pub spike_strategy: Option<String>,
+
+    /// Prefix for generated spike label values.
+    ///
+    /// Defaults to `"{spike_label}_"` when not specified.
+    #[arg(long)]
+    pub spike_prefix: Option<String>,
+
+    /// RNG seed for the `random` spike strategy.
+    #[arg(long)]
+    pub spike_seed: Option<u64>,
+
     /// Static label attached to every emitted event (repeatable).
     ///
     /// Format: `key=value`. Keys must match `[a-zA-Z_][a-zA-Z0-9_]*`.
@@ -273,6 +309,37 @@ pub struct LogsArgs {
     /// Rate multiplier during burst periods (e.g. `10.0` for 10× the base rate).
     #[arg(long)]
     pub burst_multiplier: Option<f64>,
+
+    /// Label key for a cardinality spike (e.g. `"pod_name"`).
+    ///
+    /// Together with `--spike-every`, `--spike-for`, and `--spike-cardinality`,
+    /// defines a recurring window that injects dynamic label values.
+    #[arg(long)]
+    pub spike_label: Option<String>,
+
+    /// Spike recurrence interval (e.g. `"2m"`).
+    #[arg(long)]
+    pub spike_every: Option<String>,
+
+    /// Spike duration within each cycle (e.g. `"30s"`).
+    #[arg(long)]
+    pub spike_for: Option<String>,
+
+    /// Number of unique label values during the spike.
+    #[arg(long)]
+    pub spike_cardinality: Option<u64>,
+
+    /// Spike strategy: `counter` or `random`. Default: `counter`.
+    #[arg(long)]
+    pub spike_strategy: Option<String>,
+
+    /// Prefix for generated spike label values.
+    #[arg(long)]
+    pub spike_prefix: Option<String>,
+
+    /// RNG seed for the `random` spike strategy.
+    #[arg(long)]
+    pub spike_seed: Option<u64>,
 
     /// Write output to a file at this path instead of stdout.
     ///

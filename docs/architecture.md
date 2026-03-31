@@ -339,4 +339,8 @@ The notes reference flows and traces as future signal types. These have material
 
 ### Dynamic Label Cardinality
 
-The MVP supports only static labels. Dynamic cardinality (e.g., rotating hostnames, simulated pod churn) is a planned feature. The label model is designed to accommodate this without breaking existing scenarios.
+Cardinality spikes are implemented as time-windowed label injection. Each spike configuration defines a label key, a recurrence interval (`every`), a window duration (`for`), and a target cardinality (number of unique values). During the spike window the runner injects the label with a unique value on each tick; outside the window the label is absent.
+
+Two strategies control value generation: `counter` produces sequential deterministic values (`prefix + tick % cardinality`), while `random` uses a SplitMix64 hash of `seed ^ index` to produce hex-string values that look random but are reproducible. Both strategies guarantee exactly `cardinality` distinct values per window.
+
+Spike windows are evaluated per-tick in the metric and log runners alongside gap and burst windows. Gap windows take priority: if a gap and spike overlap, the gap suppresses all output. Multiple spike configurations can be stacked on a single scenario, each injecting a different label key.

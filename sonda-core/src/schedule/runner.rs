@@ -15,7 +15,10 @@ use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent};
 use crate::schedule::stats::ScenarioStats;
-use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
+use crate::schedule::{
+    is_in_burst, is_in_gap, is_in_spike, time_until_gap_end, BurstWindow, CardinalitySpikeWindow,
+    GapWindow,
+};
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
@@ -105,6 +108,29 @@ pub fn run_with_sink(
             })
         })
         .transpose()?;
+
+    // Build cardinality spike windows from config, if present.
+    let spike_windows: Vec<CardinalitySpikeWindow> = config
+        .cardinality_spikes
+        .as_ref()
+        .map(|spikes| {
+            spikes
+                .iter()
+                .map(|s| {
+                    Ok(CardinalitySpikeWindow {
+                        label: s.label.clone(),
+                        every: parse_duration(&s.every)?,
+                        duration: parse_duration(&s.r#for)?,
+                        cardinality: s.cardinality,
+                        strategy: s.strategy,
+                        prefix: s.prefix.clone().unwrap_or_else(|| format!("{}_", s.label)),
+                        seed: s.seed.unwrap_or(0),
+                    })
+                })
+                .collect::<Result<Vec<_>, SondaError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     // Build generator and encoder from config.
     let generator = create_generator(&config.generator, config.rate)?;
@@ -234,7 +260,28 @@ pub fn run_with_sink(
             // is typically small and fixed. A zero-copy API is possible post-MVP
             // if profiling shows this to be a bottleneck.
             let value = generator.value(tick);
-            let event = MetricEvent::with_timestamp(name.clone(), value, labels.clone(), wall_now)?;
+
+            // Inject cardinality spike labels when inside a spike window.
+            // Only clone+insert when spike windows actually exist and are active,
+            // to avoid overhead for existing configs without spikes.
+            let currently_in_spike;
+            let tick_labels = if spike_windows.is_empty() {
+                currently_in_spike = false;
+                labels.clone()
+            } else {
+                let mut tl = labels.clone();
+                let mut any_spike = false;
+                for sw in &spike_windows {
+                    if is_in_spike(elapsed, sw) {
+                        tl.insert(sw.label.clone(), sw.label_value_for_tick(tick));
+                        any_spike = true;
+                    }
+                }
+                currently_in_spike = any_spike;
+                tl
+            };
+
+            let event = MetricEvent::with_timestamp(name.clone(), value, tick_labels, wall_now)?;
 
             // Encode and write.
             buf.clear();
@@ -264,6 +311,7 @@ pub fn run_with_sink(
                     st.current_rate = current_rate;
                     st.in_gap = currently_in_gap;
                     st.in_burst = currently_in_burst;
+                    st.in_cardinality_spike = currently_in_spike;
                     // Buffer the metric event for scrape endpoints. The clone
                     // cost is bounded by MAX_RECENT_METRICS (default 100).
                     st.push_metric(event);
@@ -305,6 +353,7 @@ mod tests {
             generator: GeneratorConfig::Constant { value: 1.0 },
             gaps,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
             sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
@@ -463,6 +512,7 @@ mod tests {
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
             gaps,
             bursts,
+            cardinality_spikes: None,
             labels: None,
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
             sink: crate::sink::SinkConfig::Stdout,
@@ -790,6 +840,143 @@ mod tests {
         assert!(
             newlines > 0,
             "some events must have been emitted before shutdown"
+        );
+    }
+
+    // ---- Integration: cardinality spikes inject dynamic labels ----------------
+
+    /// Helper that builds a ScenarioConfig with a cardinality spike.
+    fn make_config_with_spike(
+        rate: f64,
+        duration: &str,
+        spike: crate::config::CardinalitySpikeConfig,
+    ) -> crate::config::ScenarioConfig {
+        crate::config::ScenarioConfig {
+            name: "up".to_string(),
+            rate,
+            duration: Some(duration.to_string()),
+            generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: Some(vec![spike]),
+            labels: None,
+            encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
+            sink: crate::sink::SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        }
+    }
+
+    /// When the entire run is inside a spike window, every output line must
+    /// contain the spike label key.
+    #[test]
+    fn integration_spike_labels_appear_during_spike_window() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "10s".to_string(),
+            r#for: "9s".to_string(),
+            cardinality: 5,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        };
+        // Run for 500ms inside a spike window (spike occupies 0..9s of each 10s cycle)
+        let config = make_config_with_spike(50.0, "500ms", spike);
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            assert!(
+                line.contains("pod_name="),
+                "every line during spike must contain pod_name label, got: {line:?}"
+            );
+        }
+    }
+
+    /// When no spike windows are configured, output does not contain spike labels.
+    #[test]
+    fn integration_no_spike_config_produces_no_spike_labels() {
+        let config = make_config(50.0, "200ms", None);
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            assert!(
+                !line.contains("pod_name="),
+                "without spike config, pod_name must not appear: {line:?}"
+            );
+        }
+    }
+
+    /// Counter strategy produces unique values bounded by cardinality.
+    #[test]
+    fn integration_spike_counter_strategy_produces_bounded_values() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "10s".to_string(),
+            r#for: "9s".to_string(),
+            cardinality: 3,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        };
+        let config = make_config_with_spike(50.0, "500ms", spike);
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let mut seen_values = std::collections::HashSet::new();
+        for line in output.lines() {
+            // Extract value of pod_name from Prometheus output like: pod_name="pod-0"
+            if let Some(start) = line.find("pod_name=\"") {
+                let rest = &line[start + 10..];
+                if let Some(end) = rest.find('"') {
+                    seen_values.insert(rest[..end].to_string());
+                }
+            }
+        }
+        // With cardinality=3, we should see at most 3 unique values
+        assert!(
+            seen_values.len() <= 3,
+            "counter strategy with cardinality=3 should produce at most 3 unique values, got {}: {:?}",
+            seen_values.len(),
+            seen_values
+        );
+        assert!(
+            !seen_values.is_empty(),
+            "must have produced at least one spike label value"
+        );
+    }
+
+    /// Stats correctly reports `in_cardinality_spike` during a spike window.
+    #[test]
+    fn integration_spike_stats_reports_in_cardinality_spike() {
+        use std::sync::{Arc, RwLock};
+
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "10s".to_string(),
+            r#for: "9s".to_string(),
+            cardinality: 5,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        };
+        let config = make_config_with_spike(50.0, "200ms", spike);
+        let mut sink = MemorySink::new();
+        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
+
+        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .expect("run must succeed");
+
+        // The entire 200ms run is inside the spike window (0..9s of 10s cycle).
+        // The final stats snapshot should show in_cardinality_spike = true.
+        let st = stats.read().expect("lock must not be poisoned");
+        assert!(
+            st.in_cardinality_spike,
+            "stats must report in_cardinality_spike=true during spike window"
         );
     }
 }

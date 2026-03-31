@@ -43,6 +43,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | File | Generator | Encoder | Sink | Description |
 |------|-----------|---------|------|-------------|
 | `burst-metrics.yaml` | sine | prometheus_text | stdout | Bursts to 5x rate for 2s every 10s |
+| `cardinality-spike.yaml` | sine | prometheus_text | stdout | Injects 100 unique `pod_name` labels for 5s every 10s |
 
 ## Log Scenarios
 

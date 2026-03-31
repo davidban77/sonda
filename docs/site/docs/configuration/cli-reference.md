@@ -126,6 +126,18 @@ sonda metrics [OPTIONS]
 | `--burst-for <DURATION>` | string | Burst duration. Must be less than `--burst-every`. |
 | `--burst-multiplier <FLOAT>` | float | Rate multiplier during bursts. |
 
+### Cardinality spikes
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--spike-label <KEY>` | string | -- | Target label key for the spike. All four required flags must be provided together. |
+| `--spike-every <DURATION>` | string | -- | Spike recurrence interval (e.g. `2m`). |
+| `--spike-for <DURATION>` | string | -- | Spike duration within each cycle (e.g. `30s`). Must be less than `--spike-every`. |
+| `--spike-cardinality <INT>` | integer | -- | Number of unique label values during the spike. |
+| `--spike-strategy <STRATEGY>` | string | `counter` | Value generation strategy: `counter` or `random`. |
+| `--spike-prefix <PREFIX>` | string | `{label}_` | Prefix for generated spike label values. |
+| `--spike-seed <INT>` | integer | `0` | RNG seed for the `random` strategy. |
+
 ### Labels, encoder, output
 
 | Flag | Type | Default | Description |
@@ -222,6 +234,12 @@ sonda logs [OPTIONS]
 
 The same gap and burst flags from `sonda metrics` are available for logs:
 `--gap-every`, `--gap-for`, `--burst-every`, `--burst-for`, `--burst-multiplier`.
+
+### Cardinality spikes
+
+The same cardinality spike flags from `sonda metrics` are available for logs:
+`--spike-label`, `--spike-every`, `--spike-for`, `--spike-cardinality`,
+`--spike-strategy`, `--spike-prefix`, `--spike-seed`.
 
 ### Examples
 

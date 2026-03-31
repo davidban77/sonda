@@ -14,7 +14,10 @@ use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
 use crate::model::metric::Labels;
 use crate::schedule::stats::ScenarioStats;
-use crate::schedule::{is_in_burst, is_in_gap, time_until_gap_end, BurstWindow, GapWindow};
+use crate::schedule::{
+    is_in_burst, is_in_gap, is_in_spike, time_until_gap_end, BurstWindow, CardinalitySpikeWindow,
+    GapWindow,
+};
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
@@ -105,6 +108,29 @@ pub fn run_logs_with_sink(
             })
         })
         .transpose()?;
+
+    // Build cardinality spike windows from config, if present.
+    let spike_windows: Vec<CardinalitySpikeWindow> = config
+        .cardinality_spikes
+        .as_ref()
+        .map(|spikes| {
+            spikes
+                .iter()
+                .map(|s| {
+                    Ok(CardinalitySpikeWindow {
+                        label: s.label.clone(),
+                        every: parse_duration(&s.every)?,
+                        duration: parse_duration(&s.r#for)?,
+                        cardinality: s.cardinality,
+                        strategy: s.strategy,
+                        prefix: s.prefix.clone().unwrap_or_else(|| format!("{}_", s.label)),
+                        seed: s.seed.unwrap_or(0),
+                    })
+                })
+                .collect::<Result<Vec<_>, SondaError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;
@@ -222,7 +248,24 @@ pub fn run_logs_with_sink(
 
             // Generate the log event and inject scenario-level labels.
             let mut event = generator.generate(tick);
-            event.labels = labels.clone();
+
+            // Inject cardinality spike labels when inside a spike window.
+            let currently_in_spike;
+            if spike_windows.is_empty() {
+                currently_in_spike = false;
+                event.labels = labels.clone();
+            } else {
+                let mut tl = labels.clone();
+                let mut any_spike = false;
+                for sw in &spike_windows {
+                    if is_in_spike(elapsed, sw) {
+                        tl.insert(sw.label.clone(), sw.label_value_for_tick(tick));
+                        any_spike = true;
+                    }
+                }
+                currently_in_spike = any_spike;
+                event.labels = tl;
+            }
 
             // Encode and write.
             buf.clear();
@@ -250,6 +293,7 @@ pub fn run_logs_with_sink(
                     st.current_rate = current_rate;
                     st.in_gap = currently_in_gap;
                     st.in_burst = currently_in_burst;
+                    st.in_cardinality_spike = currently_in_spike;
                 }
             }
 
@@ -302,6 +346,7 @@ mod tests {
             },
             gaps: None,
             bursts: None,
+            cardinality_spikes: None,
             labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
             sink: SinkConfig::Stdout,
@@ -690,5 +735,78 @@ sink:
         assert_eq!(cloned.rate, config.rate);
         let s = format!("{config:?}");
         assert!(s.contains("LogScenarioConfig") || s.contains("test_logs"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Cardinality spikes: labels appear in JSON output during spike window
+    // -------------------------------------------------------------------------
+
+    /// Helper that builds a LogScenarioConfig with a cardinality spike.
+    fn make_config_with_spike(
+        rate: f64,
+        duration: Option<&str>,
+        spike: crate::config::CardinalitySpikeConfig,
+    ) -> LogScenarioConfig {
+        let mut config = make_config(rate, duration);
+        config.cardinality_spikes = Some(vec![spike]);
+        config
+    }
+
+    /// When the entire run is inside a spike window, every JSON line must
+    /// contain the spike label key in the labels object.
+    #[test]
+    fn run_logs_with_sink_spike_labels_appear_during_spike_window() {
+        let spike = crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "10s".to_string(),
+            r#for: "9s".to_string(),
+            cardinality: 5,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: Some("pod-".to_string()),
+            seed: None,
+        };
+        let config = make_config_with_spike(10.0, Some("1s"), spike);
+        let mut sink = MemorySink::new();
+
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            !lines.is_empty(),
+            "runner must produce at least one line of output"
+        );
+
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert!(
+                parsed["labels"]["pod_name"].is_string(),
+                "every JSON line during spike must contain pod_name label; line: {line}"
+            );
+            let pod_val = parsed["labels"]["pod_name"].as_str().unwrap();
+            assert!(
+                pod_val.starts_with("pod-"),
+                "spike label value must start with prefix 'pod-', got: {pod_val}"
+            );
+        }
+    }
+
+    /// When no spike windows are configured, labels object must not contain spike keys.
+    #[test]
+    fn run_logs_with_sink_no_spike_config_produces_no_spike_labels() {
+        let config = make_config(10.0, Some("500ms"));
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert!(
+                parsed["labels"]["pod_name"].is_null(),
+                "without spike config, pod_name must not appear in labels; line: {line}"
+            );
+        }
     }
 }
