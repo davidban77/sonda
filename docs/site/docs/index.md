@@ -18,95 +18,29 @@ micro-bursts, cardinality spikes, and shaped value sequences.
 
 ## Quick install
 
-=== "Install script (recommended)"
+```bash
+curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+```
 
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
-    ```
+More installation options (Cargo, Docker, from source) in [Getting Started](getting-started.md#installation).
 
-    Pin a specific version:
-
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.3.0 sh
-    ```
-
-=== "Cargo"
-
-    ```bash
-    cargo install sonda
-    ```
-
-=== "Docker"
-
-    ```bash
-    docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
-      metrics --name up --rate 5 --duration 10s
-    ```
-
-=== "From source"
-
-    ```bash
-    git clone https://github.com/davidban77/sonda.git
-    cd sonda
-    cargo build --release -p sonda
-    ```
-
-## Your first metric
-
-Generate a sine wave metric and print it to stdout:
+## A quick taste
 
 ```bash
-sonda metrics \
-  --name cpu_usage \
-  --rate 2 \
-  --duration 2s \
-  --value-mode sine \
-  --amplitude 50 \
-  --period-secs 4 \
-  --offset 50 \
+sonda metrics --name cpu_usage --rate 2 --duration 2s \
+  --value-mode sine --amplitude 50 --offset 50 --period-secs 4 \
   --label host=web-01
 ```
 
-```text title="Output (stdout -- Prometheus exposition format)"
-cpu_usage{host="web-01"} 50 1774278042509
-cpu_usage{host="web-01"} 85.35533905932738 1774278043013
-cpu_usage{host="web-01"} 100 1774278043513
-cpu_usage{host="web-01"} 85.35533905932738 1774278044010
-...
+```text title="Output (Prometheus exposition format)"
+cpu_usage{host="web-01"} 50 1774997347438
+cpu_usage{host="web-01"} 85.35533905932738 1774997347943
+cpu_usage{host="web-01"} 100 1774997348440
+cpu_usage{host="web-01"} 85.35533905932738 1774997348943
 ```
 
-The sine wave oscillates between 0 (`offset - amplitude`) and 100 (`offset + amplitude`) with a
-4-second period. Each line is a valid Prometheus text exposition sample. Sonda also prints colored
-start/stop banners to stderr -- they never mix with your data. Use `-q` to suppress them.
-
-## Using a scenario file
-
-Define reusable scenarios in YAML:
-
-```yaml title="scenario.yaml"
-name: interface_oper_state
-rate: 1000
-duration: 30s
-generator:
-  type: sine
-  amplitude: 5.0
-  period_secs: 30
-  offset: 10.0
-gaps:
-  every: 2m
-  for: 20s
-labels:
-  hostname: t0-a1
-  zone: eu1
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
-```
-
-```bash
-sonda metrics --scenario scenario.yaml
-```
+One command, shaped values, labeled output. Define reusable scenarios in YAML for anything
+beyond quick one-offs -- [Getting Started](getting-started.md#using-a-scenario-file) shows you how.
 
 ## Features at a glance
 
@@ -121,7 +55,10 @@ sonda metrics --scenario scenario.yaml
 
 ## What next
 
-- [**Getting Started**](getting-started.md) -- install Sonda, generate your first metric and log
-- **Configuration** -- [scenario files](configuration/scenario-file.md), [generators](configuration/generators.md), [encoders](configuration/encoders.md), [sinks](configuration/sinks.md), [CLI reference](configuration/cli-reference.md)
-- **Deployment** -- [Docker](deployment/docker.md), [Kubernetes](deployment/kubernetes.md), [Server API](deployment/sonda-server.md)
-- **Guides** -- [alert testing](guides/alert-testing.md), [pipeline validation](guides/pipeline-validation.md), [example scenarios](guides/examples.md)
+Ready to dive in? **[Get started in 5 minutes -->](getting-started.md)**
+
+Or jump straight to what you need:
+
+- [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference
+- [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API
+- [**Guides**](guides/tutorial.md) -- tutorial, alert testing, pipeline validation, example scenarios
