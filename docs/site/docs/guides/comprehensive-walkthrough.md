@@ -647,6 +647,8 @@ Start the Kafka service:
 docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
 ```
 
+You do not need to create topics in advance. The Kafka broker has `auto.create.topics.enable=true`, and Sonda's Kafka sink retries metadata lookups to give the broker time to create the topic automatically.
+
 ```yaml title="examples/kafka-sink.yaml"
 name: kafka_constant
 rate: 100.0
