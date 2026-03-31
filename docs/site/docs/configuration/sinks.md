@@ -175,19 +175,24 @@ retries metadata lookups, giving the broker time to create the topic if
 Batches log lines and delivers them to Grafana Loki via HTTP POST. Each call to write appends one
 log line, and the batch is flushed when it reaches the configured size.
 
+Stream labels are configured at the **top-level** `labels` field of the scenario, not inside the
+sink block. This is consistent with how labels work for all other signal types. The scenario-level
+labels are used as Loki stream labels in the push API envelope.
+
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Base URL of the Loki instance. |
-| `labels` | map | no | `{}` | Stream labels attached to every batch. |
 | `batch_size` | integer | no | `100` | Flush threshold in number of log entries. |
 
-```yaml title="Loki sink"
+```yaml title="Loki sink with top-level labels"
+name: app_logs_loki
+rate: 10
+labels:
+  job: sonda
+  env: dev
 sink:
   type: loki
   url: "http://localhost:3100"
-  labels:
-    job: sonda
-    env: dev
   batch_size: 50
 ```
 

@@ -717,7 +717,7 @@ mod kafka_matrix {
     #[test]
     fn kafka_sink_with_empty_broker_returns_sink_error_not_panic() {
         let config = unreachable_kafka_config();
-        let result = sonda_core::sink::create_sink(&config);
+        let result = sonda_core::sink::create_sink(&config, None);
         assert!(result.is_err(), "empty broker string must produce an error");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),

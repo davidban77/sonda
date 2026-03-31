@@ -110,7 +110,7 @@ pub fn launch_scenario(
 
             match entry {
                 ScenarioEntry::Metrics(config) => {
-                    let mut sink = create_sink(&config.sink)?;
+                    let mut sink = create_sink(&config.sink, None)?;
                     run_with_sink(
                         &config,
                         sink.as_mut(),
@@ -119,7 +119,7 @@ pub fn launch_scenario(
                     )
                 }
                 ScenarioEntry::Logs(config) => {
-                    let mut sink = create_sink(&config.sink)?;
+                    let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
                     run_logs_with_sink(
                         &config,
                         sink.as_mut(),

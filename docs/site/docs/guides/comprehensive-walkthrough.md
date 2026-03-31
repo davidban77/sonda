@@ -603,14 +603,14 @@ generator:
     info: 0.7
     warn: 0.2
     error: 0.1
+labels:
+  job: sonda
+  env: dev
 encoder:
   type: json_lines
 sink:
   type: loki
   url: http://localhost:3100
-  labels:
-    job: sonda
-    env: dev
   batch_size: 50
 ```
 

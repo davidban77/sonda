@@ -34,7 +34,7 @@ use crate::SondaError;
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
-    let mut sink = create_sink(&config.sink)?;
+    let mut sink = create_sink(&config.sink, None)?;
     run_with_sink(config, sink.as_mut(), None, None)
 }
 

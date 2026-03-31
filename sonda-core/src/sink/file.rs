@@ -269,7 +269,7 @@ mod tests {
         let config = SinkConfig::File {
             path: path.to_str().unwrap().to_string(),
         };
-        let mut sink = create_sink(&config).expect("factory should create FileSink");
+        let mut sink = create_sink(&config, None).expect("factory should create FileSink");
         sink.write(b"via factory\n").expect("write should succeed");
         sink.flush().expect("flush should succeed");
 

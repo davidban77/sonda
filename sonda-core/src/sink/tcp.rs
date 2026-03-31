@@ -218,7 +218,7 @@ mod tests {
         let config = SinkConfig::Tcp {
             address: addr.clone(),
         };
-        let mut sink = create_sink(&config).expect("factory should create TcpSink");
+        let mut sink = create_sink(&config, None).expect("factory should create TcpSink");
         sink.write(b"via factory\n").expect("write");
         sink.flush().expect("flush");
         drop(sink);
