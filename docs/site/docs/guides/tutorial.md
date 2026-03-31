@@ -1,42 +1,15 @@
 # Tutorial
 
-This tutorial walks you through Sonda's features step by step, starting with a single CLI
-command and building up to multi-scenario runs, log generation, and pushing to real backends.
+This tutorial picks up where [Getting Started](../getting-started.md) left off. You have
+Sonda installed and have run your first metric and log. Now let's explore the full range of
+generators, encoders, sinks, and advanced features.
 
 **What you need:**
 
 - Sonda installed ([Getting Started](../getting-started.md) covers installation)
 - Docker and Docker Compose (needed for [The Server API](#the-server-api) and [Pushing to a Backend](#pushing-to-a-backend) sections only)
 
----
-
-## Your First Metric
-
-If you haven't installed Sonda yet, follow the [Getting Started](../getting-started.md) guide
-first. It covers the basics of installation and running `sonda metrics`. Here we will pick up
-with something more interesting.
-
-Set a specific value with `--offset` and add labels to match real Prometheus metrics:
-
-```bash
-sonda metrics --name http_requests_total --rate 1 --duration 5s \
-  --offset 1 --label env=prod --label region=us-east
-```
-
-```text
-▶ http_requests_total  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 5s
-http_requests_total{env="prod",region="us-east"} 1 1711900000000
-http_requests_total{env="prod",region="us-east"} 1 1711900001000
-http_requests_total{env="prod",region="us-east"} 1 1711900002000
-```
-
-Each line has three parts: **metric name** (with labels), **value**, and **timestamp** in Unix milliseconds.
-
-!!! tip "Status lines"
-    Lines starting with `▶` and `■` are status output printed to stderr. Pipe stdout freely --
-    status messages will not interfere. Use `--quiet` to suppress them entirely.
-
-Now that you can generate a basic metric, let's explore the different value shapes Sonda can produce.
+Let's start with the different value shapes Sonda can produce.
 
 ---
 
@@ -391,76 +364,50 @@ So far we've focused on metrics. Sonda also generates structured log events.
 
 ## Generating Logs
 
-Need to test your log pipeline? Sonda generates structured log events in two modes:
-**template** for synthetic messages with randomized fields, and **replay** for re-emitting
-lines from an existing log file.
+[Getting Started](../getting-started.md#generating-logs) showed basic log generation. Sonda
+supports two log modes -- **template** for synthetic messages with randomized fields, and
+**replay** for re-emitting lines from an existing log file. Let's explore what each can do
+with YAML scenarios.
 
-=== "Template mode"
+### Template mode with field pools
 
-    From the CLI, generate simple logs:
+The CLI `--message` flag supports template syntax, but placeholder tokens like `{ip}` render
+as literal text. For dynamic log messages with randomized fields, use a YAML scenario:
 
-    ```bash
-    sonda logs --mode template --rate 5 --duration 5s \
-      --message "User logged in from {ip}"
-    ```
+```bash
+sonda logs --scenario examples/log-template.yaml --duration 5s
+```
 
-    !!! note "Field pools require YAML"
-        The `--message` CLI flag supports template syntax, but placeholder tokens like `{ip}`
-        render as literal text unless you define `field_pools` in a YAML scenario. For dynamic
-        log messages, use a scenario file.
+The `examples/log-template.yaml` file defines multiple message templates, each with its own
+pool of randomized field values and severity weights. See
+[Generators](../configuration/generators.md) for the full template configuration reference.
 
-    For rich logs with field pools and severity weights, use a YAML scenario:
+### Replay mode
 
-    ```bash
-    sonda logs --scenario examples/log-template.yaml --duration 10s
-    ```
+Replay lines from an existing log file:
 
-    ```yaml title="examples/log-template.yaml (excerpt)"
-    generator:
-      type: template
-      templates:
-        - message: "Request from {ip} to {endpoint} returned {status}"
-          field_pools:
-            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3", "192.168.1.10"]
-            endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
-            status: ["200", "201", "400", "404", "500"]
-        - message: "Service {service} processed {count} events in {duration_ms}ms"
-          field_pools:
-            service: ["ingest", "transform", "export"]
-            count: ["1", "10", "100", "1000"]
-            duration_ms: ["5", "12", "47", "200"]
-      severity_weights:
-        info: 0.7
-        warn: 0.2
-        error: 0.1
-    ```
+```bash
+sonda logs --scenario examples/log-replay.yaml
+```
 
-=== "Replay mode"
+```yaml title="examples/log-replay.yaml"
+name: app_logs_replay
+rate: 5
+duration: 30s
+generator:
+  type: replay
+  file: examples/sample-app.log
+encoder:
+  type: json_lines
+sink:
+  type: stdout
+```
 
-    Replay lines from an existing log file:
+Lines are replayed in order and cycle back to the start when the file is exhausted.
 
-    ```bash
-    sonda logs --scenario examples/log-replay.yaml
-    ```
-
-    ```yaml title="examples/log-replay.yaml"
-    name: app_logs_replay
-    rate: 5
-    duration: 30s
-    generator:
-      type: replay
-      file: examples/sample-app.log
-    encoder:
-      type: json_lines
-    sink:
-      type: stdout
-    ```
-
-    Lines are replayed in order and cycle back to the start when the file is exhausted.
-
-    !!! tip "Bring your own log file"
-        The example uses `examples/sample-app.log` which ships with Sonda. To replay your
-        own logs, point `file:` at any text file -- one log line per line.
+!!! tip "Bring your own log file"
+    The example uses `examples/sample-app.log` which ships with Sonda. To replay your
+    own logs, point `file:` at any text file -- one log line per line.
 
 ### Syslog output
 

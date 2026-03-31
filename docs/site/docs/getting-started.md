@@ -93,12 +93,12 @@ cpu_usage 0 1774277934523
 
 Each line on stdout is Prometheus exposition format: `metric_name value timestamp_ms`.
 
-!!! tip
+!!! tip "stderr vs stdout"
     Status banners go to stderr, data goes to stdout. When you redirect or pipe stdout,
     only data flows through. Use `--quiet` / `-q` to suppress banners entirely:
     `sonda -q metrics --name cpu_usage --rate 2 --duration 5s`
 
-The default generator is `constant` with a value of `0.0`. To make it more interesting, use a
+The default generator is `constant` with a value of `0.0`. To produce a shaped signal, use a
 sine wave:
 
 ```bash
@@ -116,7 +116,8 @@ cpu_usage{host="web-01"} 90.45084971874738 1774277940081
 ```
 
 The sine wave oscillates between 0 and 100 (offset 50 +/- amplitude 50), completing one full
-cycle every 10 seconds.
+cycle every 10 seconds. The [Tutorial](guides/tutorial.md#generators) covers all six generators
+in detail.
 
 ## Using a scenario file
 
@@ -157,85 +158,31 @@ interface_oper_state{hostname="t0-a1",zone="eu1"} 10.002094395041146 17742779441
 ...
 ```
 
-You can override any field from the command line. CLI flags take precedence over the YAML file:
-
-```bash
-sonda metrics --scenario examples/basic-metrics.yaml --duration 5s --rate 2
-```
-
 ## Generating logs
 
-Sonda also generates structured log events. The simplest command:
+Sonda also generates structured log events:
 
 ```bash
 sonda logs --mode template --rate 2 --duration 3s
 ```
 
 ```json title="Output"
-{"timestamp":"2026-03-23T14:59:04.840Z","severity":"info","message":"synthetic log event","fields":{}}
-{"timestamp":"2026-03-23T14:59:05.345Z","severity":"info","message":"synthetic log event","fields":{}}
-{"timestamp":"2026-03-23T14:59:05.845Z","severity":"info","message":"synthetic log event","fields":{}}
+{"timestamp":"2026-03-23T14:59:04.840Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
+{"timestamp":"2026-03-23T14:59:05.345Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
+{"timestamp":"2026-03-23T14:59:05.845Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
 ...
 ```
 
-For richer log output, use a scenario file with templates and field pools. The repository
-includes `examples/log-template.yaml` with multiple message templates:
-
-```yaml title="examples/log-template.yaml"
-name: app_logs_template
-rate: 10
-duration: 60s
-
-generator:
-  type: template
-  templates:
-    - message: "Request from {ip} to {endpoint} returned {status}"
-      field_pools:
-        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3", "192.168.1.10"]
-        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs", "/api/v1/users"]
-        status: ["200", "201", "400", "404", "500"]
-    - message: "Service {service} processed {count} events in {duration_ms}ms"
-      field_pools:
-        service: ["ingest", "transform", "export"]
-        count: ["1", "10", "100", "1000"]
-        duration_ms: ["5", "12", "47", "200"]
-  severity_weights:
-    info: 0.7
-    warn: 0.2
-    error: 0.1
-  seed: 42
-
-encoder:
-  type: json_lines
-sink:
-  type: stdout
-```
-
-```bash
-sonda logs --scenario examples/log-template.yaml --duration 3s
-```
-
-```json title="Output"
-{"timestamp":"2026-03-23T14:59:08.405Z","severity":"info","message":"Request from 10.0.0.3 to /api/v1/users returned 404","fields":{"endpoint":"/api/v1/users","ip":"10.0.0.3","status":"404"}}
-{"timestamp":"2026-03-23T14:59:08.510Z","severity":"error","message":"Service transform processed 100 events in 47ms","fields":{"count":"100","duration_ms":"47","service":"transform"}}
-{"timestamp":"2026-03-23T14:59:08.610Z","severity":"error","message":"Request from 10.0.0.3 to /api/v1/metrics returned 500","fields":{"endpoint":"/api/v1/metrics","ip":"10.0.0.3","status":"500"}}
-...
-```
+For richer logs with field pools, severity weights, and multiple templates, see the
+[Tutorial](guides/tutorial.md#generating-logs).
 
 ## What next
 
-- [**Tutorial**](guides/tutorial.md) -- continue the hands-on walkthrough with generators,
-  encoders, sinks, log generation, and multi-scenario runs.
-- [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario
-  fields, gaps, bursts, and multi-scenario mode.
-- [**Generators**](configuration/generators.md) -- all value generators (constant, sine, sawtooth,
-  uniform, sequence, CSV replay) and log generators.
-- [**Encoders**](configuration/encoders.md) -- output formats: Prometheus text, InfluxDB, JSON,
-  syslog, remote write.
-- [**Sinks**](configuration/sinks.md) -- output destinations: stdout, file, TCP, UDP, HTTP push,
-  remote write, Kafka, Loki.
-- [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and
-  `run` subcommands.
-- [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose.
-- [**Kubernetes**](deployment/kubernetes.md) -- deploy with Helm.
-- [**Server API**](deployment/sonda-server.md) -- start and manage scenarios over HTTP.
+You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every generator,
+encoder, sink, and advanced feature step by step.
+
+When you need specific details:
+
+- [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario fields
+- [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
+- [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
