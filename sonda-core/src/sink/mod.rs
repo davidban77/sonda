@@ -146,14 +146,14 @@ pub enum SinkConfig {
     /// reaches `batch_size` entries, it is automatically flushed as a single POST
     /// to `{url}/loki/api/v1/push`. Call `flush()` at shutdown to send any
     /// remaining buffered entries.
+    ///
+    /// Stream labels are sourced from the scenario-level `labels` configuration
+    /// and passed to [`create_sink()`] via the `labels` parameter, keeping label
+    /// config consistent with all other signal types.
     #[serde(rename = "loki")]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
         url: String,
-
-        /// Stream labels attached to every batch, e.g. `{"job": "sonda", "env": "dev"}`.
-        #[serde(default)]
-        labels: HashMap<String, String>,
 
         /// Flush threshold in log entries. Defaults to `100` if not specified.
         #[serde(default)]
@@ -162,7 +162,15 @@ pub enum SinkConfig {
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
-pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
+///
+/// The optional `labels` parameter is used only by the Loki sink to set stream
+/// labels. For all other sink types, pass `None`. Log scenarios pass the
+/// scenario-level labels here so that Loki stream labels are configured at the
+/// same level as every other signal type.
+pub fn create_sink(
+    config: &SinkConfig,
+    labels: Option<&HashMap<String, String>>,
+) -> Result<Box<dyn Sink>, SondaError> {
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
@@ -190,17 +198,10 @@ pub fn create_sink(config: &SinkConfig) -> Result<Box<dyn Sink>, SondaError> {
         SinkConfig::Kafka { brokers, topic } => {
             Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
         }
-        SinkConfig::Loki {
-            url,
-            labels,
-            batch_size,
-        } => {
+        SinkConfig::Loki { url, batch_size } => {
             let bs = batch_size.unwrap_or(100);
-            Ok(Box::new(loki::LokiSink::new(
-                url.clone(),
-                labels.clone(),
-                bs,
-            )?))
+            let loki_labels = labels.cloned().unwrap_or_default();
+            Ok(Box::new(loki::LokiSink::new(url.clone(), loki_labels, bs)?))
         }
     }
 }
@@ -211,13 +212,13 @@ mod tests {
 
     #[test]
     fn create_sink_stdout_returns_ok() {
-        let result = create_sink(&SinkConfig::Stdout);
+        let result = create_sink(&SinkConfig::Stdout, None);
         assert!(result.is_ok());
     }
 
     #[test]
     fn create_sink_stdout_write_and_flush_succeed() {
-        let mut sink = create_sink(&SinkConfig::Stdout).unwrap();
+        let mut sink = create_sink(&SinkConfig::Stdout, None).unwrap();
         assert!(sink.write(b"").is_ok());
         assert!(sink.flush().is_ok());
     }
@@ -234,8 +235,8 @@ mod tests {
         let config = SinkConfig::Stdout;
         let cloned = config.clone();
         // Both variants should produce valid sinks
-        assert!(create_sink(&config).is_ok());
-        assert!(create_sink(&cloned).is_ok());
+        assert!(create_sink(&config, None).is_ok());
+        assert!(create_sink(&cloned, None).is_ok());
     }
 
     #[test]
@@ -535,7 +536,7 @@ sink:
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
         };
-        let result = create_sink(&config);
+        let result = create_sink(&config, None);
         assert!(
             result.is_err(),
             "create_sink should propagate the broker connection failure"
@@ -550,7 +551,7 @@ sink:
             brokers: String::new(),
             topic: "sonda-test".to_string(),
         };
-        let result = create_sink(&config);
+        let result = create_sink(&config, None);
         assert!(
             result.is_err(),
             "create_sink should reject an empty broker string"

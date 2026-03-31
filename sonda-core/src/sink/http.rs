@@ -698,7 +698,7 @@ batch_size: 8192
             headers: None,
         };
         // Construction must succeed (no network call yet).
-        let result = create_sink(&config);
+        let result = create_sink(&config, None);
         assert!(
             result.is_ok(),
             "factory must return Ok for valid http_push config"
@@ -714,7 +714,7 @@ batch_size: 8192
             batch_size: None,
             headers: None,
         };
-        assert!(create_sink(&config).is_ok());
+        assert!(create_sink(&config, None).is_ok());
     }
 
     #[test]
@@ -725,7 +725,7 @@ batch_size: 8192
             batch_size: None,
             headers: None,
         };
-        let result = create_sink(&config);
+        let result = create_sink(&config, None);
         assert!(result.is_err(), "invalid URL must cause factory to fail");
     }
 
@@ -740,7 +740,7 @@ batch_size: 8192
             batch_size: Some(10_000),
             headers: None,
         };
-        let mut sink = create_sink(&config).expect("factory ok");
+        let mut sink = create_sink(&config, None).expect("factory ok");
         sink.write(b"end-to-end").expect("write");
         sink.flush().expect("flush");
 
@@ -870,7 +870,7 @@ batch_size: 8192
             batch_size: Some(10_000),
             headers: Some(hdr),
         };
-        let mut sink = create_sink(&config).expect("factory ok");
+        let mut sink = create_sink(&config, None).expect("factory ok");
         sink.write(b"factory-test").expect("write");
         sink.flush().expect("flush");
 

@@ -145,7 +145,8 @@ fn log_template_yaml_sink_factory_succeeds() {
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
         serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
-    let _sink = create_sink(&config.sink).expect("sink factory must succeed for log-template.yaml");
+    let _sink =
+        create_sink(&config.sink, None).expect("sink factory must succeed for log-template.yaml");
 }
 
 #[test]

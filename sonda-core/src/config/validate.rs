@@ -859,7 +859,7 @@ sink:
         // Encoder must exist (just check it does not panic on creation)
         drop(encoder);
 
-        let sink = create_sink(&config.sink);
+        let sink = create_sink(&config.sink, None);
         assert!(sink.is_ok(), "sink must be created without error");
     }
 

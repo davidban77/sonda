@@ -183,7 +183,7 @@ fn basic_metrics_yaml_factories_all_succeed() {
     let _enc = create_encoder(&config.encoder);
 
     // Sink factory must succeed.
-    let _sink = create_sink(&config.sink)
+    let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for basic-metrics.yaml: {e}"));
 }
 
@@ -315,7 +315,7 @@ fn simple_constant_yaml_factories_all_succeed() {
     let _enc = create_encoder(&config.encoder);
 
     // Sink factory must succeed.
-    let _sink = create_sink(&config.sink)
+    let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for simple-constant.yaml: {e}"));
 }
 
@@ -384,7 +384,7 @@ fn cardinality_spike_yaml_factories_all_succeed() {
     );
 
     let _enc = create_encoder(&config.encoder);
-    let _sink = create_sink(&config.sink)
+    let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for cardinality-spike.yaml: {e}"));
 }
 
@@ -413,7 +413,7 @@ fn both_example_yamls_pass_full_round_trip() {
             "{filename}: generator.value(0) must be finite, got {v}"
         );
         let _enc = create_encoder(&config.encoder);
-        let _sink = create_sink(&config.sink)
+        let _sink = create_sink(&config.sink, None)
             .unwrap_or_else(|e| panic!("{filename}: sink factory failed: {e}"));
     }
 }

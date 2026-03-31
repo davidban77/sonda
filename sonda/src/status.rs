@@ -307,7 +307,6 @@ mod tests {
     fn sink_display_loki() {
         let config = SinkConfig::Loki {
             url: "http://localhost:3100/loki/api/v1/push".to_string(),
-            labels: HashMap::new(),
             batch_size: None,
         };
         assert_eq!(

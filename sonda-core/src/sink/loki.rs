@@ -721,11 +721,9 @@ mod tests {
         match config {
             SinkConfig::Loki {
                 ref url,
-                ref labels,
                 batch_size,
             } => {
                 assert_eq!(url, "http://localhost:3100");
-                assert!(labels.is_empty(), "labels should default to empty HashMap");
                 assert!(batch_size.is_none(), "batch_size should default to None");
             }
             other => panic!("expected Loki variant, got {other:?}"),
@@ -733,25 +731,19 @@ mod tests {
     }
 
     #[test]
-    fn sink_config_loki_deserializes_with_all_fields() {
+    fn sink_config_loki_deserializes_with_batch_size() {
         let yaml = r#"
 type: loki
 url: "http://localhost:3100"
-labels:
-  job: sonda
-  env: dev
 batch_size: 50
 "#;
         let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::Loki {
                 ref url,
-                ref labels,
                 batch_size,
             } => {
                 assert_eq!(url, "http://localhost:3100");
-                assert_eq!(labels.get("job").map(String::as_str), Some("sonda"));
-                assert_eq!(labels.get("env").map(String::as_str), Some("dev"));
                 assert_eq!(batch_size, Some(50));
             }
             other => panic!("expected Loki variant, got {other:?}"),
@@ -776,12 +768,61 @@ batch_size: 50
     fn create_sink_loki_with_valid_url_returns_ok() {
         let config = SinkConfig::Loki {
             url: "http://localhost:3100".to_string(),
-            labels: HashMap::new(),
             batch_size: None,
         };
         assert!(
-            create_sink(&config).is_ok(),
+            create_sink(&config, None).is_ok(),
             "factory must return Ok for valid loki config"
+        );
+    }
+
+    #[test]
+    fn create_sink_loki_with_labels_passes_them_to_sink() {
+        let (listener, url) = mock_loki_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
+
+        let config = SinkConfig::Loki {
+            url,
+            batch_size: None,
+        };
+        let mut labels = HashMap::new();
+        labels.insert("job".to_string(), "sonda".to_string());
+        let mut sink = create_sink(&config, Some(&labels)).expect("factory ok");
+
+        sink.write(b"test\n").expect("write");
+        sink.flush().expect("flush");
+
+        let body_bytes = handle.join().expect("mock server thread panicked");
+        let body = String::from_utf8(body_bytes).expect("UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["streams"][0]["stream"]["job"].as_str(),
+            Some("sonda"),
+            "labels passed to create_sink must appear in Loki stream"
+        );
+    }
+
+    #[test]
+    fn create_sink_loki_with_none_labels_uses_empty_labels() {
+        let (listener, url) = mock_loki_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
+
+        let config = SinkConfig::Loki {
+            url,
+            batch_size: None,
+        };
+        let mut sink = create_sink(&config, None).expect("factory ok");
+
+        sink.write(b"test\n").expect("write");
+        sink.flush().expect("flush");
+
+        let body_bytes = handle.join().expect("mock server thread panicked");
+        let body = String::from_utf8(body_bytes).expect("UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let stream = &parsed["streams"][0]["stream"];
+        assert!(
+            stream.as_object().map(|m| m.is_empty()).unwrap_or(false),
+            "None labels must produce empty stream object"
         );
     }
 
@@ -797,10 +838,9 @@ batch_size: 50
         let url = format!("http://127.0.0.1:{port}");
         let config = SinkConfig::Loki {
             url,
-            labels: HashMap::new(),
             batch_size: None, // should default to 100
         };
-        let mut sink = create_sink(&config).expect("factory ok");
+        let mut sink = create_sink(&config, None).expect("factory ok");
 
         // Write 99 lines — must not trigger a flush (no server running).
         for i in 0..99u32 {
@@ -814,10 +854,9 @@ batch_size: 50
     fn create_sink_loki_with_invalid_url_returns_err() {
         let config = SinkConfig::Loki {
             url: "not-http://bad".to_string(),
-            labels: HashMap::new(),
             batch_size: None,
         };
-        let result = create_sink(&config);
+        let result = create_sink(&config, None);
         assert!(result.is_err(), "invalid URL must cause factory to fail");
     }
 
@@ -840,6 +879,7 @@ batch_size: 50
         use crate::config::LogScenarioConfig;
 
         // Read the content inline to avoid filesystem coupling in unit tests.
+        // Labels are at the top level, not inside the sink block.
         let yaml = r#"
 name: app_logs_loki
 rate: 10
@@ -855,28 +895,27 @@ generator:
     info: 0.7
     warn: 0.2
     error: 0.1
+labels:
+  job: sonda
+  env: dev
 encoder:
   type: json_lines
 sink:
   type: loki
   url: http://localhost:3100
-  labels:
-    job: sonda
-    env: dev
   batch_size: 50
 "#;
         let config: LogScenarioConfig =
             serde_yaml::from_str(yaml).expect("loki-json-lines.yaml must deserialize correctly");
         assert_eq!(config.name, "app_logs_loki");
         assert!((config.rate - 10.0).abs() < f64::EPSILON);
+        // Labels are at the scenario level, not inside the sink config.
+        let labels = config.labels.as_ref().expect("labels must be present");
+        assert_eq!(labels.get("job").map(String::as_str), Some("sonda"));
+        assert_eq!(labels.get("env").map(String::as_str), Some("dev"));
         match &config.sink {
-            SinkConfig::Loki {
-                url,
-                labels,
-                batch_size,
-            } => {
+            SinkConfig::Loki { url, batch_size } => {
                 assert_eq!(url, "http://localhost:3100");
-                assert_eq!(labels.get("job").map(String::as_str), Some("sonda"));
                 assert_eq!(batch_size, &Some(50));
             }
             other => panic!("expected Loki sink, got {other:?}"),

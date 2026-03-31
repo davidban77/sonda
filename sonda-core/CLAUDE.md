@@ -90,7 +90,9 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 1. Create `src/sink/your_sink.rs` implementing the `Sink` trait.
 2. `write(&mut self, data: &[u8])` delivers one encoded event. `flush(&mut self)` forces delivery.
 3. Sinks own their I/O resources (file handles, sockets, etc.).
-4. Register in `src/sink/mod.rs` factory.
+4. Register in `src/sink/mod.rs` factory. The `create_sink()` function accepts an optional
+   `labels: Option<&HashMap<String, String>>` parameter. Most sinks ignore this (pass `None`).
+   The Loki sink uses it for stream labels, sourced from the scenario-level `labels` config.
 5. Test with a mock or in-memory buffer sink.
 
 ## Performance Guidelines

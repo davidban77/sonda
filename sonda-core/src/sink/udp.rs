@@ -263,7 +263,7 @@ mod tests {
         let config = SinkConfig::Udp {
             address: addr.clone(),
         };
-        let mut sink = create_sink(&config).expect("factory should create UdpSink");
+        let mut sink = create_sink(&config, None).expect("factory should create UdpSink");
         sink.write(b"via factory\n").expect("write");
 
         let mut buf = [0u8; 1024];
