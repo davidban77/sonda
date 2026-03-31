@@ -215,7 +215,7 @@ Encoders control **how** each data point is serialized. The same metric looks di
 
 !!! info "remote_write encoder"
     The `remote_write` encoder produces Prometheus remote write protobuf format. It requires
-    the `remote_write` feature flag when building from source. Pre-built binaries and Docker
+    the `remote-write` feature flag when building from source. Pre-built binaries and Docker
     images include it by default. See [Encoders](../configuration/encoders.md) for details.
 
 ---
