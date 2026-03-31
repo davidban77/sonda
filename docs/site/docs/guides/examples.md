@@ -35,6 +35,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `prometheus-http-push.yaml` | sine | prometheus_text | http_push | Prometheus text POSTed in batches |
 | `precision-formatting.yaml` | sine | prom/json/influx | stdout | Demonstrates `precision` field with 3 encoders |
 | `remote-write-vm.yaml` | sine | remote_write | remote_write | Protobuf remote write to VictoriaMetrics* |
+| `multi-format-test.yaml` | constant | influx_lp | file | InfluxDB line protocol for pipeline validation |
 
 *Pre-built binaries include remote-write support. When building from source, add `--features remote-write`. See [Encoders](../configuration/encoders.md) for details.
 
@@ -67,6 +68,7 @@ sonda logs --scenario examples/log-template.yaml
 | `docker-metrics.yaml` | sine | prometheus_text | stdout | CPU wave (30--70%) for the Docker Compose stack |
 | `docker-alerts.yaml` | sine | prometheus_text | stdout | Threshold-crossing sine for alert rule testing |
 | `victoriametrics-metrics.yaml` | sine | prometheus_text | http_push | Push directly to VictoriaMetrics |
+| `vm-push-scenario.yaml` | sine | prometheus_text | http_push | Push cpu_usage to VictoriaMetrics for alert testing |
 
 See [Docker deployment](../deployment/docker.md) for the full stack setup.
 
@@ -74,11 +76,34 @@ See [Docker deployment](../deployment/docker.md) for the full stack setup.
 
 | File | Generator | Encoder | Sink | Description |
 |------|-----------|---------|------|-------------|
+| `sine-threshold-test.yaml` | sine | prometheus_text | stdout | Sine wave crossing a 90% threshold |
+| `for-duration-test.yaml` | sequence | prometheus_text | stdout | Sequence pattern for `for:` duration testing |
+| `constant-threshold-test.yaml` | constant | prometheus_text | stdout | Sustained 95% breach for `for: 5m` alerts |
+| `gap-alert-test.yaml` | constant | prometheus_text | stdout | Alert resolution via periodic gaps |
 | `sequence-alert-test.yaml` | sequence | prometheus_text | stdout | CPU spike pattern crossing a 90% threshold |
 | `csv-replay-metrics.yaml` | csv_replay | prometheus_text | stdout | Replay a real production incident from CSV |
-| `recording-rule-test.yaml` | constant | prometheus_text | http_push | Known value for recording rule validation |
+| `cardinality-alert-test.yaml` | constant | prometheus_text | http_push | 500-value cardinality spike for cardinality alerts |
 
 See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough.
+
+## Recording Rules
+
+| File | Generator | Encoder | Sink | Description |
+|------|-----------|---------|------|-------------|
+| `recording-rule-test.yaml` | constant | prometheus_text | http_push | Known value for sum-based recording rule validation |
+| `rate-rule-input.yaml` | sawtooth | prometheus_text | http_push | Sawtooth ramp for rate()-based recording rule testing |
+
+See [Recording Rules](recording-rules.md) for the step-by-step guide.
+
+## Pipeline Validation
+
+| File | Generator | Encoder | Sink | Description |
+|------|-----------|---------|------|-------------|
+| `e2e-scenario.yaml` | constant | prometheus_text | http_push | Push a known value to VictoriaMetrics for e2e checks |
+| `multi-format-test.yaml` | constant | influx_lp | file | InfluxDB line protocol to file for format validation |
+| `multi-pipeline-test.yaml` | constant + template | prom + json | stdout + file | Metrics and logs concurrently |
+
+See [Pipeline Validation](pipeline-validation.md) for usage patterns.
 
 ## Multi-Scenario
 
@@ -86,6 +111,7 @@ See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough.
 |------|--------|-------------|
 | `multi-scenario.yaml` | metrics + logs | Run both signal types concurrently |
 | `multi-metric-correlation.yaml` | metrics | Correlated CPU + memory with `phase_offset` for compound alerts |
+| `multi-pipeline-test.yaml` | metrics + logs | Pipeline validation with concurrent signal types |
 
 Run multi-scenario files with `sonda run`:
 

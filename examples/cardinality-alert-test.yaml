@@ -1,0 +1,41 @@
+# Cardinality explosion alert test.
+#
+# Generates a controlled burst of unique label values to test
+# cardinality-limiting alert rules (e.g., count(up) > 10000).
+#
+# During the 10-second spike window, each tick injects a `pod_name` label
+# with one of 500 unique values (pod-0 through pod-499), producing 500
+# distinct series. Outside the window, only one series is emitted.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/cardinality-alert-test.yaml
+
+name: http_requests_total
+rate: 10
+duration: 120s
+
+generator:
+  type: constant
+  value: 1.0
+
+labels:
+  job: web
+  env: staging
+
+cardinality_spikes:
+  - label: pod_name
+    every: 30s
+    for: 10s
+    cardinality: 500
+    strategy: counter
+    prefix: "pod-"
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"

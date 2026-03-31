@@ -1,0 +1,30 @@
+# Sine threshold test: verify a HighCPU alert fires when cpu_usage > 90.
+#
+# The sine wave oscillates between 0 and 100 with a 60-second period.
+# It crosses the 90 threshold for ~12 seconds per cycle (20.5% of each period).
+#
+# Math: offset=50, amplitude=50 => value = 50 + 50*sin(t)
+#   sin(x) > 0.8 when x is between arcsin(0.8) and pi - arcsin(0.8)
+#   That's ~20.5% of the cycle, or ~12.3 seconds out of 60.
+#
+# Usage:
+#   sonda metrics --scenario examples/sine-threshold-test.yaml
+
+name: cpu_usage
+rate: 1
+duration: 180s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

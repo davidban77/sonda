@@ -1,50 +1,26 @@
 # Alert Testing
 
-Test your Prometheus and VictoriaMetrics alerting rules with synthetic metrics before deploying
-them to production. Sonda generates the exact metric shapes to trigger alerts, so you can verify
-they fire (and resolve) exactly when you expect.
-
-## The Problem
-
 You write alert rules, deploy them, and hope they work. But common issues slip through:
+a `for: 5m` alert that never fires because the metric only breaches for 3 minutes, a gap-fill
+rule that triggers false positives during scrape outages, or a compound alert where two metrics
+never overlap. Sonda lets you generate the exact metric shapes to trigger (and resolve) alerts
+on demand, so you can catch these problems before they hit production.
 
-- An alert with `for: 5m` that never fires because the metric only breaches the threshold for 3 minutes.
-- A gap-fill rule that triggers a false alert during a 30-second scrape outage.
-- A compound alert (`A > 90 AND B > 85`) that never fires because the two metrics never overlap.
-
-Sonda solves this by generating metrics with **exact values**, **precise timing**, and
-**configurable failure patterns** -- all driven from a YAML file you can check into your repo.
+---
 
 ## Threshold Alerts
 
-**Goal**: verify a `HighCPU` alert fires when `cpu_usage > 90`.
+The most basic alert test: verify that a `HighCPU` rule fires when `cpu_usage > 90`.
 
-### The Sine Generator Math
+The sine generator produces a smooth wave that crosses your threshold predictably.
+With `amplitude=50` and `offset=50`, it oscillates between 0 and 100, crossing 90 for
+about 12 seconds per 60-second cycle.
 
-The sine generator produces: `value = offset + amplitude * sin(2 * pi * tick / period_ticks)`
+```bash
+sonda metrics --scenario examples/sine-threshold-test.yaml
+```
 
-With `amplitude=50` and `offset=50`, the wave oscillates between 0 and 100.
-A threshold at 90 is crossed when `sin(x) > 0.8`:
-
-- `sin(x) = 0.8` at `x = arcsin(0.8) = 0.927 radians` (53.1 degrees)
-- The sine exceeds 0.8 from `x = 0.927` to `x = pi - 0.927 = 2.214`
-- That is `1.287 / 6.283 = 20.5%` of each cycle
-- With a 60-second period: **~12.3 seconds above 90 per cycle**
-
-### Value at Each Tick
-
-| Tick (sec) | sin(2*pi*t/60) | Value | Above 90? |
-|------------|----------------|-------|-----------|
-| 0  | 0.000  | 50.0  | No  |
-| 5  | 0.500  | 75.0  | No  |
-| 10 | 0.866  | 93.3  | Yes |
-| 15 | 1.000  | 100.0 | Yes |
-| 20 | 0.866  | 93.3  | Yes |
-| 25 | 0.500  | 75.0  | No  |
-
-### Working Example
-
-```yaml title="sine-threshold-test.yaml"
+```yaml title="examples/sine-threshold-test.yaml"
 name: cpu_usage
 rate: 1
 duration: 180s
@@ -65,34 +41,47 @@ sink:
   type: stdout
 ```
 
-```bash
-sonda metrics --scenario sine-threshold-test.yaml
-```
-
-Output (one line per second):
-
-```
-cpu_usage{instance="server-01",job="node"} 50 1774287245640
-cpu_usage{instance="server-01",job="node"} 55.226 1774287246641
-cpu_usage{instance="server-01",job="node"} 60.395 1774287247645
-...
-cpu_usage{instance="server-01",job="node"} 93.301 1774287255641
-cpu_usage{instance="server-01",job="node"} 100.0 1774287260641
-```
-
 The metric crosses 90 around tick 9, stays above until tick 21, then drops -- giving you
-~12 seconds above threshold per 60-second cycle.
+roughly 12 seconds above threshold per cycle.
+
+??? info "Sine wave math"
+    The formula is: `value = offset + amplitude * sin(2 * pi * tick / period_ticks)`
+
+    With `amplitude=50` and `offset=50`, the threshold at 90 is crossed when `sin(x) > 0.8`:
+
+    - `sin(x) = 0.8` at `x = arcsin(0.8) = 0.927 radians`
+    - The sine exceeds 0.8 from `x = 0.927` to `x = pi - 0.927 = 2.214`
+    - That's `1.287 / 6.283 = 20.5%` of each cycle
+    - With a 60-second period: **~12.3 seconds above 90 per cycle**
+
+    | Tick (sec) | sin(2*pi*t/60) | Value | Above 90? |
+    |------------|----------------|-------|-----------|
+    | 0  | 0.000  | 50.0  | No  |
+    | 5  | 0.500  | 75.0  | No  |
+    | 10 | 0.866  | 93.3  | Yes |
+    | 15 | 1.000  | 100.0 | Yes |
+    | 20 | 0.866  | 93.3  | Yes |
+    | 25 | 0.500  | 75.0  | No  |
+
+Smooth waves are great for threshold crossings, but Prometheus `for:` clauses need precise timing control.
+
+---
 
 ## Testing `for:` Duration Behavior
 
 Prometheus alerts with a `for:` clause require the condition to be true for a **continuous**
-duration before firing. Use the sequence generator for exact control.
+duration before firing. You need exact control over how long the metric stays above threshold.
 
-### Sequence Generator Approach
+### Sequence generator
 
-The sequence generator steps through an explicit list of values, one per tick:
+The [sequence generator](../configuration/generators.md#sequence) steps through an explicit
+list of values, one per tick. Each value lasts exactly `1/rate` seconds:
 
-```yaml title="for-duration-test.yaml"
+```bash
+sonda metrics --scenario examples/for-duration-test.yaml
+```
+
+```yaml title="examples/for-duration-test.yaml"
 name: cpu_usage
 rate: 1
 duration: 80s
@@ -112,25 +101,22 @@ sink:
   type: stdout
 ```
 
+At `rate: 1`, ticks 5-9 are above 90 (5 seconds continuous), then the pattern repeats.
+Adjust the number of above-threshold values to match your `for:` duration.
+
+!!! tip "Matching your `for:` duration"
+    For a `for: 5m` alert, you need 300 consecutive above-threshold values at `rate: 1`.
+    Rather than typing 300 values, use the constant generator instead (next section).
+
+### Constant generator shortcut
+
+For simple sustained-threshold tests, the [constant generator](../configuration/generators.md#constant) is more practical:
+
 ```bash
-sonda metrics --scenario for-duration-test.yaml
+sonda metrics --scenario examples/constant-threshold-test.yaml
 ```
 
-```
-cpu_usage{instance="server-01",job="node"} 10 1774287178070
-cpu_usage{instance="server-01",job="node"} 10 1774287179075
-...
-cpu_usage{instance="server-01",job="node"} 95 1774287183075
-```
-
-Each value lasts exactly one second at `rate: 1`. Ticks 5-9 are above 90 (5 seconds), then the
-pattern repeats. Adjust the number of above-threshold values to match your `for:` duration.
-
-### Constant Generator Shortcut
-
-For simple sustained-threshold tests, use a constant generator:
-
-```yaml title="constant-threshold-test.yaml"
+```yaml title="examples/constant-threshold-test.yaml"
 name: cpu_usage
 rate: 1
 duration: 360s
@@ -150,23 +136,31 @@ sink:
 ```
 
 Run this for 6 minutes to test a `for: 5m` alert. The value stays at 95 for the entire
-duration -- the alert fires after 5 minutes of continuous threshold breach.
+duration -- the alert should fire after 5 minutes of continuous breach.
+
+Now that you can trigger alerts, what about testing when they resolve?
+
+---
 
 ## Testing Alert Resolution
 
-Use gap windows to control when metrics disappear. When a metric goes silent during a gap,
-Prometheus treats it as stale, causing the alert to resolve.
+When a metric goes silent during a gap, Prometheus treats it as stale and the alert resolves.
+Use [gap windows](../configuration/scenario-file.md) to control when metrics disappear.
 
 ```
-Time:  0s          30s         60s         90s        120s
+Time:  0s          40s         60s         100s        120s
        |-----------|xxxxxxxxxxx|-----------|xxxxxxxxxxx|
-       emit events   gap (30s)  emit events   gap (30s)
+       emit events   gap (20s)  emit events   gap (20s)
 ```
 
-Gaps occupy the **tail** of each cycle. With `every: 60s` and `for: 30s`, the gap runs from
-second 30 to second 60 of each cycle.
+Gaps occupy the **tail** of each cycle. With `every: 60s` and `for: 20s`, the gap runs from
+second 40 to second 60 of each cycle.
 
-```yaml title="gap-alert-test.yaml"
+```bash
+sonda metrics --scenario examples/gap-alert-test.yaml
+```
+
+```yaml title="examples/gap-alert-test.yaml"
 name: cpu_usage
 rate: 1
 duration: 300s
@@ -189,77 +183,120 @@ sink:
   type: stdout
 ```
 
-This keeps the value at 95 (above threshold) but introduces a 20-second gap every 60 seconds.
+The value stays at 95 (above threshold) but goes silent for 20 seconds every 60-second cycle.
 The alert enters pending state during the 40-second emit window but may not reach the `for:`
 duration before the gap resets it.
 
-## Pushing to VictoriaMetrics
+!!! tip "Combine with generators"
+    Gaps work with any generator. A sine wave with periodic gaps creates a realistic
+    "flapping service" pattern for alert testing.
 
-The fastest path to alert testing: push metrics into a TSDB and verify alerts fire.
+With single-metric alerts covered, let's move on to compound alerts that depend on multiple metrics.
 
-### HTTP Push (Prometheus Text Format)
+---
 
-Change the sink to push directly to VictoriaMetrics:
+## Multi-Metric Correlation
 
-```yaml title="vm-push-scenario.yaml"
-name: cpu_usage
-rate: 1
-duration: 120s
+Production alerts often depend on more than one metric. Compound rules like
+`cpu_usage > 90 AND memory_usage_percent > 85` require both conditions to be true
+simultaneously. Sonda supports this with `phase_offset` and `clock_group` in
+multi-scenario YAML files.
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
+| Field | Default | Description |
+|-------|---------|-------------|
+| `phase_offset` | `"0s"` | Delay before this scenario starts emitting |
+| `clock_group` | (none) | Groups scenarios under a shared timing reference |
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+```bash
+sonda run --scenario examples/multi-metric-correlation.yaml
 ```
 
-### Prometheus Remote Write (Protobuf)
+```yaml title="examples/multi-metric-correlation.yaml (excerpt)"
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    phase_offset: "0s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
+      repeat: true
+    # ...
 
-For vmagent relay or any remote-write-compatible receiver (Prometheus, Thanos, Cortex, Mimir,
-Grafana Cloud), use the `remote_write` encoder and sink pair:
-
-!!! note
-    Pre-built binaries and Docker images include remote-write support. The
-    `--features remote-write` flag is only needed when building from source:
-    `cargo build --features remote-write -p sonda`.
-
-```yaml title="remote-write-scenario.yaml"
-name: cpu_usage
-rate: 10
-duration: 60s
-
-generator:
-  type: sine
-  amplitude: 50
-  period_secs: 60
-  offset: 50
-
-labels:
-  instance: server-01
-  job: sonda
-
-encoder:
-  type: remote_write
-
-sink:
-  type: remote_write
-  url: "http://localhost:8428/api/v1/write"
-  batch_size: 100
+  - signal_type: metrics
+    name: memory_usage_percent
+    phase_offset: "3s"
+    clock_group: alert-test
+    generator:
+      type: sequence
+      values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
+      repeat: true
+    # ...
 ```
 
-The `remote_write` sink automatically batches TimeSeries into a single WriteRequest,
-snappy-compresses, and POSTs with the correct protocol headers. Compatible targets:
+### Understanding the timing
+
+```
+Wall time  cpu_usage (offset=0s)   memory_usage (offset=3s)
+--------   ---------------------   ------------------------
+t=0s       starts: 20             sleeping
+t=3s       95 (above threshold)   starts: 40
+t=6s       95                     88 (above threshold)
+t=8s       20 (drops)             88
+```
+
+The overlap window -- where **both** metrics are above threshold -- runs from t=6s to t=8s
+(2 seconds per cycle). For a `for: 5m` alert, extend the above-threshold sequences or use
+constant generators with a longer duration.
+
+See [Example Scenarios](examples.md) for the full `multi-metric-correlation.yaml` file.
+
+With local testing covered, let's push metrics to a real backend.
+
+---
+
+## Pushing to a Backend
+
+The fastest path to end-to-end alert testing: push metrics into a TSDB and verify alerts fire.
+
+=== "HTTP Push"
+
+    POST metrics directly to VictoriaMetrics using the Prometheus text import API:
+
+    ```bash
+    sonda metrics --scenario examples/vm-push-scenario.yaml
+    ```
+
+    ```yaml title="examples/vm-push-scenario.yaml (key fields)"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+    ```
+
+=== "Remote Write"
+
+    Use the Prometheus remote write protocol for native compatibility with any
+    remote-write receiver:
+
+    ```bash
+    sonda metrics --scenario examples/remote-write-vm.yaml
+    ```
+
+    ```yaml title="examples/remote-write-vm.yaml (key fields)"
+    encoder:
+      type: remote_write
+    sink:
+      type: remote_write
+      url: "http://localhost:8428/api/v1/write"
+      batch_size: 100
+    ```
+
+!!! warning "Remote write requires a feature flag when building from source"
+    Pre-built binaries and Docker images include remote-write support. When building from
+    source, add `--features remote-write`: `cargo build --features remote-write -p sonda`.
 
 | Target | URL |
 |--------|-----|
@@ -269,7 +306,7 @@ snappy-compresses, and POSTs with the correct protocol headers. Compatible targe
 | Thanos Receive | `http://localhost:19291/api/v1/receive` |
 | Cortex/Mimir | `http://localhost:9009/api/v1/push` |
 
-### Verify Data Arrived
+### Verify data arrived
 
 ```bash
 # Check that the series exists
@@ -279,42 +316,34 @@ curl "http://localhost:8428/api/v1/series?match[]={__name__='cpu_usage'}"
 curl "http://localhost:8428/api/v1/query?query=cpu_usage"
 ```
 
+!!! info "Docker Compose stack required"
+    These push scenarios require a running backend. Start the included stack with:
+    `docker compose -f examples/docker-compose-victoriametrics.yml up -d`.
+    See [Docker Deployment](../deployment/docker.md) for details.
+
+You can also use the pull model instead of pushing.
+
+---
+
 ## Scrape-Based Integration
 
 If you prefer the Prometheus pull model, sonda-server exposes a scrape endpoint for each
 running scenario.
 
-### Start sonda-server
+Start sonda-server and submit a scenario:
 
 ```bash
 cargo run -p sonda-server -- --port 8080
-```
 
-Submit a scenario:
-
-```bash
+# In another terminal:
 curl -X POST -H "Content-Type: text/yaml" \
-  --data-binary @sine-threshold-test.yaml \
+  --data-binary @examples/sine-threshold-test.yaml \
   http://localhost:8080/scenarios
 ```
 
-The response includes a scenario ID:
+The response includes a scenario ID. Configure Prometheus to scrape it:
 
-```json
-{"id": "a1b2c3d4-..."}
-```
-
-### Scrape Endpoint
-
-Each running scenario exposes its latest metrics at:
-
-```
-GET /scenarios/{id}/metrics
-```
-
-Configure Prometheus to scrape this endpoint:
-
-```yaml title="prometheus.yml"
+```yaml title="prometheus.yml (scrape config)"
 scrape_configs:
   - job_name: sonda
     scrape_interval: 15s
@@ -323,105 +352,28 @@ scrape_configs:
     metrics_path: /scenarios/<scenario-id>/metrics
 ```
 
-Replace `<scenario-id>` with the ID returned from the POST request.
+!!! tip "Scrape path"
+    Replace `<scenario-id>` with the UUID returned from `POST /scenarios`. Each running
+    scenario exposes its own metrics endpoint.
 
-## Multi-Metric Correlation
+See [Server API](../deployment/sonda-server.md) for the full API reference.
 
-Many production alerts depend on more than one metric. Compound alert rules like
-`cpu_usage > 90 AND memory_usage_percent > 85` require both conditions to be true
-simultaneously.
+Beyond simple threshold alerts, Sonda can also test cardinality explosions and replay real incidents.
 
-Sonda supports this with `phase_offset` and `clock_group` in multi-scenario YAML files.
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `phase_offset` | `"0s"` | Delay before this scenario starts emitting, relative to the group launch time |
-| `clock_group` | (none) | Groups scenarios under a shared timing reference |
-
-### Working Example
-
-```yaml title="multi-metric-correlation.yaml"
-scenarios:
-  - signal_type: metrics
-    name: cpu_usage
-    rate: 1
-    duration: 120s
-    phase_offset: "0s"
-    clock_group: alert-test
-    generator:
-      type: sequence
-      values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
-      repeat: true
-    labels:
-      instance: server-01
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
-
-  - signal_type: metrics
-    name: memory_usage_percent
-    rate: 1
-    duration: 120s
-    phase_offset: "3s"
-    clock_group: alert-test
-    generator:
-      type: sequence
-      values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
-      repeat: true
-    labels:
-      instance: server-01
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
-```
-
-```bash
-sonda run --scenario multi-metric-correlation.yaml
-```
-
-### Understanding the Timing
-
-```
-Wall time  cpu_usage (offset=0s)   memory_usage (offset=3s)
---------   ---------------------   ------------------------
-t=0s       starts: 20             sleeping
-t=1s       20                     sleeping
-t=2s       20                     sleeping
-t=3s       95 (above threshold)   starts: 40
-t=4s       95                     40
-t=5s       95                     40
-t=6s       95                     88 (above threshold)
-t=7s       95                     88
-t=8s       20 (drops)             88
-```
-
-The overlap window -- where **both** metrics are above threshold -- runs from t=6s to t=8s
-(2 seconds per cycle). For a `for: 5m` alert, extend the above-threshold sequences or use
-constant generators with a longer duration.
+---
 
 ## Cardinality Explosion Alerts
 
 Many monitoring stacks alert when series cardinality crosses a threshold (e.g.,
-`count(up) > 10000`). Use cardinality spikes to generate a controlled burst of unique label
-values and verify your cardinality-limiting rules fire correctly.
+`count(up) > 10000`). Sonda's [cardinality spikes](../configuration/scenario-file.md)
+generate a controlled burst of unique label values to verify your cardinality-limiting
+rules fire correctly.
 
-```yaml title="cardinality-alert-test.yaml"
-name: http_requests_total
-rate: 10
-duration: 120s
+```bash
+sonda metrics --scenario examples/cardinality-alert-test.yaml
+```
 
-generator:
-  type: constant
-  value: 1.0
-
-labels:
-  job: web
-  env: staging
-
+```yaml title="examples/cardinality-alert-test.yaml (key fields)"
 cardinality_spikes:
   - label: pod_name
     every: 30s
@@ -429,17 +381,6 @@ cardinality_spikes:
     cardinality: 500
     strategy: counter
     prefix: "pod-"
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
-```
-
-```bash
-sonda metrics --scenario cardinality-alert-test.yaml
 ```
 
 During the 10-second spike window, each tick injects a `pod_name` label with one of 500 unique
@@ -447,71 +388,50 @@ values (`pod-0` through `pod-499`), producing 500 distinct series. Outside the w
 is absent and only one series is emitted. This on/off pattern lets you verify that alerts fire
 during the spike and resolve after it ends.
 
-## Sequence and CSV Replay Generators
+!!! info "Docker stack required"
+    This example pushes to VictoriaMetrics via `http_push`. Start the backend first:
+    `docker compose -f examples/docker-compose-victoriametrics.yml up -d`
 
-### Sequence Generator
+For testing with recorded production data instead of synthetic patterns, use the replay generators.
 
-The sequence generator steps through an explicit list of values. Use it for hand-crafted
-threshold patterns:
+---
 
-```yaml title="sequence-alert-test.yaml"
-name: cpu_spike_test
-rate: 1
-duration: 80s
+## Replay Generators
 
+### Sequence generator
+
+The [sequence generator](../configuration/generators.md#sequence) steps through an explicit
+list of values, perfect for hand-crafted threshold patterns:
+
+```bash
+sonda metrics --scenario examples/sequence-alert-test.yaml
+```
+
+```yaml title="examples/sequence-alert-test.yaml (key fields)"
 generator:
   type: sequence
   values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
   repeat: true
-
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
 ```
 
 With `repeat: true`, the pattern loops continuously. With `repeat: false`, the generator
 holds the last value after the sequence ends.
 
-### CSV Replay Generator
+### CSV replay generator
 
-For replaying real production data, the `csv_replay` generator reads values from a CSV file:
+For replaying real production data, the [csv_replay generator](../configuration/generators.md#csv_replay) reads values from a CSV file:
 
-```yaml title="csv-incident-replay.yaml"
-name: cpu_usage
-rate: 1
-duration: 120s
+```bash
+sonda metrics --scenario examples/csv-replay-metrics.yaml
+```
 
+```yaml title="examples/csv-replay-metrics.yaml (key fields)"
 generator:
   type: csv_replay
   file: examples/sample-cpu-values.csv
   column: 1
   has_header: true
-  repeat: false
-
-labels:
-  instance: replay-01
-  job: incident-test
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
-```
-
-```bash
-sonda metrics --scenario csv-incident-replay.yaml
-```
-
-```
-cpu_usage{instance="replay-01",job="incident-test"} 12.3 1774287217908
-cpu_usage{instance="replay-01",job="incident-test"} 14.1 1774287218913
-cpu_usage{instance="replay-01",job="incident-test"} 13.8 1774287219913
-...
+  repeat: true
 ```
 
 | Parameter | Default | Description |
@@ -521,100 +441,77 @@ cpu_usage{instance="replay-01",job="incident-test"} 13.8 1774287219913
 | `has_header` | `true` | Whether the first row is a header |
 | `repeat` | `true` | Cycle back to the first value after reaching the end |
 
-!!! tip
+!!! tip "When to use csv_replay vs sequence"
     Use `csv_replay` over `sequence` when you have more than ~20 values. It keeps the YAML
     clean and makes it easy to update the data by replacing the CSV file.
 
-### Exporting Values From VictoriaMetrics
+??? info "Exporting values from VictoriaMetrics"
+    ```bash
+    curl -s "http://your-vm:8428/api/v1/query_range?\
+    query=cpu_usage{instance='prod-01'}&\
+    start=$(date -d '1 hour ago' +%s)&\
+    end=$(date +%s)&\
+    step=10s" \
+      | jq -r '["timestamp","cpu_percent"], (.data.result[0].values[] | [.[0], .[1]]) | @csv' \
+      > incident-values.csv
+    ```
+
+---
+
+## Full Docker Compose Example
+
+For a complete end-to-end setup with VictoriaMetrics, Grafana, and sonda-server, use the
+included Docker Compose stack.
 
 ```bash
-curl -s "http://your-vm:8428/api/v1/query_range?\
-query=cpu_usage{instance='prod-01'}&\
-start=$(date -d '1 hour ago' +%s)&\
-end=$(date +%s)&\
-step=10s" \
-  | jq -r '["timestamp","cpu_percent"], (.data.result[0].values[] | [.[0], .[1]]) | @csv' \
-  > incident-values.csv
-```
-
-## Full Example
-
-A complete end-to-end setup using Docker Compose with VictoriaMetrics, Grafana, and
-sonda-server.
-
-### Start the Stack
-
-```bash
+# Start the stack
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
-```
 
-This starts:
+# Push test data
+sonda metrics --scenario examples/vm-push-scenario.yaml
+
+# Verify the metric exists (wait ~15s for ingestion)
+curl "http://localhost:8428/api/v1/query?query=cpu_usage"
+
+# Open Grafana at http://localhost:3000
+# Navigate to Dashboards > Sonda > Sonda Overview
+
+# Tear down
+docker compose -f examples/docker-compose-victoriametrics.yml down -v
+```
 
 | Service | Port | Purpose |
 |---------|------|---------|
 | sonda-server | 8080 | REST API for scenario management |
 | VictoriaMetrics | 8428 | Time series database |
 | vmagent | 8429 | Metrics relay agent |
-| Grafana | 3000 | Dashboards (auto-provisioned "Sonda Overview") |
+| Grafana | 3000 | Dashboards (auto-provisioned) |
 
-### Submit a Test Scenario
+See [Docker Deployment](../deployment/docker.md) for the full stack configuration.
 
-```bash
-curl -X POST -H "Content-Type: text/yaml" \
-  --data-binary @- \
-  http://localhost:8080/scenarios <<'EOF'
-name: cpu_usage
-rate: 1
-duration: 120s
-
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
-
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://victoriametrics:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
-EOF
-```
-
-### Verify
-
-```bash
-# Wait for some data points
-sleep 15
-
-# Check the metric exists
-curl "http://localhost:8428/api/v1/query?query=cpu_usage"
-
-# Open Grafana at http://localhost:3000
-# Navigate to Dashboards > Sonda > Sonda Overview
-```
-
-### Tear Down
-
-```bash
-docker compose -f examples/docker-compose-victoriametrics.yml down -v
-```
+---
 
 ## Quick Reference
 
-| Scenario | Generator | Key Config |
+| Scenario | Generator | Example File |
 |----------|-----------|------------|
-| Threshold crossing | `sine` | `amplitude=(threshold-min)/2`, `offset=(threshold+min)/2` |
-| Sustained breach | `constant` | `value: <above threshold>` |
-| Alert resolution via gap | `constant` + gaps | `gaps: {every: 60s, for: 20s}` |
-| Precise `for:` duration | `sequence` | N values above threshold, then below |
-| Incident replay (inline) | `sequence` | `repeat: false` for one-shot |
-| Incident replay (file) | `csv_replay` | `file: values.csv`, `repeat: false` |
-| Compound alert | multi-scenario | `phase_offset` + `clock_group` |
-| Cardinality explosion | any + `cardinality_spikes` | `label: pod_name`, `cardinality: 500` |
-| Gradual degradation | `sawtooth` | `min: 50`, `max: 99`, `period_secs: 300` |
+| Threshold crossing | `sine` | `sine-threshold-test.yaml` |
+| Sustained breach | `constant` | `constant-threshold-test.yaml` |
+| Alert resolution via gap | `constant` + gaps | `gap-alert-test.yaml` |
+| Precise `for:` duration | `sequence` | `for-duration-test.yaml` |
+| Compound alert | multi-scenario | `multi-metric-correlation.yaml` |
+| Cardinality explosion | any + `cardinality_spikes` | `cardinality-alert-test.yaml` |
+| Incident replay (inline) | `sequence` | `sequence-alert-test.yaml` |
+| Incident replay (file) | `csv_replay` | `csv-replay-metrics.yaml` |
+| Push to VictoriaMetrics | any | `vm-push-scenario.yaml` |
+| Remote write | any | `remote-write-vm.yaml` |
+
+---
+
+## Next Steps
+
+**Validating a pipeline change?** See [Pipeline Validation](pipeline-validation.md).
+
+**Verifying recording rules?** Check [Recording Rules](recording-rules.md).
+
+**Browsing all example scenarios?** See [Example Scenarios](examples.md).

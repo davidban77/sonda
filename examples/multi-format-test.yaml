@@ -1,0 +1,26 @@
+# Multi-format pipeline test: verify InfluxDB line protocol output.
+#
+# Pushes a constant value through the influx_lp encoder to a file sink.
+# Use this to validate that your pipeline parses InfluxDB line protocol
+# correctly.
+#
+# Usage:
+#   sonda metrics --scenario examples/multi-format-test.yaml
+#   wc -l < /tmp/pipeline-influx.txt
+
+name: pipeline_test
+rate: 2
+duration: 10s
+
+generator:
+  type: constant
+  value: 42.0
+
+labels:
+  env: test
+
+encoder:
+  type: influx_lp
+sink:
+  type: file
+  path: /tmp/pipeline-influx.txt

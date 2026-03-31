@@ -1,0 +1,32 @@
+# End-to-end pipeline check: push a known value to VictoriaMetrics.
+#
+# Pushes a constant 99.0 for 10 seconds and verifies the metric arrives.
+# Use this as a template for writing your own e2e tests.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/e2e-scenario.yaml
+#   sleep 5
+#   curl -s "http://localhost:8428/api/v1/query?query=e2e_pipeline_check" \
+#     | jq '.data.result | length'
+
+name: e2e_pipeline_check
+rate: 1
+duration: 10s
+
+generator:
+  type: constant
+  value: 99.0
+
+labels:
+  test: pipeline
+  env: ci
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"

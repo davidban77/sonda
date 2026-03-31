@@ -1,26 +1,31 @@
 # Testing Recording Rules
 
-You have Prometheus recording rules that pre-compute expressions and store results as new time
-series. You need to verify they compute correctly against known input before deploying to
-production.
+Recording rules pre-compute expressions and store results as new time series. If they compute
+incorrectly, you won't notice until a dashboard goes blank or an alert never fires. Sonda lets
+you push metrics with **known values** so you can verify the computed output matches your
+expectation -- before deploying to production.
+
+---
 
 ## The Approach
 
 1. Push a metric with a **known, constant value** using Sonda.
 2. Wait for at least **two evaluation intervals** (default: 1 minute each).
-3. Query the recording rule output and verify the computed value matches your expectation.
+3. Query the recording rule output and verify the computed value matches.
 
 This works because a constant input produces a predictable output: `sum()` of one instance
-pushing `42.0` equals `42.0`.
+pushing `100.0` equals `100.0`.
 
-## Working Example
+---
 
-The repository includes a ready-to-use recording rule test:
+## Testing a Sum Rule
 
-- `examples/recording-rule-test.yaml` -- Sonda scenario pushing a constant value of 100 for
-  `http_requests_total`.
-- `examples/recording-rule-prometheus.yml` -- Prometheus recording rule config computing
-  `job:http_requests_total:rate5m`.
+The repository includes a ready-to-use recording rule test. The scenario pushes a constant
+value of 100 for `http_requests_total`, and the companion Prometheus config computes a
+sum per job.
+
+- **Scenario**: `examples/recording-rule-test.yaml`
+- **Rule config**: `examples/recording-rule-prometheus.yml`
 
 ### Step 1: Start VictoriaMetrics
 
@@ -34,36 +39,39 @@ Wait for the service to become healthy:
 curl -sf http://localhost:8428/health && echo "VM is ready"
 ```
 
-### Step 2: Push Known Values
+### Step 2: Push known values
 
-Use the constant [generator](../configuration/generators.md#constant) to push a known value:
+The [constant generator](../configuration/generators.md#constant) emits the same value every
+tick -- perfect for deterministic rule testing:
 
-```yaml title="recording-rule-input.yaml"
+```bash
+sonda metrics --scenario examples/recording-rule-test.yaml &
+```
+
+```yaml title="examples/recording-rule-test.yaml (key fields)"
 name: http_requests_total
 rate: 1
-duration: 300s
+duration: 120s
 
 generator:
   type: constant
-  value: 42.0
+  value: 100.0
 
 labels:
-  instance: api-01
-  job: web
+  method: GET
+  status: "200"
+  job: api
 
-encoder:
-  type: prometheus_text
 sink:
   type: http_push
   url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
 ```
 
-```bash
-sonda metrics --scenario recording-rule-input.yaml &
-```
+!!! tip "Background execution"
+    The `&` runs Sonda in the background so you can continue in the same terminal.
+    It will stop automatically after the configured `duration`.
 
-### Step 3: Wait for Evaluation
+### Step 3: Wait for evaluation
 
 Recording rules evaluate on a fixed interval (default 1 minute in Prometheus, configurable in
 vmalert). Wait at least two intervals:
@@ -72,7 +80,7 @@ vmalert). Wait at least two intervals:
 sleep 120
 ```
 
-### Step 4: Verify the Computed Value
+### Step 4: Verify the computed value
 
 Suppose your recording rule computes a sum per job:
 
@@ -84,7 +92,7 @@ groups:
         expr: sum(http_requests_total) by (job)
 ```
 
-With one instance pushing `42.0`, query the result:
+With one instance pushing `100.0`, query the result:
 
 ```bash
 curl -s "http://localhost:8428/api/v1/query?query=job:http_requests_total:sum" \
@@ -96,20 +104,29 @@ Expected output:
 ```json
 [
   {
-    "metric": {"job": "web"},
-    "value": [1700000000, "42"]
+    "metric": {"job": "api"},
+    "value": [1700000000, "100"]
   }
 ]
 ```
 
 If the value matches, your recording rule is correct.
 
+Now let's test something more complex: rate-based rules.
+
+---
+
 ## Testing Rate-Based Rules
 
-For `rate()` or `irate()` rules, you need a metric whose value increases over time. Use the
-[sawtooth generator](../configuration/generators.md#sawtooth), which ramps linearly and resets:
+For `rate()` or `irate()` rules, you need a metric whose value increases over time. The
+[sawtooth generator](../configuration/generators.md#sawtooth) ramps linearly and resets --
+producing a predictable rate.
 
-```yaml title="rate-rule-input.yaml"
+```bash
+sonda metrics --scenario examples/rate-rule-input.yaml &
+```
+
+```yaml title="examples/rate-rule-input.yaml (key fields)"
 name: http_requests_total
 rate: 1
 duration: 300s
@@ -120,16 +137,9 @@ generator:
   max: 1000.0
   period_secs: 60
 
-labels:
-  instance: api-01
-  job: web
-
-encoder:
-  type: prometheus_text
 sink:
   type: http_push
   url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
 ```
 
 The sawtooth ramps from 0 to 1000 over 60 seconds, then resets. After sufficient data,
@@ -141,24 +151,34 @@ curl -s "http://localhost:8428/api/v1/query?query=rate(http_requests_total[1m])"
   | jq '.data.result[0].value[1]'
 ```
 
+!!! warning "Wait for enough data"
+    `rate()` needs at least two data points within the range window. With a 1-minute
+    sawtooth period, wait at least 2 minutes before querying.
+
+---
+
 ## Loading Rules Into Your Stack
 
-You can load recording rules into Prometheus or vmalert:
+=== "Prometheus"
 
-**Prometheus**: Add the rule file to `rule_files` in `prometheus.yml`:
+    Add the rule file to `rule_files` in `prometheus.yml`:
 
-```yaml title="prometheus.yml (snippet)"
-rule_files:
-  - recording-rule.yml
-```
+    ```yaml title="prometheus.yml (snippet)"
+    rule_files:
+      - recording-rule.yml
+    ```
 
-**vmalert**: Pass the rule file as a flag:
+=== "vmalert"
 
-```bash
-vmalert -rule=recording-rule.yml \
-  -datasource.url=http://localhost:8428 \
-  -remoteWrite.url=http://localhost:8428
-```
+    Pass the rule file as a flag:
+
+    ```bash
+    vmalert -rule=recording-rule.yml \
+      -datasource.url=http://localhost:8428 \
+      -remoteWrite.url=http://localhost:8428
+    ```
+
+---
 
 ## Tear Down
 
@@ -166,9 +186,14 @@ vmalert -rule=recording-rule.yml \
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-## What Next
+---
 
-- [Pipeline Validation](pipeline-validation.md) -- verify your ingest pipeline handles all
-  encoders correctly.
-- [Generators reference](../configuration/generators.md) -- full list of available generators.
-- [Sinks reference](../configuration/sinks.md) -- all available sink destinations.
+## Next Steps
+
+**Testing alert rules?** Start with [Alert Testing](alert-testing.md).
+
+**Validating a pipeline change?** See [Pipeline Validation](pipeline-validation.md).
+
+**Full generator reference?** See [Generators](../configuration/generators.md).
+
+**All sink options?** See [Sinks](../configuration/sinks.md).

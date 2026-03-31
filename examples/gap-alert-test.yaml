@@ -1,0 +1,33 @@
+# Gap alert test: verify alert resolution during metric gaps.
+#
+# Emits a constant 95.0 (above threshold) but goes silent for 20 seconds
+# every 60-second cycle. When the metric goes silent, Prometheus treats it
+# as stale, causing the alert to resolve.
+#
+# Timeline per cycle:
+#   0-40s:  emit 95.0 (above threshold, alert pending)
+#   40-60s: gap (no data, alert may resolve)
+#
+# Usage:
+#   sonda metrics --scenario examples/gap-alert-test.yaml
+
+name: cpu_usage
+rate: 1
+duration: 300s
+
+generator:
+  type: constant
+  value: 95.0
+
+gaps:
+  every: 60s
+  for: 20s
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

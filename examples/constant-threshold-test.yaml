@@ -1,0 +1,25 @@
+# Constant threshold test: sustained breach for `for:` duration testing.
+#
+# Emits a constant 95.0 for 6 minutes. Use this to test alerts with
+# `for: 5m` -- the value stays above threshold for the entire duration,
+# so the alert should fire after 5 minutes of continuous breach.
+#
+# Usage:
+#   sonda metrics --scenario examples/constant-threshold-test.yaml
+
+name: cpu_usage
+rate: 1
+duration: 360s
+
+generator:
+  type: constant
+  value: 95.0
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
