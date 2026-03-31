@@ -1,7 +1,11 @@
 # E2E Testing
 
-The `tests/e2e/` directory contains a Docker Compose-based test suite that validates Sonda
-against real observability backends and message brokers.
+Unit tests and smoke tests catch encoding and sink errors, but they don't prove that data
+survives the full journey from Sonda through your backend to a query API. The `tests/e2e/`
+directory contains a Docker Compose-based test suite that validates Sonda against real
+observability backends and message brokers.
+
+---
 
 ## Prerequisites
 
@@ -10,9 +14,15 @@ against real observability backends and message brokers.
 - `curl` and `python3` in PATH
 - Rust toolchain (for `cargo build`)
 
+!!! note "Disk space"
+    The e2e tests build Sonda in release mode. Make sure you have sufficient disk space
+    for the Rust target directory (~2 GB).
+
+---
+
 ## Services
 
-The e2e stack runs these services:
+The e2e stack runs these services alongside Sonda:
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -24,7 +34,12 @@ The e2e stack runs these services:
 | Grafana | 3000 | Pre-configured datasources for VM, Prometheus, and Loki |
 | Loki | 3100 | Log aggregation push target |
 
+---
+
 ## Test Scenarios
+
+Each scenario pushes data through a specific encoder/sink combination, then the test runner
+queries the backend to verify the data arrived.
 
 **VictoriaMetrics** (verified by querying `/api/v1/series`):
 
@@ -39,6 +54,34 @@ The e2e stack runs these services:
 |---------------|---------|-------------|--------------|
 | `kafka-prometheus-text.yaml` | prometheus_text | `sonda-e2e-metrics` | messages > 0 |
 | `kafka-json-lines.yaml` | json_lines | `sonda-e2e-json` | messages > 0 |
+
+All scenario files live in `tests/e2e/scenarios/`.
+
+---
+
+## Running Automated Tests
+
+The fastest way to run the full suite:
+
+=== "Taskfile"
+
+    ```bash
+    task e2e
+    ```
+
+=== "Script"
+
+    ```bash
+    ./tests/e2e/run.sh
+    ```
+
+The script starts the Docker Compose stack, waits for all services to become healthy, builds
+Sonda in release mode, runs each scenario, verifies data arrived (VictoriaMetrics via series
+API, Kafka via consumer), and tears everything down. Exit code `0` means all passed.
+
+For more control, use the individual Taskfile commands.
+
+---
 
 ## Using the Taskfile
 
@@ -59,6 +102,12 @@ task run:kafka      # Send metrics to Kafka
 task run:loki       # Send log events to Loki
 ```
 
+!!! tip "Mix and match"
+    Use `task stack:up` to start the stack, then run individual `task run:*` commands
+    to test specific encoder/sink combinations without tearing down between runs.
+
+---
+
 ## Exploring Metrics Visually
 
 Start the stack and generate some data:
@@ -77,19 +126,9 @@ Then open the dashboards:
 - **VictoriaMetrics** -- [http://localhost:8428/vmui](http://localhost:8428/vmui) for the built-in
   query UI.
 
-## Running Automated Tests
+Dashboards are great for exploration. For repeatable manual tests, run scenarios individually.
 
-```bash
-# Via Taskfile
-task e2e
-
-# Or directly
-./tests/e2e/run.sh
-```
-
-The script starts the Docker Compose stack, waits for all services to become healthy, builds
-Sonda in release mode, runs each scenario, verifies data arrived (VictoriaMetrics via series
-API, Kafka via consumer), and tears everything down. Exit code `0` means all passed.
+---
 
 ## Running Scenarios Manually
 
@@ -114,6 +153,12 @@ docker exec sonda-e2e-kafka kafka-console-consumer.sh \
 task stack:down
 ```
 
-!!! note
-    The e2e tests build Sonda in release mode. Make sure you have sufficient disk space
-    for the Rust target directory (~2 GB).
+---
+
+## Next Steps
+
+**Testing alert rules?** Start with [Alert Testing](alert-testing.md).
+
+**Quick pipeline smoke tests (no Docker)?** See [Pipeline Validation](pipeline-validation.md).
+
+**Browsing all example scenarios?** See [Example Scenarios](examples.md).

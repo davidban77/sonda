@@ -1,0 +1,30 @@
+# Sequence generator: test Prometheus `for:` duration behavior.
+#
+# Steps through an explicit list of values at 1 event/sec:
+#   - Ticks 0-4:   10 (below threshold)
+#   - Ticks 5-9:   95 (above 90 threshold, 5 seconds continuous)
+#   - Ticks 10-15: 10 (back below threshold)
+#
+# With repeat=true, the pattern loops every 16 seconds.
+# Adjust the number of above-threshold values to match your `for:` duration.
+#
+# Usage:
+#   sonda metrics --scenario examples/for-duration-test.yaml
+
+name: cpu_usage
+rate: 1
+duration: 80s
+
+generator:
+  type: sequence
+  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+  repeat: true
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

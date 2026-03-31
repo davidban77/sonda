@@ -1,0 +1,31 @@
+# Push a sine-wave cpu_usage metric to VictoriaMetrics via HTTP import.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/vm-push-scenario.yaml
+#
+# Verify data arrived:
+#   curl "http://localhost:8428/api/v1/query?query=cpu_usage"
+
+name: cpu_usage
+rate: 1
+duration: 120s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"

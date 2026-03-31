@@ -1,0 +1,39 @@
+# Multi-scenario pipeline validation: metrics and logs concurrently.
+#
+# Validates that your pipeline handles multiple signal types at the same time.
+# Metrics go to stdout; logs go to a JSON file for inspection.
+#
+# Usage:
+#   sonda run --scenario examples/multi-pipeline-test.yaml
+#   echo "Exit: $?"
+#   wc -l < /tmp/pipeline-logs.json
+
+scenarios:
+  - signal_type: metrics
+    name: pipeline_metrics
+    rate: 5
+    duration: 10s
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: logs
+    name: pipeline_logs
+    rate: 5
+    duration: 10s
+    generator:
+      type: template
+      templates:
+        - message: "Pipeline validation event"
+      severity_weights:
+        info: 1.0
+      seed: 42
+    encoder:
+      type: json_lines
+    sink:
+      type: file
+      path: /tmp/pipeline-logs.json

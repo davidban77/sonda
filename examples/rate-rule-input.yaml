@@ -1,0 +1,36 @@
+# Sawtooth generator for testing rate()-based recording rules.
+#
+# The sawtooth ramps linearly from 0 to 1000 over 60 seconds, then resets.
+# After sufficient data, rate(http_requests_total[1m]) should return
+# approximately 16.67 (1000 / 60 seconds).
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/rate-rule-input.yaml
+#
+# After 2+ minutes, verify the rate:
+#   curl -s "http://localhost:8428/api/v1/query?query=rate(http_requests_total[1m])" \
+#     | jq '.data.result[0].value[1]'
+
+name: http_requests_total
+rate: 1
+duration: 300s
+
+generator:
+  type: sawtooth
+  min: 0.0
+  max: 1000.0
+  period_secs: 60
+
+labels:
+  instance: api-01
+  job: web
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
