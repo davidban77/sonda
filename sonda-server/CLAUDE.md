@@ -48,7 +48,7 @@ tests/
 | GET    | /scenarios/{id}         | Inspect a scenario: detail + live stats                 |
 | GET    | /scenarios/{id}/stats   | Detailed live stats: rate, target_rate, events, gap/burst state, uptime |
 | GET    | /scenarios/{id}/metrics | Latest metrics in Prometheus text format (scrapeable)   |
-| DELETE | /scenarios/{id}         | Stop a running scenario, return final stats             |
+| DELETE | /scenarios/{id}         | Stop a running scenario, return final stats, remove from map |
 
 ## Concurrency Model
 
