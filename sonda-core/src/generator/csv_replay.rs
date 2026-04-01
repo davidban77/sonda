@@ -163,10 +163,12 @@ impl ValueGenerator for CsvReplayGenerator {
     /// the last value for ticks beyond the value count.
     fn value(&self, tick: u64) -> f64 {
         let len = self.values.len();
+        // Perform modulo in u64 space to avoid truncation on 32-bit platforms
+        // where `usize` is 32 bits and ticks above u32::MAX would wrap silently.
         let index = if self.repeat {
-            (tick as usize) % len
+            (tick % len as u64) as usize
         } else {
-            (tick as usize).min(len - 1)
+            (tick.min((len - 1) as u64)) as usize
         };
         self.values[index]
     }
@@ -471,7 +473,7 @@ mod tests {
         let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
         let large_tick: u64 = 1_000_000_000;
         let val = gen.value(large_tick);
-        let expected_index = (large_tick as usize) % 3;
+        let expected_index = (large_tick % 3) as usize;
         let expected = [1.0, 2.0, 3.0][expected_index];
         assert_eq!(val, expected);
     }
@@ -482,6 +484,55 @@ mod tests {
         let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
         let large_tick: u64 = 1_000_000_000;
         assert_eq!(gen.value(large_tick), 3.0, "should clamp to last value");
+    }
+
+    // ---- 32-bit truncation safety (tick > u32::MAX) ----------------------------
+
+    #[test]
+    fn repeat_tick_above_u32_max_uses_u64_modulo() {
+        let content = "10.0\n20.0\n30.0\n";
+        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        // tick = 4_294_967_296: u64 modulo 4_294_967_296 % 3 = 1
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.value(tick),
+            20.0,
+            "tick {} mod 3 = 1, should return values[1] = 20.0",
+            tick
+        );
+    }
+
+    #[test]
+    fn repeat_tick_at_u64_max_does_not_panic() {
+        let content = "1.0\n2.0\n3.0\n";
+        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let val = gen.value(u64::MAX);
+        // u64::MAX % 3 = 0
+        assert_eq!(val, 1.0, "u64::MAX % 3 = 0, should return values[0]");
+    }
+
+    #[test]
+    fn no_repeat_tick_above_u32_max_clamps_correctly() {
+        let content = "1.0\n2.0\n3.0\n";
+        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.value(tick),
+            3.0,
+            "tick {} beyond length should clamp to last value",
+            tick
+        );
+    }
+
+    #[test]
+    fn no_repeat_tick_at_u64_max_clamps_correctly() {
+        let content = "1.0\n2.0\n";
+        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        assert_eq!(
+            gen.value(u64::MAX),
+            2.0,
+            "u64::MAX should clamp to last value"
+        );
     }
 
     // ---- CsvReplayGenerator is Send + Sync ------------------------------------
