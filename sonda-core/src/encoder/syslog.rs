@@ -122,50 +122,57 @@ impl Encoder for Syslog {
     ///
     /// Priority = (facility * 8) + syslog_severity. Facility 1 (user-level) is used.
     fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
+        use std::io::Write;
+
         let syslog_severity = severity_to_syslog(event.severity);
         let priority = FACILITY_USER * 8 + syslog_severity;
-        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
 
-        // Build structured data section: nil when no labels, [sonda k="v" ...]
-        // when labels are present.
-        let sd = if event.labels.is_empty() {
-            NILVALUE.to_string()
-        } else {
-            let mut sd_buf = String::from("[sonda");
-            for (k, v) in event.labels.iter() {
-                sd_buf.push(' ');
-                sd_buf.push_str(k);
-                sd_buf.push_str("=\"");
-                // Escape \, ], " per RFC 5424 §6.3.3
-                for ch in v.chars() {
-                    match ch {
-                        '\\' => sd_buf.push_str("\\\\"),
-                        ']' => sd_buf.push_str("\\]"),
-                        '"' => sd_buf.push_str("\\\""),
-                        _ => sd_buf.push(ch),
-                    }
-                }
-                sd_buf.push('"');
-            }
-            sd_buf.push(']');
-            sd_buf
-        };
+        // Write the priority, version, and space before timestamp.
+        write!(buf, "<{priority}>{version} ", version = SYSLOG_VERSION)
+            .expect("write to Vec<u8> is infallible");
 
-        use std::io::Write;
-        writeln!(
+        // Write the RFC 3339 timestamp directly into the output buffer (zero-alloc).
+        super::format_rfc3339_millis(event.timestamp, buf)?;
+
+        // Write the rest of the header fields.
+        write!(
             buf,
-            "<{priority}>{version} {timestamp} {hostname} {app_name} {procid} {msgid} {sd} {message}",
-            priority = priority,
-            version = SYSLOG_VERSION,
-            timestamp = timestamp,
+            " {hostname} {app_name} {procid} {msgid} ",
             hostname = self.hostname,
             app_name = self.app_name,
             procid = NILVALUE,
             msgid = NILVALUE,
-            sd = sd,
-            message = event.message,
         )
-        .map_err(|e| SondaError::Encoder(format!("syslog format error: {e}")))?;
+        .expect("write to Vec<u8> is infallible");
+
+        // Write structured data section: nil when no labels, [sonda k="v" ...]
+        // when labels are present.
+        if event.labels.is_empty() {
+            buf.extend_from_slice(NILVALUE.as_bytes());
+        } else {
+            buf.extend_from_slice(b"[sonda");
+            for (k, v) in event.labels.iter() {
+                buf.push(b' ');
+                buf.extend_from_slice(k.as_bytes());
+                buf.extend_from_slice(b"=\"");
+                // Escape \, ], " per RFC 5424 §6.3.3
+                for ch in v.bytes() {
+                    match ch {
+                        b'\\' => buf.extend_from_slice(b"\\\\"),
+                        b']' => buf.extend_from_slice(b"\\]"),
+                        b'"' => buf.extend_from_slice(b"\\\""),
+                        _ => buf.push(ch),
+                    }
+                }
+                buf.push(b'"');
+            }
+            buf.push(b']');
+        }
+
+        // Write message and trailing newline.
+        buf.push(b' ');
+        buf.extend_from_slice(event.message.as_bytes());
+        buf.push(b'\n');
 
         Ok(())
     }

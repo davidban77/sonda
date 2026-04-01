@@ -134,16 +134,40 @@ pub(crate) fn write_value(buf: &mut Vec<u8>, value: f64, precision: Option<u8>) 
     .expect("write to Vec<u8> is infallible");
 }
 
-/// Format a [`std::time::SystemTime`] as an RFC 3339 string with millisecond precision.
+/// Fixed byte length of an RFC 3339 timestamp with millisecond precision.
 ///
-/// Produces strings of the form `2026-03-20T12:00:00.000Z`. Computed entirely from
-/// `UNIX_EPOCH` arithmetic using the Gregorian calendar algorithm from
-/// <https://howardhinnant.github.io/date_algorithms.html> — no external crate required.
+/// Format: `YYYY-MM-DDTHH:MM:SS.mmmZ` — always exactly 24 bytes.
+pub(crate) const RFC3339_MILLIS_LEN: usize = 24;
+
+/// Format a [`std::time::SystemTime`] as RFC 3339 with millisecond precision,
+/// writing directly into the caller-provided buffer.
+///
+/// Appends exactly 24 bytes of the form `2026-03-20T12:00:00.000Z` to `buf`.
+/// Computed entirely from `UNIX_EPOCH` arithmetic using the Gregorian calendar
+/// algorithm from <https://howardhinnant.github.io/date_algorithms.html> — no
+/// external crate required.
 ///
 /// Returns a [`crate::SondaError::Encoder`] if the timestamp predates the Unix epoch.
 pub(crate) fn format_rfc3339_millis(
     ts: std::time::SystemTime,
-) -> Result<String, crate::SondaError> {
+    buf: &mut Vec<u8>,
+) -> Result<(), crate::SondaError> {
+    let arr = format_rfc3339_millis_array(ts)?;
+    buf.extend_from_slice(&arr);
+    Ok(())
+}
+
+/// Format a [`std::time::SystemTime`] as RFC 3339 with millisecond precision
+/// into a stack-allocated byte array.
+///
+/// Returns a fixed-size `[u8; 24]` containing valid UTF-8 of the form
+/// `2026-03-20T12:00:00.000Z`. This avoids heap allocation entirely and is
+/// suitable for callers that need a `&str` (e.g., serde serialization structs).
+///
+/// Returns a [`crate::SondaError::Encoder`] if the timestamp predates the Unix epoch.
+pub(crate) fn format_rfc3339_millis_array(
+    ts: std::time::SystemTime,
+) -> Result<[u8; RFC3339_MILLIS_LEN], crate::SondaError> {
     use std::time::UNIX_EPOCH;
 
     let duration = ts
@@ -173,9 +197,17 @@ pub(crate) fn format_rfc3339_millis(
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
 
-    Ok(format!(
+    let mut arr = [0u8; RFC3339_MILLIS_LEN];
+    // write! into a &mut [u8] slice via std::io::Write.
+    // The formatted output is always exactly 24 bytes, so this cannot fail.
+    use std::io::Write as _;
+    let mut cursor = &mut arr[..];
+    write!(
+        cursor,
         "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z",
-    ))
+    )
+    .expect("RFC 3339 millis timestamp is always exactly 24 bytes");
+    Ok(arr)
 }
 
 #[cfg(test)]
@@ -615,5 +647,117 @@ sink:
             config,
             EncoderConfig::JsonLines { precision: None }
         ));
+    }
+
+    // ---------------------------------------------------------------------------
+    // format_rfc3339_millis: buffer-based API
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn format_rfc3339_millis_writes_to_buffer() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let mut buf = Vec::new();
+        format_rfc3339_millis(ts, &mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "2026-03-20T12:00:00.000Z");
+    }
+
+    #[test]
+    fn format_rfc3339_millis_appends_to_existing_buffer() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let mut buf = b"prefix:".to_vec();
+        format_rfc3339_millis(ts, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "prefix:2026-03-20T12:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn format_rfc3339_millis_epoch_writes_correct_bytes() {
+        use std::time::UNIX_EPOCH;
+        let mut buf = Vec::new();
+        format_rfc3339_millis(UNIX_EPOCH, &mut buf).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "1970-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn format_rfc3339_millis_before_epoch_returns_error() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH - Duration::from_secs(1);
+        let mut buf = Vec::new();
+        let result = format_rfc3339_millis(ts, &mut buf);
+        assert!(result.is_err(), "timestamps before epoch must return error");
+        assert!(
+            buf.is_empty(),
+            "buffer must remain empty on error (nothing written before failure)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // format_rfc3339_millis_array: stack-allocated API
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn format_rfc3339_millis_array_returns_correct_bytes() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2026-03-20T12:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_epoch() {
+        use std::time::UNIX_EPOCH;
+        let arr = format_rfc3339_millis_array(UNIX_EPOCH).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "1970-01-01T00:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_before_epoch_returns_error() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH - Duration::from_secs(1);
+        let result = format_rfc3339_millis_array(ts);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::SondaError::Encoder(_)),
+            "error must be Encoder variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_preserves_milliseconds() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_789);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        let s = std::str::from_utf8(&arr).unwrap();
+        assert!(s.ends_with(".789Z"), "must end with .789Z but got: {s}");
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_and_buf_produce_identical_output() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        let mut buf = Vec::new();
+        format_rfc3339_millis(ts, &mut buf).unwrap();
+        assert_eq!(&arr[..], &buf[..]);
+    }
+
+    #[test]
+    fn rfc3339_millis_len_constant_matches_output_size() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let mut buf = Vec::new();
+        format_rfc3339_millis(ts, &mut buf).unwrap();
+        assert_eq!(buf.len(), RFC3339_MILLIS_LEN);
     }
 }
