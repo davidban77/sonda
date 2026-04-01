@@ -140,7 +140,7 @@ impl Encoder for RemoteWriteEncoder {
         // when sorted alphabetically. We insert it and then add the rest.
         labels.push(Label {
             name: "__name__".to_string(),
-            value: event.name.clone(),
+            value: event.name.to_string(),
         });
 
         for (key, value) in event.labels.iter() {

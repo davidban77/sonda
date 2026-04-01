@@ -136,20 +136,32 @@ pub fn run_with_sink(
     let generator = create_generator(&config.generator, config.rate)?;
     let encoder = create_encoder(&config.encoder);
 
-    // Build the label set from the config's optional HashMap.
-    let labels: Labels = if let Some(ref label_map) = config.labels {
-        let pairs: Vec<(&str, &str)> = label_map
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        Labels::from_pairs(&pairs)?
-    } else {
-        Labels::from_pairs(&[])?
+    // Build the label set from the config's optional HashMap, wrapped in Arc
+    // so the hot loop can share it across ticks without deep-cloning the BTreeMap.
+    let labels: Arc<Labels> = {
+        let inner = if let Some(ref label_map) = config.labels {
+            let pairs: Vec<(&str, &str)> = label_map
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            Labels::from_pairs(&pairs)?
+        } else {
+            Labels::from_pairs(&[])?
+        };
+        Arc::new(inner)
     };
 
-    // Clone the metric name once before the hot loop.
-    // The name is invariant for the lifetime of a scenario.
-    let name = config.name.clone();
+    // Validate and intern the metric name once before the hot loop.
+    // Arc<str> makes per-tick cloning O(1) — just a reference-count bump.
+    let name: Arc<str> = {
+        if !crate::model::metric::is_valid_metric_name(&config.name) {
+            return Err(SondaError::Config(format!(
+                "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
+                config.name
+            )));
+        }
+        Arc::from(config.name.as_str())
+    };
 
     // The base inter-event interval (at normal rate, no burst).
     let base_interval = Duration::from_secs_f64(1.0 / config.rate);
@@ -253,35 +265,40 @@ pub fn run_with_sink(
             // Timestamp the event at the start of this iteration.
             let wall_now = std::time::SystemTime::now();
 
-            // Generate the value and build the metric event.
-            // MetricEvent::with_timestamp takes owned String and Labels, so we
-            // must clone both per tick. The `name` clone is cheap (heap copy of a
-            // short string); `labels` clone is proportional to label count, which
-            // is typically small and fixed. A zero-copy API is possible post-MVP
-            // if profiling shows this to be a bottleneck.
+            // Generate the value for this tick.
             let value = generator.value(tick);
 
-            // Inject cardinality spike labels when inside a spike window.
-            // Only clone+insert when spike windows actually exist and are active,
-            // to avoid overhead for existing configs without spikes.
+            // Build the per-tick label set. In the common case (no spike windows)
+            // this is just an Arc refcount bump — O(1), zero heap allocation.
+            // Only when a cardinality spike is active do we deep-clone the inner
+            // Labels to insert the spike key.
             let currently_in_spike;
-            let tick_labels = if spike_windows.is_empty() {
+            let tick_labels: Arc<Labels> = if spike_windows.is_empty() {
                 currently_in_spike = false;
-                labels.clone()
+                Arc::clone(&labels)
             } else {
-                let mut tl = labels.clone();
                 let mut any_spike = false;
+                let mut mutated: Option<Labels> = None;
                 for sw in &spike_windows {
                     if is_in_spike(elapsed, sw) {
+                        let tl = mutated.get_or_insert_with(|| (*labels).clone());
                         tl.insert(sw.label.clone(), sw.label_value_for_tick(tick));
                         any_spike = true;
                     }
                 }
                 currently_in_spike = any_spike;
-                tl
+                match mutated {
+                    Some(tl) => Arc::new(tl),
+                    None => Arc::clone(&labels),
+                }
             };
 
-            let event = MetricEvent::with_timestamp(name.clone(), value, tick_labels, wall_now)?;
+            // Build the MetricEvent from pre-validated, pre-shared parts.
+            // name: Arc::clone is O(1) — just a refcount bump, no heap copy.
+            // tick_labels: already an Arc<Labels> from above.
+            // No metric name validation occurs here — it was validated once
+            // before the loop.
+            let event = MetricEvent::from_parts(Arc::clone(&name), value, tick_labels, wall_now);
 
             // Encode and write.
             buf.clear();
@@ -796,7 +813,7 @@ mod tests {
         let st = stats.read().expect("lock must not be poisoned");
         for event in st.recent_metrics.iter() {
             assert_eq!(
-                event.name, "up",
+                &*event.name, "up",
                 "all buffered events must have the metric name from config"
             );
         }
@@ -977,6 +994,97 @@ mod tests {
         assert!(
             st.in_cardinality_spike,
             "stats must report in_cardinality_spike=true during spike window"
+        );
+    }
+
+    // ---- Arc sharing: name and labels are reference-counted, not deep-cloned ---
+
+    /// All metric events buffered in stats must share the same Arc<str> name
+    /// allocation, proving that the runner uses Arc::clone (refcount bump)
+    /// instead of deep-cloning the name string on every tick.
+    #[test]
+    fn buffered_events_share_name_arc_allocation() {
+        use std::sync::{Arc, RwLock};
+
+        let config = make_config(200.0, "100ms", None);
+        let mut sink = MemorySink::new();
+        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
+
+        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .expect("run must succeed");
+
+        let st = stats.read().expect("lock must not be poisoned");
+        let events: Vec<_> = st.recent_metrics.iter().collect();
+        assert!(
+            events.len() >= 2,
+            "need at least 2 events to verify sharing, got {}",
+            events.len()
+        );
+
+        // All events should share the same Arc<str> allocation for the name.
+        let first_name = &events[0].name;
+        for (i, event) in events.iter().enumerate().skip(1) {
+            assert!(
+                Arc::ptr_eq(first_name, &event.name),
+                "event[{i}].name should share Arc allocation with event[0].name"
+            );
+        }
+    }
+
+    /// When no cardinality spikes are configured, all buffered events must share
+    /// the same Arc<Labels> allocation, proving that the runner avoids
+    /// deep-cloning the BTreeMap on every tick.
+    #[test]
+    fn buffered_events_share_labels_arc_when_no_spikes() {
+        use std::sync::{Arc, RwLock};
+
+        let config = make_config(200.0, "100ms", None);
+        let mut sink = MemorySink::new();
+        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
+
+        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .expect("run must succeed");
+
+        let st = stats.read().expect("lock must not be poisoned");
+        let events: Vec<_> = st.recent_metrics.iter().collect();
+        assert!(
+            events.len() >= 2,
+            "need at least 2 events to verify sharing, got {}",
+            events.len()
+        );
+
+        // All events should share the same Arc<Labels> allocation.
+        let first_labels = &events[0].labels;
+        for (i, event) in events.iter().enumerate().skip(1) {
+            assert!(
+                Arc::ptr_eq(first_labels, &event.labels),
+                "event[{i}].labels should share Arc allocation with event[0].labels"
+            );
+        }
+    }
+
+    /// Invalid metric name in config is caught before the hot loop, not during.
+    #[test]
+    fn invalid_metric_name_returns_config_error_before_loop() {
+        let config = ScenarioConfig {
+            name: "123-invalid".to_string(),
+            rate: 10.0,
+            duration: Some("100ms".to_string()),
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        };
+        let mut sink = MemorySink::new();
+        let result = super::run_with_sink(&config, &mut sink, None, None);
+        assert!(
+            matches!(result, Err(crate::SondaError::Config(ref msg)) if msg.contains("123-invalid")),
+            "expected Config error for invalid name, got: {result:?}"
         );
     }
 }
