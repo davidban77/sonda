@@ -66,14 +66,13 @@ impl RemoteWriteSink {
     /// Returns [`SondaError::Sink`] if the URL is not a valid HTTP(S) URL.
     pub fn new(url: &str, batch_size: usize) -> Result<Self, SondaError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(std::io::Error::new(
+            return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "invalid remote write URL '{}': must start with http:// or https://",
                     url
                 ),
-            )
-            .into());
+            )));
         }
 
         let client = ureq::AgentBuilder::new().build();
@@ -131,11 +130,10 @@ impl RemoteWriteSink {
                 let retry_result = self.do_post(&compressed);
                 match retry_result {
                     Ok(retry_status) if (200..300).contains(&retry_status) => Ok(()),
-                    Ok(retry_status) => Err(std::io::Error::other(format!(
+                    Ok(retry_status) => Err(SondaError::Sink(std::io::Error::other(format!(
                         "remote write to '{}' failed with status {} (retry status {})",
                         self.url, status, retry_status
-                    ))
-                    .into()),
+                    )))),
                     Err(e) => Err(e),
                 }
             }
@@ -161,11 +159,10 @@ impl RemoteWriteSink {
         match response {
             Ok(resp) => Ok(resp.status()),
             Err(ureq::Error::Status(code, _)) => Ok(code),
-            Err(e) => Err(std::io::Error::new(
+            Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("remote write to '{}' failed: {}", self.url, e),
-            )
-            .into()),
+            ))),
         }
     }
 }

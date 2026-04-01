@@ -28,25 +28,29 @@ impl FileSink {
     pub fn new(path: &Path) -> Result<Self, SondaError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    std::io::Error::new(
-                        e.kind(),
-                        format!(
-                            "failed to create parent directories for {}: {}",
-                            path.display(),
-                            e
-                        ),
-                    )
-                })?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            e.kind(),
+                            format!(
+                                "failed to create parent directories for {}: {}",
+                                path.display(),
+                                e
+                            ),
+                        )
+                    })
+                    .map_err(SondaError::Sink)?;
             }
         }
 
-        let file = File::create(path).map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!("failed to open {} for writing: {}", path.display(), e),
-            )
-        })?;
+        let file = File::create(path)
+            .map_err(|e| {
+                std::io::Error::new(
+                    e.kind(),
+                    format!("failed to open {} for writing: {}", path.display(), e),
+                )
+            })
+            .map_err(SondaError::Sink)?;
 
         Ok(Self {
             writer: BufWriter::new(file),
@@ -57,13 +61,13 @@ impl FileSink {
 impl Sink for FileSink {
     /// Write `data` to the buffered file writer.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
-        self.writer.write_all(data)?;
+        self.writer.write_all(data).map_err(SondaError::Sink)?;
         Ok(())
     }
 
     /// Flush any buffered bytes to the file.
     fn flush(&mut self) -> Result<(), SondaError> {
-        self.writer.flush()?;
+        self.writer.flush().map_err(SondaError::Sink)?;
         Ok(())
     }
 }

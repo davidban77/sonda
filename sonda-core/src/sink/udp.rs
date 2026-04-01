@@ -40,13 +40,14 @@ impl UdpSink {
                     std::io::ErrorKind::InvalidInput,
                     format!("UDP address resolution error for {addr}: {e}"),
                 )
-            })?
+            })
+            .map_err(SondaError::Sink)?
             .next()
             .ok_or_else(|| {
-                std::io::Error::new(
+                SondaError::Sink(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("UDP address {addr} resolved to no addresses"),
-                )
+                ))
             })?;
         // Bind on the wildcard address, matching the IP version of the target.
         let bind_addr = if target.is_ipv6() {
@@ -55,7 +56,8 @@ impl UdpSink {
             "0.0.0.0:0"
         };
         let socket = UdpSocket::bind(bind_addr)
-            .map_err(|e| std::io::Error::new(e.kind(), format!("UDP bind for {addr}: {e}")))?;
+            .map_err(|e| std::io::Error::new(e.kind(), format!("UDP bind for {addr}: {e}")))
+            .map_err(SondaError::Sink)?;
         Ok(Self { socket, target })
     }
 }
@@ -69,7 +71,7 @@ impl Sink for UdpSink {
     /// (65507 bytes) or if the underlying `send_to` fails.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         if data.len() > MAX_UDP_PAYLOAD {
-            return Err(std::io::Error::new(
+            return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "UDP datagram size {} exceeds maximum {} for target {}",
@@ -77,12 +79,12 @@ impl Sink for UdpSink {
                     MAX_UDP_PAYLOAD,
                     self.target
                 ),
-            )
-            .into());
+            )));
         }
-        self.socket.send_to(data, self.target).map_err(|e| {
-            std::io::Error::new(e.kind(), format!("UDP send_to {}: {e}", self.target))
-        })?;
+        self.socket
+            .send_to(data, self.target)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("UDP send_to {}: {e}", self.target)))
+            .map_err(SondaError::Sink)?;
         Ok(())
     }
 

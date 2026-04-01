@@ -108,10 +108,15 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 
 ## Error Handling
 
-- Define errors in `src/lib.rs` or a dedicated `error.rs` using `thiserror`.
+- Define errors in `src/lib.rs` using `thiserror`.
 - Every public function returns `Result<T, SondaError>`.
 - Never `unwrap()` in this crate. Use `?` propagation or explicit error mapping.
-- I/O errors from sinks should be wrapped in `SondaError::Sink(...)` with context.
+- `SondaError::Sink` wraps `std::io::Error` **without** a blanket `#[from]` conversion.
+  All I/O errors must be explicitly mapped to the correct variant at each call site:
+  - Sink I/O errors: use `.map_err(SondaError::Sink)` or `SondaError::Sink(io_err)`.
+  - Generator file I/O errors: use `SondaError::Generator(format!(...))`.
+  - Config file I/O errors: use `SondaError::Config(format!(...))`.
+- This prevents generator or config I/O errors from being misclassified as sink errors.
 
 ## Testing
 

@@ -25,7 +25,8 @@ impl TcpSink {
     /// (e.g., connection refused, invalid address).
     pub fn new(addr: &str) -> Result<Self, SondaError> {
         let stream = TcpStream::connect(addr)
-            .map_err(|e| std::io::Error::new(e.kind(), format!("TCP connect to {addr}: {e}")))?;
+            .map_err(|e| std::io::Error::new(e.kind(), format!("TCP connect to {addr}: {e}")))
+            .map_err(SondaError::Sink)?;
         Ok(Self {
             writer: BufWriter::new(stream),
             addr: addr.to_owned(),
@@ -39,9 +40,10 @@ impl Sink for TcpSink {
     /// The buffer is flushed automatically by the OS or on an explicit
     /// call to [`flush`](TcpSink::flush).
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
-        self.writer.write_all(data).map_err(|e| {
-            std::io::Error::new(e.kind(), format!("TCP write to {}: {e}", self.addr))
-        })?;
+        self.writer
+            .write_all(data)
+            .map_err(|e| std::io::Error::new(e.kind(), format!("TCP write to {}: {e}", self.addr)))
+            .map_err(SondaError::Sink)?;
         Ok(())
     }
 
@@ -50,9 +52,10 @@ impl Sink for TcpSink {
     /// Should be called at shutdown or after each logical batch to ensure
     /// in-flight data is delivered.
     fn flush(&mut self) -> Result<(), SondaError> {
-        self.writer.flush().map_err(|e| {
-            std::io::Error::new(e.kind(), format!("TCP flush to {}: {e}", self.addr))
-        })?;
+        self.writer
+            .flush()
+            .map_err(|e| std::io::Error::new(e.kind(), format!("TCP flush to {}: {e}", self.addr)))
+            .map_err(SondaError::Sink)?;
         Ok(())
     }
 }

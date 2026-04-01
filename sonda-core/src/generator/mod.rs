@@ -274,8 +274,7 @@ fn parse_severity(s: &str) -> Result<Severity, SondaError> {
 /// # Errors
 /// - Returns [`SondaError::Config`] if severity weight keys are invalid.
 /// - Returns [`SondaError::Config`] if the replay file is empty or cannot be parsed.
-/// - Returns [`SondaError::Sink`] (wrapping `std::io::Error`) if the replay file
-///   cannot be opened.
+/// - Returns [`SondaError::Generator`] if the replay file cannot be read.
 pub fn create_log_generator(
     config: &LogGeneratorConfig,
 ) -> Result<Box<dyn LogGenerator>, SondaError> {
