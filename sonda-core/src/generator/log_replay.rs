@@ -73,7 +73,10 @@ impl LogGenerator for LogReplayGenerator {
     /// Wraps around when `tick >= lines.len()`. The severity is always `Info`
     /// and `fields` is empty — the full log context is in the message.
     fn generate(&self, tick: u64) -> LogEvent {
-        let line = &self.lines[(tick as usize) % self.lines.len()];
+        // Perform modulo in u64 space to avoid truncation on 32-bit platforms
+        // where `usize` is 32 bits and ticks above u32::MAX would wrap silently.
+        let index = (tick % self.lines.len() as u64) as usize;
+        let line = &self.lines[index];
         LogEvent::new(
             Severity::Info,
             line.clone(),
@@ -254,7 +257,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Large tick values
+    // Large tick values and 32-bit truncation safety
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -262,6 +265,30 @@ mod tests {
         let gen = five_line_generator();
         let _ = gen.generate(u64::MAX);
         let _ = gen.generate(u64::MAX - 1);
+    }
+
+    #[test]
+    fn tick_above_u32_max_uses_u64_modulo() {
+        let gen = five_line_generator();
+        // tick = 4_294_967_296: u64 modulo 4_294_967_296 % 5 = 1
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.generate(tick).message,
+            "line-1",
+            "tick {} mod 5 = 1, should return line-1",
+            tick
+        );
+    }
+
+    #[test]
+    fn tick_at_u64_max_wraps_correctly() {
+        let gen = five_line_generator();
+        let event = gen.generate(u64::MAX);
+        // u64::MAX % 5 = 0 (since 18446744073709551615 % 5 = 0)
+        assert_eq!(
+            event.message, "line-0",
+            "u64::MAX % 5 = 0, should return line-0"
+        );
     }
 
     // ---------------------------------------------------------------------------

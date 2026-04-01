@@ -55,10 +55,12 @@ impl SequenceGenerator {
 impl ValueGenerator for SequenceGenerator {
     fn value(&self, tick: u64) -> f64 {
         let len = self.values.len();
+        // Perform modulo in u64 space to avoid truncation on 32-bit platforms
+        // where `usize` is 32 bits and ticks above u32::MAX would wrap silently.
         let index = if self.repeat {
-            (tick as usize) % len
+            (tick % len as u64) as usize
         } else {
-            (tick as usize).min(len - 1)
+            (tick.min((len - 1) as u64)) as usize
         };
         self.values[index]
     }
@@ -202,11 +204,9 @@ mod tests {
     #[test]
     fn repeat_large_tick_does_not_panic() {
         let gen = SequenceGenerator::new(vec![1.0, 2.0, 3.0], true).unwrap();
-        // u64::MAX would cause issues if converted to usize on 32-bit, but on 64-bit
-        // it's just a large modulo. Use a large but safe value.
         let large_tick: u64 = 1_000_000_000;
         let val = gen.value(large_tick);
-        let expected_index = (large_tick as usize) % 3;
+        let expected_index = (large_tick % 3) as usize;
         let expected = [1.0, 2.0, 3.0][expected_index];
         assert_eq!(val, expected);
     }
@@ -253,6 +253,55 @@ mod tests {
     #[test]
     fn sequence_generator_is_send_and_sync() {
         assert_send_sync::<SequenceGenerator>();
+    }
+
+    // ---- 32-bit truncation safety (tick > u32::MAX) ----------------------------
+
+    #[test]
+    fn repeat_tick_above_u32_max_uses_u64_modulo() {
+        // On a 32-bit platform, `tick as usize` would truncate to the lower 32 bits.
+        // With the fix, modulo is performed in u64 space before casting to usize.
+        let gen = SequenceGenerator::new(vec![10.0, 20.0, 30.0], true).unwrap();
+        // tick = 4_294_967_296 (u32::MAX + 1)
+        // Correct (u64):    4_294_967_296 % 3 = 1
+        // Truncated (u32):  (4_294_967_296 as u32) = 0, 0 % 3 = 0 (WRONG)
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.value(tick),
+            20.0,
+            "tick {} mod 3 = 1, should return values[1] = 20.0",
+            tick
+        );
+    }
+
+    #[test]
+    fn repeat_tick_at_u64_max_does_not_panic() {
+        let gen = SequenceGenerator::new(vec![1.0, 2.0, 3.0], true).unwrap();
+        let val = gen.value(u64::MAX);
+        // u64::MAX % 3 = 0 (since u64::MAX = 18446744073709551615, and 18446744073709551615 % 3 = 0)
+        assert_eq!(val, 1.0, "u64::MAX % 3 = 0, should return values[0]");
+    }
+
+    #[test]
+    fn no_repeat_tick_above_u32_max_clamps_correctly() {
+        let gen = SequenceGenerator::new(vec![1.0, 2.0, 3.0], false).unwrap();
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.value(tick),
+            3.0,
+            "tick {} beyond length should clamp to last value",
+            tick
+        );
+    }
+
+    #[test]
+    fn no_repeat_tick_at_u64_max_clamps_correctly() {
+        let gen = SequenceGenerator::new(vec![1.0, 2.0], false).unwrap();
+        assert_eq!(
+            gen.value(u64::MAX),
+            2.0,
+            "u64::MAX should clamp to last value"
+        );
     }
 
     // ---- Incident pattern modeling (real-world usage) -------------------------

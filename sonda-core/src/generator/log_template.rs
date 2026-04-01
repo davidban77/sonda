@@ -158,7 +158,9 @@ impl LogGenerator for LogTemplateGenerator {
             );
         }
 
-        let template = &self.templates[(tick as usize) % self.templates.len()];
+        // Perform modulo in u64 space to avoid truncation on 32-bit platforms
+        // where `usize` is 32 bits and ticks above u32::MAX would wrap silently.
+        let template = &self.templates[(tick % self.templates.len() as u64) as usize];
         let severity = self.select_severity(tick);
         let (message, fields) = self.resolve_template(template, tick);
 
@@ -450,7 +452,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Large tick values
+    // Large tick values and 32-bit truncation safety
     // ---------------------------------------------------------------------------
 
     #[test]
@@ -458,6 +460,54 @@ mod tests {
         let gen = make_simple_generator(1);
         let _ = gen.generate(u64::MAX);
         let _ = gen.generate(u64::MAX - 1);
+    }
+
+    #[test]
+    fn tick_above_u32_max_selects_correct_template() {
+        let entry_a = TemplateEntry {
+            message: "template-A".into(),
+            field_pools: HashMap::new(),
+        };
+        let entry_b = TemplateEntry {
+            message: "template-B".into(),
+            field_pools: HashMap::new(),
+        };
+        let entry_c = TemplateEntry {
+            message: "template-C".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry_a, entry_b, entry_c], vec![], 0);
+        // tick = 4_294_967_296: u64 modulo 4_294_967_296 % 3 = 1
+        let tick: u64 = u64::from(u32::MAX) + 1;
+        assert_eq!(
+            gen.generate(tick).message,
+            "template-B",
+            "tick {} mod 3 = 1, should select template-B",
+            tick
+        );
+    }
+
+    #[test]
+    fn tick_at_u64_max_selects_correct_template() {
+        let entry_a = TemplateEntry {
+            message: "template-A".into(),
+            field_pools: HashMap::new(),
+        };
+        let entry_b = TemplateEntry {
+            message: "template-B".into(),
+            field_pools: HashMap::new(),
+        };
+        let entry_c = TemplateEntry {
+            message: "template-C".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry_a, entry_b, entry_c], vec![], 0);
+        // u64::MAX % 3 = 0
+        assert_eq!(
+            gen.generate(u64::MAX).message,
+            "template-A",
+            "u64::MAX % 3 = 0, should select template-A"
+        );
     }
 
     // ---------------------------------------------------------------------------
