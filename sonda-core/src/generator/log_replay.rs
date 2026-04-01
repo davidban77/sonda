@@ -29,11 +29,12 @@ impl LogReplayGenerator {
     /// contains no non-blank lines.
     ///
     /// # Errors
-    /// - Returns [`SondaError::Sink`] (wrapping `std::io::Error`) if the file
-    ///   cannot be read.
+    /// - Returns [`SondaError::Generator`] if the file cannot be read.
     /// - Returns [`SondaError::Config`] if the file contains no non-blank lines.
     pub fn from_file(path: &Path) -> Result<Self, SondaError> {
-        let content = std::fs::read_to_string(path).map_err(SondaError::Sink)?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            SondaError::Generator(format!("cannot read replay file {:?}: {}", path, e))
+        })?;
         let lines: Vec<String> = content
             .lines()
             .map(|l| l.to_string())
@@ -190,11 +191,24 @@ mod tests {
     }
 
     #[test]
-    fn from_file_missing_file_returns_error() {
+    fn from_file_missing_file_returns_generator_error() {
         let result = LogReplayGenerator::from_file(std::path::Path::new(
             "/nonexistent/path/that/does/not/exist.log",
         ));
-        assert!(result.is_err(), "missing file must return Err");
+        match result {
+            Err(ref err) => {
+                assert!(
+                    matches!(err, SondaError::Generator(_)),
+                    "missing replay file must produce Generator variant, not Sink; got: {err:?}"
+                );
+                let msg = format!("{err}");
+                assert!(
+                    msg.contains("cannot read replay file"),
+                    "error message should mention 'cannot read replay file', got: {msg}"
+                );
+            }
+            Ok(_) => panic!("missing file must return Err"),
+        }
     }
 
     // ---------------------------------------------------------------------------

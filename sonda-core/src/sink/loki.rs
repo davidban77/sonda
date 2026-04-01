@@ -62,14 +62,13 @@ impl LokiSink {
         batch_size: usize,
     ) -> Result<Self, SondaError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(std::io::Error::new(
+            return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "invalid Loki URL '{}': must start with http:// or https://",
                     url
                 ),
-            )
-            .into());
+            )));
         }
 
         let client = ureq::AgentBuilder::new().build();
@@ -135,27 +134,25 @@ impl LokiSink {
                 if (200..300).contains(&status) {
                     Ok(())
                 } else {
-                    Err(std::io::Error::other(format!(
+                    Err(SondaError::Sink(std::io::Error::other(format!(
                         "Loki push to '{}' returned unexpected status {}",
                         push_url, status
-                    ))
-                    .into())
+                    ))))
                 }
             }
             Err(ureq::Error::Status(code, _)) => {
                 self.batch.clear();
-                Err(std::io::Error::other(format!(
+                Err(SondaError::Sink(std::io::Error::other(format!(
                     "Loki push to '{}' failed with HTTP status {}",
                     push_url, code
-                ))
-                .into())
+                ))))
             }
             Err(e) => {
                 self.batch.clear();
-                Err(
-                    std::io::Error::other(format!("Loki push to '{}' failed: {}", push_url, e))
-                        .into(),
-                )
+                Err(SondaError::Sink(std::io::Error::other(format!(
+                    "Loki push to '{}' failed: {}",
+                    push_url, e
+                ))))
             }
         }
     }

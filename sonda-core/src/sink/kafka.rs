@@ -83,7 +83,8 @@ impl KafkaSink {
                     "kafka sink: failed to build tokio runtime for broker '{}': {}",
                     brokers, e
                 ))
-            })?;
+            })
+            .map_err(SondaError::Sink)?;
 
         // Parse broker list: split on commas and trim whitespace.
         let bootstrap_brokers: Vec<String> = brokers
@@ -93,48 +94,49 @@ impl KafkaSink {
             .collect();
 
         if bootstrap_brokers.is_empty() {
-            return Err(std::io::Error::new(
+            return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("kafka sink: no valid broker addresses in '{}'", brokers),
-            )
-            .into());
+            )));
         }
 
         let topic_str = topic.to_owned();
         let brokers_str = brokers.to_owned();
 
         // Build the rskafka client and partition client inside the runtime.
-        let client = runtime.block_on(async {
-            let kafka_client = ClientBuilder::new(bootstrap_brokers)
-                .build()
-                .await
-                .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        format!(
-                            "kafka sink: failed to connect to broker(s) '{}': {}",
-                            brokers_str, e
-                        ),
-                    )
-                })?;
+        let client = runtime
+            .block_on(async {
+                let kafka_client = ClientBuilder::new(bootstrap_brokers)
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            format!(
+                                "kafka sink: failed to connect to broker(s) '{}': {}",
+                                brokers_str, e
+                            ),
+                        )
+                    })?;
 
-            kafka_client
-                .partition_client(
-                    topic_str.clone(),
-                    0, // partition 0
-                    UnknownTopicHandling::Retry,
-                )
-                .await
-                .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!(
-                            "kafka sink: failed to get partition client for topic '{}' at broker(s) '{}': {}",
-                            topic_str, brokers_str, e
-                        ),
+                kafka_client
+                    .partition_client(
+                        topic_str.clone(),
+                        0, // partition 0
+                        UnknownTopicHandling::Retry,
                     )
-                })
-        })?;
+                    .await
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!(
+                                "kafka sink: failed to get partition client for topic '{}' at broker(s) '{}': {}",
+                                topic_str, brokers_str, e
+                            ),
+                        )
+                    })
+            })
+            .map_err(SondaError::Sink)?;
 
         Ok(Self {
             topic: topic.to_owned(),
@@ -179,7 +181,8 @@ impl KafkaSink {
                         self.topic, self.brokers, e
                     ),
                 )
-            })?;
+            })
+            .map_err(SondaError::Sink)?;
 
         Ok(())
     }

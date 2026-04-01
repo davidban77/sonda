@@ -63,14 +63,13 @@ impl HttpPushSink {
     ) -> Result<Self, SondaError> {
         // Validate the URL scheme before accepting the config.
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(std::io::Error::new(
+            return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
                     "invalid HTTP push URL '{}': must start with http:// or https://",
                     url
                 ),
-            )
-            .into());
+            )));
         }
 
         let client = ureq::AgentBuilder::new().build();
@@ -138,11 +137,10 @@ impl HttpPushSink {
                     }
                     Ok(retry_status) => {
                         self.batch.clear();
-                        Err(std::io::Error::other(format!(
+                        Err(SondaError::Sink(std::io::Error::other(format!(
                             "HTTP push to '{}' failed with status {} (retry status {})",
                             self.url, status, retry_status
-                        ))
-                        .into())
+                        ))))
                     }
                     Err(e) => {
                         // Retry transport failure — clear batch to prevent unbounded growth.
@@ -184,11 +182,10 @@ impl HttpPushSink {
         match response {
             Ok(resp) => Ok(resp.status()),
             Err(ureq::Error::Status(code, _)) => Ok(code),
-            Err(e) => Err(std::io::Error::new(
+            Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("HTTP push to '{}' failed: {}", url, e),
-            )
-            .into()),
+            ))),
         }
     }
 }

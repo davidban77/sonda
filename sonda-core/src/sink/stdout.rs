@@ -32,13 +32,13 @@ impl Default for StdoutSink {
 impl Sink for StdoutSink {
     /// Write `data` to the buffered stdout writer.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
-        self.writer.write_all(data)?;
+        self.writer.write_all(data).map_err(SondaError::Sink)?;
         Ok(())
     }
 
     /// Flush any buffered bytes to stdout.
     fn flush(&mut self) -> Result<(), SondaError> {
-        self.writer.flush()?;
+        self.writer.flush().map_err(SondaError::Sink)?;
         Ok(())
     }
 }
