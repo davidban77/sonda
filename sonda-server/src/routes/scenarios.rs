@@ -417,8 +417,8 @@ pub async fn get_scenario(
 /// for the thread to exit via `handle.join()`. If the thread does not exit within
 /// the timeout, the response status is `"force_stopped"` and a warning is logged.
 ///
-/// Idempotent: deleting an already-stopped scenario returns `200 OK` with
-/// `"stopped"` status. Returns `404 Not Found` for unknown IDs.
+/// After returning final stats, the scenario handle is removed from the map.
+/// A subsequent DELETE on the same ID returns `404 Not Found`.
 pub async fn delete_scenario(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -449,12 +449,17 @@ pub async fn delete_scenario(
     } else if was_running_before_join {
         "stopped".to_string()
     } else {
-        // Already stopped before we called delete — still idempotent 200.
+        // Thread had already exited before DELETE was called.
         "stopped".to_string()
     };
 
     // Read final stats before responding.
     let final_stats = handle.stats_snapshot();
+
+    // Remove the handle from the map to free resources (fixes memory leak).
+    scenarios.remove(&id);
+    // Release the write lock before logging and building the response.
+    drop(scenarios);
 
     info!(id = %id, status = %status, total_events = final_stats.total_events, "scenario deleted");
 
@@ -1898,11 +1903,11 @@ sink:
         );
     }
 
-    // ---- DELETE idempotency: DELETE twice on same ID ------------------------
+    // ---- DELETE twice: second DELETE returns 404 after handle removal --------
 
-    /// DELETE twice on the same ID returns 200 both times.
+    /// DELETE removes the handle from the map, so a second DELETE returns 404.
     #[tokio::test]
-    async fn delete_twice_on_same_id_returns_200_both_times() {
+    async fn delete_twice_on_same_id_returns_404_on_second() {
         let h = make_handle("id-del-twice", "del_twice", 1000, Duration::from_millis(50));
         let state = AppState::new();
         {
@@ -1921,20 +1926,98 @@ sink:
         let body1 = body_json(resp1).await;
         assert_eq!(body1["status"].as_str().unwrap(), "stopped");
 
-        // Second DELETE on the same (now stopped) ID.
+        // Second DELETE on the same ID — handle was removed, so 404.
         let app2 = router(state.clone());
         let resp2 = delete_scenario_req(app2, "id-del-twice").await;
         assert_eq!(
             resp2.status(),
-            StatusCode::OK,
-            "second DELETE on same ID must return 200 OK (idempotent)"
+            StatusCode::NOT_FOUND,
+            "second DELETE on same ID must return 404 after handle removal"
         );
-        let body2 = body_json(resp2).await;
+    }
+
+    // ---- DELETE removes handle from HashMap -----------------------------------
+
+    /// DELETE removes the scenario handle from the internal HashMap.
+    #[tokio::test]
+    async fn delete_removes_handle_from_hashmap() {
+        let h = make_handle("id-del-map", "del_map", 1000, Duration::from_millis(50));
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        // Precondition: map has exactly 1 entry.
         assert_eq!(
-            body2["status"].as_str().unwrap(),
-            "stopped",
-            "second DELETE must also return status 'stopped'"
+            state.scenarios.read().unwrap().len(),
+            1,
+            "precondition: map must have 1 entry before DELETE"
         );
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-del-map").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // After DELETE, the handle must be gone.
+        let map = state.scenarios.read().unwrap();
+        assert_eq!(map.len(), 0, "map must be empty after DELETE");
+        assert!(
+            map.get("id-del-map").is_none(),
+            "deleted scenario must not be present in the map"
+        );
+    }
+
+    // ---- DELETE excludes scenario from GET /scenarios list -------------------
+
+    /// After deleting one of two scenarios, GET /scenarios returns only the remaining one.
+    #[tokio::test]
+    async fn delete_scenario_excluded_from_list() {
+        let h_keep = make_handle("id-keep", "keep_scenario", 1000, Duration::from_millis(50));
+        let h_delete = make_handle(
+            "id-delete",
+            "delete_scenario",
+            1000,
+            Duration::from_millis(50),
+        );
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h_keep.id.clone(), h_keep);
+            map.insert(h_delete.id.clone(), h_delete);
+        }
+
+        // DELETE "id-delete".
+        let app1 = router(state.clone());
+        let resp = delete_scenario_req(app1, "id-delete").await;
+        assert_eq!(resp.status(), StatusCode::OK, "DELETE must return 200");
+
+        // GET /scenarios — only "id-keep" should remain.
+        let app2 = router(state.clone());
+        let req = Request::builder()
+            .uri("/scenarios")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app2.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("response must have a scenarios array");
+        assert_eq!(
+            scenarios.len(),
+            1,
+            "only one scenario should remain after DELETE"
+        );
+        assert_eq!(
+            scenarios[0]["id"].as_str().unwrap(),
+            "id-keep",
+            "the remaining scenario must be 'id-keep'"
+        );
+
+        // Clean up the remaining running scenario.
+        cleanup_scenarios(&state);
     }
 
     // ---- Contract: DeletedScenario serializes correctly ---------------------

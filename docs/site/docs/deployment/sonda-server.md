@@ -79,6 +79,28 @@ Error responses:
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state |
 | GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format |
 
+## Stopping a Scenario
+
+`DELETE /scenarios/{id}` stops the scenario thread, collects final stats, and removes the
+scenario from the server. After deletion, the scenario no longer appears in `GET /scenarios`
+and its memory is freed.
+
+```bash
+curl -X DELETE http://localhost:8080/scenarios/<id>
+# {"id":"<id>","status":"stopped","total_events":42}
+```
+
+Response codes:
+
+| Status | Meaning |
+|--------|---------|
+| **200 OK** | Scenario stopped and removed. Body includes `id`, `status`, and `total_events`. |
+| **404 Not Found** | No scenario with that ID exists (already deleted or never created). |
+
+!!! warning "DELETE is not idempotent"
+    A successful DELETE removes the scenario entirely. A second DELETE on the same ID
+    returns **404**, not 200. If your automation retries deletes, treat 404 as success.
+
 ## Scrape Integration
 
 The `GET /scenarios/{id}/metrics` endpoint returns recent metric events in Prometheus text

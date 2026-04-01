@@ -279,7 +279,7 @@ fn full_lifecycle_metrics_and_logs() {
         );
     }
 
-    // -- Step 6: GET /scenarios -> both show as stopped --
+    // -- Step 6: GET /scenarios -> both removed after DELETE --
     let resp = client
         .get(format!("{base}/scenarios"))
         .send()
@@ -292,16 +292,9 @@ fn full_lifecycle_metrics_and_logs() {
         .as_array()
         .expect("response must have a scenarios array");
 
-    for s in scenarios {
-        if s["id"].as_str() == Some(metrics_id.as_str())
-            || s["id"].as_str() == Some(logs_id.as_str())
-        {
-            assert_eq!(
-                s["status"].as_str(),
-                Some("stopped"),
-                "scenario {} must be stopped after DELETE",
-                s["id"]
-            );
-        }
-    }
+    assert!(
+        scenarios.is_empty(),
+        "GET /scenarios must return empty list after all scenarios are deleted, got {} entries",
+        scenarios.len()
+    );
 }
