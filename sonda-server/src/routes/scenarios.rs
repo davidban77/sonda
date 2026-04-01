@@ -449,7 +449,7 @@ pub async fn delete_scenario(
     } else if was_running_before_join {
         "stopped".to_string()
     } else {
-        // Already stopped before we called delete — still idempotent 200.
+        // Thread had already exited before DELETE was called.
         "stopped".to_string()
     };
 

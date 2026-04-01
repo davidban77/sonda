@@ -25,7 +25,7 @@ src/
 │                         GET /scenarios/{id} (inspect with stats),
 │                         GET /scenarios/{id}/stats (detailed live stats),
 │                         GET /scenarios/{id}/metrics (Prometheus text scrape),
-│                         DELETE /scenarios/{id} (stop and return final stats)
+│                         DELETE /scenarios/{id} (stop, return final stats, remove from map)
 │                         parse_body(), parse_yaml_body(), parse_json_body(),
 │                         post_scenario(), list_scenarios(), get_scenario(),
 │                         get_scenario_stats(), get_scenario_metrics(),
