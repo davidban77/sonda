@@ -10,7 +10,8 @@ src/
 ├── lib.rs              ← public API surface, re-exports
 ├── model/
 │   ├── mod.rs          ← module declarations
-│   ├── metric.rs       ← MetricEvent (Arc<str> name, Arc<Labels>), Labels, from_parts()
+│   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
+│   │                      MetricEvent (ValidatedMetricName name, Arc<Labels>), Labels, from_parts()
 │   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels)
 ├── generator/
 │   ├── mod.rs          ← ValueGenerator trait + factory
@@ -100,11 +101,12 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 
 - **No per-event allocations.** The hot path is: generate value → build MetricEvent → encode into
   buffer → write to sink. Each step should write into pre-allocated or caller-provided memory.
-- **Arc-wrapped MetricEvent fields.** `MetricEvent::name` is `Arc<str>` and `MetricEvent::labels`
+- **Arc-wrapped MetricEvent fields.** `MetricEvent::name` is a `ValidatedMetricName` (newtype
+  over `Arc<str>` that validates the metric name regex once at construction) and `MetricEvent::labels`
   is `Arc<Labels>`. Cloning a MetricEvent is O(1) — just reference-count bumps. The metric runner
-  validates the name once before the loop and uses `MetricEvent::from_parts` (no per-tick
-  validation) with `Arc::clone` (no per-tick heap allocation). Only when a cardinality spike is
-  active does the runner deep-clone the inner Labels to insert the spike key.
+  constructs a `ValidatedMetricName` once before the loop and uses `MetricEvent::from_parts` (no
+  per-tick validation) with `name.clone()` (no per-tick heap allocation). Only when a cardinality
+  spike is active does the runner deep-clone the inner Labels to insert the spike key.
 - **Pre-build label strings.** Labels don't change between events for a given scenario. Build the
   serialized label prefix once at construction time.
 - **Use `BufWriter`.** Never write individual lines to stdout or files without buffering.
