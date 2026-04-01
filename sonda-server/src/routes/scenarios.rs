@@ -361,11 +361,11 @@ pub async fn post_scenario(
 /// Returns a JSON object with a `scenarios` array containing each scenario's
 /// ID, name, status, and elapsed time. The list includes both running and
 /// stopped scenarios that have not been deleted.
-pub async fn list_scenarios(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoResponse, Response> {
     let scenarios = state
         .scenarios
         .read()
-        .expect("AppState RwLock must not be poisoned");
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
 
     let summaries: Vec<ScenarioSummary> = scenarios
         .iter()
@@ -377,9 +377,9 @@ pub async fn list_scenarios(State(state): State<AppState>) -> impl IntoResponse 
         })
         .collect();
 
-    Json(ListScenariosResponse {
+    Ok(Json(ListScenariosResponse {
         scenarios: summaries,
-    })
+    }))
 }
 
 /// `GET /scenarios/{id}` — inspect a single scenario with full detail.
@@ -394,7 +394,7 @@ pub async fn get_scenario(
     let scenarios = state
         .scenarios
         .read()
-        .expect("AppState RwLock must not be poisoned");
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
 
     let handle = scenarios
         .get(&id)
@@ -487,7 +487,7 @@ pub async fn get_scenario_stats(
     let scenarios = state
         .scenarios
         .read()
-        .expect("AppState RwLock must not be poisoned");
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
 
     let handle = scenarios
         .get(&id)
@@ -551,7 +551,7 @@ pub async fn get_scenario_metrics(
     let scenarios = state
         .scenarios
         .read()
-        .expect("AppState RwLock must not be poisoned");
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
 
     let handle = scenarios
         .get(&id)
