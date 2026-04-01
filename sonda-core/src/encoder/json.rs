@@ -62,21 +62,23 @@ impl Default for JsonLines {
 /// Intermediate serde-serializable representation of a metric event.
 ///
 /// Uses `BTreeMap` for labels so the JSON field order is consistent and deterministic.
+/// The `timestamp` field borrows from a stack-allocated byte array to avoid heap allocation.
 #[derive(Serialize)]
 struct JsonMetric<'a> {
     name: &'a str,
     value: f64,
     labels: BTreeMap<&'a str, &'a str>,
-    timestamp: String,
+    timestamp: &'a str,
 }
 
 /// Intermediate serde-serializable representation of a log event.
 ///
 /// Field order matches the spec: timestamp, severity, message, labels, fields.
 /// Uses `BTreeMap` for labels and fields so the JSON field order is consistent and deterministic.
+/// The `timestamp` field borrows from a stack-allocated byte array to avoid heap allocation.
 #[derive(Serialize)]
 struct JsonLog<'a> {
-    timestamp: String,
+    timestamp: &'a str,
     severity: &'a str,
     message: &'a str,
     labels: BTreeMap<&'a str, &'a str>,
@@ -89,7 +91,10 @@ impl Encoder for JsonLines {
     /// Uses `serde_json::to_writer` to write directly into the caller-provided buffer,
     /// avoiding an intermediate `String` allocation.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
-        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
+        let ts_bytes = super::format_rfc3339_millis_array(event.timestamp)?;
+        // Safety: the array contains only ASCII digits, hyphens, colons, 'T', '.', 'Z'.
+        let timestamp =
+            std::str::from_utf8(&ts_bytes).expect("RFC 3339 timestamp is always valid UTF-8");
 
         let labels: BTreeMap<&str, &str> = event
             .labels
@@ -126,7 +131,9 @@ impl Encoder for JsonLines {
     ///
     /// Uses `serde_json::to_writer` to write directly into the caller-provided buffer.
     fn encode_log(&self, event: &LogEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
-        let timestamp = super::format_rfc3339_millis(event.timestamp)?;
+        let ts_bytes = super::format_rfc3339_millis_array(event.timestamp)?;
+        let timestamp =
+            std::str::from_utf8(&ts_bytes).expect("RFC 3339 timestamp is always valid UTF-8");
 
         // Serialize severity to its lowercase string representation using serde.
         let severity_str = match event.severity {
@@ -509,24 +516,35 @@ mod tests {
 
     // --- format_rfc3339_millis direct tests ---
 
+    /// Helper: format a timestamp via the buffer-based API and return as String.
+    fn fmt_ts(ts: std::time::SystemTime) -> String {
+        let mut buf = Vec::new();
+        super::super::format_rfc3339_millis(ts, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// Helper: format a timestamp via the array-based API and return as String.
+    fn fmt_ts_array(ts: std::time::SystemTime) -> String {
+        let arr = super::super::format_rfc3339_millis_array(ts).unwrap();
+        std::str::from_utf8(&arr).unwrap().to_string()
+    }
+
     #[test]
     fn format_rfc3339_millis_epoch_returns_correct_string() {
-        let result = super::super::format_rfc3339_millis(UNIX_EPOCH).unwrap();
-        assert_eq!(result, "1970-01-01T00:00:00.000Z");
+        assert_eq!(fmt_ts(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
     }
 
     #[test]
     fn format_rfc3339_millis_known_timestamp_2026_03_20_returns_correct_string() {
         // 2026-03-20T12:00:00.000Z = 1774008000 Unix seconds
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
-        assert_eq!(result, "2026-03-20T12:00:00.000Z");
+        assert_eq!(fmt_ts(ts), "2026-03-20T12:00:00.000Z");
     }
 
     #[test]
     fn format_rfc3339_millis_preserves_milliseconds() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_456);
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
+        let result = fmt_ts(ts);
         assert!(
             result.ends_with(".456Z"),
             "must end with .456Z but got: {result}"
@@ -537,15 +555,13 @@ mod tests {
     fn format_rfc3339_millis_midnight_boundary() {
         // End of day: 23:59:59.999
         let ts = UNIX_EPOCH + Duration::from_millis(86_399_999);
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
-        assert_eq!(result, "1970-01-01T23:59:59.999Z");
+        assert_eq!(fmt_ts(ts), "1970-01-01T23:59:59.999Z");
     }
 
     #[test]
     fn format_rfc3339_millis_start_of_day_plus_one_second() {
         let ts = UNIX_EPOCH + Duration::from_secs(86400); // 1970-01-02T00:00:00.000Z
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
-        assert_eq!(result, "1970-01-02T00:00:00.000Z");
+        assert_eq!(fmt_ts(ts), "1970-01-02T00:00:00.000Z");
     }
 
     #[test]
@@ -554,16 +570,42 @@ mod tests {
         // Days from epoch to 2024-02-29: calculate via known timestamp
         // 2024-02-29T00:00:00Z = 1709164800 seconds
         let ts = UNIX_EPOCH + Duration::from_secs(1_709_164_800);
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
-        assert_eq!(result, "2024-02-29T00:00:00.000Z");
+        assert_eq!(fmt_ts(ts), "2024-02-29T00:00:00.000Z");
     }
 
     #[test]
     fn format_rfc3339_millis_end_of_year_dec_31() {
         // 2023-12-31T23:59:59.999Z = 1704067199.999
         let ts = UNIX_EPOCH + Duration::from_millis(1_704_067_199_999);
-        let result = super::super::format_rfc3339_millis(ts).unwrap();
-        assert_eq!(result, "2023-12-31T23:59:59.999Z");
+        assert_eq!(fmt_ts(ts), "2023-12-31T23:59:59.999Z");
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_matches_buffer_output() {
+        // Both APIs must produce identical bytes for the same timestamp.
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_456);
+        assert_eq!(fmt_ts(ts), fmt_ts_array(ts));
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_is_valid_utf8() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let arr = super::super::format_rfc3339_millis_array(ts).unwrap();
+        assert!(
+            std::str::from_utf8(&arr).is_ok(),
+            "array output must be valid UTF-8"
+        );
+    }
+
+    #[test]
+    fn format_rfc3339_millis_array_length_is_24() {
+        let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
+        let arr = super::super::format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            arr.len(),
+            24,
+            "RFC 3339 millis timestamp must be exactly 24 bytes"
+        );
     }
 
     // =========================================================================

@@ -107,6 +107,10 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
   constructs a `ValidatedMetricName` once before the loop and uses `MetricEvent::from_parts` (no
   per-tick validation) with `name.clone()` (no per-tick heap allocation). Only when a cardinality
   spike is active does the runner deep-clone the inner Labels to insert the spike key.
+- **Zero-alloc timestamp formatting.** `format_rfc3339_millis_array` writes the RFC 3339 timestamp
+  into a stack-allocated `[u8; 24]` — no heap allocation. JSON and syslog encoders use this to
+  borrow a `&str` without going through `String`. The `format_rfc3339_millis(ts, buf)` variant
+  appends directly into the caller's `Vec<u8>` buffer.
 - **Pre-build label strings.** Labels don't change between events for a given scenario. Build the
   serialized label prefix once at construction time.
 - **Use `BufWriter`.** Never write individual lines to stdout or files without buffering.
