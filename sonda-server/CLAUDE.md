@@ -50,6 +50,14 @@ tests/
 | GET    | /scenarios/{id}/metrics | Latest metrics in Prometheus text format (scrapeable)   |
 | DELETE | /scenarios/{id}         | Stop a running scenario, return final stats, remove from map |
 
+## Error Handling
+
+All handlers use `.map_err()` with the `?` operator for lock acquisition and other fallible
+operations. No handler uses `.expect()` or `.unwrap()` on lock guards. If the `AppState` scenarios
+`RwLock` is poisoned (e.g., because a write handler panicked), all handlers return `500 Internal
+Server Error` with a JSON error body instead of panicking. The per-scenario stats `RwLock` in
+`ScenarioHandle` uses `into_inner()` to recover data from poisoned guards without panicking.
+
 ## Concurrency Model
 
 Each scenario runs on a dedicated thread (spawned by `sonda_core::schedule::launch::launch_scenario`).

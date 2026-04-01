@@ -193,13 +193,7 @@ fn is_yaml_content_type(headers: &HeaderMap) -> bool {
     headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|ct| {
-            ct.contains("yaml")
-                || ct.contains("x-yaml")
-                || ct.starts_with("text/yaml")
-                || ct.starts_with("application/yaml")
-                || ct.starts_with("application/x-yaml")
-        })
+        .map(|ct| ct.contains("yaml"))
         .unwrap_or(true) // default: assume YAML
 }
 
@@ -300,21 +294,18 @@ pub async fn post_scenario(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     // 1. Parse the body into a ScenarioEntry.
-    let entry = match parse_body(&body, &headers) {
-        Ok(e) => e,
-        Err(msg) => {
-            warn!(error = %msg, "POST /scenarios: invalid request body");
-            return bad_request(msg);
-        }
-    };
+    let entry = parse_body(&body, &headers).map_err(|msg| {
+        warn!(error = %msg, "POST /scenarios: invalid request body");
+        bad_request(msg)
+    })?;
 
     // 2. Validate the entry (rate, duration, generator parameters, etc.).
-    if let Err(e) = validate_entry(&entry) {
+    validate_entry(&entry).map_err(|e| {
         warn!(error = %e, "POST /scenarios: validation failed");
-        return unprocessable(e);
-    }
+        unprocessable(e)
+    })?;
 
     // 3. Assign a unique ID and extract the scenario name before moving entry.
     let id = Uuid::new_v4().to_string();
@@ -325,27 +316,22 @@ pub async fn post_scenario(
 
     // 4. Launch the scenario on a new OS thread.
     let shutdown = Arc::new(AtomicBool::new(true));
-    let handle = match launch_scenario(id.clone(), entry, shutdown, None) {
-        Ok(h) => h,
-        Err(e) => {
-            warn!(error = %e, "POST /scenarios: failed to launch scenario");
-            return internal_error(e);
-        }
-    };
+    let handle = launch_scenario(id.clone(), entry, shutdown, None).map_err(|e| {
+        warn!(error = %e, "POST /scenarios: failed to launch scenario");
+        internal_error(e)
+    })?;
 
     info!(id = %id, name = %name, "scenario launched");
 
     // 5. Store the handle in shared state.
-    match state.scenarios.write() {
-        Ok(mut scenarios) => {
-            scenarios.insert(id.clone(), handle);
-        }
-        Err(e) => {
-            // Poisoned lock — highly unlikely but must be handled.
+    state
+        .scenarios
+        .write()
+        .map_err(|e| {
             warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
-            return internal_error("internal state lock is poisoned");
-        }
-    }
+            internal_error("internal state lock is poisoned")
+        })?
+        .insert(id.clone(), handle);
 
     // 6. Respond with 201 Created.
     let response_body = CreatedScenario {
@@ -353,7 +339,7 @@ pub async fn post_scenario(
         name,
         status: "running",
     };
-    (StatusCode::CREATED, Json(response_body)).into_response()
+    Ok((StatusCode::CREATED, Json(response_body)).into_response())
 }
 
 /// `GET /scenarios` — list all scenarios with summary information.
@@ -697,11 +683,22 @@ mod tests {
         serde_json::from_slice(&bytes).expect("body must be valid JSON")
     }
 
-    /// Helper: stop all scenarios in the AppState to clean up spawned threads.
+    /// Helper: stop and join all scenarios in the AppState to clean up spawned threads.
+    ///
+    /// Uses a two-phase approach: first stops all scenarios via a read lock
+    /// (safe to call while other read guards exist), then acquires a write
+    /// lock to join the threads.
     fn cleanup_scenarios(state: &AppState) {
+        // Phase 1: signal all scenarios to stop (read lock).
         if let Ok(scenarios) = state.scenarios.read() {
             for handle in scenarios.values() {
                 handle.stop();
+            }
+        }
+        // Phase 2: join all scenario threads (write lock).
+        if let Ok(mut scenarios) = state.scenarios.write() {
+            for handle in scenarios.values_mut() {
+                let _ = handle.join(Some(Duration::from_secs(2)));
             }
         }
     }
@@ -1242,12 +1239,14 @@ sink:
         );
 
         // Verify the handle was stored in AppState.
-        let scenarios = state.scenarios.read().expect("lock must not be poisoned");
-        let id = body["id"].as_str().unwrap();
-        assert!(
-            scenarios.contains_key(id),
-            "AppState must contain the handle for the newly created scenario ID"
-        );
+        {
+            let scenarios = state.scenarios.read().expect("lock must not be poisoned");
+            let id = body["id"].as_str().unwrap();
+            assert!(
+                scenarios.contains_key(id),
+                "AppState must contain the handle for the newly created scenario ID"
+            );
+        }
 
         cleanup_scenarios(&state);
     }
@@ -2916,6 +2915,274 @@ sink:
         assert_eq!(
             PROMETHEUS_CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8",
             "PROMETHEUS_CONTENT_TYPE must match the Prometheus exposition format MIME type"
+        );
+    }
+
+    // ========================================================================
+    // Hardening tests — force_stopped, panicked threads, poisoned locks
+    // ========================================================================
+
+    // ---- Helper: build a handle whose thread ignores the shutdown flag ------
+
+    /// Build a ScenarioHandle whose thread sleeps for a long time, ignoring
+    /// the shutdown flag. This simulates a scenario that cannot be stopped
+    /// gracefully within the join timeout.
+    fn make_unjoinable_handle(id: &str, name: &str) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let thread = thread::Builder::new()
+            .name(format!("test-unjoinable-{name}"))
+            .spawn(move || -> Result<(), sonda_core::SondaError> {
+                // Ignore shutdown — sleep for a very long time.
+                thread::sleep(Duration::from_secs(300));
+                Ok(())
+            })
+            .expect("thread must spawn");
+
+        ScenarioHandle {
+            id: id.to_string(),
+            name: name.to_string(),
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate: 50.0,
+        }
+    }
+
+    /// Build a ScenarioHandle whose thread panics immediately.
+    fn make_panicking_handle(id: &str, name: &str) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let thread = thread::Builder::new()
+            .name(format!("test-panic-{name}"))
+            .spawn(move || -> Result<(), sonda_core::SondaError> {
+                panic!("intentional panic for testing");
+            })
+            .expect("thread must spawn");
+
+        // Give the thread time to panic.
+        thread::sleep(Duration::from_millis(50));
+
+        ScenarioHandle {
+            id: id.to_string(),
+            name: name.to_string(),
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate: 10.0,
+        }
+    }
+
+    // ---- L1: DELETE on unjoinable thread returns force_stopped --------------
+
+    /// When the scenario thread does not exit within the join timeout,
+    /// DELETE returns status "force_stopped".
+    #[tokio::test]
+    async fn delete_unjoinable_thread_returns_force_stopped() {
+        let h = make_unjoinable_handle("id-force", "force_stop");
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-force").await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "DELETE on unjoinable thread must still return 200 OK"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["status"].as_str().unwrap(),
+            "force_stopped",
+            "DELETE on unjoinable thread must return status 'force_stopped'"
+        );
+        assert_eq!(
+            body["id"].as_str().unwrap(),
+            "id-force",
+            "response must contain the correct scenario ID"
+        );
+
+        // Verify the handle was removed from the map despite being force-stopped.
+        let map = state.scenarios.read().unwrap();
+        assert!(
+            map.get("id-force").is_none(),
+            "force-stopped scenario must still be removed from the map"
+        );
+    }
+
+    // ---- L2: DELETE on panicked thread returns stopped ----------------------
+
+    /// When the scenario thread has panicked, DELETE returns 200 OK with status
+    /// "stopped" (the thread has already exited, just abnormally).
+    #[tokio::test]
+    async fn delete_panicked_thread_returns_stopped() {
+        let h = make_panicking_handle("id-panic", "panic_scenario");
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app = router(state.clone());
+        let resp = delete_scenario_req(app, "id-panic").await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "DELETE on panicked thread must return 200 OK"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["status"].as_str().unwrap(),
+            "stopped",
+            "DELETE on panicked thread must return status 'stopped' (thread already exited)"
+        );
+
+        // Verify the handle was removed from the map.
+        let map = state.scenarios.read().unwrap();
+        assert!(
+            map.get("id-panic").is_none(),
+            "panicked scenario must be removed from the map"
+        );
+    }
+
+    // ---- L3: Poisoned map lock returns 500 in read handlers ----------------
+
+    /// Helper: build an AppState with a poisoned scenarios lock.
+    fn make_poisoned_state() -> AppState {
+        let state = AppState::new();
+        // Poison the lock by panicking inside a write guard.
+        let scenarios_clone = Arc::clone(&state.scenarios);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = scenarios_clone.write().unwrap();
+            panic!("intentional panic to poison map lock");
+        }));
+        assert!(result.is_err(), "panic must have occurred");
+        // Verify the lock is actually poisoned.
+        assert!(
+            state.scenarios.read().is_err(),
+            "map lock must be poisoned after panic"
+        );
+        state
+    }
+
+    /// GET /scenarios returns 500 when the map lock is poisoned.
+    #[tokio::test]
+    async fn list_scenarios_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let req = Request::builder()
+            .uri("/scenarios")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on list must return 500"
+        );
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str().unwrap(),
+            "internal_server_error",
+            "500 response must have error='internal_server_error'"
+        );
+    }
+
+    /// GET /scenarios/{id} returns 500 when the map lock is poisoned.
+    #[tokio::test]
+    async fn get_scenario_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let req = Request::builder()
+            .uri("/scenarios/any-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on get must return 500"
+        );
+    }
+
+    /// GET /scenarios/{id}/stats returns 500 when the map lock is poisoned.
+    #[tokio::test]
+    async fn get_scenario_stats_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let resp = get_stats_req(app, "any-id").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on stats must return 500"
+        );
+    }
+
+    /// GET /scenarios/{id}/metrics returns 500 when the map lock is poisoned.
+    #[tokio::test]
+    async fn get_scenario_metrics_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let resp = get_metrics_req(app, "any-id").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on metrics must return 500"
+        );
+    }
+
+    /// DELETE /scenarios/{id} returns 500 when the map lock is poisoned.
+    #[tokio::test]
+    async fn delete_scenario_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let resp = delete_scenario_req(app, "any-id").await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on delete must return 500"
+        );
+    }
+
+    /// POST /scenarios returns 500 when the map lock is poisoned (lock
+    /// acquisition for storing the handle fails).
+    #[tokio::test]
+    async fn post_scenario_poisoned_lock_returns_500() {
+        let state = make_poisoned_state();
+        let app = router(state);
+
+        let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "poisoned map lock on post must return 500"
+        );
+
+        let body = body_json(response).await;
+        assert_eq!(
+            body["error"].as_str().unwrap(),
+            "internal_server_error",
+            "500 response must have error='internal_server_error'"
         );
     }
 }
