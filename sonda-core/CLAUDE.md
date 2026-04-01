@@ -25,7 +25,8 @@ src/
 ├── schedule/
 │   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike
 │   ├── stats.rs        ← ScenarioStats (live telemetry + recent_metrics buffer for scrape endpoints)
-│   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot)
+│   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
+│   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API, supports phase_offset)
 │   ├── runner.rs       ← the main event loop (metrics)
 │   ├── log_runner.rs   ← the log event loop (logs)

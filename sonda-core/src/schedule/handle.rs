@@ -61,6 +61,15 @@ impl ScenarioHandle {
     /// method returns `Ok(())` without consuming the thread (the thread
     /// continues running and the handle still owns it).
     ///
+    /// **Orphaned thread trade-off:** When the join times out, the OS thread
+    /// continues running in the background with no way for the caller to
+    /// observe or control it further (the shutdown flag has already been set).
+    /// If the handle is subsequently dropped (e.g., removed from the server's
+    /// scenario map), the `JoinHandle` is dropped without joining, and the
+    /// thread becomes fully detached. This is an acceptable trade-off: the
+    /// thread will eventually exit on its own (it checks the shutdown flag
+    /// each tick), and blocking the HTTP handler indefinitely would be worse.
+    ///
     /// Returns the thread's result on success, or a [`SondaError`] if the
     /// thread panicked or returned an error.
     pub fn join(&mut self, timeout: Option<Duration>) -> Result<(), SondaError> {
@@ -117,11 +126,16 @@ impl ScenarioHandle {
     ///
     /// Acquires the read lock briefly, clones the stats, and returns. Does not
     /// block writers for longer than the clone operation.
+    ///
+    /// If the stats lock is poisoned (because a writer panicked), this method
+    /// recovers the data from the poisoned guard rather than propagating the
+    /// panic. The returned stats may be partially updated but will not cause
+    /// the caller to panic.
     pub fn stats_snapshot(&self) -> ScenarioStats {
-        self.stats
-            .read()
-            .expect("ScenarioStats RwLock poisoned")
-            .clone()
+        match self.stats.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Drain and return recent metric events from the stats buffer.
@@ -132,11 +146,16 @@ impl ScenarioHandle {
     ///
     /// This is used by the scrape endpoint (`GET /scenarios/{id}/metrics`)
     /// to retrieve the latest metric events for Prometheus text encoding.
+    ///
+    /// If the stats lock is poisoned (because a writer panicked), this method
+    /// recovers the data from the poisoned guard rather than propagating the
+    /// panic. The returned events may be incomplete but will not cause the
+    /// caller to panic.
     pub fn recent_metrics(&self) -> Vec<crate::model::metric::MetricEvent> {
-        self.stats
-            .write()
-            .expect("ScenarioStats RwLock poisoned")
-            .drain_recent_metrics()
+        match self.stats.write() {
+            Ok(mut guard) => guard.drain_recent_metrics(),
+            Err(poisoned) => poisoned.into_inner().drain_recent_metrics(),
+        }
     }
 }
 
@@ -422,6 +441,106 @@ mod tests {
         assert!(
             second.is_empty(),
             "second call to recent_metrics must return empty Vec after drain"
+        );
+    }
+
+    // ---- stats_snapshot: recovers from poisoned lock -------------------------
+
+    /// If the stats lock is poisoned, stats_snapshot recovers the data instead
+    /// of panicking.
+    #[test]
+    fn stats_snapshot_recovers_from_poisoned_lock() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        // Set a known value before poisoning.
+        {
+            let mut guard = stats.write().expect("lock must not be poisoned");
+            guard.total_events = 42;
+        }
+
+        // Poison the lock by panicking inside a write guard.
+        let stats_clone = Arc::clone(&stats);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = stats_clone.write().expect("lock must not be poisoned");
+            panic!("intentional panic to poison lock");
+        }));
+        assert!(result.is_err(), "panic must have occurred");
+
+        // Verify the lock is actually poisoned.
+        assert!(stats.read().is_err(), "lock must be poisoned after panic");
+
+        let thread = thread::Builder::new()
+            .name("test-poisoned-stats".to_string())
+            .spawn(|| -> Result<(), SondaError> { Ok(()) })
+            .expect("thread must spawn");
+
+        let handle = ScenarioHandle {
+            id: "test-poisoned".to_string(),
+            name: "poisoned".to_string(),
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate: 10.0,
+        };
+
+        // stats_snapshot must not panic — it recovers from the poisoned lock.
+        let snap = handle.stats_snapshot();
+        assert_eq!(
+            snap.total_events, 42,
+            "stats_snapshot must recover data from poisoned lock"
+        );
+    }
+
+    // ---- recent_metrics: recovers from poisoned lock --------------------------
+
+    /// If the stats lock is poisoned, recent_metrics recovers the data instead
+    /// of panicking.
+    #[test]
+    fn recent_metrics_recovers_from_poisoned_lock() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        // Push a metric event before poisoning.
+        {
+            let mut guard = stats.write().expect("lock must not be poisoned");
+            guard.push_metric(make_metric_event("up", 99.0));
+        }
+
+        // Poison the lock.
+        let stats_clone = Arc::clone(&stats);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = stats_clone.write().expect("lock must not be poisoned");
+            panic!("intentional panic to poison lock");
+        }));
+        assert!(result.is_err(), "panic must have occurred");
+
+        let thread = thread::Builder::new()
+            .name("test-poisoned-metrics".to_string())
+            .spawn(|| -> Result<(), SondaError> { Ok(()) })
+            .expect("thread must spawn");
+
+        let handle = ScenarioHandle {
+            id: "test-poisoned-m".to_string(),
+            name: "poisoned_metrics".to_string(),
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate: 10.0,
+        };
+
+        // recent_metrics must not panic — it recovers from the poisoned lock.
+        let events = handle.recent_metrics();
+        assert_eq!(
+            events.len(),
+            1,
+            "must recover buffered events from poisoned lock"
+        );
+        assert_eq!(
+            events[0].value, 99.0,
+            "recovered event must have correct value"
         );
     }
 
