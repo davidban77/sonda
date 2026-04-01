@@ -21,6 +21,7 @@ pub use model::log::LogEvent;
 pub use model::log::Severity;
 pub use model::metric::Labels;
 pub use model::metric::MetricEvent;
+pub use model::metric::ValidatedMetricName;
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, validate_entry};
 pub use schedule::stats::ScenarioStats;

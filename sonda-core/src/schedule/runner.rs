@@ -13,7 +13,7 @@ use crate::config::validate::parse_duration;
 use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
-use crate::model::metric::{Labels, MetricEvent};
+use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::{
     is_in_burst, is_in_gap, is_in_spike, time_until_gap_end, BurstWindow, CardinalitySpikeWindow,
@@ -152,16 +152,9 @@ pub fn run_with_sink(
     };
 
     // Validate and intern the metric name once before the hot loop.
-    // Arc<str> makes per-tick cloning O(1) — just a reference-count bump.
-    let name: Arc<str> = {
-        if !crate::model::metric::is_valid_metric_name(&config.name) {
-            return Err(SondaError::Config(format!(
-                "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
-                config.name
-            )));
-        }
-        Arc::from(config.name.as_str())
-    };
+    // ValidatedMetricName wraps Arc<str> — cloning is O(1), just a refcount bump.
+    // The type system guarantees the name is valid for all subsequent uses.
+    let name = ValidatedMetricName::new(&config.name)?;
 
     // The base inter-event interval (at normal rate, no burst).
     let base_interval = Duration::from_secs_f64(1.0 / config.rate);
@@ -298,7 +291,7 @@ pub fn run_with_sink(
             // tick_labels: already an Arc<Labels> from above.
             // No metric name validation occurs here — it was validated once
             // before the loop.
-            let event = MetricEvent::from_parts(Arc::clone(&name), value, tick_labels, wall_now);
+            let event = MetricEvent::from_parts(name.clone(), value, tick_labels, wall_now);
 
             // Encode and write.
             buf.clear();
@@ -1022,10 +1015,10 @@ mod tests {
         );
 
         // All events should share the same Arc<str> allocation for the name.
-        let first_name = &events[0].name;
+        let first_name = events[0].name.arc();
         for (i, event) in events.iter().enumerate().skip(1) {
             assert!(
-                Arc::ptr_eq(first_name, &event.name),
+                Arc::ptr_eq(first_name, event.name.arc()),
                 "event[{i}].name should share Arc allocation with event[0].name"
             );
         }
