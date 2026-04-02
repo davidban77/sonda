@@ -44,7 +44,11 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
   --profile alerting up -d
 ```
 
-Wait for all services to become healthy (about 15--20 seconds):
+Wait for all services to show `(healthy)` status (about 15--20 seconds):
+
+!!! note "First-run build time"
+    On first run, Docker builds the `sonda-server` image from source. This can take a few
+    minutes depending on your machine. Subsequent runs use the cached image and start in seconds.
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml \

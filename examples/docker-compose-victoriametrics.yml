@@ -268,6 +268,12 @@ services:
     depends_on:
       victoriametrics:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8880/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Alertmanager: Prometheus alert notification router.
@@ -290,6 +296,12 @@ services:
       - "--storage.path=/alertmanager"
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/healthy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # webhook-receiver: lightweight HTTP echo server that logs request bodies.
