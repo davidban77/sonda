@@ -19,10 +19,11 @@
 
 use std::collections::BTreeMap;
 
+use serde::ser::SerializeMap;
 use serde::Serialize;
 
 use crate::model::log::LogEvent;
-use crate::model::metric::MetricEvent;
+use crate::model::metric::{Labels, MetricEvent};
 use crate::SondaError;
 
 use super::Encoder;
@@ -59,30 +60,70 @@ impl Default for JsonLines {
     }
 }
 
+/// Zero-allocation serde wrapper that serializes a [`Labels`] reference as a JSON map.
+///
+/// `Labels` stores its data in a `BTreeMap<String, String>`, which already iterates
+/// in sorted key order. This wrapper serializes directly from the iterator without
+/// collecting into an intermediate `BTreeMap<&str, &str>`, eliminating per-event
+/// heap allocations for BTreeMap nodes.
+struct LabelsRef<'a>(&'a Labels);
+
+impl<'a> Serialize for LabelsRef<'a> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0.iter() {
+            map.serialize_entry(k.as_str(), v.as_str())?;
+        }
+        map.end()
+    }
+}
+
+/// Zero-allocation serde wrapper that serializes a `&BTreeMap<String, String>` as a JSON map.
+///
+/// Iterates directly over the borrowed map entries in sorted key order without
+/// collecting into an intermediate `BTreeMap<&str, &str>`.
+struct StringMapRef<'a>(&'a BTreeMap<String, String>);
+
+impl<'a> Serialize for StringMapRef<'a> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0.iter() {
+            map.serialize_entry(k.as_str(), v.as_str())?;
+        }
+        map.end()
+    }
+}
+
 /// Intermediate serde-serializable representation of a metric event.
 ///
-/// Uses `BTreeMap` for labels so the JSON field order is consistent and deterministic.
+/// Labels are serialized directly from the source [`Labels`] iterator via [`LabelsRef`],
+/// avoiding the intermediate `BTreeMap<&str, &str>` collection. The source `Labels` type
+/// already stores data in sorted order, so JSON field order is consistent and deterministic.
+///
 /// The `timestamp` field borrows from a stack-allocated byte array to avoid heap allocation.
 #[derive(Serialize)]
 struct JsonMetric<'a> {
     name: &'a str,
     value: f64,
-    labels: BTreeMap<&'a str, &'a str>,
+    labels: LabelsRef<'a>,
     timestamp: &'a str,
 }
 
 /// Intermediate serde-serializable representation of a log event.
 ///
 /// Field order matches the spec: timestamp, severity, message, labels, fields.
-/// Uses `BTreeMap` for labels and fields so the JSON field order is consistent and deterministic.
+/// Labels and fields are serialized directly from their source iterators via
+/// [`LabelsRef`] and [`StringMapRef`], avoiding intermediate `BTreeMap<&str, &str>`
+/// collections. Both source types already iterate in sorted key order.
+///
 /// The `timestamp` field borrows from a stack-allocated byte array to avoid heap allocation.
 #[derive(Serialize)]
 struct JsonLog<'a> {
     timestamp: &'a str,
     severity: &'a str,
     message: &'a str,
-    labels: BTreeMap<&'a str, &'a str>,
-    fields: BTreeMap<&'a str, &'a str>,
+    labels: LabelsRef<'a>,
+    fields: StringMapRef<'a>,
 }
 
 impl Encoder for JsonLines {
@@ -96,12 +137,6 @@ impl Encoder for JsonLines {
         let timestamp =
             std::str::from_utf8(&ts_bytes).expect("RFC 3339 timestamp is always valid UTF-8");
 
-        let labels: BTreeMap<&str, &str> = event
-            .labels
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
         let value = match self.precision {
             None => event.value,
             Some(n) => {
@@ -113,7 +148,7 @@ impl Encoder for JsonLines {
         let record = JsonMetric {
             name: &event.name,
             value,
-            labels,
+            labels: LabelsRef(&event.labels),
             timestamp,
         };
 
@@ -145,24 +180,12 @@ impl Encoder for JsonLines {
             crate::model::log::Severity::Fatal => "fatal",
         };
 
-        let labels: BTreeMap<&str, &str> = event
-            .labels
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
-        let fields: BTreeMap<&str, &str> = event
-            .fields
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-
         let record = JsonLog {
             timestamp,
             severity: severity_str,
             message: &event.message,
-            labels,
-            fields,
+            labels: LabelsRef(&event.labels),
+            fields: StringMapRef(&event.fields),
         };
 
         serde_json::to_writer(&mut *buf, &record)
@@ -1155,5 +1178,127 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
         let value = parsed["value"].as_f64().unwrap();
         assert!((value - 43.0).abs() < 1e-10, "expected 43.0, got {value}");
+    }
+
+    // =========================================================================
+    // Slice 9B.4: LabelsRef and StringMapRef — zero-intermediate-collection
+    // =========================================================================
+
+    // --- LabelsRef: serializes Labels directly without intermediate BTreeMap ---
+
+    #[test]
+    fn labels_ref_serializes_empty_labels_as_empty_object() {
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let wrapper = super::LabelsRef(&labels);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn labels_ref_serializes_single_label() {
+        let labels = Labels::from_pairs(&[("host", "srv1")]).unwrap();
+        let wrapper = super::LabelsRef(&labels);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        assert_eq!(json, r#"{"host":"srv1"}"#);
+    }
+
+    #[test]
+    fn labels_ref_serializes_multiple_labels_in_sorted_order() {
+        let labels =
+            Labels::from_pairs(&[("zone", "eu1"), ("env", "prod"), ("host", "srv1")]).unwrap();
+        let wrapper = super::LabelsRef(&labels);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        assert_eq!(json, r#"{"env":"prod","host":"srv1","zone":"eu1"}"#);
+    }
+
+    #[test]
+    fn labels_ref_handles_values_with_special_json_characters() {
+        let labels = Labels::from_pairs(&[("msg", "hello \"world\"")]).unwrap();
+        let wrapper = super::LabelsRef(&labels);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        // serde_json escapes double quotes inside values
+        assert_eq!(json, r#"{"msg":"hello \"world\""}"#);
+    }
+
+    // --- StringMapRef: serializes BTreeMap<String, String> directly ---
+
+    #[test]
+    fn string_map_ref_serializes_empty_map_as_empty_object() {
+        let map = BTreeMap::new();
+        let wrapper = super::StringMapRef(&map);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn string_map_ref_serializes_entries_in_sorted_order() {
+        let mut map = BTreeMap::new();
+        map.insert("z_key".to_string(), "last".to_string());
+        map.insert("a_key".to_string(), "first".to_string());
+        map.insert("m_key".to_string(), "middle".to_string());
+        let wrapper = super::StringMapRef(&map);
+        let json = serde_json::to_string(&wrapper).unwrap();
+        assert_eq!(json, r#"{"a_key":"first","m_key":"middle","z_key":"last"}"#);
+    }
+
+    // --- End-to-end: metric encode output is identical with direct serialization ---
+
+    #[test]
+    fn encode_metric_many_labels_produces_sorted_json_object() {
+        // 10 labels inserted in reverse order to stress sort guarantee
+        let pairs: Vec<(&str, &str)> = vec![
+            ("j", "10"),
+            ("i", "9"),
+            ("h", "8"),
+            ("g", "7"),
+            ("f", "6"),
+            ("e", "5"),
+            ("d", "4"),
+            ("c", "3"),
+            ("b", "2"),
+            ("a", "1"),
+        ];
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let event = make_event("multi", 1.0, &pairs, ts);
+        let encoder = JsonLines::new(None);
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        let labels = parsed["labels"].as_object().unwrap();
+        let keys: Vec<&String> = labels.keys().collect();
+        assert_eq!(
+            keys,
+            &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+            "labels must be sorted alphabetically"
+        );
+    }
+
+    #[test]
+    fn encode_log_many_fields_produces_sorted_json_object() {
+        use crate::model::log::Severity;
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let event = make_log_event(
+            Severity::Info,
+            "multi-field",
+            &[
+                ("z_field", "last"),
+                ("a_field", "first"),
+                ("m_field", "mid"),
+            ],
+            ts,
+        );
+        let encoder = JsonLines::new(None);
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+        let line = std::str::from_utf8(&buf).unwrap().trim_end_matches('\n');
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        let fields = parsed["fields"].as_object().unwrap();
+        let keys: Vec<&String> = fields.keys().collect();
+        assert_eq!(
+            keys,
+            &["a_field", "m_field", "z_field"],
+            "fields must be sorted alphabetically"
+        );
     }
 }
