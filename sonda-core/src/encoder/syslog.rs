@@ -791,6 +791,7 @@ mod tests {
     // EncoderConfig::Syslog: deserialization and factory wiring
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_syslog_deserializes_without_optional_fields() {
         use crate::encoder::{create_encoder, EncoderConfig};
@@ -810,6 +811,7 @@ mod tests {
         let _enc = create_encoder(&config);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_syslog_deserializes_with_hostname() {
         use crate::encoder::EncoderConfig;
@@ -824,6 +826,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_syslog_deserializes_with_both_hostname_and_app_name() {
         use crate::encoder::EncoderConfig;

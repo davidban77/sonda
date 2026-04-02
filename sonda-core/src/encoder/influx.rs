@@ -525,6 +525,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_deserialization_influx_lp_no_field_key() {
         let config: EncoderConfig =
@@ -538,6 +539,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_deserialization_influx_lp_with_field_key() {
         let config: EncoderConfig =

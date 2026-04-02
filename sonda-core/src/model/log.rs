@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::model::metric::Labels;
 
@@ -15,7 +15,8 @@ use crate::model::metric::Labels;
 ///
 /// Variants map to the conventional log severity ladder. Serializes to and from
 /// lowercase strings (e.g., `"info"`, `"error"`) for YAML and JSON compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Extremely detailed diagnostic information.
@@ -285,44 +286,52 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Severity: deserializes from lowercase JSON
+    // These tests require the `config` feature (Deserialize impl).
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_trace() {
         let s: Severity = serde_json::from_str(r#""trace""#).unwrap();
         assert_eq!(s, Severity::Trace);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_debug() {
         let s: Severity = serde_json::from_str(r#""debug""#).unwrap();
         assert_eq!(s, Severity::Debug);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_info() {
         let s: Severity = serde_json::from_str(r#""info""#).unwrap();
         assert_eq!(s, Severity::Info);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_warn() {
         let s: Severity = serde_json::from_str(r#""warn""#).unwrap();
         assert_eq!(s, Severity::Warn);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_error() {
         let s: Severity = serde_json::from_str(r#""error""#).unwrap();
         assert_eq!(s, Severity::Error);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_deserializes_from_lowercase_fatal() {
         let s: Severity = serde_json::from_str(r#""fatal""#).unwrap();
         assert_eq!(s, Severity::Fatal);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_rejects_uppercase_deserialization() {
         let result: Result<Severity, _> = serde_json::from_str(r#""INFO""#);
@@ -332,6 +341,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_rejects_unknown_variant() {
         let result: Result<Severity, _> = serde_json::from_str(r#""critical""#);
@@ -342,12 +352,14 @@ mod tests {
     // Severity: serializes to lowercase YAML
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_info_serializes_to_lowercase_yaml() {
         let s = serde_yaml::to_string(&Severity::Info).unwrap();
         assert!(s.trim() == "info", "expected 'info', got: {s}");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn severity_error_serializes_to_lowercase_yaml() {
         let s = serde_yaml::to_string(&Severity::Error).unwrap();

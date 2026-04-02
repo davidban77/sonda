@@ -653,6 +653,7 @@ mod tests {
 
     // ---- ScenarioConfig YAML deserialization ---------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_minimal_scenario_config() {
         let yaml = r#"
@@ -671,6 +672,7 @@ generator:
         assert!(config.labels.is_none());
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_minimal_config_encoder_defaults_to_prometheus_text() {
         let yaml = r#"
@@ -688,6 +690,7 @@ generator:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_minimal_config_sink_defaults_to_stdout() {
         let yaml = r#"
@@ -705,6 +708,7 @@ generator:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_full_scenario_config_from_architecture_example() {
         // This YAML is taken directly from docs/architecture.md Section 6.
@@ -752,6 +756,7 @@ sink:
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_config_with_labels() {
         let yaml = r#"
@@ -771,6 +776,7 @@ labels:
         assert_eq!(labels.get("region").map(String::as_str), Some("us-east-1"));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_config_with_gap() {
         let yaml = r#"
@@ -792,6 +798,7 @@ gaps:
 
     // ---- validate_config: full architecture example round-trip ---------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn validate_architecture_example_config_passes() {
         let yaml = r#"
@@ -823,6 +830,7 @@ sink:
 
     // ---- Round-trip: deserialize -> validate -> create factories -------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn round_trip_creates_generator_encoder_sink_successfully() {
         use crate::encoder::create_encoder;
@@ -863,6 +871,7 @@ sink:
         assert!(sink.is_ok(), "sink must be created without error");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn round_trip_constant_generator_produces_expected_value() {
         use crate::generator::create_generator;
@@ -881,6 +890,7 @@ generator:
         assert_eq!(gen.value(999), 42.0);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn round_trip_uniform_generator_values_in_range() {
         use crate::generator::create_generator;
@@ -908,6 +918,7 @@ generator:
 
     // ---- ScenarioConfig: Clone and Debug contracts ---------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_config_is_cloneable() {
         let yaml = r#"
@@ -923,6 +934,7 @@ generator:
         assert_eq!(cloned.rate, config.rate);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_config_is_debuggable() {
         let yaml = r#"
@@ -1182,6 +1194,7 @@ generator:
 
     // ---- ScenarioConfig: burst YAML deserialization -------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_config_with_burst() {
         let yaml = r#"
@@ -1203,6 +1216,7 @@ bursts:
         assert_eq!(burst.multiplier, 5.0);
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_config_without_burst_has_none_bursts() {
         let yaml = r#"

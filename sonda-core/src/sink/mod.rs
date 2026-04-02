@@ -20,8 +20,6 @@ pub mod udp;
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde::Deserialize;
-
 use crate::SondaError;
 
 /// A sink consumes encoded bytes and delivers them to a destination.
@@ -37,17 +35,18 @@ pub trait Sink: Send + Sync {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `stdout`, `file`, `tcp`, or `udp`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum SinkConfig {
     /// Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).
-    #[serde(rename = "stdout")]
+    #[cfg_attr(feature = "config", serde(rename = "stdout"))]
     Stdout,
 
     /// Write encoded events to a file at the given path.
     ///
     /// Parent directories are created automatically if they do not exist.
-    #[serde(rename = "file")]
+    #[cfg_attr(feature = "config", serde(rename = "file"))]
     File {
         /// Filesystem path to write encoded events to.
         path: String,
@@ -56,7 +55,7 @@ pub enum SinkConfig {
     /// Write encoded events over a persistent TCP connection.
     ///
     /// The sink connects on construction and buffers writes via [`BufWriter`](std::io::BufWriter).
-    #[serde(rename = "tcp")]
+    #[cfg_attr(feature = "config", serde(rename = "tcp"))]
     Tcp {
         /// Remote address to connect to, e.g. `"127.0.0.1:9999"`.
         address: String,
@@ -66,7 +65,7 @@ pub enum SinkConfig {
     ///
     /// No connection is established; an ephemeral local port is bound and each
     /// call to `write` sends one `send_to` datagram.
-    #[serde(rename = "udp")]
+    #[cfg_attr(feature = "config", serde(rename = "udp"))]
     Udp {
         /// Remote address to send datagrams to, e.g. `"127.0.0.1:9999"`.
         address: String,
@@ -80,7 +79,7 @@ pub enum SinkConfig {
     ///
     /// Requires the `http` Cargo feature to be enabled.
     #[cfg(feature = "http")]
-    #[serde(rename = "http_push")]
+    #[cfg_attr(feature = "config", serde(rename = "http_push"))]
     HttpPush {
         /// Target URL for HTTP POST requests, e.g. `"http://localhost:9090/api/v1/write"`.
         url: String,
@@ -98,7 +97,7 @@ pub enum SinkConfig {
         /// header. Useful for protocols that require specific headers, such as
         /// Prometheus remote write (`Content-Encoding: snappy`,
         /// `X-Prometheus-Remote-Write-Version: 0.1.0`).
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         headers: Option<HashMap<String, String>>,
     },
 
@@ -112,7 +111,7 @@ pub enum SinkConfig {
     ///
     /// Requires the `remote-write` Cargo feature to be enabled.
     #[cfg(feature = "remote-write")]
-    #[serde(rename = "remote_write")]
+    #[cfg_attr(feature = "config", serde(rename = "remote_write"))]
     RemoteWrite {
         /// Target URL for the remote write endpoint, e.g.
         /// `"http://localhost:8428/api/v1/write"`.
@@ -120,7 +119,7 @@ pub enum SinkConfig {
 
         /// Flush threshold in number of TimeSeries entries. Defaults to 100 if
         /// not specified.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
     },
 
@@ -135,7 +134,7 @@ pub enum SinkConfig {
     ///
     /// Requires the `kafka` Cargo feature to be enabled.
     #[cfg(feature = "kafka")]
-    #[serde(rename = "kafka")]
+    #[cfg_attr(feature = "config", serde(rename = "kafka"))]
     Kafka {
         /// Comma-separated list of broker `host:port` addresses,
         /// e.g. `"127.0.0.1:9092"` or `"broker1:9092,broker2:9092"`.
@@ -158,13 +157,13 @@ pub enum SinkConfig {
     ///
     /// Requires the `http` Cargo feature to be enabled.
     #[cfg(feature = "http")]
-    #[serde(rename = "loki")]
+    #[cfg_attr(feature = "config", serde(rename = "loki"))]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
         url: String,
 
         /// Flush threshold in log entries. Defaults to `100` if not specified.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
     },
 }
@@ -236,6 +235,7 @@ mod tests {
         assert!(sink.flush().is_ok());
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_stdout_deserializes_from_yaml() {
         let yaml = "type: stdout";
@@ -263,6 +263,7 @@ mod tests {
     // SinkConfig: internally-tagged deserialization for all variants (`type:` field)
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_file_deserializes_with_type_field() {
         let yaml = "type: file\npath: /tmp/sonda-mod-test.txt";
@@ -272,6 +273,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_tcp_deserializes_with_type_field() {
         let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
@@ -279,6 +281,7 @@ mod tests {
         assert!(matches!(config, SinkConfig::Tcp { ref address } if address == "127.0.0.1:9999"));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_udp_deserializes_with_type_field() {
         let yaml = "type: udp\naddress: \"127.0.0.1:9999\"";
@@ -286,6 +289,7 @@ mod tests {
         assert!(matches!(config, SinkConfig::Udp { ref address } if address == "127.0.0.1:9999"));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_unknown_type_returns_error() {
         let yaml = "type: no_such_sink";
@@ -296,6 +300,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_missing_type_field_returns_error() {
         // Without the `type` field the internally-tagged enum cannot identify the variant.
@@ -307,6 +312,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_old_external_tag_format_is_rejected() {
         // The old externally-tagged format (`!stdout`) must no longer be accepted.
@@ -318,6 +324,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_file_requires_path_field() {
         // `type: file` without a `path` field must fail.
@@ -329,6 +336,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_tcp_requires_address_field() {
         let yaml = "type: tcp";
@@ -339,6 +347,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_udp_requires_address_field() {
         let yaml = "type: udp";
@@ -400,6 +409,7 @@ mod tests {
     // Full scenario YAML using internally-tagged EncoderConfig and SinkConfig
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_yaml_with_tcp_sink_deserializes_correctly() {
         use crate::config::ScenarioConfig;
@@ -427,6 +437,7 @@ sink:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_yaml_with_file_sink_and_json_encoder_deserializes_correctly() {
         use crate::config::ScenarioConfig;
@@ -453,6 +464,7 @@ sink:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_yaml_with_udp_sink_and_influx_encoder_deserializes_correctly() {
         use crate::config::ScenarioConfig;
@@ -484,7 +496,7 @@ sink:
     // SinkConfig::Kafka deserialization and factory wiring
     // -----------------------------------------------------------------------
 
-    #[cfg(feature = "kafka")]
+    #[cfg(all(feature = "kafka", feature = "config"))]
     #[test]
     fn sink_config_kafka_deserializes_with_type_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
@@ -495,7 +507,7 @@ sink:
         );
     }
 
-    #[cfg(feature = "kafka")]
+    #[cfg(all(feature = "kafka", feature = "config"))]
     #[test]
     fn sink_config_kafka_requires_brokers_field() {
         let yaml = "type: kafka\ntopic: sonda-test";
@@ -506,7 +518,7 @@ sink:
         );
     }
 
-    #[cfg(feature = "kafka")]
+    #[cfg(all(feature = "kafka", feature = "config"))]
     #[test]
     fn sink_config_kafka_requires_topic_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
@@ -575,7 +587,7 @@ sink:
     // SinkConfig::HttpPush with custom headers deserialization
     // ---------------------------------------------------------------------------
 
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", feature = "config"))]
     #[test]
     fn sink_config_http_push_with_headers_deserializes() {
         let yaml = r#"
@@ -609,7 +621,7 @@ headers:
         }
     }
 
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", feature = "config"))]
     #[test]
     fn sink_config_http_push_without_headers_is_backward_compatible() {
         let yaml = r#"
@@ -636,7 +648,7 @@ content_type: "text/plain"
         }
     }
 
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", feature = "config"))]
     #[test]
     fn sink_config_http_push_with_empty_headers_map_deserializes() {
         let yaml = r#"
@@ -714,7 +726,7 @@ headers: {}
 
     /// When the `http` feature is enabled, `type: http_push` YAML must
     /// deserialize into the `HttpPush` variant.
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", feature = "config"))]
     #[test]
     fn http_feature_enables_http_push_deserialization() {
         let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
@@ -724,7 +736,7 @@ headers: {}
 
     /// When the `http` feature is enabled, `type: loki` YAML must
     /// deserialize into the `Loki` variant.
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "http", feature = "config"))]
     #[test]
     fn http_feature_enables_loki_deserialization() {
         let yaml = "type: loki\nurl: \"http://localhost:3100\"";

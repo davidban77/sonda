@@ -422,6 +422,7 @@ mod tests {
         assert_eq!(output, "up 1 1000000\n");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_deserialization_prometheus_text() {
         use crate::encoder::EncoderConfig;

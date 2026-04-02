@@ -711,6 +711,7 @@ mod tests {
     // SinkConfig::Loki deserialization
     // -------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_loki_deserializes_with_url_only() {
         let yaml = "type: loki\nurl: \"http://localhost:3100\"";
@@ -727,6 +728,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_loki_deserializes_with_batch_size() {
         let yaml = r#"
@@ -747,6 +749,7 @@ batch_size: 50
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_loki_requires_url_field() {
         let yaml = "type: loki";
@@ -871,6 +874,7 @@ batch_size: 50
     // Example YAML file round-trip
     // -------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn loki_json_lines_example_yaml_deserializes_to_log_scenario_config() {
         use crate::config::LogScenarioConfig;

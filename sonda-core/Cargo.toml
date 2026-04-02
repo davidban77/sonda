@@ -12,13 +12,15 @@ description = "Core engine for Sonda — synthetic telemetry generation library"
 readme = "../README.md"
 
 [features]
+default = ["config"]
+config = ["dep:serde_yaml"]
 http = ["dep:ureq"]
 kafka = ["dep:rskafka", "dep:tokio", "dep:chrono"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq"]
 
 [dependencies]
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { workspace = true, optional = true }

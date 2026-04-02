@@ -10,8 +10,6 @@ pub mod prometheus;
 pub mod remote_write;
 pub mod syslog;
 
-use serde::Deserialize;
-
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 
@@ -42,28 +40,29 @@ pub trait Encoder: Send + Sync {
 ///
 /// This enum is serde-deserializable from YAML scenario files.
 /// The `type` field selects the variant: `prometheus_text`, `influx_lp`, `json_lines`, or `syslog`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).
     ///
     /// `precision` optionally limits the number of decimal places in metric values.
-    #[serde(rename = "prometheus_text")]
+    #[cfg_attr(feature = "config", serde(rename = "prometheus_text"))]
     PrometheusText {
         /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         precision: Option<u8>,
     },
     /// InfluxDB line protocol.
     ///
     /// `field_key` sets the field key used for the metric value. Defaults to `"value"`.
     /// `precision` optionally limits the number of decimal places in metric values.
-    #[serde(rename = "influx_lp")]
+    #[cfg_attr(feature = "config", serde(rename = "influx_lp"))]
     InfluxLineProtocol {
         /// The InfluxDB field key for the metric value. Defaults to `"value"` if absent.
         field_key: Option<String>,
         /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         precision: Option<u8>,
     },
     /// JSON Lines (NDJSON) format.
@@ -72,16 +71,16 @@ pub enum EncoderConfig {
     /// Loki, and generic HTTP ingest endpoints.
     ///
     /// `precision` optionally rounds the metric value before JSON serialization.
-    #[serde(rename = "json_lines")]
+    #[cfg_attr(feature = "config", serde(rename = "json_lines"))]
     JsonLines {
         /// Maximum decimal places for metric values. `None` preserves full `f64` precision.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         precision: Option<u8>,
     },
     /// RFC 5424 syslog format.
     ///
     /// Encodes log events as syslog lines. `hostname` and `app_name` default to `"sonda"`.
-    #[serde(rename = "syslog")]
+    #[cfg_attr(feature = "config", serde(rename = "syslog"))]
     Syslog {
         /// The HOSTNAME field in the syslog header. Defaults to `"sonda"`.
         hostname: Option<String>,
@@ -95,7 +94,7 @@ pub enum EncoderConfig {
     /// into a single `WriteRequest`, snappy-compresses, and HTTP POSTs with the
     /// correct protocol headers. Requires the `remote-write` feature flag.
     #[cfg(feature = "remote-write")]
-    #[serde(rename = "remote_write")]
+    #[cfg_attr(feature = "config", serde(rename = "remote_write"))]
     RemoteWrite,
 }
 
@@ -216,8 +215,10 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // EncoderConfig: internally-tagged deserialization (`type:` field)
+    // These tests require the `config` feature (serde_yaml).
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_prometheus_text_deserializes_with_type_field() {
         let yaml = "type: prometheus_text";
@@ -225,6 +226,7 @@ mod tests {
         assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_json_lines_deserializes_with_type_field() {
         let yaml = "type: json_lines";
@@ -232,6 +234,7 @@ mod tests {
         assert!(matches!(config, EncoderConfig::JsonLines { .. }));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_influx_lp_without_field_key_deserializes_with_type_field() {
         let yaml = "type: influx_lp";
@@ -245,6 +248,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_influx_lp_with_field_key_deserializes_with_type_field() {
         let yaml = "type: influx_lp\nfield_key: requests";
@@ -255,6 +259,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_unknown_type_returns_error() {
         let yaml = "type: no_such_encoder";
@@ -265,6 +270,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_missing_type_field_returns_error() {
         // Without the `type` field the internally-tagged enum cannot identify the variant.
@@ -276,6 +282,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn encoder_config_old_external_tag_format_is_rejected() {
         // The old externally-tagged format (`!prometheus_text`) must no longer be accepted.
@@ -467,7 +474,7 @@ mod tests {
     // EncoderConfig::RemoteWrite (feature-gated tests)
     // ---------------------------------------------------------------------------
 
-    #[cfg(feature = "remote-write")]
+    #[cfg(all(feature = "remote-write", feature = "config"))]
     #[test]
     fn encoder_config_remote_write_deserializes_from_yaml() {
         let yaml = "type: remote_write";
@@ -521,7 +528,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "remote-write")]
+    #[cfg(all(feature = "remote-write", feature = "config"))]
     #[test]
     fn scenario_yaml_with_remote_write_encoder_deserializes() {
         use crate::config::ScenarioConfig;
@@ -594,8 +601,10 @@ sink:
 
     // ---------------------------------------------------------------------------
     // EncoderConfig deserialization: precision field
+    // These tests require the `config` feature (serde_yaml).
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn prometheus_text_with_precision_deserializes() {
         let yaml = "type: prometheus_text\nprecision: 3";
@@ -606,6 +615,7 @@ sink:
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn prometheus_text_without_precision_defaults_to_none() {
         let yaml = "type: prometheus_text";
@@ -616,6 +626,7 @@ sink:
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn influx_with_precision_and_field_key_deserializes() {
         let yaml = "type: influx_lp\nfield_key: gauge\nprecision: 2";
@@ -629,6 +640,7 @@ sink:
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn json_lines_with_precision_deserializes() {
         let yaml = "type: json_lines\nprecision: 5";
@@ -639,6 +651,7 @@ sink:
         ));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn json_lines_without_precision_defaults_to_none() {
         let yaml = "type: json_lines";

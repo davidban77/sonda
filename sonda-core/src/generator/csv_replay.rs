@@ -626,6 +626,7 @@ mod tests {
 
     // ---- Example YAML deserializes and runs -----------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_csv_replay_config_from_yaml() {
         let yaml = "\
@@ -653,6 +654,7 @@ repeat: false
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_csv_replay_config_minimal() {
         let yaml = "type: csv_replay\nfile: data.csv\n";
@@ -674,6 +676,7 @@ repeat: false
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn example_yaml_scenario_file_deserializes() {
         // Validate the example file pattern from examples/csv-replay-metrics.yaml.

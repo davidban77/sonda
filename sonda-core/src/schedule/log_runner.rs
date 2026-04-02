@@ -491,6 +491,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     /// Config from YAML: log-template style YAML → valid `LogScenarioConfig`.
+    #[cfg(feature = "config")]
     #[test]
     fn log_scenario_config_deserializes_template_yaml() {
         let yaml = r#"
@@ -528,6 +529,7 @@ sink:
     }
 
     /// Config from YAML: log-replay style YAML → valid `LogScenarioConfig`.
+    #[cfg(feature = "config")]
     #[test]
     fn log_scenario_config_deserializes_replay_yaml() {
         let yaml = r#"
@@ -553,6 +555,7 @@ sink:
     }
 
     /// Default encoder for LogScenarioConfig is json_lines (not prometheus_text).
+    #[cfg(feature = "config")]
     #[test]
     fn log_scenario_config_default_encoder_is_json_lines() {
         let yaml = r#"
@@ -574,6 +577,7 @@ generator:
     }
 
     /// Default sink for LogScenarioConfig is stdout.
+    #[cfg(feature = "config")]
     #[test]
     fn log_scenario_config_default_sink_is_stdout() {
         let yaml = r#"
@@ -595,6 +599,7 @@ generator:
     }
 
     /// LogScenarioConfig with optional gaps and bursts deserializes correctly.
+    #[cfg(feature = "config")]
     #[test]
     fn log_scenario_config_with_gaps_and_bursts_deserializes() {
         let yaml = r#"

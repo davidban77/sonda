@@ -241,6 +241,7 @@ mod tests {
     // SinkConfig deserialization
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_kafka_deserializes_with_brokers_and_topic() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
@@ -254,6 +255,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_kafka_deserializes_with_multiple_brokers() {
         let yaml = "type: kafka\nbrokers: \"broker1:9092,broker2:9092\"\ntopic: my-topic";
@@ -264,6 +266,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_kafka_requires_brokers_field() {
         let yaml = "type: kafka\ntopic: sonda-test";
@@ -274,6 +277,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_kafka_requires_topic_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
@@ -369,6 +373,7 @@ mod tests {
     // Full scenario YAML: kafka sink variant
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn scenario_yaml_with_kafka_sink_deserializes_correctly() {
         use crate::config::ScenarioConfig;

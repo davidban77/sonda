@@ -17,8 +17,6 @@ pub mod uniform;
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
-
 use self::constant::Constant;
 use self::csv_replay::CsvReplayGenerator;
 use self::log_replay::LogReplayGenerator;
@@ -53,17 +51,18 @@ pub trait ValueGenerator: Send + Sync {
 ///   period_secs: 30
 ///   offset: 10.0
 /// ```
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum GeneratorConfig {
     /// A generator that always returns the same value.
-    #[serde(rename = "constant")]
+    #[cfg_attr(feature = "config", serde(rename = "constant"))]
     Constant {
         /// The fixed value returned on every tick.
         value: f64,
     },
     /// A generator that returns deterministically random values in `[min, max]`.
-    #[serde(rename = "uniform")]
+    #[cfg_attr(feature = "config", serde(rename = "uniform"))]
     Uniform {
         /// Lower bound of the output range (inclusive).
         min: f64,
@@ -73,7 +72,7 @@ pub enum GeneratorConfig {
         seed: Option<u64>,
     },
     /// A generator that follows a sine curve.
-    #[serde(rename = "sine")]
+    #[cfg_attr(feature = "config", serde(rename = "sine"))]
     Sine {
         /// Half the peak-to-peak swing of the wave.
         amplitude: f64,
@@ -83,7 +82,7 @@ pub enum GeneratorConfig {
         offset: f64,
     },
     /// A generator that linearly ramps from `min` to `max` then resets.
-    #[serde(rename = "sawtooth")]
+    #[cfg_attr(feature = "config", serde(rename = "sawtooth"))]
     Sawtooth {
         /// Value at the start of each period.
         min: f64,
@@ -93,7 +92,7 @@ pub enum GeneratorConfig {
         period_secs: f64,
     },
     /// A generator that steps through an explicit sequence of values.
-    #[serde(rename = "sequence")]
+    #[cfg_attr(feature = "config", serde(rename = "sequence"))]
     Sequence {
         /// The ordered list of values to step through. Must not be empty.
         values: Vec<f64>,
@@ -102,7 +101,7 @@ pub enum GeneratorConfig {
         repeat: Option<bool>,
     },
     /// A generator that replays numeric values from a CSV file.
-    #[serde(rename = "csv_replay")]
+    #[cfg_attr(feature = "config", serde(rename = "csv_replay"))]
     CsvReplay {
         /// Path to the CSV file containing numeric values.
         file: String,
@@ -193,12 +192,13 @@ pub trait LogGenerator: Send + Sync {
 ///     - "/api"
 ///     - "/health"
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct TemplateConfig {
     /// The message template. Use `{field_name}` for dynamic placeholders.
     pub message: String,
     /// Maps placeholder names to their value pools.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub field_pools: HashMap<String, Vec<String>>,
 }
 
@@ -230,23 +230,24 @@ pub struct TemplateConfig {
 ///   type: replay
 ///   file: /var/log/app.log
 /// ```
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum LogGeneratorConfig {
     /// Generates events from message templates with randomized field pool values.
-    #[serde(rename = "template")]
+    #[cfg_attr(feature = "config", serde(rename = "template"))]
     Template {
         /// One or more template entries. Templates are selected round-robin by tick.
         templates: Vec<TemplateConfig>,
         /// Optional severity weight map. Keys are severity names (`info`, `warn`, etc.),
         /// values are relative weights. Defaults to `info: 1.0` when absent.
-        #[serde(default)]
+        #[cfg_attr(feature = "config", serde(default))]
         severity_weights: Option<HashMap<String, f64>>,
         /// Seed for deterministic replay. Defaults to `0` when absent.
         seed: Option<u64>,
     },
     /// Replays lines from a file, cycling back to the start when exhausted.
-    #[serde(rename = "replay")]
+    #[cfg_attr(feature = "config", serde(rename = "replay"))]
     Replay {
         /// Path to the file containing log lines to replay.
         file: String,
@@ -454,7 +455,9 @@ mod tests {
     }
 
     // ---- Config deserialization tests ----------------------------------------
+    // These tests require the `config` feature (serde_yaml).
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_constant_config() {
         let yaml = "type: constant\nvalue: 42.0\n";
@@ -467,6 +470,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_uniform_config_with_seed() {
         let yaml = "type: uniform\nmin: 1.0\nmax: 5.0\nseed: 99\n";
@@ -481,6 +485,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_uniform_config_without_seed() {
         let yaml = "type: uniform\nmin: 0.0\nmax: 10.0\n";
@@ -496,6 +501,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sine_config() {
         let yaml = "type: sine\namplitude: 5.0\nperiod_secs: 30\noffset: 10.0\n";
@@ -514,6 +520,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sawtooth_config() {
         let yaml = "type: sawtooth\nmin: 0.0\nmax: 100.0\nperiod_secs: 60.0\n";
@@ -532,6 +539,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sequence_config_with_repeat() {
         let yaml = "type: sequence\nvalues: [1.0, 2.0, 3.0]\nrepeat: true\n";
@@ -546,6 +554,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sequence_config_without_repeat() {
         let yaml = "type: sequence\nvalues: [10.0, 20.0]\n";
@@ -560,6 +569,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sequence_config_repeat_false() {
         let yaml = "type: sequence\nvalues: [5.0]\nrepeat: false\n";
@@ -574,6 +584,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_sequence_config_integer_values() {
         // YAML integers should coerce to f64
@@ -589,6 +600,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_example_yaml_scenario_file() {
         // Validate the example file from examples/sequence-alert-test.yaml
@@ -645,7 +657,9 @@ sink:
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------
+    // These tests require the `config` feature (serde_yaml).
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_log_template_config_minimal() {
         let yaml = "\
@@ -682,6 +696,7 @@ templates:
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_log_template_config_with_weights_and_seed() {
         let yaml = "\
@@ -713,6 +728,7 @@ seed: 42
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn deserialize_log_replay_config() {
         let yaml = "type: replay\nfile: /var/log/app.log\n";
