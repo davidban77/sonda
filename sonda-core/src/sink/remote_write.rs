@@ -36,7 +36,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// - `Content-Encoding: snappy`
 /// - `X-Prometheus-Remote-Write-Version: 0.1.0`
 ///
-/// Response handling follows the same policy as [`HttpPushSink`](crate::sink::http::HttpPushSink):
+/// Response handling follows the same policy as `HttpPushSink`:
 /// - 2xx: success
 /// - 4xx: log warning, discard batch, continue
 /// - 5xx: retry once, then error
