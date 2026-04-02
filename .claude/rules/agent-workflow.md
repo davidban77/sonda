@@ -13,6 +13,7 @@ workflow: implementer → reviewer + UAT.** This is not limited to numbered slic
 | **Reviewer** | `@reviewer` | Audits code and tests against architecture doc and conventions. Read-only. |
 | **UAT** | `@uat` | Builds the binary, validates observable behavior end-to-end. |
 | **Doc** | `@doc` | Writes/maintains user-facing MkDocs documentation. |
+| **Smoke** | `@smoke` | SRE Test Engineer. Spins up Docker Compose stacks and validates infra-level pipelines end-to-end. |
 
 ## Feature Branch Workflow
 
@@ -72,6 +73,25 @@ Phase-plan slices follow the same feature branch workflow. The slice ID is passe
 - **One slice at a time.** Never work ahead.
 - **Commit after the implementer.** Implementer commits code and tests. Reviewer and UAT report only.
 - **Exit gates are hard.** A slice is not done until reviewer and UAT have passed.
+
+## Smoke Agent: Infra-Level Validation
+
+The smoke agent (`@smoke`) validates Docker Compose stacks and infra-level pipelines end-to-end.
+It runs as an SRE Test Engineer — spinning up services, pushing telemetry, and verifying the
+full signal path.
+
+**When to use:** the orchestrator launches `@smoke` alongside UAT when the changeset touches:
+- `docker-compose*.yml` files
+- Infrastructure configs (`examples/alertmanager/`, alert rules, etc.)
+- Documentation that includes Docker/infra walkthrough steps
+
+**When NOT to use:** pure code changes, pure docs without infra components.
+
+The smoke agent gracefully handles missing Docker by falling back to static validation and
+reporting SKIPPED. It always tears down what it started.
+
+Uses Sonnet model for cost efficiency — the work is procedural (run commands, check output),
+not reasoning-heavy.
 
 ## Exceptional Use: Tester Agent
 
