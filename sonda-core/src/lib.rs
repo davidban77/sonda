@@ -170,12 +170,25 @@ pub enum EncoderError {
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     /// The OS refused to spawn a new thread.
-    #[error("failed to spawn scenario thread: {0}")]
-    SpawnFailed(std::io::Error),
+    ///
+    /// Preserves the original [`std::io::Error`] via the `#[source]` attribute
+    /// so callers can inspect the error kind (e.g., resource exhaustion)
+    /// programmatically via the standard [`std::error::Error::source`] chain.
+    #[error("failed to spawn scenario thread")]
+    SpawnFailed(#[source] std::io::Error),
 
     /// A scenario thread panicked during execution.
     #[error("scenario thread panicked")]
     ThreadPanicked,
+
+    /// One or more scenarios in a multi-scenario run failed.
+    ///
+    /// The error messages from all failed scenario threads are collected and
+    /// joined into a single string. This variant exists to prevent thread-level
+    /// sink, runtime, or generator errors from being misclassified as
+    /// [`ConfigError`] when collected at the multi-runner level.
+    #[error("{0}")]
+    ScenariosFailed(String),
 }
 
 #[cfg(test)]
@@ -429,6 +442,82 @@ mod tests {
         assert!(
             msg.contains("panicked"),
             "ThreadPanicked display must mention panic, got: {msg}"
+        );
+
+        let scenarios_err =
+            RuntimeError::ScenariosFailed("sink error: broken pipe; sink error: timeout".into());
+        let msg = format!("{scenarios_err}");
+        assert!(
+            msg.contains("sink error"),
+            "ScenariosFailed display must include the collected messages, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn spawn_failed_preserves_io_error_source() {
+        use std::error::Error;
+
+        let io_err = std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "resource temporarily unavailable",
+        );
+        let rt_err = RuntimeError::SpawnFailed(io_err);
+
+        let source = rt_err
+            .source()
+            .expect("SpawnFailed source() must return Some");
+        let io_source = source
+            .downcast_ref::<std::io::Error>()
+            .expect("source must be std::io::Error");
+        assert_eq!(io_source.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn spawn_failed_source_chain_traverses_through_sonda_error() {
+        use std::error::Error;
+
+        let io_err =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "cannot create thread");
+        let sonda_err = SondaError::Runtime(RuntimeError::SpawnFailed(io_err));
+
+        // SondaError::Runtime.source() -> RuntimeError
+        let runtime_source = sonda_err
+            .source()
+            .expect("SondaError::Runtime source() must return Some");
+        let rt_err = runtime_source
+            .downcast_ref::<RuntimeError>()
+            .expect("first source must be RuntimeError");
+
+        // RuntimeError::SpawnFailed.source() -> io::Error
+        let io_source = rt_err
+            .source()
+            .expect("SpawnFailed source() must return Some");
+        let io_inner = io_source
+            .downcast_ref::<std::io::Error>()
+            .expect("second source must be std::io::Error");
+        assert_eq!(io_inner.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn scenarios_failed_is_runtime_not_config() {
+        let rt_err = RuntimeError::ScenariosFailed("thread failed".into());
+        let sonda_err: SondaError = rt_err.into();
+        assert!(
+            matches!(
+                sonda_err,
+                SondaError::Runtime(RuntimeError::ScenariosFailed(_))
+            ),
+            "multi-scenario failures must be Runtime::ScenariosFailed, not Config"
+        );
+    }
+
+    #[test]
+    fn scenarios_failed_converts_to_sonda_error_via_from() {
+        let rt_err = RuntimeError::ScenariosFailed("sink error: broken pipe".into());
+        let sonda_err: SondaError = rt_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Runtime(_)),
+            "ScenariosFailed must convert to SondaError::Runtime"
         );
     }
 

@@ -155,15 +155,18 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
   - `EncoderError` — encoding errors. `SerializationFailed(serde_json::Error)` and
     `TimestampBeforeEpoch(SystemTimeError)` preserve the original error. `NotSupported(String)`
     for unsupported event types. `Other(String)` for feature-gated encoder errors (protobuf, snappy).
-  - `RuntimeError` — system/environment errors. `SpawnFailed(io::Error)` for thread spawn
-    failures, `ThreadPanicked` for panicked scenario threads. Separated from `ConfigError` so
-    consumers matching on config errors are not confused by system failures.
+  - `RuntimeError` — system/environment errors. `SpawnFailed(#[source] io::Error)` for thread
+    spawn failures (preserves the original `io::Error` via `#[source]`), `ThreadPanicked` for
+    panicked scenario threads, `ScenariosFailed(String)` for collected errors from multi-scenario
+    thread joins. Separated from `ConfigError` so consumers matching on config errors are not
+    confused by system failures.
 - `SondaError::Sink` wraps `std::io::Error` **without** a blanket `#[from]` conversion.
   All I/O errors must be explicitly mapped to the correct variant at each call site:
   - Sink I/O errors: use `.map_err(SondaError::Sink)` or `SondaError::Sink(io_err)`.
   - Generator file I/O errors: use `SondaError::Generator(GeneratorError::FileRead { path, source })`.
   - Config validation errors: use `SondaError::Config(ConfigError::invalid(msg))`.
   - Runtime errors: use `SondaError::Runtime(RuntimeError::SpawnFailed(io_err))`.
+  - Multi-scenario thread failures: use `SondaError::Runtime(RuntimeError::ScenariosFailed(msg))`.
 - This prevents generator or config I/O errors from being misclassified as sink errors.
 
 ## Testing

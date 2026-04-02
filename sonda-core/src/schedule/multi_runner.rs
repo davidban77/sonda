@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::config::MultiScenarioConfig;
 use crate::schedule::launch::{launch_scenario, validate_entry};
-use crate::{ConfigError, SondaError};
+use crate::{ConfigError, RuntimeError, SondaError};
 
 /// Run all scenarios in `config` concurrently, one OS thread per scenario.
 ///
@@ -20,7 +20,8 @@ use crate::{ConfigError, SondaError};
 ///
 /// The main thread blocks until all scenario threads have finished. If any
 /// thread returns an error, those errors are collected and returned as a
-/// combined [`SondaError::Config`] message. Errors from all threads are
+/// combined [`SondaError::Runtime`] with the
+/// [`RuntimeError::ScenariosFailed`] variant. Errors from all threads are
 /// reported, not just the first one.
 ///
 /// # Parameters
@@ -31,9 +32,12 @@ use crate::{ConfigError, SondaError};
 ///
 /// # Errors
 ///
-/// Returns [`SondaError`] if any scenario thread encounters an error during
-/// setup (sink creation, config parsing) or during the event loop (encoding,
-/// I/O). All thread errors are collected and formatted into a single error.
+/// Returns [`SondaError::Config`] for synchronous validation failures
+/// (invalid config fields, bad phase_offset). Returns
+/// [`SondaError::Runtime`] if any scenario thread encounters an error during
+/// setup (sink creation) or during the event loop (encoding, I/O). All
+/// thread errors are collected and formatted into a single
+/// [`RuntimeError::ScenariosFailed`] error.
 pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
     let mut handles = Vec::with_capacity(config.scenarios.len());
 
@@ -72,7 +76,9 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(SondaError::Config(ConfigError::invalid(errors.join("; "))))
+        Err(SondaError::Runtime(RuntimeError::ScenariosFailed(
+            errors.join("; "),
+        )))
     }
 }
 
@@ -383,6 +389,41 @@ mod tests {
         assert!(
             err_msg.contains(';'),
             "combined error should separate errors with ';', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn run_multi_thread_errors_produce_runtime_not_config_variant() {
+        // A file sink pointing to an invalid path will fail inside the thread.
+        // The collected error must be Runtime::ScenariosFailed, not Config.
+        let config = MultiScenarioConfig {
+            scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
+                name: "variant_test".to_string(),
+                rate: 10.0,
+                duration: Some("100ms".to_string()),
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                encoder: EncoderConfig::PrometheusText { precision: None },
+                sink: SinkConfig::File {
+                    path: "/proc/sonda_variant_test_27.txt".to_string(),
+                },
+                phase_offset: None,
+                clock_group: None,
+            })],
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let result = run_multi(config, shutdown);
+        assert!(result.is_err(), "invalid sink must produce an error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::SondaError::Runtime(crate::RuntimeError::ScenariosFailed(_))
+            ),
+            "thread join errors must be Runtime::ScenariosFailed, not Config; got: {err:?}"
         );
     }
 
