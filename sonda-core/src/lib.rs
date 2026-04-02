@@ -12,6 +12,7 @@ pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
 
+pub use config::BaseScheduleConfig;
 pub use config::BurstConfig;
 pub use config::CardinalitySpikeConfig;
 pub use config::LogScenarioConfig;
@@ -532,24 +533,26 @@ mod tests {
     /// This test runs with or without the feature enabled.
     #[test]
     fn config_types_constructible_without_yaml_parsing() {
-        use crate::config::ScenarioConfig;
+        use crate::config::{BaseScheduleConfig, ScenarioConfig};
         use crate::encoder::EncoderConfig;
         use crate::generator::GeneratorConfig;
         use crate::sink::SinkConfig;
 
         let _config = ScenarioConfig {
-            name: "test".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         };
     }
 

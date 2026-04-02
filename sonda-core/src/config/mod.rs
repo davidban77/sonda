@@ -127,9 +127,69 @@ fn default_sink() -> SinkConfig {
     SinkConfig::Stdout
 }
 
-/// Full configuration for a single scenario run.
+/// Shared schedule and delivery fields common to all signal types.
 ///
-/// Deserialized from a YAML scenario file. CLI flags can override any field.
+/// Both [`ScenarioConfig`] (metrics) and [`LogScenarioConfig`] (logs) embed
+/// this struct via `#[serde(flatten)]`. It contains every field that is
+/// identical across signal types — everything except the generator
+/// configuration and the encoder default.
+///
+/// New schedule-level fields (rate control, windows, labels, sink, phase
+/// offset) should be added here once and automatically propagate to both
+/// signal types.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct BaseScheduleConfig {
+    /// Scenario name (metric name for metrics, identifier for logs).
+    pub name: String,
+    /// Target event rate in events per second. Must be strictly positive.
+    pub rate: f64,
+    /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub duration: Option<String>,
+    /// Optional gap window: recurring silent periods in the event stream.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub gaps: Option<GapConfig>,
+    /// Optional burst window: recurring high-rate periods in the event stream.
+    ///
+    /// When both a gap and a burst overlap in time, the gap takes priority.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub bursts: Option<BurstConfig>,
+    /// Optional cardinality spikes: recurring windows that inject dynamic
+    /// labels to simulate cardinality explosions.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
+    /// Static labels attached to every emitted event.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub labels: Option<HashMap<String, String>>,
+    /// Output sink. Defaults to `stdout`.
+    #[cfg_attr(feature = "config", serde(default = "default_sink"))]
+    pub sink: SinkConfig,
+    /// Delay before starting this scenario, relative to the group start time.
+    ///
+    /// Only meaningful in multi-scenario mode. Enables temporal correlation
+    /// between scenarios: "metric A starts immediately, metric B starts 30s
+    /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
+    #[cfg_attr(feature = "config", serde(default))]
+    pub phase_offset: Option<String>,
+    /// Clock group identifier for multi-scenario correlation.
+    ///
+    /// Scenarios with the same `clock_group` value share a common start time
+    /// reference. For MVP this provides a shared start reference only; advanced
+    /// cross-scenario signaling is deferred to a future phase.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub clock_group: Option<String>,
+}
+
+/// Full configuration for a single metric scenario run.
+///
+/// Embeds [`BaseScheduleConfig`] for the shared schedule and delivery fields,
+/// adding only the metric-specific value generator and a Prometheus-defaulting
+/// encoder.
+///
+/// Fields from [`BaseScheduleConfig`] are accessible directly via `Deref` (e.g.
+/// `config.name`, `config.rate`) for ergonomic read access. Struct construction
+/// uses the explicit `base` field.
 ///
 /// # Example YAML
 ///
@@ -156,50 +216,28 @@ fn default_sink() -> SinkConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct ScenarioConfig {
-    /// Metric name emitted by this scenario (must be a valid Prometheus metric name).
-    pub name: String,
-    /// Target event rate in events per second. Must be strictly positive.
-    pub rate: f64,
-    /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub duration: Option<String>,
+    /// Shared schedule and delivery fields.
+    #[cfg_attr(feature = "config", serde(flatten))]
+    pub base: BaseScheduleConfig,
     /// Value generator configuration.
     pub generator: GeneratorConfig,
-    /// Optional gap window: recurring silent periods in the event stream.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub gaps: Option<GapConfig>,
-    /// Optional burst window: recurring high-rate periods in the event stream.
-    ///
-    /// When both a gap and a burst overlap in time, the gap takes priority.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub bursts: Option<BurstConfig>,
-    /// Optional cardinality spikes: recurring windows that inject dynamic
-    /// labels to simulate cardinality explosions.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
-    /// Static labels attached to every emitted event.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
-    /// Output sink. Defaults to `stdout`.
-    #[cfg_attr(feature = "config", serde(default = "default_sink"))]
-    pub sink: SinkConfig,
-    /// Delay before starting this scenario, relative to the group start time.
-    ///
-    /// Only meaningful in multi-scenario mode. Enables temporal correlation
-    /// between scenarios: "metric A starts immediately, metric B starts 30s
-    /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
-    #[cfg_attr(feature = "config", serde(default))]
-    pub phase_offset: Option<String>,
-    /// Clock group identifier for multi-scenario correlation.
-    ///
-    /// Scenarios with the same `clock_group` value share a common start time
-    /// reference. For MVP this provides a shared start reference only; advanced
-    /// cross-scenario signaling is deferred to a future phase.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub clock_group: Option<String>,
+}
+
+impl std::ops::Deref for ScenarioConfig {
+    type Target = BaseScheduleConfig;
+
+    fn deref(&self) -> &BaseScheduleConfig {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for ScenarioConfig {
+    fn deref_mut(&mut self) -> &mut BaseScheduleConfig {
+        &mut self.base
+    }
 }
 
 /// A single entry in a multi-scenario configuration.
@@ -220,20 +258,25 @@ pub enum ScenarioEntry {
 }
 
 impl ScenarioEntry {
+    /// Return a reference to the shared [`BaseScheduleConfig`].
+    ///
+    /// Useful when only schedule-level fields (name, rate, duration, gaps,
+    /// labels, sink, etc.) are needed regardless of signal type.
+    pub fn base(&self) -> &BaseScheduleConfig {
+        match self {
+            ScenarioEntry::Metrics(c) => &c.base,
+            ScenarioEntry::Logs(c) => &c.base,
+        }
+    }
+
     /// Return the `phase_offset` duration string, if set on the inner config.
     pub fn phase_offset(&self) -> Option<&str> {
-        match self {
-            ScenarioEntry::Metrics(c) => c.phase_offset.as_deref(),
-            ScenarioEntry::Logs(c) => c.phase_offset.as_deref(),
-        }
+        self.base().phase_offset.as_deref()
     }
 
     /// Return the `clock_group` identifier, if set on the inner config.
     pub fn clock_group(&self) -> Option<&str> {
-        match self {
-            ScenarioEntry::Metrics(c) => c.clock_group.as_deref(),
-            ScenarioEntry::Logs(c) => c.clock_group.as_deref(),
-        }
+        self.base().clock_group.as_deref()
     }
 }
 
@@ -278,7 +321,12 @@ pub struct MultiScenarioConfig {
 
 /// Full configuration for a single log scenario run.
 ///
-/// Deserialized from a YAML scenario file. CLI flags can override any field.
+/// Embeds [`BaseScheduleConfig`] for the shared schedule and delivery fields,
+/// adding only the log-specific generator and a JSON-Lines-defaulting encoder.
+///
+/// Fields from [`BaseScheduleConfig`] are accessible directly via `Deref` (e.g.
+/// `config.name`, `config.rate`) for ergonomic read access. Struct construction
+/// uses the explicit `base` field.
 ///
 /// # Example YAML
 ///
@@ -305,48 +353,28 @@ pub struct MultiScenarioConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct LogScenarioConfig {
-    /// Scenario name (used for identification and logging).
-    pub name: String,
-    /// Target event rate in events per second. Must be strictly positive.
-    pub rate: f64,
-    /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub duration: Option<String>,
+    /// Shared schedule and delivery fields.
+    #[cfg_attr(feature = "config", serde(flatten))]
+    pub base: BaseScheduleConfig,
     /// Log generator configuration.
     pub generator: LogGeneratorConfig,
-    /// Optional gap window: recurring silent periods in the event stream.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub gaps: Option<GapConfig>,
-    /// Optional burst window: recurring high-rate periods.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub bursts: Option<BurstConfig>,
-    /// Optional cardinality spikes: recurring windows that inject dynamic
-    /// labels to simulate cardinality explosions.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
-    /// Static labels attached to every emitted log event.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `json_lines`.
     #[cfg_attr(feature = "config", serde(default = "default_log_encoder"))]
     pub encoder: EncoderConfig,
-    /// Output sink. Defaults to `stdout`.
-    #[cfg_attr(feature = "config", serde(default = "default_sink"))]
-    pub sink: SinkConfig,
-    /// Delay before starting this scenario, relative to the group start time.
-    ///
-    /// Only meaningful in multi-scenario mode. Enables temporal correlation
-    /// between scenarios: "metric A starts immediately, metric B starts 30s
-    /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
-    #[cfg_attr(feature = "config", serde(default))]
-    pub phase_offset: Option<String>,
-    /// Clock group identifier for multi-scenario correlation.
-    ///
-    /// Scenarios with the same `clock_group` value share a common start time
-    /// reference. For MVP this provides a shared start reference only; advanced
-    /// cross-scenario signaling is deferred to a future phase.
-    #[cfg_attr(feature = "config", serde(default))]
-    pub clock_group: Option<String>,
+}
+
+impl std::ops::Deref for LogScenarioConfig {
+    type Target = BaseScheduleConfig;
+
+    fn deref(&self) -> &BaseScheduleConfig {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for LogScenarioConfig {
+    fn deref_mut(&mut self) -> &mut BaseScheduleConfig {
+        &mut self.base
+    }
 }
 
 #[cfg(all(test, feature = "config"))]
@@ -636,18 +664,20 @@ clock_group: compound-alert
     #[test]
     fn scenario_entry_phase_offset_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "accessor_test".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "accessor_test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("5s".to_string()),
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: Some("5s".to_string()),
-            clock_group: None,
         });
         assert_eq!(entry.phase_offset(), Some("5s"));
     }
@@ -656,18 +686,20 @@ clock_group: compound-alert
     #[test]
     fn scenario_entry_phase_offset_returns_none_for_metrics_without_offset() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "no_offset".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "no_offset".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         assert_eq!(entry.phase_offset(), None);
     }
@@ -676,9 +708,18 @@ clock_group: compound-alert
     #[test]
     fn scenario_entry_phase_offset_returns_value_for_logs() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "log_accessor".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "log_accessor".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("10s".to_string()),
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
                     message: "test".to_string(),
@@ -687,14 +728,7 @@ clock_group: compound-alert
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: Some("10s".to_string()),
-            clock_group: None,
         });
         assert_eq!(entry.phase_offset(), Some("10s"));
     }
@@ -707,18 +741,20 @@ clock_group: compound-alert
     #[test]
     fn scenario_entry_clock_group_returns_value_for_metrics() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "group_accessor".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "group_accessor".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: Some("my-group".to_string()),
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: Some("my-group".to_string()),
         });
         assert_eq!(entry.clock_group(), Some("my-group"));
     }
@@ -727,20 +763,79 @@ clock_group: compound-alert
     #[test]
     fn scenario_entry_clock_group_returns_none_when_absent() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "no_group_acc".to_string(),
-            rate: 10.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "no_group_acc".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         assert_eq!(entry.clock_group(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // ScenarioEntry::base() accessor
+    // -----------------------------------------------------------------------
+
+    /// ScenarioEntry::base() returns the shared config for a Metrics entry.
+    #[test]
+    fn scenario_entry_base_returns_shared_config_for_metrics() {
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "base_test".to_string(),
+                rate: 42.0,
+                duration: Some("5s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+        assert_eq!(entry.base().name, "base_test");
+        assert_eq!(entry.base().rate, 42.0);
+    }
+
+    /// ScenarioEntry::base() returns the shared config for a Logs entry.
+    #[test]
+    fn scenario_entry_base_returns_shared_config_for_logs() {
+        let entry = ScenarioEntry::Logs(LogScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "log_base".to_string(),
+                rate: 99.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
+            generator: LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        });
+        assert_eq!(entry.base().name, "log_base");
+        assert_eq!(entry.base().rate, 99.0);
     }
 
     // -----------------------------------------------------------------------
@@ -955,7 +1050,7 @@ cardinality_spikes:
     cardinality: 10
 "#;
         let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        let spikes = config.cardinality_spikes.unwrap();
+        let spikes = config.base.cardinality_spikes.unwrap();
         assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
     }
 
@@ -977,7 +1072,7 @@ cardinality_spikes:
     cardinality: 100
 "#;
         let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        let spikes = config.cardinality_spikes.unwrap();
+        let spikes = config.base.cardinality_spikes.unwrap();
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].label, "pod_name");
     }
@@ -1003,5 +1098,253 @@ gaps:
         assert!(config.cardinality_spikes.is_none());
         assert!(config.gaps.is_some());
         assert_eq!(config.name, "compat_test");
+    }
+
+    // -----------------------------------------------------------------------
+    // BaseScheduleConfig: Clone + Debug contract
+    // -----------------------------------------------------------------------
+
+    /// BaseScheduleConfig is Clone and Debug.
+    #[test]
+    fn base_schedule_config_is_clone_and_debug() {
+        let base = BaseScheduleConfig {
+            name: "test".to_string(),
+            rate: 42.0,
+            duration: Some("10s".to_string()),
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        };
+        let cloned = base.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.rate, 42.0);
+        let dbg = format!("{base:?}");
+        assert!(
+            dbg.contains("BaseScheduleConfig"),
+            "Debug output must contain type name"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Deref: ScenarioConfig fields accessible directly
+    // -----------------------------------------------------------------------
+
+    /// ScenarioConfig fields from BaseScheduleConfig are accessible via Deref.
+    #[test]
+    fn scenario_config_deref_accesses_base_fields() {
+        let config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "deref_test".to_string(),
+                rate: 99.0,
+                duration: Some("5s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("1s".to_string()),
+                clock_group: Some("group-a".to_string()),
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        };
+        // All these access via Deref — no explicit `.base.` needed.
+        assert_eq!(config.name, "deref_test");
+        assert_eq!(config.rate, 99.0);
+        assert_eq!(config.duration.as_deref(), Some("5s"));
+        assert!(config.gaps.is_none());
+        assert_eq!(config.phase_offset.as_deref(), Some("1s"));
+        assert_eq!(config.clock_group.as_deref(), Some("group-a"));
+    }
+
+    /// LogScenarioConfig fields from BaseScheduleConfig are accessible via Deref.
+    #[test]
+    fn log_scenario_config_deref_accesses_base_fields() {
+        let config = LogScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "log_deref".to_string(),
+                rate: 50.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
+            generator: LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        };
+        assert_eq!(config.name, "log_deref");
+        assert_eq!(config.rate, 50.0);
+        assert!(config.duration.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DerefMut: ScenarioConfig base fields mutable via DerefMut
+    // -----------------------------------------------------------------------
+
+    /// ScenarioConfig base fields can be mutated via DerefMut.
+    #[test]
+    fn scenario_config_deref_mut_allows_base_field_mutation() {
+        let mut config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "original".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        };
+        config.name = "mutated".to_string();
+        config.rate = 999.0;
+        config.duration = Some("30s".to_string());
+        assert_eq!(config.name, "mutated");
+        assert_eq!(config.rate, 999.0);
+        assert_eq!(config.duration.as_deref(), Some("30s"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Flatten: YAML with base fields and generator deserializes correctly
+    // -----------------------------------------------------------------------
+
+    /// ScenarioConfig deserializes with all fields at the top level (serde flatten).
+    #[test]
+    fn scenario_config_flatten_deserializes_all_fields() {
+        let yaml = r#"
+name: flatten_test
+rate: 100
+duration: 30s
+generator:
+  type: sine
+  amplitude: 5.0
+  period_secs: 30
+  offset: 10.0
+gaps:
+  every: 2m
+  for: 20s
+bursts:
+  every: 10s
+  for: 2s
+  multiplier: 5.0
+labels:
+  hostname: t0-a1
+  zone: eu1
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+phase_offset: "5s"
+clock_group: correlation
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.name, "flatten_test");
+        assert_eq!(config.rate, 100.0);
+        assert_eq!(config.duration.as_deref(), Some("30s"));
+        assert!(config.gaps.is_some());
+        assert!(config.bursts.is_some());
+        let labels = config.labels.as_ref().unwrap();
+        assert_eq!(labels.get("hostname").map(String::as_str), Some("t0-a1"));
+        assert!(matches!(
+            config.encoder,
+            EncoderConfig::PrometheusText { .. }
+        ));
+        assert!(matches!(config.base.sink, SinkConfig::Stdout));
+        assert_eq!(config.phase_offset.as_deref(), Some("5s"));
+        assert_eq!(config.clock_group.as_deref(), Some("correlation"));
+    }
+
+    /// LogScenarioConfig deserializes with all fields at the top level (serde flatten).
+    #[test]
+    fn log_scenario_config_flatten_deserializes_all_fields() {
+        let yaml = r#"
+name: log_flatten
+rate: 20
+duration: 60s
+generator:
+  type: template
+  templates:
+    - message: "hello"
+      field_pools: {}
+labels:
+  env: prod
+encoder:
+  type: syslog
+  hostname: myhost
+  app_name: myapp
+sink:
+  type: stdout
+phase_offset: "2s"
+clock_group: log-group
+"#;
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.name, "log_flatten");
+        assert_eq!(config.rate, 20.0);
+        assert_eq!(config.duration.as_deref(), Some("60s"));
+        let labels = config.labels.as_ref().unwrap();
+        assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
+        assert_eq!(config.phase_offset.as_deref(), Some("2s"));
+        assert_eq!(config.clock_group.as_deref(), Some("log-group"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoder defaults remain correct per signal type
+    // -----------------------------------------------------------------------
+
+    /// ScenarioConfig defaults encoder to prometheus_text.
+    #[test]
+    fn scenario_config_encoder_defaults_to_prometheus_text() {
+        let yaml = r#"
+name: enc_default
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(
+            matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
+            "ScenarioConfig encoder default must be prometheus_text, got {:?}",
+            config.encoder
+        );
+    }
+
+    /// LogScenarioConfig defaults encoder to json_lines.
+    #[test]
+    fn log_scenario_config_encoder_defaults_to_json_lines() {
+        let yaml = r#"
+name: log_enc_default
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+"#;
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(
+            matches!(config.encoder, EncoderConfig::JsonLines { .. }),
+            "LogScenarioConfig encoder default must be json_lines, got {:?}",
+            config.encoder
+        );
     }
 }

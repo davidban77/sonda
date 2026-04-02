@@ -435,7 +435,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use sonda_core::config::{LogScenarioConfig, ScenarioConfig};
+    use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig};
     use sonda_core::encoder::EncoderConfig;
     use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use sonda_core::schedule::stats::ScenarioStats;
@@ -858,27 +858,38 @@ mod tests {
     /// Helper: build a minimal ScenarioEntry::Metrics for testing.
     fn make_metrics_entry() -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
-            name: "test_metric".to_string(),
-            rate: 10.0,
-            duration: Some("10s".to_string()),
+            base: BaseScheduleConfig {
+                name: "test_metric".to_string(),
+                rate: 10.0,
+                duration: Some("10s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
     /// Helper: build a minimal ScenarioEntry::Logs for testing.
     fn make_logs_entry() -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
-            name: "test_logs".to_string(),
-            rate: 5.0,
-            duration: Some("5s".to_string()),
+            base: BaseScheduleConfig {
+                name: "test_logs".to_string(),
+                rate: 5.0,
+                duration: Some("5s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test message".to_string(),
@@ -887,14 +898,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
@@ -939,18 +943,20 @@ mod tests {
     #[test]
     fn print_start_metrics_without_duration_does_not_panic() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "no_dur".to_string(),
-            rate: 1.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "no_dur".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 0.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         print_start(&entry, Verbosity::Normal);
     }
@@ -1045,37 +1051,39 @@ mod tests {
         labels.insert("region".to_string(), "us-east-1".to_string());
 
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "full_config".to_string(),
-            rate: 1000.0,
-            duration: Some("30s".to_string()),
+            base: BaseScheduleConfig {
+                name: "full_config".to_string(),
+                rate: 1000.0,
+                duration: Some("30s".to_string()),
+                gaps: Some(GapConfig {
+                    every: "2m".to_string(),
+                    r#for: "20s".to_string(),
+                }),
+                bursts: Some(BurstConfig {
+                    every: "10s".to_string(),
+                    r#for: "1s".to_string(),
+                    multiplier: 5.0,
+                }),
+                cardinality_spikes: Some(vec![CardinalitySpikeConfig {
+                    label: "pod_name".to_string(),
+                    every: "2m".to_string(),
+                    r#for: "30s".to_string(),
+                    cardinality: 100,
+                    strategy: SpikeStrategy::Counter,
+                    prefix: None,
+                    seed: None,
+                }]),
+                labels: Some(labels),
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Sine {
                 amplitude: 50.0,
                 period_secs: 60.0,
                 offset: 50.0,
             },
-            gaps: Some(GapConfig {
-                every: "2m".to_string(),
-                r#for: "20s".to_string(),
-            }),
-            bursts: Some(BurstConfig {
-                every: "10s".to_string(),
-                r#for: "1s".to_string(),
-                multiplier: 5.0,
-            }),
-            cardinality_spikes: Some(vec![CardinalitySpikeConfig {
-                label: "pod_name".to_string(),
-                every: "2m".to_string(),
-                r#for: "30s".to_string(),
-                cardinality: 100,
-                strategy: SpikeStrategy::Counter,
-                prefix: None,
-                seed: None,
-            }]),
-            labels: Some(labels),
             encoder: EncoderConfig::PrometheusText { precision: Some(2) },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         print_config(&entry);
     }
@@ -1083,25 +1091,27 @@ mod tests {
     #[test]
     fn print_config_logs_with_replay_generator_does_not_panic() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "replay_logs".to_string(),
-            rate: 100.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "replay_logs".to_string(),
+                rate: 100.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::File {
+                    path: "/tmp/out.log".to_string(),
+                },
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Replay {
                 file: "/var/log/app.log".to_string(),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::Syslog {
                 hostname: None,
                 app_name: None,
             },
-            sink: SinkConfig::File {
-                path: "/tmp/out.log".to_string(),
-            },
-            phase_offset: None,
-            clock_group: None,
         });
         print_config(&entry);
     }
@@ -1201,18 +1211,20 @@ mod tests {
     #[test]
     fn print_config_metrics_with_phase_offset_and_clock_group_does_not_panic() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "correlated_metric".to_string(),
-            rate: 10.0,
-            duration: Some("30s".to_string()),
+            base: BaseScheduleConfig {
+                name: "correlated_metric".to_string(),
+                rate: 10.0,
+                duration: Some("30s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("5s".to_string()),
+                clock_group: Some("alert-group".to_string()),
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: Some("5s".to_string()),
-            clock_group: Some("alert-group".to_string()),
         });
         print_config(&entry);
     }
@@ -1220,9 +1232,18 @@ mod tests {
     #[test]
     fn print_config_logs_with_phase_offset_and_clock_group_does_not_panic() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "correlated_logs".to_string(),
-            rate: 5.0,
-            duration: Some("10s".to_string()),
+            base: BaseScheduleConfig {
+                name: "correlated_logs".to_string(),
+                rate: 5.0,
+                duration: Some("10s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("2s".to_string()),
+                clock_group: Some("log-sync".to_string()),
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test".to_string(),
@@ -1231,14 +1252,7 @@ mod tests {
                 severity_weights: None,
                 seed: None,
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: Some("2s".to_string()),
-            clock_group: Some("log-sync".to_string()),
         });
         print_config(&entry);
     }

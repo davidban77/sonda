@@ -776,7 +776,7 @@ labels:
 "#;
         let config: ScenarioConfig =
             serde_yaml_ng::from_str(yaml).expect("YAML with labels must deserialize");
-        let labels = config.labels.expect("labels must be present");
+        let labels = config.base.labels.expect("labels must be present");
         assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
         assert_eq!(labels.get("region").map(String::as_str), Some("us-east-1"));
     }
@@ -796,7 +796,7 @@ gaps:
 "#;
         let config: ScenarioConfig =
             serde_yaml_ng::from_str(yaml).expect("YAML with gaps must deserialize");
-        let gap = config.gaps.expect("gaps must be present");
+        let gap = config.base.gaps.expect("gaps must be present");
         assert_eq!(gap.every, "2m");
         assert_eq!(gap.r#for, "20s");
     }
@@ -1215,7 +1215,7 @@ bursts:
 "#;
         let config: ScenarioConfig =
             serde_yaml_ng::from_str(yaml).expect("YAML with bursts must deserialize");
-        let burst = config.bursts.expect("bursts must be present");
+        let burst = config.base.bursts.expect("bursts must be present");
         assert_eq!(burst.every, "10s");
         assert_eq!(burst.r#for, "2s");
         assert_eq!(burst.multiplier, 5.0);
@@ -1281,18 +1281,20 @@ generator:
     /// Build a minimal valid ScenarioConfig overriding only the rate.
     fn minimal_config_with_rate(rate: f64) -> ScenarioConfig {
         ScenarioConfig {
-            name: "up".to_string(),
-            rate,
-            duration: None,
+            base: crate::config::BaseScheduleConfig {
+                name: "up".to_string(),
+                rate,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     }
 

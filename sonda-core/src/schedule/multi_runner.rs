@@ -97,7 +97,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use crate::config::{LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry};
+    use crate::config::{
+        BaseScheduleConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry,
+    };
     use crate::encoder::EncoderConfig;
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
@@ -108,18 +110,20 @@ mod tests {
     /// Duration of "100ms" ensures the thread exits quickly.
     fn metrics_entry_stdout(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
-            name: name.to_string(),
-            rate: 10.0,
-            duration: Some("100ms".to_string()),
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 10.0,
+                duration: Some("100ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
@@ -127,9 +131,18 @@ mod tests {
     /// Duration of "100ms" ensures the thread exits quickly.
     fn logs_entry_stdout(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
-            name: name.to_string(),
-            rate: 10.0,
-            duration: Some("100ms".to_string()),
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 10.0,
+                duration: Some("100ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test log event".to_string(),
@@ -138,14 +151,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(42),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
@@ -234,23 +240,34 @@ mod tests {
         let config = MultiScenarioConfig {
             scenarios: vec![
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "shutdown_test_metric".to_string(),
-                    rate: 10.0,
-                    duration: None, // indefinite
+                    base: BaseScheduleConfig {
+                        name: "shutdown_test_metric".to_string(),
+                        rate: 10.0,
+                        duration: None, // indefinite
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: None,
+                        clock_group: None,
+                    },
                     generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: None,
-                    clock_group: None,
                 }),
                 ScenarioEntry::Logs(LogScenarioConfig {
-                    name: "shutdown_test_logs".to_string(),
-                    rate: 10.0,
-                    duration: None, // indefinite
+                    base: BaseScheduleConfig {
+                        name: "shutdown_test_logs".to_string(),
+                        rate: 10.0,
+                        duration: None, // indefinite
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: None,
+                        clock_group: None,
+                    },
                     generator: LogGeneratorConfig::Template {
                         templates: vec![TemplateConfig {
                             message: "shutdown test".to_string(),
@@ -259,14 +276,7 @@ mod tests {
                         severity_weights: None,
                         seed: Some(0),
                     },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::JsonLines { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: None,
-                    clock_group: None,
                 }),
             ],
         };
@@ -312,21 +322,22 @@ mod tests {
         // during sink construction inside the thread.
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
-                name: "error_test".to_string(),
-                rate: 10.0,
-                duration: Some("100ms".to_string()),
-                generator: GeneratorConfig::Constant { value: 1.0 },
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                encoder: EncoderConfig::PrometheusText { precision: None },
-                // /proc is read-only on Linux and not writable on macOS either
-                sink: SinkConfig::File {
-                    path: "/proc/sonda_test_cannot_create_this_file_27.txt".to_string(),
+                base: BaseScheduleConfig {
+                    name: "error_test".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    gaps: None,
+                    bursts: None,
+                    cardinality_spikes: None,
+                    labels: None,
+                    sink: SinkConfig::File {
+                        path: "/proc/sonda_test_cannot_create_this_file_27.txt".to_string(),
+                    },
+                    phase_offset: None,
+                    clock_group: None,
                 },
-                phase_offset: None,
-                clock_group: None,
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                encoder: EncoderConfig::PrometheusText { precision: None },
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -348,36 +359,40 @@ mod tests {
         let config = MultiScenarioConfig {
             scenarios: vec![
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "err_a".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
-                    generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
-                    encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::File {
-                        path: "/proc/sonda_err_a_27.txt".to_string(),
+                    base: BaseScheduleConfig {
+                        name: "err_a".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::File {
+                            path: "/proc/sonda_err_a_27.txt".to_string(),
+                        },
+                        phase_offset: None,
+                        clock_group: None,
                     },
-                    phase_offset: None,
-                    clock_group: None,
+                    generator: GeneratorConfig::Constant { value: 1.0 },
+                    encoder: EncoderConfig::PrometheusText { precision: None },
                 }),
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "err_b".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
-                    generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
-                    encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::File {
-                        path: "/proc/sonda_err_b_27.txt".to_string(),
+                    base: BaseScheduleConfig {
+                        name: "err_b".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::File {
+                            path: "/proc/sonda_err_b_27.txt".to_string(),
+                        },
+                        phase_offset: None,
+                        clock_group: None,
                     },
-                    phase_offset: None,
-                    clock_group: None,
+                    generator: GeneratorConfig::Constant { value: 1.0 },
+                    encoder: EncoderConfig::PrometheusText { precision: None },
                 }),
             ],
         };
@@ -398,20 +413,22 @@ mod tests {
         // The collected error must be Runtime::ScenariosFailed, not Config.
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
-                name: "variant_test".to_string(),
-                rate: 10.0,
-                duration: Some("100ms".to_string()),
-                generator: GeneratorConfig::Constant { value: 1.0 },
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                encoder: EncoderConfig::PrometheusText { precision: None },
-                sink: SinkConfig::File {
-                    path: "/proc/sonda_variant_test_27.txt".to_string(),
+                base: BaseScheduleConfig {
+                    name: "variant_test".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    gaps: None,
+                    bursts: None,
+                    cardinality_spikes: None,
+                    labels: None,
+                    sink: SinkConfig::File {
+                        path: "/proc/sonda_variant_test_27.txt".to_string(),
+                    },
+                    phase_offset: None,
+                    clock_group: None,
                 },
-                phase_offset: None,
-                clock_group: None,
+                generator: GeneratorConfig::Constant { value: 1.0 },
+                encoder: EncoderConfig::PrometheusText { precision: None },
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -621,18 +638,20 @@ rate: 10
     fn run_multi_with_minimal_phase_offset_emits_almost_immediately() {
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
-                name: "minimal_offset".to_string(),
-                rate: 10.0,
-                duration: Some("200ms".to_string()),
+                base: BaseScheduleConfig {
+                    name: "minimal_offset".to_string(),
+                    rate: 10.0,
+                    duration: Some("200ms".to_string()),
+                    gaps: None,
+                    bursts: None,
+                    cardinality_spikes: None,
+                    labels: None,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("1ms".to_string()),
+                    clock_group: None,
+                },
                 generator: GeneratorConfig::Constant { value: 1.0 },
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
                 encoder: EncoderConfig::PrometheusText { precision: None },
-                sink: SinkConfig::Stdout,
-                phase_offset: Some("1ms".to_string()),
-                clock_group: None,
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -657,18 +676,20 @@ rate: 10
     fn run_multi_accepts_zero_phase_offset() {
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
-                name: "zero_offset".to_string(),
-                rate: 10.0,
-                duration: Some("200ms".to_string()),
+                base: BaseScheduleConfig {
+                    name: "zero_offset".to_string(),
+                    rate: 10.0,
+                    duration: Some("200ms".to_string()),
+                    gaps: None,
+                    bursts: None,
+                    cardinality_spikes: None,
+                    labels: None,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("0s".to_string()),
+                    clock_group: None,
+                },
                 generator: GeneratorConfig::Constant { value: 1.0 },
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
                 encoder: EncoderConfig::PrometheusText { precision: None },
-                sink: SinkConfig::Stdout,
-                phase_offset: Some("0s".to_string()),
-                clock_group: None,
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -702,32 +723,36 @@ rate: 10
         let config = MultiScenarioConfig {
             scenarios: vec![
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "first_immediate".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
+                    base: BaseScheduleConfig {
+                        name: "first_immediate".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: None,
+                        clock_group: None,
+                    },
                     generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: None,
-                    clock_group: None,
                 }),
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "second_delayed".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
+                    base: BaseScheduleConfig {
+                        name: "second_delayed".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: Some("500ms".to_string()),
+                        clock_group: None,
+                    },
                     generator: GeneratorConfig::Constant { value: 2.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: Some("500ms".to_string()),
-                    clock_group: None,
                 }),
             ],
         };
@@ -753,33 +778,37 @@ rate: 10
             scenarios: vec![
                 // First scenario runs indefinitely.
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "immediate_indef".to_string(),
-                    rate: 10.0,
-                    duration: None,
+                    base: BaseScheduleConfig {
+                        name: "immediate_indef".to_string(),
+                        rate: 10.0,
+                        duration: None,
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: None,
+                        clock_group: None,
+                    },
                     generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: None,
-                    clock_group: None,
                 }),
                 // Second scenario has a long delay — we'll shut down before it starts.
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "long_delay".to_string(),
-                    rate: 10.0,
-                    duration: None,
+                    base: BaseScheduleConfig {
+                        name: "long_delay".to_string(),
+                        rate: 10.0,
+                        duration: None,
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: Some("10s".to_string()),
+                        clock_group: None,
+                    },
                     generator: GeneratorConfig::Constant { value: 2.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: Some("10s".to_string()),
-                    clock_group: None,
                 }),
             ],
         };
@@ -814,18 +843,20 @@ rate: 10
     fn run_multi_rejects_invalid_phase_offset() {
         let config = MultiScenarioConfig {
             scenarios: vec![ScenarioEntry::Metrics(ScenarioConfig {
-                name: "bad_offset".to_string(),
-                rate: 10.0,
-                duration: Some("100ms".to_string()),
+                base: BaseScheduleConfig {
+                    name: "bad_offset".to_string(),
+                    rate: 10.0,
+                    duration: Some("100ms".to_string()),
+                    gaps: None,
+                    bursts: None,
+                    cardinality_spikes: None,
+                    labels: None,
+                    sink: SinkConfig::Stdout,
+                    phase_offset: Some("not_a_duration".to_string()),
+                    clock_group: None,
+                },
                 generator: GeneratorConfig::Constant { value: 1.0 },
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
                 encoder: EncoderConfig::PrometheusText { precision: None },
-                sink: SinkConfig::Stdout,
-                phase_offset: Some("not_a_duration".to_string()),
-                clock_group: None,
             })],
         };
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -890,32 +921,36 @@ scenarios:
         let config = MultiScenarioConfig {
             scenarios: vec![
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "grouped_a".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
+                    base: BaseScheduleConfig {
+                        name: "grouped_a".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: None,
+                        clock_group: Some("test-group".to_string()),
+                    },
                     generator: GeneratorConfig::Constant { value: 1.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: None,
-                    clock_group: Some("test-group".to_string()),
                 }),
                 ScenarioEntry::Metrics(ScenarioConfig {
-                    name: "grouped_b".to_string(),
-                    rate: 10.0,
-                    duration: Some("100ms".to_string()),
+                    base: BaseScheduleConfig {
+                        name: "grouped_b".to_string(),
+                        rate: 10.0,
+                        duration: Some("100ms".to_string()),
+                        gaps: None,
+                        bursts: None,
+                        cardinality_spikes: None,
+                        labels: None,
+                        sink: SinkConfig::Stdout,
+                        phase_offset: Some("200ms".to_string()),
+                        clock_group: Some("test-group".to_string()),
+                    },
                     generator: GeneratorConfig::Constant { value: 2.0 },
-                    gaps: None,
-                    bursts: None,
-                    cardinality_spikes: None,
-                    labels: None,
                     encoder: EncoderConfig::PrometheusText { precision: None },
-                    sink: SinkConfig::Stdout,
-                    phase_offset: Some("200ms".to_string()),
-                    clock_group: Some("test-group".to_string()),
                 }),
             ],
         };

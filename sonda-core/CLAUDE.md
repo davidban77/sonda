@@ -54,7 +54,12 @@ src/
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
-    ├── mod.rs          ← ScenarioConfig (with phase_offset, clock_group, cardinality_spikes), ScenarioEntry, MultiScenarioConfig, CardinalitySpikeConfig, SpikeStrategy
+    ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
+    │                      gaps, bursts, cardinality_spikes, labels, sink, phase_offset, clock_group),
+    │                      ScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
+    │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
+    │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,
+    │                      CardinalitySpikeConfig, SpikeStrategy
     └── validate.rs     ← config validation logic, parse_duration, validate_cardinality_spike_config
 ```
 

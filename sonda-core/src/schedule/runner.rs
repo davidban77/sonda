@@ -348,7 +348,7 @@ pub fn run_with_sink(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{GapConfig, ScenarioConfig};
+    use crate::config::{BaseScheduleConfig, GapConfig, ScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::GeneratorConfig;
     use crate::sink::memory::MemorySink;
@@ -357,18 +357,20 @@ mod tests {
     /// Build a minimal ScenarioConfig suitable for a short integration run.
     fn make_config(rate: f64, duration: &str, gaps: Option<GapConfig>) -> ScenarioConfig {
         ScenarioConfig {
-            name: "up".to_string(),
-            rate,
-            duration: Some(duration.to_string()),
+            base: BaseScheduleConfig {
+                name: "up".to_string(),
+                rate,
+                duration: Some(duration.to_string()),
+                gaps,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
-            phase_offset: None,
-            clock_group: None,
         }
     }
 
@@ -516,18 +518,20 @@ mod tests {
         bursts: Option<crate::config::BurstConfig>,
     ) -> crate::config::ScenarioConfig {
         crate::config::ScenarioConfig {
-            name: "up".to_string(),
-            rate,
-            duration: Some(duration.to_string()),
+            base: crate::config::BaseScheduleConfig {
+                name: "up".to_string(),
+                rate,
+                duration: Some(duration.to_string()),
+                gaps,
+                bursts,
+                cardinality_spikes: None,
+                labels: None,
+                sink: crate::sink::SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
-            gaps,
-            bursts,
-            cardinality_spikes: None,
-            labels: None,
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
-            sink: crate::sink::SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     }
 
@@ -862,18 +866,20 @@ mod tests {
         spike: crate::config::CardinalitySpikeConfig,
     ) -> crate::config::ScenarioConfig {
         crate::config::ScenarioConfig {
-            name: "up".to_string(),
-            rate,
-            duration: Some(duration.to_string()),
+            base: crate::config::BaseScheduleConfig {
+                name: "up".to_string(),
+                rate,
+                duration: Some(duration.to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: Some(vec![spike]),
+                labels: None,
+                sink: crate::sink::SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: Some(vec![spike]),
-            labels: None,
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
-            sink: crate::sink::SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     }
 
@@ -1060,18 +1066,20 @@ mod tests {
     #[test]
     fn invalid_metric_name_returns_config_error_before_loop() {
         let config = ScenarioConfig {
-            name: "123-invalid".to_string(),
-            rate: 10.0,
-            duration: Some("100ms".to_string()),
+            base: BaseScheduleConfig {
+                name: "123-invalid".to_string(),
+                rate: 10.0,
+                duration: Some("100ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         };
         let mut sink = MemorySink::new();
         let result = super::run_with_sink(&config, &mut sink, None, None);
