@@ -105,16 +105,39 @@ sonda metrics --scenario examples/basic-metrics.yaml
 | `--verbose` | `-v` | Show the resolved config at startup, then run normally. Mutually exclusive with `--quiet`. |
 | `--dry-run` | | Parse and validate the config, print it, and exit without emitting events. |
 
-Validate a scenario file before running it:
+Validate a scenario file without emitting any events:
 
 ```bash
 sonda --dry-run metrics --scenario examples/basic-metrics.yaml
 ```
 
-Show the resolved config and then run:
+```text
+[config] Resolved scenario config:
+
+  name:       interface_oper_state
+  signal:     metrics
+  rate:       1000/s
+  duration:   30s
+  generator:  sine (amplitude: 5, period: 30s, offset: 10)
+  encoder:    prometheus_text (precision: 2)
+  sink:       stdout
+  labels:     hostname=t0-a1, zone=eu1
+  gaps:       every 2m, for 20s
+
+Validation: OK
+```
+
+Show the resolved config at startup, then run the scenario normally:
 
 ```bash
-sonda --verbose metrics --scenario examples/basic-metrics.yaml
+sonda --verbose metrics --name cpu_usage --rate 2 --duration 2s --label host=web-01
+```
+
+Combine `--dry-run` with CLI-only flags to verify what would run:
+
+```bash
+sonda --dry-run metrics --name my_metric --rate 100 --duration 1m --value-mode sine \
+  --amplitude 50 --period-secs 60 --offset 50 --label env=staging
 ```
 
 ## Documentation

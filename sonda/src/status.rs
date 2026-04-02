@@ -146,6 +146,8 @@ fn print_metrics_config(c: &ScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_phase_offset_line(&c.phase_offset);
+    print_clock_group_line(&c.clock_group);
     eprintln!();
 }
 
@@ -168,6 +170,8 @@ fn print_logs_config(c: &LogScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_phase_offset_line(&c.phase_offset);
+    print_clock_group_line(&c.clock_group);
     eprintln!();
 }
 
@@ -176,7 +180,7 @@ fn print_labels_line(labels: &Option<std::collections::HashMap<String, String>>)
     if let Some(ref map) = labels {
         if !map.is_empty() {
             let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by_key(|(k, _)| (*k).clone());
+            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
             let formatted: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             eprintln!("  labels:     {}", formatted.join(", "));
         }
@@ -209,6 +213,20 @@ fn print_spikes_lines(spikes: &Option<Vec<CardinalitySpikeConfig>>) {
                 s.label, s.every, s.r#for, s.cardinality
             );
         }
+    }
+}
+
+/// Print the phase_offset line if set.
+fn print_phase_offset_line(phase_offset: &Option<String>) {
+    if let Some(ref offset) = phase_offset {
+        eprintln!("  phase_offset: {offset}");
+    }
+}
+
+/// Print the clock_group line if set.
+fn print_clock_group_line(clock_group: &Option<String>) {
+    if let Some(ref group) = clock_group {
+        eprintln!("  clock_group: {group}");
     }
 }
 
@@ -335,7 +353,7 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
             let seed_str = seed.map(|s| format!(", seed: {s}")).unwrap_or_default();
             let weights_str = if let Some(ref w) = severity_weights {
                 let mut pairs: Vec<_> = w.iter().collect();
-                pairs.sort_by_key(|(k, _)| (*k).clone());
+                pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
                 let formatted: Vec<String> =
                     pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 format!(", severity: {}", formatted.join("/"))
@@ -1154,5 +1172,74 @@ mod tests {
             total_errors: 0,
         };
         print_summary(&agg, Duration::from_secs(0), Verbosity::Normal);
+    }
+
+    // -----------------------------------------------------------------------
+    // print_phase_offset_line / print_clock_group_line: no panic, correct skip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_phase_offset_line_with_value_does_not_panic() {
+        print_phase_offset_line(&Some("5s".to_string()));
+    }
+
+    #[test]
+    fn print_phase_offset_line_with_none_does_not_panic() {
+        print_phase_offset_line(&None);
+    }
+
+    #[test]
+    fn print_clock_group_line_with_value_does_not_panic() {
+        print_clock_group_line(&Some("alert-test".to_string()));
+    }
+
+    #[test]
+    fn print_clock_group_line_with_none_does_not_panic() {
+        print_clock_group_line(&None);
+    }
+
+    #[test]
+    fn print_config_metrics_with_phase_offset_and_clock_group_does_not_panic() {
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            name: "correlated_metric".to_string(),
+            rate: 10.0,
+            duration: Some("30s".to_string()),
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            sink: SinkConfig::Stdout,
+            phase_offset: Some("5s".to_string()),
+            clock_group: Some("alert-group".to_string()),
+        });
+        print_config(&entry);
+    }
+
+    #[test]
+    fn print_config_logs_with_phase_offset_and_clock_group_does_not_panic() {
+        let entry = ScenarioEntry::Logs(LogScenarioConfig {
+            name: "correlated_logs".to_string(),
+            rate: 5.0,
+            duration: Some("10s".to_string()),
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: HashMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            },
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            encoder: EncoderConfig::JsonLines { precision: None },
+            sink: SinkConfig::Stdout,
+            phase_offset: Some("2s".to_string()),
+            clock_group: Some("log-sync".to_string()),
+        });
+        print_config(&entry);
     }
 }
