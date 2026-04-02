@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::model::log::LogEvent;
 use crate::model::metric::{Labels, MetricEvent};
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 use super::Encoder;
 
@@ -153,7 +153,7 @@ impl Encoder for JsonLines {
         };
 
         serde_json::to_writer(&mut *buf, &record)
-            .map_err(|e| SondaError::Encoder(format!("JSON serialization failed: {e}")))?;
+            .map_err(|e| SondaError::Encoder(EncoderError::SerializationFailed(e)))?;
 
         buf.push(b'\n');
 
@@ -189,7 +189,7 @@ impl Encoder for JsonLines {
         };
 
         serde_json::to_writer(&mut *buf, &record)
-            .map_err(|e| SondaError::Encoder(format!("JSON serialization failed: {e}")))?;
+            .map_err(|e| SondaError::Encoder(EncoderError::SerializationFailed(e)))?;
 
         buf.push(b'\n');
 

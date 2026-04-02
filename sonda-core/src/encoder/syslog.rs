@@ -33,7 +33,7 @@
 
 use crate::model::log::{LogEvent, Severity};
 use crate::model::metric::MetricEvent;
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 use super::Encoder;
 
@@ -110,9 +110,9 @@ impl Encoder for Syslog {
         _event: &MetricEvent,
         _buf: &mut Vec<u8>,
     ) -> Result<(), crate::SondaError> {
-        Err(SondaError::Encoder(
+        Err(SondaError::Encoder(EncoderError::NotSupported(
             "metric encoding not supported by syslog encoder".into(),
-        ))
+        )))
     }
 
     /// Encode a log event as an RFC 5424 syslog line appended to `buf`.

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::config::MultiScenarioConfig;
 use crate::schedule::launch::{launch_scenario, validate_entry};
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 /// Run all scenarios in `config` concurrently, one OS thread per scenario.
 ///
@@ -40,13 +40,18 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
     for (i, entry) in config.scenarios.into_iter().enumerate() {
         // Validate before spawning so errors are caught synchronously.
         if let Err(e) = validate_entry(&entry) {
-            return Err(SondaError::Config(format!("scenario[{i}]: {e}")));
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "scenario[{i}]: {e}"
+            ))));
         }
 
         // Parse the optional phase_offset into a Duration for the launcher.
         let start_delay = match entry.phase_offset() {
-            Some(offset) => crate::config::validate::parse_phase_offset(offset)
-                .map_err(|e| SondaError::Config(format!("scenario[{i}] phase_offset: {e}")))?,
+            Some(offset) => crate::config::validate::parse_phase_offset(offset).map_err(|e| {
+                SondaError::Config(ConfigError::invalid(format!(
+                    "scenario[{i}] phase_offset: {e}"
+                )))
+            })?,
             None => None,
         };
 
@@ -67,7 +72,7 @@ pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Resu
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(SondaError::Config(errors.join("; ")))
+        Err(SondaError::Config(ConfigError::invalid(errors.join("; "))))
     }
 }
 

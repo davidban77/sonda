@@ -28,8 +28,13 @@ pub use schedule::stats::ScenarioStats;
 
 /// Top-level error type for sonda-core.
 ///
-/// Each variant represents a distinct origin for errors in the crate. The
-/// `Sink` variant wraps [`std::io::Error`] without a blanket `#[from]`
+/// Each variant delegates to a typed sub-enum that preserves the original
+/// error source where possible. This enables callers to programmatically
+/// inspect error origins (e.g., distinguish `io::ErrorKind::NotFound` from
+/// `PermissionDenied` in a generator file-read error) via the standard
+/// [`std::error::Error::source`] chain.
+///
+/// The `Sink` variant wraps [`std::io::Error`] without a blanket `#[from]`
 /// conversion — all I/O errors must be explicitly mapped to the correct
 /// variant at the call site. This prevents generator or config I/O errors
 /// from being misclassified as sink errors.
@@ -37,11 +42,11 @@ pub use schedule::stats::ScenarioStats;
 pub enum SondaError {
     /// An error in scenario configuration (invalid values, missing fields).
     #[error("configuration error: {0}")]
-    Config(String),
+    Config(#[from] ConfigError),
 
-    /// An error during event encoding (protobuf, format issues).
+    /// An error during event encoding (serialization, timestamp, protobuf).
     #[error("encoder error: {0}")]
-    Encoder(String),
+    Encoder(#[from] EncoderError),
 
     /// An I/O error originating from a sink (stdout, file, TCP, UDP, HTTP).
     ///
@@ -51,9 +56,126 @@ pub enum SondaError {
     #[error("sink error: {0}")]
     Sink(std::io::Error),
 
-    /// An error from a generator (file not found, invalid data).
+    /// An error from a generator (file I/O, invalid data).
     #[error("generator error: {0}")]
-    Generator(String),
+    Generator(#[from] GeneratorError),
+
+    /// A runtime or system error (thread spawn failure, thread panic).
+    ///
+    /// These are environmental failures that are outside the user's control
+    /// and cannot be fixed by editing configuration. Separated from
+    /// [`ConfigError`] so that consumers matching on config errors to
+    /// surface YAML validation feedback are not confused by thread panics.
+    #[error("runtime error: {0}")]
+    Runtime(#[from] RuntimeError),
+}
+
+/// Errors related to scenario configuration validation.
+///
+/// Covers invalid field values, missing required fields, unparseable
+/// durations, and similar problems that the user can fix by editing their
+/// YAML scenario file or adjusting programmatic config construction.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// A configuration field has an invalid value.
+    ///
+    /// The message includes the field name and a human-readable explanation
+    /// of the constraint that was violated.
+    #[error("{0}")]
+    InvalidValue(String),
+}
+
+impl ConfigError {
+    /// Create a new [`ConfigError::InvalidValue`] from any displayable message.
+    pub(crate) fn invalid(msg: impl Into<String>) -> Self {
+        ConfigError::InvalidValue(msg.into())
+    }
+}
+
+/// Errors originating from value or log generators.
+///
+/// Currently contains [`FileRead`](GeneratorError::FileRead) for I/O failures
+/// when loading generator data from disk. This enum is designed for
+/// extensibility — future variants may include `InvalidData` (malformed file
+/// contents), `ParseFailed` (unparseable numeric columns), or
+/// `UnsupportedFormat` as generator capabilities grow.
+#[derive(Debug, thiserror::Error)]
+pub enum GeneratorError {
+    /// Failed to read a generator input file (CSV replay, log replay).
+    ///
+    /// Preserves the original [`std::io::Error`] via the `#[source]` attribute
+    /// so callers can inspect the error kind (e.g., `ErrorKind::NotFound` vs
+    /// `ErrorKind::PermissionDenied`) programmatically.
+    #[error("cannot read file {path:?}")]
+    FileRead {
+        /// The path that could not be read.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl GeneratorError {
+    /// Returns the [`std::io::ErrorKind`] of the underlying I/O error, if this
+    /// is a [`FileRead`](GeneratorError::FileRead) variant.
+    ///
+    /// Convenience method that lets callers inspect the error kind without
+    /// manually traversing the `source()` chain.
+    pub fn source_io_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            GeneratorError::FileRead { source, .. } => Some(source.kind()),
+        }
+    }
+}
+
+/// Errors during event encoding (serialization, timestamp conversion, protobuf).
+///
+/// Preserves original error sources where possible so callers can inspect
+/// the underlying failure without string parsing.
+#[derive(Debug, thiserror::Error)]
+pub enum EncoderError {
+    /// JSON serialization failed.
+    ///
+    /// Preserves the original [`serde_json::Error`] so callers can inspect
+    /// whether the failure was due to I/O, data, syntax, or EOF conditions.
+    #[error("JSON serialization failed")]
+    SerializationFailed(#[source] serde_json::Error),
+
+    /// The event timestamp predates the Unix epoch.
+    ///
+    /// Preserves the original [`std::time::SystemTimeError`] so callers can
+    /// inspect how far before the epoch the timestamp was.
+    #[error("timestamp before Unix epoch")]
+    TimestampBeforeEpoch(#[source] std::time::SystemTimeError),
+
+    /// The encoder does not support this event type (e.g., a metric-only
+    /// encoder receiving a log event).
+    #[error("{0}")]
+    NotSupported(String),
+
+    /// A catch-all for encoder errors that do not fit other variants.
+    ///
+    /// Used for feature-gated encoders (protobuf, snappy) where preserving
+    /// the concrete error type would require conditional compilation on the
+    /// enum definition itself.
+    #[error("{0}")]
+    Other(String),
+}
+
+/// Runtime and system errors outside the user's control.
+///
+/// These represent environmental failures (OS thread limits, thread panics)
+/// that cannot be resolved by changing configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeError {
+    /// The OS refused to spawn a new thread.
+    #[error("failed to spawn scenario thread: {0}")]
+    SpawnFailed(std::io::Error),
+
+    /// A scenario thread panicked during execution.
+    #[error("scenario thread panicked")]
+    ThreadPanicked,
 }
 
 #[cfg(test)]
@@ -64,9 +186,8 @@ mod tests {
 
     #[test]
     fn io_error_does_not_auto_convert_to_sonda_error() {
-        // Verify that removing #[from] means there is no From<io::Error> impl.
-        // We assert this at the type level: SondaError::Sink must be constructed
-        // explicitly.
+        // Verify that there is no From<io::Error> for SondaError.
+        // SondaError::Sink must be constructed explicitly.
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         let sonda_err = SondaError::Sink(io_err);
         assert!(
@@ -145,15 +266,169 @@ mod tests {
 
     #[test]
     fn sonda_error_display_includes_context() {
-        let err = SondaError::Generator("cannot read file: no such file".to_string());
+        let err = SondaError::Generator(GeneratorError::FileRead {
+            path: "/some/file".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"),
+        });
         let msg = format!("{err}");
         assert!(
             msg.contains("generator error"),
             "Generator variant display must include 'generator error', got: {msg}"
         );
         assert!(
-            msg.contains("cannot read file"),
-            "Generator variant display must include the inner message, got: {msg}"
+            msg.contains("/some/file"),
+            "Generator variant display must include the file path, got: {msg}"
+        );
+    }
+
+    // ---- Sub-enum From conversions ------------------------------------------
+
+    #[test]
+    fn config_error_converts_to_sonda_error_via_from() {
+        let config_err = ConfigError::invalid("rate must be positive");
+        let sonda_err: SondaError = config_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Config(_)),
+            "ConfigError must convert to SondaError::Config"
+        );
+    }
+
+    #[test]
+    fn generator_error_converts_to_sonda_error_via_from() {
+        let gen_err = GeneratorError::FileRead {
+            path: "/tmp/test.csv".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        let sonda_err: SondaError = gen_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Generator(_)),
+            "GeneratorError must convert to SondaError::Generator"
+        );
+    }
+
+    #[test]
+    fn encoder_error_converts_to_sonda_error_via_from() {
+        let enc_err = EncoderError::NotSupported("log encoding not supported".into());
+        let sonda_err: SondaError = enc_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Encoder(_)),
+            "EncoderError must convert to SondaError::Encoder"
+        );
+    }
+
+    #[test]
+    fn runtime_error_converts_to_sonda_error_via_from() {
+        let rt_err = RuntimeError::ThreadPanicked;
+        let sonda_err: SondaError = rt_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Runtime(_)),
+            "RuntimeError must convert to SondaError::Runtime"
+        );
+    }
+
+    // ---- source() chain preservation ----------------------------------------
+
+    #[test]
+    fn generator_file_read_preserves_io_error_source() {
+        use std::error::Error;
+
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let gen_err = GeneratorError::FileRead {
+            path: "/secret/file".to_string(),
+            source: io_err,
+        };
+
+        // The source() chain must be present and be an io::Error.
+        let source = gen_err.source().expect("source() must return Some");
+        let io_source = source
+            .downcast_ref::<std::io::Error>()
+            .expect("source must be std::io::Error");
+        assert_eq!(io_source.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn generator_file_read_io_error_kind_is_inspectable() {
+        let gen_err = GeneratorError::FileRead {
+            path: "/missing/file".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+        };
+        // Callers can match on the io::Error kind programmatically.
+        assert_eq!(gen_err.source_io_kind(), Some(std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn encoder_serialization_preserves_serde_json_source() {
+        use std::error::Error;
+
+        // Provoke a real serde_json error by deserializing invalid JSON.
+        let json_err: serde_json::Error = serde_json::from_str::<serde_json::Value>("{{invalid}}")
+            .expect_err("invalid JSON must fail");
+        let enc_err = EncoderError::SerializationFailed(json_err);
+
+        let source = enc_err.source().expect("source() must return Some");
+        assert!(
+            source.downcast_ref::<serde_json::Error>().is_some(),
+            "source must be serde_json::Error"
+        );
+    }
+
+    #[test]
+    fn encoder_timestamp_preserves_system_time_source() {
+        use std::error::Error;
+
+        let pre_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+        let sys_err = pre_epoch.duration_since(std::time::UNIX_EPOCH).unwrap_err();
+        let enc_err = EncoderError::TimestampBeforeEpoch(sys_err);
+
+        let source = enc_err.source().expect("source() must return Some");
+        assert!(
+            source
+                .downcast_ref::<std::time::SystemTimeError>()
+                .is_some(),
+            "source must be SystemTimeError"
+        );
+    }
+
+    // ---- Runtime error classification (WARNING 1) ---------------------------
+
+    #[test]
+    fn spawn_failed_is_runtime_not_config() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "resource limit");
+        let rt_err = RuntimeError::SpawnFailed(io_err);
+        let sonda_err: SondaError = rt_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Runtime(RuntimeError::SpawnFailed(_))),
+            "thread spawn failure must be Runtime::SpawnFailed, not Config"
+        );
+    }
+
+    #[test]
+    fn thread_panicked_is_runtime_not_config() {
+        let rt_err = RuntimeError::ThreadPanicked;
+        let sonda_err: SondaError = rt_err.into();
+        assert!(
+            matches!(sonda_err, SondaError::Runtime(RuntimeError::ThreadPanicked)),
+            "thread panic must be Runtime::ThreadPanicked, not Config"
+        );
+    }
+
+    #[test]
+    fn runtime_error_display_is_descriptive() {
+        let spawn_err = RuntimeError::SpawnFailed(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "too many threads",
+        ));
+        let msg = format!("{spawn_err}");
+        assert!(
+            msg.contains("failed to spawn scenario thread"),
+            "SpawnFailed display must describe the spawn failure, got: {msg}"
+        );
+
+        let panic_err = RuntimeError::ThreadPanicked;
+        let msg = format!("{panic_err}");
+        assert!(
+            msg.contains("panicked"),
+            "ThreadPanicked display must mention panic, got: {msg}"
         );
     }
 
@@ -234,5 +509,17 @@ generator:
             msg.contains("pipe broke"),
             "Sink variant display must include the I/O error message, got: {msg}"
         );
+    }
+
+    // ---- Contract: error types are Send + Sync --------------------------------
+
+    #[test]
+    fn error_types_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SondaError>();
+        assert_send_sync::<ConfigError>();
+        assert_send_sync::<GeneratorError>();
+        assert_send_sync::<EncoderError>();
+        assert_send_sync::<RuntimeError>();
     }
 }

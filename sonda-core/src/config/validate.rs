@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConfig};
 
@@ -19,7 +19,9 @@ use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConf
 /// unit suffix, has a non-numeric prefix, or has a zero or negative value.
 pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
     if s.is_empty() {
-        return Err(SondaError::Config("duration must not be empty".to_string()));
+        return Err(SondaError::Config(ConfigError::invalid(
+            "duration must not be empty",
+        )));
     }
 
     // Determine unit suffix and numeric portion.
@@ -32,39 +34,39 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
     } else if let Some(stripped) = s.strip_suffix('s') {
         (stripped, 1_000)
     } else {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "unrecognized duration unit in {:?}: expected one of ms, s, m, h",
             s
-        )));
+        ))));
     };
 
     if numeric_str.is_empty() {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} has no numeric value before the unit",
             s
-        )));
+        ))));
     }
 
     // Reject leading minus sign explicitly for a clear error message.
     if numeric_str.starts_with('-') {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} must be positive",
             s
-        )));
+        ))));
     }
 
     let value: u64 = numeric_str.parse().map_err(|_| {
-        SondaError::Config(format!(
+        SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} has an invalid numeric part {:?}",
             s, numeric_str
-        ))
+        )))
     })?;
 
     if value == 0 {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} must be greater than zero",
             s
-        )));
+        ))));
     }
 
     Ok(Duration::from_millis(value * multiplier_ms))
@@ -88,11 +90,11 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
             if let Ok(0) = trimmed[..numeric_end].parse::<u64>() {
                 Ok(None) // "0s", "0ms", "0m", "0h" all mean no delay
             } else {
-                Err(SondaError::Config(format!(
+                Err(SondaError::Config(ConfigError::invalid(format!(
                     "invalid phase_offset {:?}: {}",
                     s,
                     parse_duration(s).unwrap_err()
-                )))
+                ))))
             }
         }
     }
@@ -109,10 +111,10 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_cardinality_spike_config(spike: &CardinalitySpikeConfig) -> Result<(), SondaError> {
     if !is_valid_label_key(&spike.label) {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "invalid cardinality_spikes label {:?}: must match [a-zA-Z_][a-zA-Z0-9_]*",
             spike.label
-        )));
+        ))));
     }
 
     let every = parse_duration(&spike.every)
@@ -121,16 +123,16 @@ pub fn validate_cardinality_spike_config(spike: &CardinalitySpikeConfig) -> Resu
         .map_err(|e| prepend_context("invalid cardinality_spikes.for", &spike.r#for, e))?;
 
     if for_dur >= every {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "cardinality_spikes.for ({:?}) must be less than cardinality_spikes.every ({:?})",
             spike.r#for, spike.every
-        )));
+        ))));
     }
 
     if spike.cardinality == 0 {
-        return Err(SondaError::Config(
-            "cardinality_spikes.cardinality must be greater than zero".to_string(),
-        ));
+        return Err(SondaError::Config(ConfigError::invalid(
+            "cardinality_spikes.cardinality must be greater than zero",
+        )));
     }
 
     Ok(())
@@ -150,10 +152,10 @@ pub fn validate_cardinality_spike_config(spike: &CardinalitySpikeConfig) -> Resu
 pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Rate must be strictly positive. Explicit NaN check ensures NaN is also rejected.
     if config.rate.is_nan() || config.rate <= 0.0 {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
             config.rate
-        )));
+        ))));
     }
 
     // Duration must be parseable if provided.
@@ -168,10 +170,10 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
         let for_dur = parse_duration(&gap.r#for)
             .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
         if for_dur >= every {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "gaps.for ({:?}) must be less than gaps.every ({:?})",
                 gap.r#for, gap.every
-            )));
+            ))));
         }
     }
 
@@ -189,10 +191,10 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
 
     // Metric name must be a valid Prometheus metric name.
     if !is_valid_metric_name(&config.name) {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
             config.name
-        )));
+        ))));
     }
 
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
@@ -211,10 +213,10 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
 pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
     // Multiplier must be strictly positive.
     if burst.multiplier.is_nan() || burst.multiplier <= 0.0 {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "bursts.multiplier must be positive, got {}",
             burst.multiplier
-        )));
+        ))));
     }
 
     // Parse both duration strings.
@@ -225,10 +227,10 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 
     // burst.for must be strictly less than burst.every.
     if for_dur >= every {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "bursts.for ({:?}) must be less than bursts.every ({:?})",
             burst.r#for, burst.every
-        )));
+        ))));
     }
 
     Ok(())
@@ -247,10 +249,10 @@ pub fn validate_burst_config(burst: &BurstConfig) -> Result<(), SondaError> {
 /// and the invalid value.
 pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError> {
     if config.rate.is_nan() || config.rate <= 0.0 {
-        return Err(SondaError::Config(format!(
+        return Err(SondaError::Config(ConfigError::invalid(format!(
             "rate must be positive, got {}",
             config.rate
-        )));
+        ))));
     }
 
     if let Some(ref dur_str) = config.duration {
@@ -263,10 +265,10 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
         let for_dur = parse_duration(&gap.r#for)
             .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
         if for_dur >= every {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "gaps.for ({:?}) must be less than gaps.every ({:?})",
                 gap.r#for, gap.every
-            )));
+            ))));
         }
     }
 
@@ -307,10 +309,10 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
 fn validate_encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Result<(), SondaError> {
     if let Some(p) = encoder_precision(encoder) {
         if p > 17 {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "encoder precision must be 0..=17, got {}",
                 p
-            )));
+            ))));
         }
     }
     Ok(())
@@ -322,10 +324,13 @@ fn validate_encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Result
 /// `"<label> <value_quoted>: <original message>"` without double-prefixing.
 fn prepend_context(label: &str, value: &str, err: SondaError) -> SondaError {
     let inner_msg = match err {
-        SondaError::Config(ref msg) => msg.clone(),
+        SondaError::Config(ref e) => e.to_string(),
         _ => err.to_string(),
     };
-    SondaError::Config(format!("{} {:?}: {}", label, value, inner_msg))
+    SondaError::Config(ConfigError::invalid(format!(
+        "{} {:?}: {}",
+        label, value, inner_msg
+    )))
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::model::log::{LogEvent, Severity};
 use crate::model::metric::Labels;
-use crate::SondaError;
+use crate::{ConfigError, GeneratorError, SondaError};
 
 use super::LogGenerator;
 
@@ -33,7 +33,10 @@ impl LogReplayGenerator {
     /// - Returns [`SondaError::Config`] if the file contains no non-blank lines.
     pub fn from_file(path: &Path) -> Result<Self, SondaError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
-            SondaError::Generator(format!("cannot read replay file {:?}: {}", path, e))
+            SondaError::Generator(GeneratorError::FileRead {
+                path: path.display().to_string(),
+                source: e,
+            })
         })?;
         let lines: Vec<String> = content
             .lines()
@@ -42,10 +45,10 @@ impl LogReplayGenerator {
             .collect();
 
         if lines.is_empty() {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "replay file {:?} contains no lines",
                 path
-            )));
+            ))));
         }
 
         Ok(Self { lines })
@@ -59,9 +62,9 @@ impl LogReplayGenerator {
     /// on disk.
     pub fn from_lines(lines: Vec<String>) -> Result<Self, SondaError> {
         if lines.is_empty() {
-            return Err(SondaError::Config(
-                "replay generator requires at least one line".into(),
-            ));
+            return Err(SondaError::Config(ConfigError::invalid(
+                "replay generator requires at least one line",
+            )));
         }
         Ok(Self { lines })
     }
@@ -206,8 +209,8 @@ mod tests {
                 );
                 let msg = format!("{err}");
                 assert!(
-                    msg.contains("cannot read replay file"),
-                    "error message should mention 'cannot read replay file', got: {msg}"
+                    msg.contains("cannot read file"),
+                    "error message should mention 'cannot read file', got: {msg}"
                 );
             }
             Ok(_) => panic!("missing file must return Err"),

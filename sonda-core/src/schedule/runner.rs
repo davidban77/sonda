@@ -1076,7 +1076,7 @@ mod tests {
         let mut sink = MemorySink::new();
         let result = super::run_with_sink(&config, &mut sink, None, None);
         assert!(
-            matches!(result, Err(crate::SondaError::Config(ref msg)) if msg.contains("123-invalid")),
+            matches!(result, Err(crate::SondaError::Config(ref e)) if e.to_string().contains("123-invalid")),
             "expected Config error for invalid name, got: {result:?}"
         );
     }

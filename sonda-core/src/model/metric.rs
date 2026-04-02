@@ -8,7 +8,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 /// Returns `true` if `s` is a valid Prometheus label key.
 ///
@@ -64,10 +64,10 @@ impl ValidatedMetricName {
     /// `[a-zA-Z_:][a-zA-Z0-9_:]*` or is empty.
     pub fn new(name: &str) -> Result<Self, SondaError> {
         if !is_valid_metric_name(name) {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
                 name
-            )));
+            ))));
         }
         Ok(Self(Arc::from(name)))
     }
@@ -130,10 +130,10 @@ impl Labels {
         let mut inner = BTreeMap::new();
         for (key, value) in pairs {
             if !is_valid_label_key(key) {
-                return Err(SondaError::Config(format!(
+                return Err(SondaError::Config(ConfigError::invalid(format!(
                     "invalid label key {:?}: must match [a-zA-Z_][a-zA-Z0-9_]*",
                     key
-                )));
+                ))));
             }
             inner.insert(key.to_string(), value.to_string());
         }
@@ -310,7 +310,7 @@ mod tests {
     fn from_pairs_with_digit_leading_key_returns_config_error() {
         let err = Labels::from_pairs(&[("1bad", "value")]).unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("1bad")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("1bad")),
             "unexpected error: {err}"
         );
     }
@@ -319,7 +319,7 @@ mod tests {
     fn from_pairs_with_hyphen_in_key_returns_config_error() {
         let err = Labels::from_pairs(&[("bad-key", "value")]).unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("bad-key")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("bad-key")),
             "unexpected error: {err}"
         );
     }
@@ -337,7 +337,7 @@ mod tests {
     fn from_pairs_with_space_in_key_returns_config_error() {
         let err = Labels::from_pairs(&[("bad key", "value")]).unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("bad key")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("bad key")),
             "unexpected error: {err}"
         );
     }
@@ -345,9 +345,10 @@ mod tests {
     #[test]
     fn from_pairs_error_message_includes_invalid_key() {
         let err = Labels::from_pairs(&[("9invalid", "v")]).unwrap_err();
-        let SondaError::Config(msg) = err else {
+        let SondaError::Config(ref e) = err else {
             panic!("expected Config error");
         };
+        let msg = e.to_string();
         assert!(
             msg.contains("9invalid"),
             "message missing invalid key: {msg}"
@@ -439,7 +440,7 @@ mod tests {
         let labels = Labels::from_pairs(&[]).unwrap();
         let err = MetricEvent::new("123bad".to_string(), 0.0, labels).unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("123bad")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("123bad")),
             "unexpected error: {err}"
         );
     }
@@ -449,7 +450,7 @@ mod tests {
         let labels = Labels::from_pairs(&[]).unwrap();
         let err = MetricEvent::new("has-dash".to_string(), 0.0, labels).unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("has-dash")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("has-dash")),
             "unexpected error: {err}"
         );
     }
@@ -468,9 +469,10 @@ mod tests {
     fn metric_event_new_error_message_includes_invalid_name() {
         let labels = Labels::from_pairs(&[]).unwrap();
         let err = MetricEvent::new("123bad".to_string(), 0.0, labels).unwrap_err();
-        let SondaError::Config(msg) = err else {
+        let SondaError::Config(ref e) = err else {
             panic!("expected Config error");
         };
+        let msg = e.to_string();
         assert!(
             msg.contains("123bad"),
             "message missing invalid name: {msg}"
@@ -605,7 +607,7 @@ mod tests {
     fn validated_name_rejects_digit_leading() {
         let err = ValidatedMetricName::new("123bad").unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("123bad")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("123bad")),
             "unexpected error: {err}"
         );
     }
@@ -623,7 +625,7 @@ mod tests {
     fn validated_name_rejects_dash_in_name() {
         let err = ValidatedMetricName::new("has-dash").unwrap_err();
         assert!(
-            matches!(err, SondaError::Config(ref msg) if msg.contains("has-dash")),
+            matches!(err, SondaError::Config(ref e) if e.to_string().contains("has-dash")),
             "unexpected error: {err}"
         );
     }

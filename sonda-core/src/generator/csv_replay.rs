@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::ValueGenerator;
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 /// A value generator that replays numeric values from a CSV file.
 ///
@@ -69,16 +69,20 @@ impl CsvReplayGenerator {
         repeat: bool,
     ) -> Result<Self, SondaError> {
         let file_path = Path::new(path);
-        let content = std::fs::read_to_string(file_path)
-            .map_err(|e| SondaError::Config(format!("cannot read CSV file {:?}: {}", path, e)))?;
+        let content = std::fs::read_to_string(file_path).map_err(|e| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "cannot read CSV file {:?}: {}",
+                path, e
+            )))
+        })?;
 
         let values = Self::parse_values(&content, column, has_header)?;
 
         if values.is_empty() {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "CSV file {:?} contains no valid numeric values in column {}",
                 path, column
-            )));
+            ))));
         }
 
         Ok(Self { values, repeat })
@@ -101,10 +105,10 @@ impl CsvReplayGenerator {
         let values = Self::parse_values(content, column, has_header)?;
 
         if values.is_empty() {
-            return Err(SondaError::Config(format!(
+            return Err(SondaError::Config(ConfigError::invalid(format!(
                 "CSV content contains no valid numeric values in column {}",
                 column
-            )));
+            ))));
         }
 
         Ok(Self { values, repeat })

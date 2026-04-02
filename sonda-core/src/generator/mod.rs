@@ -26,7 +26,7 @@ use self::sequence::SequenceGenerator;
 use self::sine::Sine;
 use self::uniform::UniformRandom;
 use crate::model::log::{LogEvent, Severity};
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 /// A generator produces a single f64 value for a given tick index.
 ///
@@ -263,10 +263,10 @@ fn parse_severity(s: &str) -> Result<Severity, SondaError> {
         "warn" | "warning" => Ok(Severity::Warn),
         "error" => Ok(Severity::Error),
         "fatal" => Ok(Severity::Fatal),
-        other => Err(SondaError::Config(format!(
+        other => Err(SondaError::Config(ConfigError::invalid(format!(
             "unknown severity {:?}: must be one of trace, debug, info, warn, error, fatal",
             other
-        ))),
+        )))),
     }
 }
 

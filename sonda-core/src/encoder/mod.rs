@@ -31,7 +31,7 @@ pub trait Encoder: Send + Sync {
     /// override this method.
     fn encode_log(&self, _event: &LogEvent, _buf: &mut Vec<u8>) -> Result<(), crate::SondaError> {
         Err(crate::SondaError::Encoder(
-            "log encoding not supported by this encoder".into(),
+            crate::EncoderError::NotSupported("log encoding not supported by this encoder".into()),
         ))
     }
 }
@@ -171,7 +171,7 @@ pub(crate) fn format_rfc3339_millis_array(
 
     let duration = ts
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| crate::SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?;
+        .map_err(|e| crate::SondaError::Encoder(crate::EncoderError::TimestampBeforeEpoch(e)))?;
 
     let total_secs = duration.as_secs();
     let millis = duration.subsec_millis();
