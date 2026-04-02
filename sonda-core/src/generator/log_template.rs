@@ -122,21 +122,61 @@ impl LogTemplateGenerator {
 
     /// Resolve all `{placeholder}` occurrences in a template message.
     ///
-    /// Returns the resolved message string and the fields map (placeholder name → selected value).
+    /// Uses a single-pass scan: walks the template string once, copies literal
+    /// segments directly into the output buffer, and when a `{name}` placeholder
+    /// is encountered, looks up the pre-selected value from the fields map and
+    /// writes it in place. This avoids the N successive `String::replace` calls
+    /// (and their N intermediate `String` allocations) of the naive approach.
+    ///
+    /// Returns the resolved message string and the fields map (placeholder name
+    /// to selected value).
     fn resolve_template(
         &self,
         template: &TemplateEntry,
         tick: u64,
     ) -> (String, BTreeMap<String, String>) {
+        // Phase 1: select all field values up front. We need the fields map for
+        // LogEvent::fields anyway, so this adds no extra work.
         let mut fields = BTreeMap::new();
-        let mut message = template.message.clone();
-
-        // Resolve each placeholder in the field_pools.
         for (field_name, pool) in &template.field_pools {
             let value = Self::select_from_pool(self.seed, tick, field_name, pool);
             fields.insert(field_name.clone(), value.to_string());
-            let placeholder = format!("{{{field_name}}}");
-            message = message.replace(&placeholder, value);
+        }
+
+        // Phase 2: single-pass scan of the template string. Walk byte-by-byte,
+        // copying literals and resolving `{name}` placeholders via lookup into
+        // the fields map built above.
+        let src = template.message.as_bytes();
+        let len = src.len();
+        let mut message = String::with_capacity(len);
+        let mut i = 0;
+
+        while i < len {
+            if src[i] == b'{' {
+                // Look for the matching closing brace.
+                if let Some(close_offset) = src[i + 1..].iter().position(|&b| b == b'}') {
+                    let name = &template.message[i + 1..i + 1 + close_offset];
+                    if let Some(value) = fields.get(name) {
+                        message.push_str(value);
+                    } else {
+                        // Not a known placeholder — copy the `{name}` literal.
+                        message.push_str(&template.message[i..i + 1 + close_offset + 1]);
+                    }
+                    i += close_offset + 2; // skip past the closing '}'
+                } else {
+                    // No closing brace found — copy the '{' literally.
+                    message.push('{');
+                    i += 1;
+                }
+            } else {
+                // Fast path: copy the longest literal run in one slice operation
+                // instead of pushing one byte at a time.
+                let start = i;
+                while i < len && src[i] != b'{' {
+                    i += 1;
+                }
+                message.push_str(&template.message[start..i]);
+            }
         }
 
         (message, fields)
@@ -507,6 +547,177 @@ mod tests {
             gen.generate(u64::MAX).message,
             "template-A",
             "u64::MAX % 3 = 0, should select template-A"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Single-pass template resolution edge cases
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn template_with_no_placeholders_returns_literal() {
+        let entry = TemplateEntry {
+            message: "plain message with no placeholders".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "plain message with no placeholders");
+        assert!(event.fields.is_empty());
+    }
+
+    #[test]
+    fn template_with_unknown_placeholder_preserves_literal_braces() {
+        // A {name} that is NOT in field_pools should be copied literally.
+        let entry = TemplateEntry {
+            message: "hello {unknown} world".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(
+            event.message, "hello {unknown} world",
+            "unknown placeholders are preserved literally"
+        );
+    }
+
+    #[test]
+    fn template_with_unclosed_brace_copies_brace_literally() {
+        let entry = TemplateEntry {
+            message: "trailing open brace {".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(
+            event.message, "trailing open brace {",
+            "unclosed brace at end is copied as-is"
+        );
+    }
+
+    #[test]
+    fn template_with_adjacent_placeholders_resolves_both() {
+        let entry = TemplateEntry {
+            message: "{a}{b}".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("a".into(), vec!["ALPHA".into()]);
+                m.insert("b".into(), vec!["BETA".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "ALPHABETA");
+    }
+
+    #[test]
+    fn template_with_repeated_placeholder_resolves_all_occurrences() {
+        let entry = TemplateEntry {
+            message: "{x} and {x} again".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("x".into(), vec!["VAL".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "VAL and VAL again");
+    }
+
+    #[test]
+    fn template_with_placeholder_at_start_and_end() {
+        let entry = TemplateEntry {
+            message: "{start}middle{end}".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("start".into(), vec!["[BEGIN]".into()]);
+                m.insert("end".into(), vec!["[END]".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "[BEGIN]middle[END]");
+    }
+
+    #[test]
+    fn template_only_placeholder_no_literal_text() {
+        let entry = TemplateEntry {
+            message: "{sole}".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("sole".into(), vec!["ONLY".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "ONLY");
+        assert_eq!(event.fields.get("sole").unwrap(), "ONLY");
+    }
+
+    #[test]
+    fn template_empty_message_returns_empty_string() {
+        let entry = TemplateEntry {
+            message: String::new(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "");
+    }
+
+    #[test]
+    fn template_mixed_known_and_unknown_placeholders() {
+        let entry = TemplateEntry {
+            message: "{known} then {mystery} then {known}".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("known".into(), vec!["K".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(
+            event.message, "K then {mystery} then K",
+            "known placeholders resolve; unknown ones stay literal"
+        );
+    }
+
+    #[test]
+    fn template_with_empty_placeholder_name_preserved() {
+        // `{}` is not a valid field name (no pool entry) so should be kept literally.
+        let entry = TemplateEntry {
+            message: "before {} after".into(),
+            field_pools: HashMap::new(),
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "before {} after");
+    }
+
+    #[test]
+    fn fields_map_populated_even_if_placeholder_not_in_message() {
+        // field_pools has "phantom" key but the message does not contain {phantom}.
+        // The fields map should still contain it (pool selection happens unconditionally).
+        let entry = TemplateEntry {
+            message: "no placeholders here".into(),
+            field_pools: {
+                let mut m = HashMap::new();
+                m.insert("phantom".into(), vec!["ghost".into()]);
+                m
+            },
+        };
+        let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
+        let event = gen.generate(0);
+        assert_eq!(event.message, "no placeholders here");
+        assert_eq!(
+            event.fields.get("phantom").unwrap(),
+            "ghost",
+            "fields map includes pool entries even when not referenced in template"
         );
     }
 
