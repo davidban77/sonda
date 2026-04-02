@@ -66,6 +66,10 @@ sink:
 
 ## http_push
 
+!!! note
+    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this
+    feature. If building from source: `cargo build --features http -p sonda`.
+
 Batches encoded events and delivers them via HTTP POST. Events accumulate in a buffer until the
 batch size is reached, then the buffer is flushed as a single POST request.
 
@@ -171,6 +175,10 @@ retries metadata lookups, giving the broker time to create the topic if
 `auto.create.topics.enable=true`.
 
 ## loki
+
+!!! note
+    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this
+    feature. If building from source: `cargo build --features http -p sonda`.
 
 Batches log lines and delivers them to Grafana Loki via HTTP POST. Each call to write appends one
 log line, and the batch is flushed when it reaches the configured size.

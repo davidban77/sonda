@@ -67,7 +67,7 @@ impl Sink for UdpSink {
     ///
     /// # Errors
     ///
-    /// Returns [`SondaError::Sink`] if `data` exceeds [`MAX_UDP_PAYLOAD`]
+    /// Returns [`SondaError::Sink`] if `data` exceeds `MAX_UDP_PAYLOAD`
     /// (65507 bytes) or if the underlying `send_to` fails.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         if data.len() > MAX_UDP_PAYLOAD {

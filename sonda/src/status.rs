@@ -115,11 +115,13 @@ fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::File { path } => format!("file: {path}"),
         SinkConfig::Tcp { address } => format!("tcp: {address}"),
         SinkConfig::Udp { address } => format!("udp: {address}"),
+        #[cfg(feature = "http")]
         SinkConfig::HttpPush { url, .. } => format!("http: {url}"),
         #[cfg(feature = "remote-write")]
         SinkConfig::RemoteWrite { url, .. } => format!("remote_write: {url}"),
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { topic, .. } => format!("kafka: {topic}"),
+        #[cfg(feature = "http")]
         SinkConfig::Loki { url, .. } => format!("loki: {url}"),
     }
 }
@@ -292,6 +294,7 @@ mod tests {
         assert_eq!(sink_display(&config), "udp: 127.0.0.1:8888");
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_display_http_push() {
         let config = SinkConfig::HttpPush {
@@ -303,6 +306,7 @@ mod tests {
         assert_eq!(sink_display(&config), "http: http://localhost:9090/write");
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_display_loki() {
         let config = SinkConfig::Loki {

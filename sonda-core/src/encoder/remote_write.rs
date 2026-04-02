@@ -1,7 +1,7 @@
 //! Prometheus remote write protobuf encoder.
 //!
 //! Encodes [`MetricEvent`]s into individual `TimeSeries` protobuf messages,
-//! length-prefixed with a 4-byte little-endian u32. The [`RemoteWriteSink`]
+//! length-prefixed with a 4-byte little-endian u32. The `RemoteWriteSink`
 //! (see `sink::remote_write`) accumulates these TimeSeries messages, wraps
 //! them in a single `WriteRequest`, prost-encodes, snappy-compresses, and
 //! HTTP POSTs the result to the remote write endpoint.
@@ -93,7 +93,7 @@ pub struct Sample {
 /// Each call to [`encode_metric`](Encoder::encode_metric) produces one
 /// prost-encoded `TimeSeries` (NOT a full `WriteRequest`, NOT snappy-compressed),
 /// prefixed with a 4-byte little-endian u32 length. This encoding is designed to
-/// be consumed by [`RemoteWriteSink`](crate::sink::remote_write::RemoteWriteSink),
+/// be consumed by `RemoteWriteSink`,
 /// which batches multiple TimeSeries into a single `WriteRequest`, snappy-compresses,
 /// and HTTP POSTs the result.
 ///
@@ -195,7 +195,7 @@ impl Encoder for RemoteWriteEncoder {
 /// prefix followed by that many bytes of prost-encoded protobuf. This function
 /// reads all such messages from `data` and returns the decoded `TimeSeries` structs.
 ///
-/// Used by [`RemoteWriteSink`](crate::sink::remote_write::RemoteWriteSink) to
+/// Used by `RemoteWriteSink` to
 /// accumulate TimeSeries for batching into a single `WriteRequest`.
 ///
 /// # Errors

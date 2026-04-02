@@ -8,9 +8,14 @@
 //! Encoders under test: prometheus_text, influx_lp, json_lines
 //! Sinks under test:    stdout, file, tcp, udp, http_push, kafka (feature-gated)
 
+#[cfg(feature = "http")]
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::io::Read;
+#[cfg(feature = "http")]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(feature = "http")]
+use std::net::TcpStream;
+use std::net::{TcpListener, UdpSocket};
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
@@ -50,6 +55,7 @@ fn encode_event(config: &EncoderConfig, event: &MetricEvent) -> Vec<u8> {
 
 /// Accept one HTTP connection, consume the request, and respond 200 OK.
 /// Returns the request body.
+#[cfg(feature = "http")]
 fn accept_http_and_respond_ok(listener: &TcpListener) -> Vec<u8> {
     let (mut stream, _) = listener.accept().expect("accept");
     let body = read_http_body(&mut stream);
@@ -58,6 +64,7 @@ fn accept_http_and_respond_ok(listener: &TcpListener) -> Vec<u8> {
     body
 }
 
+#[cfg(feature = "http")]
 fn read_http_body(stream: &mut TcpStream) -> Vec<u8> {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut content_length: usize = 0;
@@ -528,6 +535,7 @@ fn json_x_udp_datagram_arrives_at_receiver() {
 // matches the encoded bytes.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "http")]
 fn http_matrix_server() -> (TcpListener, String) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
@@ -535,6 +543,7 @@ fn http_matrix_server() -> (TcpListener, String) {
     (listener, url)
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn prometheus_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
@@ -560,6 +569,7 @@ fn prometheus_x_http_push_body_matches_encoded_bytes() {
     assert_eq!(body, expected);
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn influx_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
@@ -584,6 +594,7 @@ fn influx_x_http_push_body_matches_encoded_bytes() {
     assert_eq!(body, expected);
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn json_x_http_push_body_matches_encoded_bytes() {
     let (listener, url) = http_matrix_server();
@@ -884,6 +895,7 @@ fn yaml_prometheus_x_udp_deserializes() {
     assert!(matches!(scenario.sink, SC::Udp { .. }));
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn yaml_prometheus_x_http_push_deserializes() {
     let scenario = parse_scenario(&base_yaml(
@@ -944,6 +956,7 @@ fn yaml_influx_x_udp_deserializes() {
     assert!(matches!(scenario.sink, SC::Udp { .. }));
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn yaml_influx_x_http_push_deserializes() {
     let scenario = parse_scenario(&base_yaml(
@@ -1004,6 +1017,7 @@ fn yaml_json_x_udp_deserializes() {
     assert!(matches!(scenario.sink, SC::Udp { .. }));
 }
 
+#[cfg(feature = "http")]
 #[test]
 fn yaml_json_x_http_push_deserializes() {
     let scenario = parse_scenario(&base_yaml(
