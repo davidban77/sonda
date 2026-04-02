@@ -320,7 +320,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::config::{GapConfig, LogScenarioConfig};
+    use crate::config::{BaseScheduleConfig, GapConfig, LogScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::{LogGeneratorConfig, TemplateConfig};
     use crate::sink::memory::MemorySink;
@@ -333,9 +333,18 @@ mod tests {
     /// call `run_logs_with_sink` directly).
     fn make_config(rate: f64, duration: Option<&str>) -> LogScenarioConfig {
         LogScenarioConfig {
-            name: "test_logs".to_string(),
-            rate,
-            duration: duration.map(|s| s.to_string()),
+            base: BaseScheduleConfig {
+                name: "test_logs".to_string(),
+                rate,
+                duration: duration.map(|s| s.to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "synthetic log event".to_string(),
@@ -344,14 +353,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     }
 

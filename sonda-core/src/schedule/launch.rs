@@ -150,7 +150,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::config::{LogScenarioConfig, ScenarioConfig, ScenarioEntry};
+    use crate::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry};
     use crate::encoder::EncoderConfig;
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
@@ -160,27 +160,38 @@ mod tests {
     /// Build a short-lived metrics `ScenarioEntry` (runs for 200ms then stops).
     fn metrics_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
-            name: name.to_string(),
-            rate: 50.0,
-            duration: Some("200ms".to_string()),
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 50.0,
+                duration: Some("200ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
     /// Build a short-lived logs `ScenarioEntry` (runs for 200ms then stops).
     fn logs_entry(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
-            name: name.to_string(),
-            rate: 50.0,
-            duration: Some("200ms".to_string()),
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 50.0,
+                duration: Some("200ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test log".to_string(),
@@ -189,41 +200,45 @@ mod tests {
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
     /// Build an indefinitely-running metrics entry (no duration).
     fn metrics_entry_indefinite(name: &str) -> ScenarioEntry {
         ScenarioEntry::Metrics(ScenarioConfig {
-            name: name.to_string(),
-            rate: 100.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 100.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
     /// Build an indefinitely-running logs entry (no duration).
     fn logs_entry_indefinite(name: &str) -> ScenarioEntry {
         ScenarioEntry::Logs(LogScenarioConfig {
-            name: name.to_string(),
-            rate: 100.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 100.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "indefinite log".to_string(),
@@ -232,14 +247,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(1),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         })
     }
 
@@ -271,18 +279,20 @@ mod tests {
     #[test]
     fn validate_entry_rejects_metrics_entry_with_zero_rate() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "bad_metrics".to_string(),
-            rate: 0.0, // invalid
-            duration: Some("1s".to_string()),
+            base: BaseScheduleConfig {
+                name: "bad_metrics".to_string(),
+                rate: 0.0, // invalid
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -295,18 +305,20 @@ mod tests {
     #[test]
     fn validate_entry_rejects_metrics_entry_with_negative_rate() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "neg_rate".to_string(),
-            rate: -5.0,
-            duration: Some("1s".to_string()),
+            base: BaseScheduleConfig {
+                name: "neg_rate".to_string(),
+                rate: -5.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -319,9 +331,18 @@ mod tests {
     #[test]
     fn validate_entry_rejects_logs_entry_with_zero_rate() {
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "bad_logs".to_string(),
-            rate: 0.0, // invalid
-            duration: Some("1s".to_string()),
+            base: BaseScheduleConfig {
+                name: "bad_logs".to_string(),
+                rate: 0.0, // invalid
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "msg".to_string(),
@@ -330,14 +351,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -350,18 +364,20 @@ mod tests {
     #[test]
     fn validate_entry_rejects_metrics_entry_with_bad_duration() {
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "bad_dur".to_string(),
-            rate: 10.0,
-            duration: Some("not_a_duration".to_string()),
+            base: BaseScheduleConfig {
+                name: "bad_dur".to_string(),
+                rate: 10.0,
+                duration: Some("not_a_duration".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -485,18 +501,20 @@ mod tests {
         let shutdown = Arc::new(AtomicBool::new(true));
         // High rate so events accumulate quickly.
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "stats_test".to_string(),
-            rate: 500.0,
-            duration: None, // indefinite — we stop it manually
+            base: BaseScheduleConfig {
+                name: "stats_test".to_string(),
+                rate: 500.0,
+                duration: None, // indefinite — we stop it manually
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
 
         let mut handle =
@@ -529,9 +547,18 @@ mod tests {
 
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "logs_stats_test".to_string(),
-            rate: 500.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "logs_stats_test".to_string(),
+                rate: 500.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "stat tracking log".to_string(),
@@ -540,14 +567,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(42),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
 
         let mut handle = launch_scenario(
@@ -622,18 +642,20 @@ mod tests {
 
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "no_delay_test".to_string(),
-            rate: 500.0,
-            duration: None,
+            base: BaseScheduleConfig {
+                name: "no_delay_test".to_string(),
+                rate: 500.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
 
         let mut handle =
@@ -663,18 +685,20 @@ mod tests {
 
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
-            name: "delay_test".to_string(),
-            rate: 500.0,
-            duration: Some("1s".to_string()),
+            base: BaseScheduleConfig {
+                name: "delay_test".to_string(),
+                rate: 500.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: GeneratorConfig::Constant { value: 1.0 },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
 
         let delay = Duration::from_millis(500);
@@ -767,9 +791,18 @@ mod tests {
 
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
-            name: "log_delay_test".to_string(),
-            rate: 500.0,
-            duration: Some("1s".to_string()),
+            base: BaseScheduleConfig {
+                name: "log_delay_test".to_string(),
+                rate: 500.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "delayed log".to_string(),
@@ -778,14 +811,7 @@ mod tests {
                 severity_weights: None,
                 seed: Some(0),
             },
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            labels: None,
             encoder: EncoderConfig::JsonLines { precision: None },
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         });
 
         let delay = Duration::from_millis(500);

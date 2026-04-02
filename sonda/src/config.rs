@@ -13,8 +13,8 @@ use std::fs;
 
 use anyhow::{bail, Context, Result};
 use sonda_core::config::{
-    BurstConfig, CardinalitySpikeConfig, GapConfig, LogScenarioConfig, MultiScenarioConfig,
-    ScenarioConfig, SpikeStrategy,
+    BaseScheduleConfig, BurstConfig, CardinalitySpikeConfig, GapConfig, LogScenarioConfig,
+    MultiScenarioConfig, ScenarioConfig, SpikeStrategy,
 };
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
@@ -53,21 +53,23 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
         })?;
 
         ScenarioConfig {
-            name,
-            rate,
-            duration: args.duration.clone(),
+            base: BaseScheduleConfig {
+                name,
+                rate,
+                duration: args.duration.clone(),
+                gaps: build_gap_config(args)?,
+                bursts: build_burst_config(args)?,
+                cardinality_spikes: build_spike_config(args)?,
+                labels: build_labels(args),
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator: build_generator_config(args)?,
-            gaps: build_gap_config(args)?,
-            bursts: build_burst_config(args)?,
-            cardinality_spikes: build_spike_config(args)?,
-            labels: build_labels(args),
             encoder: parse_encoder_config(
                 args.encoder.as_deref().unwrap_or("prometheus_text"),
                 args.precision,
             )?,
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     };
 
@@ -363,21 +365,23 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
         let rate = args.rate.unwrap_or(10.0);
 
         LogScenarioConfig {
-            name: "logs".to_string(),
-            rate,
-            duration: args.duration.clone(),
+            base: BaseScheduleConfig {
+                name: "logs".to_string(),
+                rate,
+                duration: args.duration.clone(),
+                gaps: build_gap_config_for_logs(args)?,
+                bursts: build_log_burst_config(args)?,
+                cardinality_spikes: build_log_spike_config(args)?,
+                labels: build_log_labels(args),
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+            },
             generator,
-            gaps: build_gap_config_for_logs(args)?,
-            bursts: build_log_burst_config(args)?,
-            cardinality_spikes: build_log_spike_config(args)?,
-            labels: build_log_labels(args),
             encoder: parse_log_encoder_config(
                 args.encoder.as_deref().unwrap_or("json_lines"),
                 args.precision,
             )?,
-            sink: SinkConfig::Stdout,
-            phase_offset: None,
-            clock_group: None,
         }
     };
 
@@ -1089,7 +1093,7 @@ mod tests {
             ..default_args()
         };
         let config = load_config(&args).expect("output flag should produce valid config");
-        match config.sink {
+        match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-output-test.txt");
             }
@@ -1140,7 +1144,7 @@ mod tests {
             ..default_args()
         };
         let config = load_config(&args).expect("output override on YAML should succeed");
-        match config.sink {
+        match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-yaml-override.txt");
             }
@@ -1159,7 +1163,7 @@ mod tests {
             ..default_args()
         };
         let config = load_config(&args).expect("nested output path should succeed");
-        match config.sink {
+        match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda/nested/dir/test.txt");
             }
@@ -1631,7 +1635,7 @@ mod tests {
         };
 
         let config = load_log_config(&args).expect("output flag must produce valid config");
-        match config.sink {
+        match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-logs-test.json");
             }
