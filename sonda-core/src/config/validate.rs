@@ -664,7 +664,7 @@ generator:
   value: 1.0
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("minimal YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal YAML must deserialize");
         assert_eq!(config.name, "up");
         assert_eq!(config.rate, 10.0);
         assert!(config.duration.is_none());
@@ -683,7 +683,7 @@ generator:
   value: 1.0
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("minimal YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal YAML must deserialize");
         assert!(
             matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "default encoder must be PrometheusText"
@@ -701,7 +701,7 @@ generator:
   value: 1.0
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("minimal YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal YAML must deserialize");
         assert!(
             matches!(config.sink, SinkConfig::Stdout),
             "default sink must be Stdout"
@@ -733,7 +733,7 @@ sink:
   type: stdout
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("architecture example YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("architecture example YAML must deserialize");
         assert_eq!(config.name, "interface_oper_state");
         assert_eq!(config.rate, 1000.0);
         assert_eq!(config.duration.as_deref(), Some("30s"));
@@ -770,7 +770,7 @@ labels:
   region: us-east-1
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("YAML with labels must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("YAML with labels must deserialize");
         let labels = config.labels.expect("labels must be present");
         assert_eq!(labels.get("env").map(String::as_str), Some("prod"));
         assert_eq!(labels.get("region").map(String::as_str), Some("us-east-1"));
@@ -790,7 +790,7 @@ gaps:
   for: 20s
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("YAML with gaps must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("YAML with gaps must deserialize");
         let gap = config.gaps.expect("gaps must be present");
         assert_eq!(gap.every, "2m");
         assert_eq!(gap.r#for, "20s");
@@ -821,7 +821,7 @@ encoder:
 sink:
   type: stdout
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         assert!(
             validate_config(&config).is_ok(),
             "architecture example must pass validation"
@@ -856,7 +856,7 @@ encoder:
 sink:
   type: stdout
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok(), "must validate");
 
         let gen = create_generator(&config.generator, config.rate).expect("generator factory");
@@ -883,7 +883,7 @@ generator:
   type: constant
   value: 42.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok());
         let gen = create_generator(&config.generator, config.rate).expect("constant factory");
         assert_eq!(gen.value(0), 42.0);
@@ -904,7 +904,7 @@ generator:
   max: 1.0
   seed: 42
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         assert!(validate_config(&config).is_ok());
         let gen = create_generator(&config.generator, config.rate).expect("uniform factory");
         for tick in 0..1000 {
@@ -928,7 +928,7 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         let cloned = config.clone();
         assert_eq!(cloned.name, config.name);
         assert_eq!(cloned.rate, config.rate);
@@ -944,7 +944,7 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("must deserialize");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).expect("must deserialize");
         let debug_str = format!("{config:?}");
         assert!(
             debug_str.contains("up"),
@@ -1209,7 +1209,7 @@ bursts:
   multiplier: 5.0
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("YAML with bursts must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("YAML with bursts must deserialize");
         let burst = config.bursts.expect("bursts must be present");
         assert_eq!(burst.every, "10s");
         assert_eq!(burst.r#for, "2s");
@@ -1227,7 +1227,7 @@ generator:
   value: 1.0
 "#;
         let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("YAML without bursts must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("YAML without bursts must deserialize");
         assert!(
             config.bursts.is_none(),
             "bursts field must be None when not provided"

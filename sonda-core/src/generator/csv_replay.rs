@@ -637,7 +637,7 @@ has_header: true
 repeat: false
 ";
         let config: super::super::GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("csv_replay YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("csv_replay YAML must deserialize");
         match config {
             super::super::GeneratorConfig::CsvReplay {
                 file,
@@ -659,7 +659,7 @@ repeat: false
     fn deserialize_csv_replay_config_minimal() {
         let yaml = "type: csv_replay\nfile: data.csv\n";
         let config: super::super::GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("minimal csv_replay YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal csv_replay YAML must deserialize");
         match config {
             super::super::GeneratorConfig::CsvReplay {
                 file,
@@ -708,7 +708,7 @@ sink:
             csv_path
         );
         let config: crate::config::ScenarioConfig =
-            serde_yaml::from_str(&yaml).expect("example scenario YAML must deserialize");
+            serde_yaml_ng::from_str(&yaml).expect("example scenario YAML must deserialize");
         assert_eq!(config.name, "cpu_replay");
         assert_eq!(config.rate, 1.0);
         match &config.generator {

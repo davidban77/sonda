@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn sink_config_udp_deserializes_from_yaml() {
         let yaml = "type: udp\naddress: \"127.0.0.1:9999\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::Udp { address } => {
                 assert_eq!(address, "127.0.0.1:9999");

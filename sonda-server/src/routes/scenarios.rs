@@ -227,23 +227,23 @@ fn parse_yaml_body(body: &[u8]) -> Result<ScenarioEntry, String> {
         std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
 
     // Strategy 1: tagged ScenarioEntry (has `signal_type: metrics|logs`).
-    if let Ok(entry) = serde_yaml::from_str::<ScenarioEntry>(text) {
+    if let Ok(entry) = serde_yaml_ng::from_str::<ScenarioEntry>(text) {
         return Ok(entry);
     }
 
     // Strategy 2: bare ScenarioConfig → wrap in Metrics variant.
-    if let Ok(config) = serde_yaml::from_str::<ScenarioConfig>(text) {
+    if let Ok(config) = serde_yaml_ng::from_str::<ScenarioConfig>(text) {
         return Ok(ScenarioEntry::Metrics(config));
     }
 
     // Strategy 3: bare LogScenarioConfig → wrap in Logs variant.
-    if let Ok(config) = serde_yaml::from_str::<LogScenarioConfig>(text) {
+    if let Ok(config) = serde_yaml_ng::from_str::<LogScenarioConfig>(text) {
         return Ok(ScenarioEntry::Logs(config));
     }
 
     // All three attempts failed — return a generic YAML parse error.
     // Re-parse just to get a meaningful error message.
-    let yaml_err = serde_yaml::from_str::<ScenarioEntry>(text)
+    let yaml_err = serde_yaml_ng::from_str::<ScenarioEntry>(text)
         .err()
         .map(|e| e.to_string())
         .unwrap_or_else(|| "unknown YAML parse error".to_string());

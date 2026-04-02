@@ -848,7 +848,8 @@ use sonda_core::encoder::EncoderConfig as EC;
 use sonda_core::sink::SinkConfig as SC;
 
 fn parse_scenario(yaml: &str) -> ScenarioConfig {
-    serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("YAML parse failed: {e}\nInput:\n{yaml}"))
+    serde_yaml_ng::from_str(yaml)
+        .unwrap_or_else(|e| panic!("YAML parse failed: {e}\nInput:\n{yaml}"))
 }
 
 fn base_yaml(encoder_block: &str, sink_block: &str) -> String {

@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn encoder_config_deserialization_influx_lp_no_field_key() {
         let config: EncoderConfig =
-            serde_yaml::from_str("type: influx_lp\nfield_key: null").unwrap();
+            serde_yaml_ng::from_str("type: influx_lp\nfield_key: null").unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn encoder_config_deserialization_influx_lp_with_field_key() {
         let config: EncoderConfig =
-            serde_yaml::from_str("type: influx_lp\nfield_key: requests").unwrap();
+            serde_yaml_ng::from_str("type: influx_lp\nfield_key: requests").unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {

@@ -402,7 +402,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 1);
         assert!(
             matches!(config.scenarios[0], ScenarioEntry::Metrics(_)),
@@ -429,7 +429,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 1);
         assert!(
             matches!(config.scenarios[0], ScenarioEntry::Logs(_)),
@@ -465,7 +465,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 2);
         assert!(matches!(config.scenarios[0], ScenarioEntry::Metrics(_)));
         assert!(matches!(config.scenarios[1], ScenarioEntry::Logs(_)));
@@ -485,7 +485,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let result: Result<MultiScenarioConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<MultiScenarioConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "unknown signal_type should fail deserialization"
@@ -499,7 +499,7 @@ scenarios:
 name: no_scenarios_key
 rate: 10
 "#;
-        let result: Result<MultiScenarioConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<MultiScenarioConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "YAML without top-level 'scenarios:' key should fail"
@@ -550,7 +550,7 @@ rate: 10
     #[test]
     fn multi_scenario_example_file_deserializes_correctly() {
         let yaml = include_str!("../../../examples/multi-scenario.yaml");
-        let config: Result<MultiScenarioConfig, _> = serde_yaml::from_str(yaml);
+        let config: Result<MultiScenarioConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             config.is_ok(),
             "examples/multi-scenario.yaml should parse without error: {:?}",
@@ -829,7 +829,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(config, shutdown);
         assert!(

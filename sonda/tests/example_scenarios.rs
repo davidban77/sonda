@@ -35,7 +35,7 @@ fn basic_metrics_yaml_deserializes_without_error() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml::from_str::<ScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
         .unwrap_or_else(|e| panic!("basic-metrics.yaml failed to deserialize: {e}"));
 }
 
@@ -44,7 +44,7 @@ fn basic_metrics_yaml_has_correct_metric_name() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert_eq!(
         config.name, "interface_oper_state",
         "metric name must match the spec"
@@ -56,7 +56,7 @@ fn basic_metrics_yaml_has_correct_rate() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert_eq!(config.rate, 1000.0, "rate must be 1000 events/sec");
 }
 
@@ -65,7 +65,7 @@ fn basic_metrics_yaml_has_correct_duration() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert_eq!(
         config.duration.as_deref(),
         Some("30s"),
@@ -78,7 +78,7 @@ fn basic_metrics_yaml_has_sine_generator() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     match config.generator {
         GeneratorConfig::Sine {
             amplitude,
@@ -98,7 +98,7 @@ fn basic_metrics_yaml_has_gap_config() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     let gaps = config
         .gaps
         .as_ref()
@@ -112,7 +112,7 @@ fn basic_metrics_yaml_has_labels() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     let labels = config
         .labels
         .as_ref()
@@ -134,7 +134,7 @@ fn basic_metrics_yaml_uses_prometheus_text_encoder() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
         "encoder must be prometheus_text"
@@ -146,7 +146,7 @@ fn basic_metrics_yaml_uses_stdout_sink() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -158,7 +158,7 @@ fn basic_metrics_yaml_passes_validate_config() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
     validate_config(&config)
         .unwrap_or_else(|e| panic!("basic-metrics.yaml failed validation: {e}"));
 }
@@ -168,7 +168,7 @@ fn basic_metrics_yaml_factories_all_succeed() {
     let path = workspace_file("examples/basic-metrics.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize basic-metrics.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize basic-metrics.yaml");
 
     // Generator factory must succeed and produce a working generator.
     let gen = create_generator(&config.generator, config.rate).expect("generator factory");
@@ -196,7 +196,7 @@ fn simple_constant_yaml_deserializes_without_error() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml::from_str::<ScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
         .unwrap_or_else(|e| panic!("simple-constant.yaml failed to deserialize: {e}"));
 }
 
@@ -205,7 +205,7 @@ fn simple_constant_yaml_has_correct_metric_name() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert_eq!(config.name, "up", "metric name must be 'up'");
 }
 
@@ -214,7 +214,7 @@ fn simple_constant_yaml_has_correct_rate() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert_eq!(config.rate, 10.0, "rate must be 10 events/sec");
 }
 
@@ -223,7 +223,7 @@ fn simple_constant_yaml_has_correct_duration() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert_eq!(
         config.duration.as_deref(),
         Some("10s"),
@@ -236,7 +236,7 @@ fn simple_constant_yaml_has_constant_generator_with_value_one() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     match config.generator {
         GeneratorConfig::Constant { value } => {
             assert_eq!(value, 1.0, "constant value must be 1.0");
@@ -250,7 +250,7 @@ fn simple_constant_yaml_has_no_gaps() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert!(
         config.gaps.is_none(),
         "simple-constant.yaml must not define gaps"
@@ -262,7 +262,7 @@ fn simple_constant_yaml_uses_prometheus_text_encoder() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
         "encoder must be prometheus_text"
@@ -274,7 +274,7 @@ fn simple_constant_yaml_uses_stdout_sink() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -286,7 +286,7 @@ fn simple_constant_yaml_passes_validate_config() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
     validate_config(&config)
         .unwrap_or_else(|e| panic!("simple-constant.yaml failed validation: {e}"));
 }
@@ -296,7 +296,7 @@ fn simple_constant_yaml_factories_all_succeed() {
     let path = workspace_file("examples/simple-constant.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize simple-constant.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize simple-constant.yaml");
 
     // Generator factory must succeed and produce a constant value of 1.0.
     let gen = create_generator(&config.generator, config.rate).expect("generator factory");
@@ -328,7 +328,7 @@ fn cardinality_spike_yaml_deserializes_without_error() {
     let path = workspace_file("examples/cardinality-spike.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml::from_str::<ScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
         .unwrap_or_else(|e| panic!("cardinality-spike.yaml failed to deserialize: {e}"));
 }
 
@@ -337,7 +337,7 @@ fn cardinality_spike_yaml_has_correct_metric_name() {
     let path = workspace_file("examples/cardinality-spike.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize cardinality-spike.yaml");
     assert_eq!(
         config.name, "cardinality_spike_demo",
         "metric name must match"
@@ -349,7 +349,7 @@ fn cardinality_spike_yaml_has_spike_config() {
     let path = workspace_file("examples/cardinality-spike.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize cardinality-spike.yaml");
     let spikes = config
         .cardinality_spikes
         .as_ref()
@@ -364,7 +364,7 @@ fn cardinality_spike_yaml_passes_validate_config() {
     let path = workspace_file("examples/cardinality-spike.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize cardinality-spike.yaml");
     validate_config(&config)
         .unwrap_or_else(|e| panic!("cardinality-spike.yaml failed validation: {e}"));
 }
@@ -374,7 +374,7 @@ fn cardinality_spike_yaml_factories_all_succeed() {
     let path = workspace_file("examples/cardinality-spike.yaml");
     let contents = std::fs::read_to_string(&path).expect("read file");
     let config: ScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize cardinality-spike.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize cardinality-spike.yaml");
 
     let gen = create_generator(&config.generator, config.rate).expect("generator factory");
     let value = gen.value(0);
@@ -402,7 +402,7 @@ fn both_example_yamls_pass_full_round_trip() {
         let path = workspace_file(filename);
         let contents = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-        let config: ScenarioConfig = serde_yaml::from_str(&contents)
+        let config: ScenarioConfig = serde_yaml_ng::from_str(&contents)
             .unwrap_or_else(|e| panic!("{filename} failed to deserialize: {e}"));
         validate_config(&config).unwrap_or_else(|e| panic!("{filename} failed validation: {e}"));
         let gen = create_generator(&config.generator, config.rate).expect("generator factory");

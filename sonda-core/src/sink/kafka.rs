@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn sink_config_kafka_deserializes_with_brokers_and_topic() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         match config {
             SinkConfig::Kafka { brokers, topic } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn sink_config_kafka_deserializes_with_multiple_brokers() {
         let yaml = "type: kafka\nbrokers: \"broker1:9092,broker2:9092\"\ntopic: my-topic";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             matches!(config, SinkConfig::Kafka { ref brokers, ref topic }
                 if brokers == "broker1:9092,broker2:9092" && topic == "my-topic")
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn sink_config_kafka_requires_brokers_field() {
         let yaml = "type: kafka\ntopic: sonda-test";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "kafka variant without brokers should fail deserialization"
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn sink_config_kafka_requires_topic_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "kafka variant without topic should fail deserialization"
@@ -391,7 +391,7 @@ sink:
   brokers: "127.0.0.1:9092"
   topic: sonda-metrics
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.name, "kafka_test");
         assert!(
             matches!(config.sink, SinkConfig::Kafka { ref brokers, ref topic }

@@ -520,7 +520,7 @@ sink:
   type: stdout
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("log-template YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("log-template YAML must deserialize");
         assert_eq!(config.name, "app_logs_template");
         assert_eq!(config.rate, 10.0);
         assert_eq!(config.duration.as_deref(), Some("60s"));
@@ -545,7 +545,7 @@ sink:
   type: stdout
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("log-replay YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("log-replay YAML must deserialize");
         assert_eq!(config.name, "app_logs_replay");
         assert_eq!(config.rate, 5.0);
         assert!(matches!(
@@ -568,7 +568,7 @@ generator:
       field_pools: {}
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("minimal log YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal log YAML must deserialize");
         assert!(
             matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "default encoder must be json_lines, got {:?}",
@@ -590,7 +590,7 @@ generator:
       field_pools: {}
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("minimal log YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("minimal log YAML must deserialize");
         assert!(
             matches!(config.sink, SinkConfig::Stdout),
             "default sink must be stdout, got {:?}",
@@ -626,7 +626,7 @@ sink:
   type: stdout
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("full log YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("full log YAML must deserialize");
         let gaps = config.gaps.as_ref().expect("gaps must be present");
         assert_eq!(gaps.every, "10s");
         assert_eq!(gaps.r#for, "2s");

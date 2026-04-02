@@ -796,7 +796,7 @@ mod tests {
     fn encoder_config_syslog_deserializes_without_optional_fields() {
         use crate::encoder::{create_encoder, EncoderConfig};
         let yaml = "type: syslog";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             matches!(
                 config,
@@ -816,7 +816,7 @@ mod tests {
     fn encoder_config_syslog_deserializes_with_hostname() {
         use crate::encoder::EncoderConfig;
         let yaml = "type: syslog\nhostname: myhost";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::Syslog {
@@ -831,7 +831,7 @@ mod tests {
     fn encoder_config_syslog_deserializes_with_both_hostname_and_app_name() {
         use crate::encoder::EncoderConfig;
         let yaml = "type: syslog\nhostname: prod-01\napp_name: api-server";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::Syslog {

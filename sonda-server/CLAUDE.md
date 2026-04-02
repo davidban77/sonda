@@ -79,7 +79,7 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 | `sonda-core`       | All scenario lifecycle logic (`launch_scenario`, etc.)    |
 | `axum`             | HTTP routing and handler infrastructure                   |
 | `tokio`            | Async runtime (full features)                             |
-| `serde` + `serde_json` + `serde_yaml` | Request/response serialization       |
+| `serde` + `serde_json` + `serde_yaml_ng` | Request/response serialization       |
 | `anyhow`           | Error handling in binary code                             |
 | `clap`             | CLI argument parsing                                      |
 | `tower-http`       | CORS and trace middleware                                 |

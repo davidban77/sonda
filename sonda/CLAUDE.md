@@ -77,7 +77,7 @@ Example: if the YAML says `rate: 100` and the CLI says `--rate 500`, the effecti
 This crate depends on:
 - `sonda-core` (workspace dependency)
 - `clap` with derive feature
-- `serde` + `serde_yaml` for config loading
+- `serde` + `serde_yaml_ng` for config loading
 - `anyhow` for error handling
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
 

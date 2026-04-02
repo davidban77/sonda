@@ -287,7 +287,7 @@ mod tests {
         use crate::sink::SinkConfig;
 
         let yaml = "type: file\npath: /tmp/sonda-test.txt";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-test.txt");
@@ -303,7 +303,7 @@ mod tests {
 
         // Inline mapping form with `type` field.
         let yaml = "{type: file, path: /tmp/inline.txt}";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize inline");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize inline");
         match config {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/inline.txt");

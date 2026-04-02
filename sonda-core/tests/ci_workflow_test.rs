@@ -6,7 +6,7 @@
 /// - It triggers on push and pull_request events.
 /// - It runs build, test, clippy, and fmt steps — in that order.
 /// - Clippy uses `-D warnings`.
-use serde_yaml::Value;
+use serde_yaml_ng::Value;
 use std::fs;
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ fn load_ci_yaml() -> Value {
     let path = ci_yaml_path();
     let content =
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {:?}: {e}", path));
-    serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("ci.yml is not valid YAML: {e}"))
+    serde_yaml_ng::from_str(&content).unwrap_or_else(|e| panic!("ci.yml is not valid YAML: {e}"))
 }
 
 #[test]

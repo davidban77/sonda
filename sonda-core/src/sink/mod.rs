@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn sink_config_stdout_deserializes_from_yaml() {
         let yaml = "type: stdout";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(config, SinkConfig::Stdout));
     }
 
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn sink_config_file_deserializes_with_type_field() {
         let yaml = "type: file\npath: /tmp/sonda-mod-test.txt";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             matches!(config, SinkConfig::File { ref path } if path == "/tmp/sonda-mod-test.txt")
         );
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn sink_config_tcp_deserializes_with_type_field() {
         let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(config, SinkConfig::Tcp { ref address } if address == "127.0.0.1:9999"));
     }
 
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn sink_config_udp_deserializes_with_type_field() {
         let yaml = "type: udp\naddress: \"127.0.0.1:9999\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(config, SinkConfig::Udp { ref address } if address == "127.0.0.1:9999"));
     }
 
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn sink_config_unknown_type_returns_error() {
         let yaml = "type: no_such_sink";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "unknown type tag should fail deserialization"
@@ -305,7 +305,7 @@ mod tests {
     fn sink_config_missing_type_field_returns_error() {
         // Without the `type` field the internally-tagged enum cannot identify the variant.
         let yaml = "stdout";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "missing type field should fail deserialization"
@@ -317,7 +317,7 @@ mod tests {
     fn sink_config_old_external_tag_format_is_rejected() {
         // The old externally-tagged format (`!stdout`) must no longer be accepted.
         let yaml = "!stdout";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "externally-tagged YAML format must be rejected in favour of internally-tagged"
@@ -329,7 +329,7 @@ mod tests {
     fn sink_config_file_requires_path_field() {
         // `type: file` without a `path` field must fail.
         let yaml = "type: file";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "file variant without path should fail deserialization"
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn sink_config_tcp_requires_address_field() {
         let yaml = "type: tcp";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "tcp variant without address should fail deserialization"
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn sink_config_udp_requires_address_field() {
         let yaml = "type: udp";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "udp variant without address should fail deserialization"
@@ -426,7 +426,7 @@ sink:
   type: tcp
   address: "127.0.0.1:4321"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.name, "test_metric");
         assert!(matches!(
             config.encoder,
@@ -454,7 +454,7 @@ sink:
   type: file
   path: /tmp/sonda-file-json-test.txt
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config.encoder,
             crate::encoder::EncoderConfig::JsonLines { .. }
@@ -482,7 +482,7 @@ sink:
   type: udp
   address: "127.0.0.1:5555"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config.encoder,
             crate::encoder::EncoderConfig::InfluxLineProtocol { field_key: Some(ref k), .. } if k == "bytes"
@@ -500,7 +500,7 @@ sink:
     #[test]
     fn sink_config_kafka_deserializes_with_type_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
-        let config: SinkConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             matches!(config, SinkConfig::Kafka { ref brokers, ref topic }
                 if brokers == "127.0.0.1:9092" && topic == "sonda-test")
@@ -511,7 +511,7 @@ sink:
     #[test]
     fn sink_config_kafka_requires_brokers_field() {
         let yaml = "type: kafka\ntopic: sonda-test";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "kafka variant without brokers should fail deserialization"
@@ -522,7 +522,7 @@ sink:
     #[test]
     fn sink_config_kafka_requires_topic_field() {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "kafka variant without topic should fail deserialization"
@@ -598,7 +598,7 @@ headers:
   Content-Encoding: "snappy"
   X-Prometheus-Remote-Write-Version: "0.1.0"
 "#;
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::HttpPush { url, headers, .. } => {
                 assert_eq!(url, "http://localhost:8428/api/v1/write");
@@ -629,7 +629,7 @@ type: http_push
 url: "http://localhost:9090/push"
 content_type: "text/plain"
 "#;
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::HttpPush {
                 url,
@@ -656,7 +656,7 @@ type: http_push
 url: "http://localhost:9090/push"
 headers: {}
 "#;
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::HttpPush { headers, .. } => {
                 let hdr = headers.expect("headers should be Some even when empty");
@@ -730,7 +730,7 @@ headers: {}
     #[test]
     fn http_feature_enables_http_push_deserialization() {
         let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         assert!(matches!(config, SinkConfig::HttpPush { .. }));
     }
 
@@ -740,7 +740,7 @@ headers: {}
     #[test]
     fn http_feature_enables_loki_deserialization() {
         let yaml = "type: loki\nurl: \"http://localhost:3100\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         assert!(matches!(config, SinkConfig::Loki { .. }));
     }
 

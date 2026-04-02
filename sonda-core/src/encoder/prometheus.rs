@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn encoder_config_deserialization_prometheus_text() {
         use crate::encoder::EncoderConfig;
-        let config: EncoderConfig = serde_yaml::from_str("type: prometheus_text").unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str("type: prometheus_text").unwrap();
         assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
     }
 
