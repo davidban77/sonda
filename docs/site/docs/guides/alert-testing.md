@@ -489,6 +489,11 @@ docker compose -f examples/docker-compose-victoriametrics.yml down -v
 
 See [Docker Deployment](../deployment/docker.md) for the full stack configuration.
 
+!!! tip "Close the loop with Alertmanager"
+    This stack verifies that data arrives in VictoriaMetrics, but doesn't prove alerts fire.
+    To add vmalert, Alertmanager, and a webhook receiver to the stack, see the
+    [Alerting Pipeline](alerting-pipeline.md) guide.
+
 ---
 
 ## Quick Reference
@@ -509,6 +514,9 @@ See [Docker Deployment](../deployment/docker.md) for the full stack configuratio
 ---
 
 ## Next Steps
+
+**Verifying alerts fire end-to-end?** See [Alerting Pipeline](alerting-pipeline.md) to run
+vmalert, Alertmanager, and a webhook receiver with Docker Compose.
 
 **Validating a pipeline change?** See [Pipeline Validation](pipeline-validation.md).
 

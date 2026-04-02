@@ -1,0 +1,29 @@
+# Alert rules for vmalert, designed to fire on Sonda-generated metrics.
+#
+# These rules match the docker-alerts.yaml scenario which produces a sine wave
+# metric `docker_alert_cpu` oscillating between 0 and 100 with a 30-second
+# period. The wave crosses 70 (warning) and 90 (critical) twice per cycle.
+#
+# Usage: mounted into vmalert as part of the `alerting` Docker Compose profile.
+
+groups:
+  - name: sonda-alerts
+    interval: 5s
+    rules:
+      - alert: HighCpuUsage
+        expr: docker_alert_cpu > 90
+        for: 5s
+        labels:
+          severity: critical
+        annotations:
+          summary: "CPU usage is critically high"
+          description: "docker_alert_cpu on {{ $labels.host }} is {{ $value | printf \"%.1f\" }}%"
+
+      - alert: ElevatedCpuUsage
+        expr: docker_alert_cpu > 70
+        for: 5s
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU usage is elevated"
+          description: "docker_alert_cpu on {{ $labels.host }} is {{ $value | printf \"%.1f\" }}%"
