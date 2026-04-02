@@ -20,9 +20,9 @@ in sonda-core.
 ```
 src/
 ├── main.rs             ← entrypoint, clap setup, orchestration
-├── cli.rs              ← clap arg structs (#[derive(Parser)])
+├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum
 ├── config.rs           ← config loading: YAML file → merge CLI overrides → ScenarioConfig
-└── status.rs           ← colored lifecycle banners (start/stop) printed to stderr
+└── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
 This crate should stay small. Three to five files is the target. If it grows beyond five, something
@@ -31,14 +31,22 @@ is in the wrong crate.
 ## CLI Surface
 
 ```
-sonda [--quiet] metrics --scenario <file.yaml>
-sonda [--quiet] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]...
-sonda [--quiet] logs --scenario <file.yaml>
-sonda [--quiet] run --scenario <multi-scenario.yaml>
+sonda [--quiet | --verbose] [--dry-run] metrics --scenario <file.yaml>
+sonda [--quiet | --verbose] [--dry-run] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]...
+sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml>
+sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml>
 ```
 
-The `--quiet` (`-q`) flag is global and suppresses all status banners (start/stop). Errors are
-still printed to stderr.
+### Global Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--quiet` | `-q` | Suppress all status banners (start/stop/summary). Errors are still printed to stderr. |
+| `--verbose` | `-v` | Show the resolved scenario config at startup, then run normally with start/stop banners. Mutually exclusive with `--quiet`. |
+| `--dry-run` | | Parse and validate the scenario config, print it, then exit without emitting any events. Orthogonal to `--quiet`/`--verbose` — always prints the resolved config. |
+
+The verbosity model is captured in the `Verbosity` enum (`Quiet`, `Normal`, `Verbose`), constructed
+from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-run` is orthogonal.
 
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `run` runs multiple
 scenarios concurrently from a single YAML file whose `scenarios:` list carries `signal_type: metrics`
@@ -46,6 +54,9 @@ or `signal_type: logs` entries.
 
 All three subcommands now go through the unified `sonda_core::validate_entry` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
+
+The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total
+scenarios, events, bytes, errors, and elapsed time.
 
 ## Adding a New Subcommand
 

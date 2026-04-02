@@ -97,6 +97,26 @@ sink:
 sonda metrics --scenario examples/basic-metrics.yaml
 ```
 
+## CLI global flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--quiet` | `-q` | Suppress all status banners. Errors still go to stderr. |
+| `--verbose` | `-v` | Show the resolved config at startup, then run normally. Mutually exclusive with `--quiet`. |
+| `--dry-run` | | Parse and validate the config, print it, and exit without emitting events. |
+
+Validate a scenario file before running it:
+
+```bash
+sonda --dry-run metrics --scenario examples/basic-metrics.yaml
+```
+
+Show the resolved config and then run:
+
+```bash
+sonda --verbose metrics --scenario examples/basic-metrics.yaml
+```
+
 ## Documentation
 
 Full documentation is available at **https://davidban77.github.io/sonda/**.
