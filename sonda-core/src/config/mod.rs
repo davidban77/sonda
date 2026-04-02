@@ -1,10 +1,12 @@
-//! Scenario configuration: YAML deserialization and validation.
+//! Scenario configuration types and validation.
+//!
+//! The `Deserialize` impls on all config types are available only when the
+//! `config` Cargo feature is enabled (active by default). Without the feature,
+//! configs can still be constructed in code — only YAML/JSON parsing is gated.
 
 pub mod validate;
 
 use std::collections::HashMap;
-
-use serde::Deserialize;
 
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -14,7 +16,8 @@ use crate::sink::SinkConfig;
 ///
 /// During a gap the scheduler emits no events. The gap repeats on a fixed
 /// cycle defined by `every`, and each instance lasts for `for`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct GapConfig {
     /// How often the gap recurs (e.g. `"2m"`).
     pub every: String,
@@ -26,8 +29,9 @@ pub struct GapConfig {
 ///
 /// Determines how the spike window produces distinct values for the injected
 /// label key on each tick.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "snake_case"))]
 pub enum SpikeStrategy {
     /// Sequential counter: `prefix + (tick % cardinality)`.
     ///
@@ -58,7 +62,8 @@ pub enum SpikeStrategy {
 ///     strategy: counter
 ///     prefix: "pod-"
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct CardinalitySpikeConfig {
     /// The label key to inject during the spike window.
     ///
@@ -75,17 +80,17 @@ pub struct CardinalitySpikeConfig {
     /// Strategy for generating unique label values.
     ///
     /// Defaults to `counter` if not specified.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub strategy: SpikeStrategy,
     /// Optional prefix for generated label values.
     ///
     /// Defaults to `"{label}_"` when not specified.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub prefix: Option<String>,
     /// Optional RNG seed for the `random` strategy.
     ///
     /// Ignored for the `counter` strategy.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub seed: Option<u64>,
 }
 
@@ -96,7 +101,8 @@ pub struct CardinalitySpikeConfig {
 ///
 /// If a gap and burst overlap in time, the gap takes priority and no events
 /// are emitted.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct BurstConfig {
     /// How often the burst recurs (e.g. `"10s"`).
     pub every: String,
@@ -106,14 +112,17 @@ pub struct BurstConfig {
     pub multiplier: f64,
 }
 
+#[cfg(feature = "config")]
 fn default_encoder() -> EncoderConfig {
     EncoderConfig::PrometheusText { precision: None }
 }
 
+#[cfg(feature = "config")]
 fn default_log_encoder() -> EncoderConfig {
     EncoderConfig::JsonLines { precision: None }
 }
 
+#[cfg(feature = "config")]
 fn default_sink() -> SinkConfig {
     SinkConfig::Stdout
 }
@@ -144,51 +153,52 @@ fn default_sink() -> SinkConfig {
 /// sink:
 ///   type: stdout
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct ScenarioConfig {
     /// Metric name emitted by this scenario (must be a valid Prometheus metric name).
     pub name: String,
     /// Target event rate in events per second. Must be strictly positive.
     pub rate: f64,
     /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub duration: Option<String>,
     /// Value generator configuration.
     pub generator: GeneratorConfig,
     /// Optional gap window: recurring silent periods in the event stream.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub gaps: Option<GapConfig>,
     /// Optional burst window: recurring high-rate periods in the event stream.
     ///
     /// When both a gap and a burst overlap in time, the gap takes priority.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub bursts: Option<BurstConfig>,
     /// Optional cardinality spikes: recurring windows that inject dynamic
     /// labels to simulate cardinality explosions.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
     /// Static labels attached to every emitted event.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `prometheus_text`.
-    #[serde(default = "default_encoder")]
+    #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
     /// Output sink. Defaults to `stdout`.
-    #[serde(default = "default_sink")]
+    #[cfg_attr(feature = "config", serde(default = "default_sink"))]
     pub sink: SinkConfig,
     /// Delay before starting this scenario, relative to the group start time.
     ///
     /// Only meaningful in multi-scenario mode. Enables temporal correlation
     /// between scenarios: "metric A starts immediately, metric B starts 30s
     /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub phase_offset: Option<String>,
     /// Clock group identifier for multi-scenario correlation.
     ///
     /// Scenarios with the same `clock_group` value share a common start time
     /// reference. For MVP this provides a shared start reference only; advanced
     /// cross-scenario signaling is deferred to a future phase.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub clock_group: Option<String>,
 }
 
@@ -197,14 +207,15 @@ pub struct ScenarioConfig {
 /// The `signal_type` tag selects whether this entry is a metrics or logs scenario.
 /// Deserialized from a YAML multi-scenario file where each element of the
 /// `scenarios` list carries a `signal_type: metrics` or `signal_type: logs` key.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "signal_type")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "signal_type"))]
 pub enum ScenarioEntry {
     /// A metrics scenario entry.
-    #[serde(rename = "metrics")]
+    #[cfg_attr(feature = "config", serde(rename = "metrics"))]
     Metrics(ScenarioConfig),
     /// A logs scenario entry.
-    #[serde(rename = "logs")]
+    #[cfg_attr(feature = "config", serde(rename = "logs"))]
     Logs(LogScenarioConfig),
 }
 
@@ -258,7 +269,8 @@ impl ScenarioEntry {
 ///       type: file
 ///       path: /tmp/logs.json
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct MultiScenarioConfig {
     /// The list of scenarios to run concurrently.
     pub scenarios: Vec<ScenarioEntry>,
@@ -290,53 +302,54 @@ pub struct MultiScenarioConfig {
 /// sink:
 ///   type: stdout
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct LogScenarioConfig {
     /// Scenario name (used for identification and logging).
     pub name: String,
     /// Target event rate in events per second. Must be strictly positive.
     pub rate: f64,
     /// Optional total run duration (e.g. `"30s"`, `"5m"`). `None` means run indefinitely.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub duration: Option<String>,
     /// Log generator configuration.
     pub generator: LogGeneratorConfig,
     /// Optional gap window: recurring silent periods in the event stream.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub gaps: Option<GapConfig>,
     /// Optional burst window: recurring high-rate periods.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub bursts: Option<BurstConfig>,
     /// Optional cardinality spikes: recurring windows that inject dynamic
     /// labels to simulate cardinality explosions.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
     /// Static labels attached to every emitted log event.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<HashMap<String, String>>,
     /// Output encoder. Defaults to `json_lines`.
-    #[serde(default = "default_log_encoder")]
+    #[cfg_attr(feature = "config", serde(default = "default_log_encoder"))]
     pub encoder: EncoderConfig,
     /// Output sink. Defaults to `stdout`.
-    #[serde(default = "default_sink")]
+    #[cfg_attr(feature = "config", serde(default = "default_sink"))]
     pub sink: SinkConfig,
     /// Delay before starting this scenario, relative to the group start time.
     ///
     /// Only meaningful in multi-scenario mode. Enables temporal correlation
     /// between scenarios: "metric A starts immediately, metric B starts 30s
     /// later". Accepts a duration string (e.g. `"30s"`, `"1m"`, `"500ms"`).
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub phase_offset: Option<String>,
     /// Clock group identifier for multi-scenario correlation.
     ///
     /// Scenarios with the same `clock_group` value share a common start time
     /// reference. For MVP this provides a shared start reference only; advanced
     /// cross-scenario signaling is deferred to a future phase.
-    #[serde(default)]
+    #[cfg_attr(feature = "config", serde(default))]
     pub clock_group: Option<String>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     use super::*;
 

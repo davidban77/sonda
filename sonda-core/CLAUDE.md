@@ -56,6 +56,22 @@ src/
     └── validate.rs     ← config validation logic, parse_duration, validate_cardinality_spike_config
 ```
 
+## Cargo Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `config` | yes | Enables `serde::Deserialize` impls on all config types and pulls in `serde_yaml` for YAML parsing. Disable for library consumers who construct configs in code and do not need YAML/JSON deserialization. |
+| `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
+| `kafka` | no | Enables `rskafka` + `tokio` for the Kafka sink. |
+| `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
+
+When the `config` feature is disabled:
+- All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain
+  public and constructible in code.
+- `Deserialize` impls and `#[serde(...)]` attributes are conditionally compiled out.
+- `serde_yaml` is not linked. `serde_json` remains available (used by the JSON encoder).
+- Tests that parse YAML are gated behind `#[cfg(feature = "config")]`.
+
 ## How to Add a New Generator
 
 1. Create `src/generator/your_name.rs` with a struct that implements `ValueGenerator`.

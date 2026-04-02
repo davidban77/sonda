@@ -609,6 +609,7 @@ mod tests {
     // SinkConfig::HttpPush deserialization
     // -------------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_http_push_deserializes_with_required_fields() {
         let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
@@ -631,6 +632,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_http_push_deserializes_with_all_fields() {
         let yaml = r#"
@@ -658,6 +660,7 @@ batch_size: 8192
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_http_push_requires_url_field() {
         let yaml = "type: http_push";

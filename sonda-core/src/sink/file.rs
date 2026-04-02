@@ -281,6 +281,7 @@ mod tests {
         assert_eq!(content, b"via factory\n");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_file_deserializes_from_yaml() {
         use crate::sink::SinkConfig;
@@ -295,6 +296,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_file_deserializes_from_inline_yaml() {
         use crate::sink::SinkConfig;

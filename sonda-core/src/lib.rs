@@ -157,6 +157,70 @@ mod tests {
         );
     }
 
+    // ---- config feature gate tests --------------------------------------------
+
+    /// Config types are constructible in code regardless of the `config` feature.
+    /// This test runs with or without the feature enabled.
+    #[test]
+    fn config_types_constructible_without_yaml_parsing() {
+        use crate::config::ScenarioConfig;
+        use crate::encoder::EncoderConfig;
+        use crate::generator::GeneratorConfig;
+        use crate::sink::SinkConfig;
+
+        let _config = ScenarioConfig {
+            name: "test".to_string(),
+            rate: 10.0,
+            duration: None,
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        };
+    }
+
+    /// YAML deserialization is available when the `config` feature is active.
+    #[cfg(feature = "config")]
+    #[test]
+    fn config_feature_enables_yaml_deserialization() {
+        use crate::config::ScenarioConfig;
+
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig =
+            serde_yaml::from_str(yaml).expect("YAML deserialization must work with config feature");
+        assert_eq!(config.name, "test");
+    }
+
+    /// EncoderConfig, SinkConfig, and GeneratorConfig are all constructible
+    /// without deserialization and can be passed to their respective factory functions.
+    #[test]
+    fn factory_functions_work_without_deserialization() {
+        use crate::encoder::{create_encoder, EncoderConfig};
+        use crate::generator::{create_generator, GeneratorConfig};
+        use crate::sink::{create_sink, SinkConfig};
+
+        let gen_config = GeneratorConfig::Constant { value: 42.0 };
+        let gen = create_generator(&gen_config, 1.0).expect("generator factory must succeed");
+        assert_eq!(gen.value(0), 42.0);
+
+        let enc_config = EncoderConfig::PrometheusText { precision: None };
+        let _enc = create_encoder(&enc_config);
+
+        let sink_config = SinkConfig::Stdout;
+        let _sink = create_sink(&sink_config, None).expect("sink factory must succeed");
+    }
+
     #[test]
     fn sonda_error_sink_display_includes_io_context() {
         let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe broke");

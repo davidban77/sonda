@@ -1,3 +1,4 @@
+#![cfg(feature = "config")]
 /// Tests that validate the GitHub Actions CI workflow file for slice 0.0.
 ///
 /// The spec requires:

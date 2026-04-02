@@ -1,3 +1,4 @@
+#![cfg(feature = "config")]
 //! Encoder × Sink matrix integration tests for Slice 1.7.
 //!
 //! Validates that all 18 combinations of 3 encoders × 6 sinks compile and

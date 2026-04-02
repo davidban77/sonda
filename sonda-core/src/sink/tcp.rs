@@ -230,6 +230,7 @@ mod tests {
         assert_eq!(received, b"via factory\n");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_tcp_deserializes_from_yaml() {
         let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";

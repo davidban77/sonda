@@ -273,6 +273,7 @@ mod tests {
         assert_eq!(&buf[..len], b"via factory\n");
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn sink_config_udp_deserializes_from_yaml() {
         let yaml = "type: udp\naddress: \"127.0.0.1:9999\"";

@@ -385,6 +385,7 @@ mod tests {
     // Config: MultiScenarioConfig and ScenarioEntry deserialization
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_config_deserializes_metrics_entry_from_yaml() {
         let yaml = r#"
@@ -409,6 +410,7 @@ scenarios:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_config_deserializes_logs_entry_from_yaml() {
         let yaml = r#"
@@ -435,6 +437,7 @@ scenarios:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_config_deserializes_mixed_entries_from_yaml() {
         let yaml = r#"
@@ -468,6 +471,7 @@ scenarios:
         assert!(matches!(config.scenarios[1], ScenarioEntry::Logs(_)));
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_config_unknown_signal_type_returns_error() {
         let yaml = r#"
@@ -488,6 +492,7 @@ scenarios:
         );
     }
 
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_config_missing_scenarios_key_returns_error() {
         let yaml = r#"
@@ -541,6 +546,7 @@ rate: 10
     ///
     /// This catches accidental breakage of the example YAML if the config
     /// types change.
+    #[cfg(feature = "config")]
     #[test]
     fn multi_scenario_example_file_deserializes_correctly() {
         let yaml = include_str!("../../../examples/multi-scenario.yaml");
@@ -791,6 +797,7 @@ rate: 10
 
     /// Two correlated scenarios with different phase_offsets run concurrently.
     /// (Uses "1ms" instead of "0s" to avoid the parse_duration zero-rejection bug.)
+    #[cfg(feature = "config")]
     #[test]
     fn multi_metric_correlation_example_runs_concurrently() {
         let yaml = r#"
