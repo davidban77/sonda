@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::model::log::{LogEvent, Severity};
 use crate::model::metric::Labels;
+use crate::util::splitmix64;
 
 use super::LogGenerator;
 
@@ -61,24 +62,14 @@ impl LogTemplateGenerator {
         }
     }
 
-    /// Mix a `u64` through a SplitMix64 finalizer.
-    ///
-    /// Stateless hash: same input always produces the same output.
-    fn mix(mut z: u64) -> u64 {
-        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
     /// Produce a deterministic `u64` hash from the seed, tick, and a string discriminant.
     ///
     /// The discriminant is hashed character-by-character to avoid allocations.
     fn hash_for(seed: u64, tick: u64, discriminant: &str) -> u64 {
         // Fold discriminant bytes into the hash to make each field independent.
-        let mut h = Self::mix(seed ^ tick);
+        let mut h = splitmix64(seed ^ tick);
         for b in discriminant.bytes() {
-            h = Self::mix(h ^ (b as u64));
+            h = splitmix64(h ^ (b as u64));
         }
         h
     }

@@ -6,6 +6,7 @@
 //! a stateful RNG. This keeps `ValueGenerator` stateless — `value()` takes `&self`.
 
 use super::ValueGenerator;
+use crate::util::splitmix64;
 
 /// Generates uniformly distributed random values in `[min, max]`.
 ///
@@ -30,16 +31,6 @@ impl UniformRandom {
     pub fn new(min: f64, max: f64, seed: u64) -> Self {
         Self { min, max, seed }
     }
-
-    /// Mix a `u64` through a SplitMix64 finalizer to produce a well-distributed value.
-    ///
-    /// This is a stateless hash: same input always produces same output.
-    fn mix(mut z: u64) -> u64 {
-        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
 }
 
 impl ValueGenerator for UniformRandom {
@@ -48,7 +39,7 @@ impl ValueGenerator for UniformRandom {
     /// The value is derived by hashing `seed XOR tick` through a SplitMix64
     /// finalizer and mapping the result into the target range.
     fn value(&self, tick: u64) -> f64 {
-        let hash = Self::mix(self.seed ^ tick);
+        let hash = splitmix64(self.seed ^ tick);
         // Map the u64 to [0.0, 1.0) then scale to [min, max].
         let unit = (hash as f64) / (u64::MAX as f64);
         self.min + unit * (self.max - self.min)
