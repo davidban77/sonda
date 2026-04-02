@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_csv_file_produces_config_error_not_sink() {
+    fn missing_csv_file_produces_generator_error_not_sink() {
         let result = generator::csv_replay::CsvReplayGenerator::new(
             "/nonexistent/path/for/data.csv",
             0,
@@ -233,11 +233,15 @@ mod tests {
             true,
         );
         match result {
+            Err(SondaError::Generator(GeneratorError::FileRead {
+                ref path,
+                ref source,
+            })) => {
+                assert_eq!(path, "/nonexistent/path/for/data.csv");
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+            }
             Err(ref err) => {
-                assert!(
-                    matches!(err, SondaError::Config(_)),
-                    "missing CSV file must produce Config variant, got: {err:?}"
-                );
+                panic!("missing CSV file must produce Generator(FileRead) variant, got: {err:?}");
             }
             Ok(_) => panic!("missing CSV file must return Err"),
         }

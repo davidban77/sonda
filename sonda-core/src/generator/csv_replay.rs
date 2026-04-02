@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use super::ValueGenerator;
-use crate::{ConfigError, SondaError};
+use crate::{ConfigError, GeneratorError, SondaError};
 
 /// A value generator that replays numeric values from a CSV file.
 ///
@@ -59,9 +59,11 @@ impl CsvReplayGenerator {
     ///
     /// # Errors
     ///
-    /// Returns [`SondaError::Config`] if:
-    /// - The file cannot be opened or read.
-    /// - No valid numeric values are found in the specified column.
+    /// Returns [`SondaError::Generator`] with [`GeneratorError::FileRead`] if
+    /// the file cannot be opened or read.
+    ///
+    /// Returns [`SondaError::Config`] if no valid numeric values are found in
+    /// the specified column.
     pub fn new(
         path: &str,
         column: usize,
@@ -70,10 +72,10 @@ impl CsvReplayGenerator {
     ) -> Result<Self, SondaError> {
         let file_path = Path::new(path);
         let content = std::fs::read_to_string(file_path).map_err(|e| {
-            SondaError::Config(ConfigError::invalid(format!(
-                "cannot read CSV file {:?}: {}",
-                path, e
-            )))
+            SondaError::Generator(GeneratorError::FileRead {
+                path: path.to_string(),
+                source: e,
+            })
         })?;
 
         let values = Self::parse_values(&content, column, has_header)?;
@@ -434,16 +436,28 @@ mod tests {
     // ---- File not found returns error -----------------------------------------
 
     #[test]
-    fn file_not_found_returns_error() {
+    fn file_not_found_returns_generator_file_read_error() {
         let result =
             CsvReplayGenerator::new("/nonexistent/path/that/does/not/exist.csv", 0, false, true);
         assert!(result.is_err(), "missing file must return an error");
         let err = result.err().expect("already confirmed is_err");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("cannot read CSV file"),
-            "error message should mention 'cannot read CSV file', got: {msg}"
-        );
+        match err {
+            SondaError::Generator(GeneratorError::FileRead {
+                ref path,
+                ref source,
+            }) => {
+                assert!(
+                    path.contains("does/not/exist.csv"),
+                    "FileRead path should contain the file name, got: {path}"
+                );
+                assert_eq!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "source io::Error should be NotFound"
+                );
+            }
+            _ => panic!("expected SondaError::Generator(FileRead), got: {err:?}"),
+        }
     }
 
     // ---- Invalid column index (out of bounds) returns error -------------------
