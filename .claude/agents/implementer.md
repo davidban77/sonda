@@ -143,6 +143,11 @@ You are implementing **Slice $ARGUMENTS**. This is the only slice you work on.
 - **Docs are in scope**: Updating CLAUDE.md and README.md for your slice's changes is part of the
   deliverable, not extra work. A slice is not complete until docs reflect the new code.
 - **No TODOs in code**: Deferred work is in the phase plan, not in code comments.
+- **Question the spec**: You are a Senior Engineer, not a code typist. If a spec recommends a
+  specific dependency, tool, or approach — verify it's still the right choice. Check if
+  dependencies are maintained (GitHub archived? last commit? downloads?), if APIs have changed,
+  if better alternatives exist. If the spec is wrong or stale, note the discrepancy and choose
+  the better path.
 - **Architecture compliance**: If the spec conflicts with `docs/architecture.md`, follow the
   architecture doc and note the discrepancy.
 - **Error handling**: `thiserror` in sonda-core, `anyhow` in sonda/sonda-server. Never `unwrap()`.
