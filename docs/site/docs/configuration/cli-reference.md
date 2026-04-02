@@ -6,26 +6,23 @@ Sonda provides three subcommands: `metrics` for metric generation, `logs` for lo
 ## Global options
 
 ```
-sonda [OPTIONS] <COMMAND>
-
-Options:
-  -q, --quiet    Suppress status banners (errors still print to stderr)
-  -h, --help     Print help
-  -V, --version  Print version
+sonda [--quiet | --verbose] [--dry-run] <COMMAND>
 ```
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--quiet` | `-q` | Suppress start/stop status banners. Errors still print to stderr. |
+| `--verbose` | `-v` | Print resolved scenario config at startup, then run normally. Mutually exclusive with `--quiet`. |
+| `--dry-run` | -- | Parse and validate the scenario config, print it, then exit without emitting events. |
 | `--help` | `-h` | Print help information. |
 | `--version` | `-V` | Print version. |
 
-The `--quiet` flag is global and goes **before** the subcommand:
+Global flags go **before** the subcommand:
 
 ```bash
 sonda -q metrics --name up --rate 1 --duration 5s
-sonda -q logs --mode template --rate 5 --duration 5s
-sonda -q run --scenario multi.yaml
+sonda --verbose metrics --name up --rate 1 --duration 5s
+sonda --dry-run run --scenario examples/multi-scenario.yaml
 ```
 
 ```bash
@@ -82,6 +79,137 @@ sonda -q metrics --name up --rate 5 --duration 5s > /tmp/data.txt
     Status banners go to stderr, data goes to stdout. Even without `--quiet`, you can
     safely redirect stdout to a file or pipe it to another program -- banners never mix
     with your data.
+
+### Dry run
+
+Use `--dry-run` to validate a scenario without emitting any events. Sonda parses the
+configuration, prints the resolved settings, and exits. This is useful for catching YAML
+errors and confirming what Sonda *would* do before committing to a long run.
+
+=== "Metrics"
+
+    ```bash
+    sonda --dry-run metrics --name cpu --rate 10 --duration 30s \
+      --value-mode sine --amplitude 50 --offset 50 --label host=web-01
+    ```
+
+    ```text title="Output"
+    [config] Resolved scenario config:
+
+      name:       cpu
+      signal:     metrics
+      rate:       10/s
+      duration:   30s
+      generator:  sine (amplitude: 50, period: 60s, offset: 50)
+      encoder:    prometheus_text
+      sink:       stdout
+      labels:     host=web-01
+
+    Validation: OK
+    ```
+
+=== "Logs"
+
+    ```bash
+    sonda --dry-run logs --mode template --rate 5 --duration 10s \
+      --message "Connection timeout" \
+      --severity-weights "info=0.7,warn=0.2,error=0.1"
+    ```
+
+    ```text title="Output"
+    [config] Resolved scenario config:
+
+      name:       logs
+      signal:     logs
+      rate:       5/s
+      duration:   10s
+      generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2)
+      encoder:    json_lines
+      sink:       stdout
+
+    Validation: OK
+    ```
+
+=== "Run (multi-scenario)"
+
+    ```bash
+    sonda --dry-run run --scenario examples/multi-scenario.yaml
+    ```
+
+    ```text title="Output"
+    [config] Resolved scenario config:
+
+      name:       cpu_usage
+      signal:     metrics
+      rate:       100/s
+      duration:   30s
+      generator:  sine (amplitude: 50, period: 60s, offset: 50)
+      encoder:    prometheus_text
+      sink:       stdout
+
+    [config] Resolved scenario config:
+
+      name:       app_logs
+      signal:     logs
+      rate:       10/s
+      duration:   30s
+      generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
+      encoder:    json_lines
+      sink:       file: /tmp/sonda-logs.json
+
+    Validation: OK
+    ```
+
+`--dry-run` works with scenario files too -- handy for validating YAML before deploying:
+
+```bash
+sonda --dry-run metrics --scenario examples/basic-metrics.yaml
+```
+
+!!! tip
+    `--dry-run` is orthogonal to `--quiet` and `--verbose`. It always prints the resolved
+    config regardless of other flags, since its whole purpose is to show you what was parsed.
+
+### Verbose mode
+
+Use `--verbose` / `-v` to print the resolved scenario config at startup, then continue
+running normally. This gives you the same config dump as `--dry-run`, followed by the
+regular start banner, events, and stop banner.
+
+```bash
+sonda --verbose metrics --name up --rate 1 --duration 2s
+```
+
+```text title="Output (stderr)"
+[config] Resolved scenario config:
+
+  name:       up
+  signal:     metrics
+  rate:       1/s
+  duration:   2s
+  generator:  constant (value: 0)
+  encoder:    prometheus_text
+  sink:       stdout
+
+▶ up  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 2s
+■ up  completed in 2.0s | events: 3 | bytes: 57 B | errors: 0
+```
+
+`--verbose` is mutually exclusive with `--quiet`. If you pass both, Sonda exits with an error:
+
+```text
+error: the argument '--verbose' cannot be used with '--quiet'
+```
+
+### Verbosity comparison
+
+| Output | Default | `--quiet` | `--verbose` | `--dry-run` |
+|--------|---------|-----------|-------------|-------------|
+| Resolved config | -- | -- | Yes | Yes |
+| Start banner | Yes | -- | Yes | -- |
+| Event data | Yes | Yes | Yes | -- |
+| Stop banner | Yes | -- | Yes | -- |
+| Errors | Yes | Yes | Yes | Yes |
 
 ## sonda metrics
 
@@ -287,6 +415,23 @@ The file must have a top-level `scenarios:` list. Each entry includes `signal_ty
 ```bash
 sonda run --scenario examples/multi-scenario.yaml
 ```
+
+### Aggregate summary
+
+After all scenarios finish, `sonda run` prints a summary line that aggregates totals across
+every scenario in the file:
+
+```text
+━━ run complete  scenarios: 2 | events: 3302 | bytes: 174.9 KB | errors: 0 | elapsed: 30.0s
+```
+
+The summary includes the scenario count, total events emitted, total bytes written, error count,
+and wall-clock elapsed time. Each individual scenario still prints its own stop banner before
+the aggregate line appears.
+
+!!! tip
+    Pipe the summary to a monitoring script to gate CI pipelines -- a non-zero `errors` count
+    means at least one scenario encountered a write failure.
 
 ## Precedence rules
 
