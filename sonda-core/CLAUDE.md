@@ -111,6 +111,10 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
   into a stack-allocated `[u8; 24]` — no heap allocation. JSON and syslog encoders use this to
   borrow a `&str` without going through `String`. The `format_rfc3339_millis(ts, buf)` variant
   appends directly into the caller's `Vec<u8>` buffer.
+- **Zero-allocation JSON label serialization.** The JSON encoder serializes labels and fields
+  directly from their source iterators via `LabelsRef` and `StringMapRef` wrappers that implement
+  `serde::Serialize`. No intermediate `BTreeMap<&str, &str>` is collected per event. The source
+  `Labels` (BTreeMap) and `fields` (BTreeMap) already iterate in sorted order.
 - **Pre-build label strings.** Labels don't change between events for a given scenario. Build the
   serialized label prefix once at construction time.
 - **Use `BufWriter`.** Never write individual lines to stdout or files without buffering.
