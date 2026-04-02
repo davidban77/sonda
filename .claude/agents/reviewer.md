@@ -140,3 +140,8 @@ discover. Specific checks:
 - **BLOCKERs must be fixed** before the slice can proceed.
 - **Be specific.** Always reference exact file, line, and what's wrong.
 - **Architecture doc is the source of truth.**
+- **Audit the spec, not just the code.** If the implementation follows a spec that is itself
+  flawed (e.g., recommending an archived dependency), flag it as a BLOCKER. A Staff Engineer
+  doesn't just check if code matches the spec — they check if the spec is correct. Verify
+  dependency health (archived? maintained? alternatives?) independently of what the implementer
+  chose.
