@@ -3,6 +3,9 @@
 Sinks deliver encoded bytes to their destination. You select a sink with the `sink.type` field. If
 omitted, the default is `stdout`.
 
+Most sinks buffer data before delivering it, which affects when you see output. For a full
+explanation of how this works, see [Sink Batching](sink-batching.md).
+
 ## stdout
 
 Writes events to standard output via a buffered writer. This is the default sink.
