@@ -4,9 +4,11 @@
 
 pub mod channel;
 pub mod file;
+#[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "kafka")]
 pub mod kafka;
+#[cfg(feature = "http")]
 pub mod loki;
 pub mod memory;
 #[cfg(feature = "remote-write")]
@@ -75,6 +77,9 @@ pub enum SinkConfig {
     /// Bytes are accumulated in a buffer until `batch_size` bytes are reached,
     /// then flushed as a single POST request. The `flush()` method sends any
     /// remaining buffered data.
+    ///
+    /// Requires the `http` Cargo feature to be enabled.
+    #[cfg(feature = "http")]
     #[serde(rename = "http_push")]
     HttpPush {
         /// Target URL for HTTP POST requests, e.g. `"http://localhost:9090/api/v1/write"`.
@@ -150,6 +155,9 @@ pub enum SinkConfig {
     /// Stream labels are sourced from the scenario-level `labels` configuration
     /// and passed to [`create_sink()`] via the `labels` parameter, keeping label
     /// config consistent with all other signal types.
+    ///
+    /// Requires the `http` Cargo feature to be enabled.
+    #[cfg(feature = "http")]
     #[serde(rename = "loki")]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
@@ -163,19 +171,23 @@ pub enum SinkConfig {
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
 ///
-/// The optional `labels` parameter is used only by the Loki sink to set stream
-/// labels. For all other sink types, pass `None`. Log scenarios pass the
-/// scenario-level labels here so that Loki stream labels are configured at the
-/// same level as every other signal type.
+/// The optional `labels` parameter is used only by the Loki sink (feature
+/// `http`) to set stream labels. For all other sink types, pass `None`. Log
+/// scenarios pass the scenario-level labels here so that Loki stream labels
+/// are configured at the same level as every other signal type.
 pub fn create_sink(
     config: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<Box<dyn Sink>, SondaError> {
+    // `labels` is only consumed by the Loki arm (feature = "http"). Suppress
+    // the unused-variable warning when that feature is disabled.
+    let _ = &labels;
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
         SinkConfig::Tcp { address } => Ok(Box::new(tcp::TcpSink::new(address)?)),
         SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
+        #[cfg(feature = "http")]
         SinkConfig::HttpPush {
             url,
             content_type,
@@ -198,6 +210,7 @@ pub fn create_sink(
         SinkConfig::Kafka { brokers, topic } => {
             Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
         }
+        #[cfg(feature = "http")]
         SinkConfig::Loki { url, batch_size } => {
             let bs = batch_size.unwrap_or(100);
             let loki_labels = labels.cloned().unwrap_or_default();
@@ -562,6 +575,7 @@ sink:
     // SinkConfig::HttpPush with custom headers deserialization
     // ---------------------------------------------------------------------------
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_config_http_push_with_headers_deserializes() {
         let yaml = r#"
@@ -595,6 +609,7 @@ headers:
         }
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_config_http_push_without_headers_is_backward_compatible() {
         let yaml = r#"
@@ -621,6 +636,7 @@ content_type: "text/plain"
         }
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_config_http_push_with_empty_headers_map_deserializes() {
         let yaml = r#"
@@ -641,6 +657,7 @@ headers: {}
         }
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn sink_config_http_push_with_headers_is_cloneable_and_debuggable() {
         let mut hdr = HashMap::new();
@@ -655,5 +672,71 @@ headers: {}
         let debug_str = format!("{cloned:?}");
         assert!(debug_str.contains("HttpPush"));
         assert!(debug_str.contains("X-Custom"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Feature gate: `http` feature controls HttpPush and Loki availability
+    // ---------------------------------------------------------------------------
+
+    /// When the `http` feature is enabled, `SinkConfig::HttpPush` must be
+    /// constructible and the factory must produce a valid sink.
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_feature_enables_http_push_variant() {
+        let config = SinkConfig::HttpPush {
+            url: "http://127.0.0.1:19999/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            headers: None,
+        };
+        let result = create_sink(&config, None);
+        assert!(
+            result.is_ok(),
+            "HttpPush variant must be available when http feature is enabled"
+        );
+    }
+
+    /// When the `http` feature is enabled, `SinkConfig::Loki` must be
+    /// constructible and the factory must produce a valid sink.
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_feature_enables_loki_variant() {
+        let config = SinkConfig::Loki {
+            url: "http://127.0.0.1:19999".to_string(),
+            batch_size: None,
+        };
+        let result = create_sink(&config, None);
+        assert!(
+            result.is_ok(),
+            "Loki variant must be available when http feature is enabled"
+        );
+    }
+
+    /// When the `http` feature is enabled, `type: http_push` YAML must
+    /// deserialize into the `HttpPush` variant.
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_feature_enables_http_push_deserialization() {
+        let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        assert!(matches!(config, SinkConfig::HttpPush { .. }));
+    }
+
+    /// When the `http` feature is enabled, `type: loki` YAML must
+    /// deserialize into the `Loki` variant.
+    #[cfg(feature = "http")]
+    #[test]
+    fn http_feature_enables_loki_deserialization() {
+        let yaml = "type: loki\nurl: \"http://localhost:3100\"";
+        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        assert!(matches!(config, SinkConfig::Loki { .. }));
+    }
+
+    /// Non-HTTP sinks (stdout, file, tcp, udp) must remain available
+    /// regardless of the `http` feature flag.
+    #[test]
+    fn non_http_sinks_available_without_http_feature() {
+        // This test compiles and runs with or without the `http` feature.
+        assert!(create_sink(&SinkConfig::Stdout, None).is_ok());
     }
 }

@@ -45,8 +45,8 @@ src/
 │   ├── file.rs         ← BufWriter<File>
 │   ├── tcp.rs          ← TCP socket (BufWriter<TcpStream>)
 │   ├── udp.rs          ← UDP socket (UdpSocket)
-│   ├── http.rs         ← HTTP push sink (ureq)
-│   ├── loki.rs         ← Loki log push sink (HTTP, ureq)
+│   ├── http.rs         ← HTTP push sink (ureq, feature = "http")
+│   ├── loki.rs         ← Loki log push sink (HTTP, ureq, feature = "http")
 │   ├── remote_write.rs ← Prometheus remote write sink (batches TimeSeries, snappy, feature = "remote-write")
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)

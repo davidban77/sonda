@@ -115,6 +115,18 @@ Add `sonda-core` as a dependency to use the generation engine programmatically:
 sonda-core = "0.3"
 ```
 
+Heavy dependencies are gated behind Cargo features so library consumers only pay
+for what they use:
+
+| Feature | Dependencies | Sinks enabled |
+|---------|-------------|---------------|
+| `http` | `ureq` (rustls) | HTTP push, Loki |
+| `remote-write` | `prost`, `snap`, `ureq` | Prometheus remote write |
+| `kafka` | `rskafka`, `tokio`, `chrono` | Kafka |
+
+Generators, encoders, and the stdout/file/TCP/UDP/memory/channel sinks are always
+available with no optional dependencies.
+
 See the [sonda-core docs on docs.rs](https://docs.rs/sonda-core) for API details.
 
 ## Contributing

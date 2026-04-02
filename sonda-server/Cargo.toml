@@ -12,6 +12,8 @@ description = "HTTP control plane for Sonda — synthetic telemetry generator"
 readme = "../README.md"
 
 [features]
+default = ["http"]
+http = ["sonda-core/http"]
 remote-write = ["sonda-core/remote-write"]
 kafka = ["sonda-core/kafka"]
 
