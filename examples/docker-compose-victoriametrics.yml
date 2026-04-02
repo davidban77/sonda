@@ -160,6 +160,12 @@ services:
     depends_on:
       victoriametrics:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # ---------------------------------------------------------------------------
   # Loki: log aggregation system.
