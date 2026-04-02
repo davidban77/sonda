@@ -155,7 +155,7 @@ cargo fmt --all -- --check
 - **Sine**: value(0) == offset. value at quarter-period ≈ offset + amplitude. value at half-period ≈ offset. Symmetry: value(t) + value(t + half_period) ≈ 2 * offset.
 - **Sawtooth**: value(0) == min. value(period_ticks - 1) approaches max. value(period_ticks) == min (reset).
 - **Factory**: `create_generator(Constant{value: 1.0}, _)` returns a generator where `value(0) == 1.0`. Each config variant produces the correct concrete type.
-- **Config deserialization**: `serde_yaml::from_str` with `type: sine` YAML → correct `GeneratorConfig::Sine`.
+- **Config deserialization**: `serde_yaml_ng::from_str` with `type: sine` YAML → correct `GeneratorConfig::Sine`.
 
 ### Review criteria
 - `ValueGenerator` trait is `&self` only (stateless, no `&mut self`).

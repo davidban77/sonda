@@ -191,7 +191,7 @@ will use.
   tokio = { version = "1", features = ["full"] }
   serde = { workspace = true }
   serde_json = { workspace = true }
-  serde_yaml = { workspace = true }
+  serde_yaml_ng = { workspace = true }
   anyhow = { workspace = true }
   tower-http = { version = "0.5", features = ["cors", "trace"] }
   tracing = "0.1"

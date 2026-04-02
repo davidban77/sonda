@@ -173,6 +173,19 @@ Sink implementations follow a natural progression of complexity:
 | **Channel** | In-memory channel sink (`mpsc::Sender<Vec<u8>>`). For testing and inter-thread communication. |
 | **Memory** | In-memory buffer sink (`Vec<Vec<u8>>`). For testing and embedding. |
 
+### 5.6 Cargo Features
+
+`sonda-core` uses Cargo features to keep the default dependency footprint minimal. Consumers who only need generators and encoders can omit heavy transitive dependencies like HTTP/TLS stacks and async runtimes.
+
+| Feature | Default | Dependencies Gated | Description |
+|---------|---------|-------------------|-------------|
+| `config` | yes | `serde_yaml_ng` | Enables `serde::Deserialize` on all config types. Disable for library consumers who construct configs in code. |
+| `http` | no | `ureq` (+ rustls, ring, webpki) | Enables `HttpPush` and `Loki` sinks. |
+| `kafka` | no | `rskafka`, `tokio` | Enables the Kafka sink. |
+| `remote-write` | no | `prost`, `snap`, `ureq` | Enables Prometheus remote write encoder and sink. |
+
+The CLI (`sonda`) and HTTP server (`sonda-server`) enable all features they need in their own `Cargo.toml`. End users of the pre-built binary or Docker image get every feature enabled.
+
 ---
 
 ## 6. Configuration
