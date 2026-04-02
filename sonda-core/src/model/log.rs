@@ -355,14 +355,14 @@ mod tests {
     #[cfg(feature = "config")]
     #[test]
     fn severity_info_serializes_to_lowercase_yaml() {
-        let s = serde_yaml::to_string(&Severity::Info).unwrap();
+        let s = serde_yaml_ng::to_string(&Severity::Info).unwrap();
         assert!(s.trim() == "info", "expected 'info', got: {s}");
     }
 
     #[cfg(feature = "config")]
     #[test]
     fn severity_error_serializes_to_lowercase_yaml() {
-        let s = serde_yaml::to_string(&Severity::Error).unwrap();
+        let s = serde_yaml_ng::to_string(&Severity::Error).unwrap();
         assert!(s.trim() == "error", "expected 'error', got: {s}");
     }
 

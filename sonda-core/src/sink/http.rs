@@ -613,7 +613,7 @@ mod tests {
     #[test]
     fn sink_config_http_push_deserializes_with_required_fields() {
         let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::HttpPush {
                 url,
@@ -641,7 +641,7 @@ url: "http://localhost:9090/push"
 content_type: "application/x-www-form-urlencoded"
 batch_size: 8192
 "#;
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::HttpPush {
                 url,
@@ -664,7 +664,7 @@ batch_size: 8192
     #[test]
     fn sink_config_http_push_requires_url_field() {
         let yaml = "type: http_push";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "http_push without url must fail deserialization"

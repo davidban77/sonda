@@ -368,7 +368,7 @@ generator:
   value: 1.0
 phase_offset: "5s"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.phase_offset.as_deref(), Some("5s"));
     }
 
@@ -382,7 +382,7 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.phase_offset.is_none());
     }
 
@@ -397,7 +397,7 @@ generator:
   value: 1.0
 phase_offset: "500ms"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.phase_offset.as_deref(), Some("500ms"));
     }
 
@@ -412,7 +412,7 @@ generator:
   value: 1.0
 phase_offset: "2m"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.phase_offset.as_deref(), Some("2m"));
     }
 
@@ -433,7 +433,7 @@ generator:
       field_pools: {}
 phase_offset: "3s"
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.phase_offset.as_deref(), Some("3s"));
     }
 
@@ -449,7 +449,7 @@ generator:
     - message: "test"
       field_pools: {}
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.phase_offset.is_none());
     }
 
@@ -468,7 +468,7 @@ generator:
   value: 1.0
 clock_group: alert-test
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.clock_group.as_deref(), Some("alert-test"));
     }
 
@@ -482,7 +482,7 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.clock_group.is_none());
     }
 
@@ -499,7 +499,7 @@ generator:
       field_pools: {}
 clock_group: log-sync
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.clock_group.as_deref(), Some("log-sync"));
     }
 
@@ -515,7 +515,7 @@ generator:
     - message: "test"
       field_pools: {}
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.clock_group.is_none());
     }
 
@@ -538,7 +538,7 @@ labels:
   device: wlan0
   hostname: router-01
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let labels = config.labels.as_ref().expect("labels must be Some");
         assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
         assert_eq!(
@@ -560,7 +560,7 @@ generator:
     - message: "test"
       field_pools: {}
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             config.labels.is_none(),
             "labels must default to None when not in YAML"
@@ -580,7 +580,7 @@ generator:
       field_pools: {}
 labels: {}
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let labels = config
             .labels
             .as_ref()
@@ -601,7 +601,7 @@ labels:
   zone: eu1
   env: production
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let labels = config.labels.as_ref().expect("labels must be Some");
         assert_eq!(labels.get("zone").map(String::as_str), Some("eu1"));
         assert_eq!(labels.get("env").map(String::as_str), Some("production"));
@@ -623,7 +623,7 @@ generator:
 phase_offset: "30s"
 clock_group: compound-alert
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.phase_offset.as_deref(), Some("30s"));
         assert_eq!(config.clock_group.as_deref(), Some("compound-alert"));
     }
@@ -779,7 +779,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 2);
 
         assert_eq!(config.scenarios[0].phase_offset(), Some("0s"));
@@ -805,7 +805,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 1);
         assert_eq!(config.scenarios[0].phase_offset(), None);
         assert_eq!(config.scenarios[0].clock_group(), None);
@@ -815,7 +815,7 @@ scenarios:
     #[test]
     fn multi_metric_correlation_example_deserializes() {
         let yaml = include_str!("../../../examples/multi-metric-correlation.yaml");
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 2, "example must have 2 scenarios");
 
         // First scenario: cpu_usage with phase_offset "0s"
@@ -852,7 +852,7 @@ scenarios:
     sink:
       type: stdout
 "#;
-        let config: MultiScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.scenarios.len(), 1);
         assert_eq!(config.scenarios[0].phase_offset(), Some("2s"));
         assert_eq!(config.scenarios[0].clock_group(), Some("log-group"));
@@ -875,7 +875,7 @@ generator:
   value: 1.0
 phase_offset: "3s"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let dur = parse_duration(config.phase_offset.as_deref().unwrap()).unwrap();
         assert_eq!(dur, std::time::Duration::from_secs(3));
     }
@@ -907,7 +907,7 @@ cardinality_spikes:
     strategy: random
     seed: 42
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let spikes = config
             .cardinality_spikes
             .as_ref()
@@ -932,7 +932,7 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             config.cardinality_spikes.is_none(),
             "cardinality_spikes must be None when absent from YAML"
@@ -954,7 +954,7 @@ cardinality_spikes:
     for: 10s
     cardinality: 10
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let spikes = config.cardinality_spikes.unwrap();
         assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
     }
@@ -976,7 +976,7 @@ cardinality_spikes:
     for: 10s
     cardinality: 100
 "#;
-        let config: LogScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let spikes = config.cardinality_spikes.unwrap();
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].label, "pod_name");
@@ -999,7 +999,7 @@ gaps:
   every: 2m
   for: 20s
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.cardinality_spikes.is_none());
         assert!(config.gaps.is_some());
         assert_eq!(config.name, "compat_test");

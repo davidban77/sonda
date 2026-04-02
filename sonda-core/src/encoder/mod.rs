@@ -215,14 +215,14 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // EncoderConfig: internally-tagged deserialization (`type:` field)
-    // These tests require the `config` feature (serde_yaml).
+    // These tests require the `config` feature (serde_yaml_ng).
     // ---------------------------------------------------------------------------
 
     #[cfg(feature = "config")]
     #[test]
     fn encoder_config_prometheus_text_deserializes_with_type_field() {
         let yaml = "type: prometheus_text";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(config, EncoderConfig::PrometheusText { .. }));
     }
 
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn encoder_config_json_lines_deserializes_with_type_field() {
         let yaml = "type: json_lines";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(config, EncoderConfig::JsonLines { .. }));
     }
 
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn encoder_config_influx_lp_without_field_key_deserializes_with_type_field() {
         let yaml = "type: influx_lp";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn encoder_config_influx_lp_with_field_key_deserializes_with_type_field() {
         let yaml = "type: influx_lp\nfield_key: requests";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol { field_key: Some(ref k), .. } if k == "requests"
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn encoder_config_unknown_type_returns_error() {
         let yaml = "type: no_such_encoder";
-        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<EncoderConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "unknown type tag should fail deserialization"
@@ -275,7 +275,7 @@ mod tests {
     fn encoder_config_missing_type_field_returns_error() {
         // Without the `type` field the internally-tagged enum cannot identify the variant.
         let yaml = "prometheus_text";
-        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<EncoderConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "missing type field should fail deserialization"
@@ -287,7 +287,7 @@ mod tests {
     fn encoder_config_old_external_tag_format_is_rejected() {
         // The old externally-tagged format (`!prometheus_text`) must no longer be accepted.
         let yaml = "!prometheus_text";
-        let result: Result<EncoderConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<EncoderConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "externally-tagged YAML format must be rejected in favour of internally-tagged"
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn encoder_config_remote_write_deserializes_from_yaml() {
         let yaml = "type: remote_write";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             matches!(config, EncoderConfig::RemoteWrite),
             "should deserialize as RemoteWrite variant"
@@ -546,7 +546,7 @@ sink:
   type: remote_write
   url: "http://localhost:8428/api/v1/write"
 "#;
-        let config: ScenarioConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.name, "rw_test_metric");
         assert!(matches!(config.encoder, EncoderConfig::RemoteWrite));
         assert!(matches!(config.sink, SinkConfig::RemoteWrite { .. }));
@@ -601,14 +601,14 @@ sink:
 
     // ---------------------------------------------------------------------------
     // EncoderConfig deserialization: precision field
-    // These tests require the `config` feature (serde_yaml).
+    // These tests require the `config` feature (serde_yaml_ng).
     // ---------------------------------------------------------------------------
 
     #[cfg(feature = "config")]
     #[test]
     fn prometheus_text_with_precision_deserializes() {
         let yaml = "type: prometheus_text\nprecision: 3";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::PrometheusText { precision: Some(3) }
@@ -619,7 +619,7 @@ sink:
     #[test]
     fn prometheus_text_without_precision_defaults_to_none() {
         let yaml = "type: prometheus_text";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::PrometheusText { precision: None }
@@ -630,7 +630,7 @@ sink:
     #[test]
     fn influx_with_precision_and_field_key_deserializes() {
         let yaml = "type: influx_lp\nfield_key: gauge\nprecision: 2";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::InfluxLineProtocol {
@@ -644,7 +644,7 @@ sink:
     #[test]
     fn json_lines_with_precision_deserializes() {
         let yaml = "type: json_lines\nprecision: 5";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::JsonLines { precision: Some(5) }
@@ -655,7 +655,7 @@ sink:
     #[test]
     fn json_lines_without_precision_defaults_to_none() {
         let yaml = "type: json_lines";
-        let config: EncoderConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(matches!(
             config,
             EncoderConfig::JsonLines { precision: None }

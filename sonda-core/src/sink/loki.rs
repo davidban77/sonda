@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn sink_config_loki_deserializes_with_url_only() {
         let yaml = "type: loki\nurl: \"http://localhost:3100\"";
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::Loki {
                 ref url,
@@ -736,7 +736,7 @@ type: loki
 url: "http://localhost:3100"
 batch_size: 50
 "#;
-        let config: SinkConfig = serde_yaml::from_str(yaml).expect("should deserialize");
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
             SinkConfig::Loki {
                 ref url,
@@ -753,7 +753,7 @@ batch_size: 50
     #[test]
     fn sink_config_loki_requires_url_field() {
         let yaml = "type: loki";
-        let result: Result<SinkConfig, _> = serde_yaml::from_str(yaml);
+        let result: Result<SinkConfig, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
             "loki variant without url must fail deserialization"
@@ -907,7 +907,7 @@ sink:
   batch_size: 50
 "#;
         let config: LogScenarioConfig =
-            serde_yaml::from_str(yaml).expect("loki-json-lines.yaml must deserialize correctly");
+            serde_yaml_ng::from_str(yaml).expect("loki-json-lines.yaml must deserialize correctly");
         assert_eq!(config.name, "app_logs_loki");
         assert!((config.rate - 10.0).abs() < f64::EPSILON);
         // Labels are at the scenario level, not inside the sink config.

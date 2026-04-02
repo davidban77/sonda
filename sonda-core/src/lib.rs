@@ -197,8 +197,8 @@ generator:
   type: constant
   value: 1.0
 "#;
-        let config: ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("YAML deserialization must work with config feature");
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml)
+            .expect("YAML deserialization must work with config feature");
         assert_eq!(config.name, "test");
     }
 

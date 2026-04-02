@@ -35,7 +35,7 @@ fn log_template_yaml_deserializes_without_error() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml::from_str::<LogScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
         .unwrap_or_else(|e| panic!("log-template.yaml failed to deserialize: {e}"));
 }
 
@@ -44,7 +44,7 @@ fn log_template_yaml_has_correct_name() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert_eq!(
         config.name, "app_logs_template",
         "name must be app_logs_template"
@@ -56,7 +56,7 @@ fn log_template_yaml_has_correct_rate() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert_eq!(config.rate, 10.0, "rate must be 10");
 }
 
@@ -65,7 +65,7 @@ fn log_template_yaml_has_correct_duration() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert_eq!(
         config.duration.as_deref(),
         Some("60s"),
@@ -78,7 +78,7 @@ fn log_template_yaml_has_template_generator_with_seed_42() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     match &config.generator {
         LogGeneratorConfig::Template {
             templates,
@@ -101,7 +101,7 @@ fn log_template_yaml_has_json_lines_encoder() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
@@ -113,7 +113,7 @@ fn log_template_yaml_has_stdout_sink() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -125,7 +125,7 @@ fn log_template_yaml_generator_factory_succeeds_and_resolves_placeholders() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     let gen = create_log_generator(&config.generator)
         .expect("log template generator factory must succeed");
     // Seeded generator must produce deterministic events with no unresolved placeholders.
@@ -144,7 +144,7 @@ fn log_template_yaml_sink_factory_succeeds() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     let _sink =
         create_sink(&config.sink, None).expect("sink factory must succeed for log-template.yaml");
 }
@@ -154,7 +154,7 @@ fn log_template_yaml_generator_is_deterministic_for_same_tick() {
     let path = workspace_file("examples/log-template.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-template.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     let gen1 = create_log_generator(&config.generator).expect("factory must succeed");
     let gen2 = create_log_generator(&config.generator).expect("factory must succeed");
     // Same seed, same tick → same message.
@@ -176,7 +176,7 @@ fn log_replay_yaml_deserializes_without_error() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml::from_str::<LogScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
         .unwrap_or_else(|e| panic!("log-replay.yaml failed to deserialize: {e}"));
 }
 
@@ -185,7 +185,7 @@ fn log_replay_yaml_has_correct_name() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert_eq!(
         config.name, "app_logs_replay",
         "name must be app_logs_replay"
@@ -197,7 +197,7 @@ fn log_replay_yaml_has_correct_rate() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert_eq!(config.rate, 5.0, "rate must be 5");
 }
 
@@ -206,7 +206,7 @@ fn log_replay_yaml_has_replay_generator() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     match &config.generator {
         LogGeneratorConfig::Replay { file } => {
             assert!(!file.is_empty(), "replay file path must not be empty");
@@ -220,7 +220,7 @@ fn log_replay_yaml_has_json_lines_encoder() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
@@ -232,7 +232,7 @@ fn log_replay_yaml_has_stdout_sink() {
     let path = workspace_file("examples/log-replay.yaml");
     let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
     let config: LogScenarioConfig =
-        serde_yaml::from_str(&contents).expect("deserialize log-replay.yaml");
+        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -249,7 +249,7 @@ fn log_scenario_fixture_template_mode_deserializes() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let config: LogScenarioConfig = serde_yaml::from_str(&contents)
+    let config: LogScenarioConfig = serde_yaml_ng::from_str(&contents)
         .unwrap_or_else(|e| panic!("log-template fixture failed to deserialize: {e}"));
     assert_eq!(config.rate, 10.0, "fixture rate must be 10");
     assert!(

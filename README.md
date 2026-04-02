@@ -120,14 +120,14 @@ for what they use:
 
 | Feature | Default | Dependencies | What it enables |
 |---------|---------|-------------|-----------------|
-| `config` | yes | `serde_yaml` | `Deserialize` impls on config types for YAML parsing |
+| `config` | yes | `serde_yaml_ng` | `Deserialize` impls on config types for YAML parsing |
 | `http` | no | `ureq` (rustls) | HTTP push and Loki sinks |
 | `remote-write` | no | `prost`, `snap`, `ureq` | Prometheus remote write encoder and sink |
 | `kafka` | no | `rskafka`, `tokio`, `chrono` | Kafka sink |
 
 Generators, encoders, and the stdout/file/TCP/UDP/memory/channel sinks are always
 available with no optional dependencies. Library consumers who build configs in code
-can disable the `config` feature to avoid pulling in `serde_yaml`.
+can disable the `config` feature to avoid pulling in `serde_yaml_ng`.
 
 See the [sonda-core docs on docs.rs](https://docs.rs/sonda-core) for API details.
 

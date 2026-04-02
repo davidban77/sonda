@@ -41,7 +41,7 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     let mut config = if let Some(ref path) = args.scenario {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read scenario file {}", path.display()))?;
-        serde_yaml::from_str::<ScenarioConfig>(&contents)
+        serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
         // No scenario file — build a baseline config from required flags.
@@ -352,7 +352,7 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
     let mut config = if let Some(ref path) = args.scenario {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read scenario file {}", path.display()))?;
-        serde_yaml::from_str::<LogScenarioConfig>(&contents)
+        serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
         // No scenario file — build from CLI flags.
@@ -651,7 +651,7 @@ pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
     let path = &args.scenario;
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read scenario file {}", path.display()))?;
-    serde_yaml::from_str::<MultiScenarioConfig>(&contents)
+    serde_yaml_ng::from_str::<MultiScenarioConfig>(&contents)
         .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
 }
 

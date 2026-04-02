@@ -455,13 +455,13 @@ mod tests {
     }
 
     // ---- Config deserialization tests ----------------------------------------
-    // These tests require the `config` feature (serde_yaml).
+    // These tests require the `config` feature (serde_yaml_ng).
 
     #[cfg(feature = "config")]
     #[test]
     fn deserialize_constant_config() {
         let yaml = "type: constant\nvalue: 42.0\n";
-        let config: GeneratorConfig = serde_yaml::from_str(yaml).expect("deserialize constant");
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize constant");
         match config {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(value, 42.0);
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn deserialize_uniform_config_with_seed() {
         let yaml = "type: uniform\nmin: 1.0\nmax: 5.0\nseed: 99\n";
-        let config: GeneratorConfig = serde_yaml::from_str(yaml).expect("deserialize uniform");
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize uniform");
         match config {
             GeneratorConfig::Uniform { min, max, seed } => {
                 assert_eq!(min, 1.0);
@@ -490,7 +490,7 @@ mod tests {
     fn deserialize_uniform_config_without_seed() {
         let yaml = "type: uniform\nmin: 0.0\nmax: 10.0\n";
         let config: GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize uniform no seed");
+            serde_yaml_ng::from_str(yaml).expect("deserialize uniform no seed");
         match config {
             GeneratorConfig::Uniform { min, max, seed } => {
                 assert_eq!(min, 0.0);
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn deserialize_sine_config() {
         let yaml = "type: sine\namplitude: 5.0\nperiod_secs: 30\noffset: 10.0\n";
-        let config: GeneratorConfig = serde_yaml::from_str(yaml).expect("deserialize sine");
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize sine");
         match config {
             GeneratorConfig::Sine {
                 amplitude,
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn deserialize_sawtooth_config() {
         let yaml = "type: sawtooth\nmin: 0.0\nmax: 100.0\nperiod_secs: 60.0\n";
-        let config: GeneratorConfig = serde_yaml::from_str(yaml).expect("deserialize sawtooth");
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize sawtooth");
         match config {
             GeneratorConfig::Sawtooth {
                 min,
@@ -544,7 +544,7 @@ mod tests {
     fn deserialize_sequence_config_with_repeat() {
         let yaml = "type: sequence\nvalues: [1.0, 2.0, 3.0]\nrepeat: true\n";
         let config: GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize sequence with repeat");
+            serde_yaml_ng::from_str(yaml).expect("deserialize sequence with repeat");
         match config {
             GeneratorConfig::Sequence { values, repeat } => {
                 assert_eq!(values, vec![1.0, 2.0, 3.0]);
@@ -559,7 +559,7 @@ mod tests {
     fn deserialize_sequence_config_without_repeat() {
         let yaml = "type: sequence\nvalues: [10.0, 20.0]\n";
         let config: GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize sequence without repeat");
+            serde_yaml_ng::from_str(yaml).expect("deserialize sequence without repeat");
         match config {
             GeneratorConfig::Sequence { values, repeat } => {
                 assert_eq!(values, vec![10.0, 20.0]);
@@ -574,7 +574,7 @@ mod tests {
     fn deserialize_sequence_config_repeat_false() {
         let yaml = "type: sequence\nvalues: [5.0]\nrepeat: false\n";
         let config: GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize sequence repeat=false");
+            serde_yaml_ng::from_str(yaml).expect("deserialize sequence repeat=false");
         match config {
             GeneratorConfig::Sequence { values, repeat } => {
                 assert_eq!(values, vec![5.0]);
@@ -590,7 +590,7 @@ mod tests {
         // YAML integers should coerce to f64
         let yaml = "type: sequence\nvalues: [10, 20, 30]\nrepeat: true\n";
         let config: GeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize sequence with integer values");
+            serde_yaml_ng::from_str(yaml).expect("deserialize sequence with integer values");
         match config {
             GeneratorConfig::Sequence { values, repeat } => {
                 assert_eq!(values, vec![10.0, 20.0, 30.0]);
@@ -624,7 +624,7 @@ sink:
   type: stdout
 ";
         let config: crate::config::ScenarioConfig =
-            serde_yaml::from_str(yaml).expect("example YAML must deserialize");
+            serde_yaml_ng::from_str(yaml).expect("example YAML must deserialize");
         assert_eq!(config.name, "cpu_spike_test");
         assert_eq!(config.rate, 1.0);
         assert_eq!(config.duration, Some("80s".to_string()));
@@ -657,7 +657,7 @@ sink:
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------
-    // These tests require the `config` feature (serde_yaml).
+    // These tests require the `config` feature (serde_yaml_ng).
 
     #[cfg(feature = "config")]
     #[test]
@@ -672,7 +672,7 @@ templates:
         - bob
 ";
         let config: LogGeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize template config");
+            serde_yaml_ng::from_str(yaml).expect("deserialize template config");
         match config {
             LogGeneratorConfig::Template {
                 templates,
@@ -711,7 +711,7 @@ severity_weights:
 seed: 42
 ";
         let config: LogGeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize template config with weights");
+            serde_yaml_ng::from_str(yaml).expect("deserialize template config with weights");
         match config {
             LogGeneratorConfig::Template {
                 severity_weights,
@@ -733,7 +733,7 @@ seed: 42
     fn deserialize_log_replay_config() {
         let yaml = "type: replay\nfile: /var/log/app.log\n";
         let config: LogGeneratorConfig =
-            serde_yaml::from_str(yaml).expect("deserialize replay config");
+            serde_yaml_ng::from_str(yaml).expect("deserialize replay config");
         match config {
             LogGeneratorConfig::Replay { file } => {
                 assert_eq!(file, "/var/log/app.log");
