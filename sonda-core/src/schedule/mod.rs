@@ -13,6 +13,7 @@ pub mod stats;
 use std::time::Duration;
 
 use crate::config::SpikeStrategy;
+use crate::util::splitmix64;
 
 /// Configuration for a gap window (intentional silent period).
 #[derive(Debug, Clone)]
@@ -161,17 +162,6 @@ impl CardinalitySpikeWindow {
             }
         }
     }
-}
-
-/// SplitMix64 mixing function — deterministic hash of a u64 input.
-///
-/// Produces a well-distributed output from any input. Used by the `Random`
-/// spike strategy to generate deterministic label values.
-fn splitmix64(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9e3779b97f4a7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-    x ^ (x >> 31)
 }
 
 /// Returns `true` if the scheduler should be in a cardinality spike at the
