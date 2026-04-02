@@ -1,7 +1,7 @@
 //! The log scenario event loop.
 //!
-//! Mirrors the structure of [`super::runner`] but drives a [`LogGenerator`]
-//! and calls [`Encoder::encode_log`] instead of [`Encoder::encode_metric`].
+//! Mirrors the structure of [`super::runner`] but drives a `LogGenerator`
+//! and calls `Encoder::encode_log` instead of `Encoder::encode_metric`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
