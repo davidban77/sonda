@@ -86,6 +86,17 @@ See [Docker deployment](../deployment/docker.md) for the full stack setup.
 
 See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough.
 
+## Alerting Pipeline
+
+| File | Type | Description |
+|------|------|-------------|
+| `alertmanager/alerting-scenario.yaml` | Sonda scenario | Sine wave pushing to VictoriaMetrics for alert evaluation |
+| `alertmanager/alert-rules.yml` | vmalert rules | HighCpuUsage (>90) and ElevatedCpuUsage (>70) alerts |
+| `alertmanager/alertmanager.yml` | Alertmanager config | Routes all alerts to the webhook receiver |
+
+These files are used with the `--profile alerting` Docker Compose profile. See the
+[Alerting Pipeline](alerting-pipeline.md) guide for the full walkthrough.
+
 ## Recording Rules
 
 | File | Generator | Encoder | Sink | Description |

@@ -1,0 +1,44 @@
+# Alerting pipeline scenario
+#
+# Produces a sine wave that crosses alert thresholds and pushes directly to
+# VictoriaMetrics via the HTTP import API. Designed for the alerting Docker
+# Compose profile: vmalert evaluates the rules, fires alerts to Alertmanager,
+# and Alertmanager routes them to the webhook receiver.
+#
+# The sine wave oscillates between 0 and 100 with a 30-second period, crossing
+# the warning threshold (70) and critical threshold (90) twice per cycle.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/alertmanager/alerting-scenario.yaml
+#
+# Verify data arrived:
+#   curl "http://localhost:8428/api/v1/query?query=docker_alert_cpu"
+#
+# Check fired alerts:
+#   curl -s http://localhost:8880/api/v1/alerts | jq .
+
+name: docker_alert_cpu
+rate: 2
+duration: 300s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 30
+  offset: 50.0
+
+labels:
+  host: docker-alert-demo
+  region: us-east-1
+  service: payment-service
+  env: staging
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"

@@ -137,3 +137,26 @@ or open Grafana and navigate to **Dashboards > Sonda > Sonda Overview**.
     The stack includes vmagent for remote write relay. You can push protobuf metrics
     through vmagent using `examples/remote-write-vm.yaml`.
     See [Encoders](../configuration/encoders.md) for details.
+
+### Alerting Profile
+
+Add vmalert, Alertmanager, and a webhook receiver to test the complete alerting loop:
+
+```bash
+docker compose -f examples/docker-compose-victoriametrics.yml \
+  --profile alerting up -d
+```
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `vmalert` | 8880 | Rule evaluation engine |
+| `alertmanager` | 9093 | Alert routing and notification |
+| `webhook-receiver` | 8090 | HTTP echo server (shows alert payloads) |
+
+Push a threshold-crossing metric and watch alerts flow through to the webhook:
+
+```bash
+sonda metrics --scenario examples/alertmanager/alerting-scenario.yaml
+```
+
+See the [Alerting Pipeline](../guides/alerting-pipeline.md) guide for the full walkthrough.

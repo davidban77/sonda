@@ -21,8 +21,9 @@
 # to explore metrics with the pre-configured VictoriaMetrics datasource.
 # The "Sonda Overview" dashboard is auto-provisioned under Dashboards > Sonda.
 #
-# Optional services (Loki, Kafka) are available via Docker Compose profiles:
+# Optional services are available via Docker Compose profiles:
 #
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile loki --profile kafka up -d
@@ -235,6 +236,83 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # vmalert: VictoriaMetrics alerting engine.
+  #
+  # Evaluates recording and alerting rules against VictoriaMetrics, then
+  # sends firing alerts to Alertmanager. Compatible with Prometheus alerting
+  # rule syntax.
+  #
+  # Alert rules are mounted from examples/alertmanager/alert-rules.yml.
+  # vmalert UI available at http://localhost:8880 to inspect rule state and
+  # active alerts.
+  #
+  # This service is only started with --profile alerting.
+  # ---------------------------------------------------------------------------
+  vmalert:
+    image: victoriametrics/vmalert:v1.108.1
+    profiles: [alerting]
+    ports:
+      - "8880:8880"
+    command:
+      - "--datasource.url=http://victoriametrics:8428"
+      - "--remoteRead.url=http://victoriametrics:8428"
+      - "--remoteWrite.url=http://victoriametrics:8428"
+      - "--notifier.url=http://alertmanager:9093"
+      - "--rule=/rules/*.yml"
+      - "--httpListenAddr=:8880"
+      - "--evaluationInterval=5s"
+    volumes:
+      - ./alertmanager/alert-rules.yml:/rules/alert-rules.yml:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager: Prometheus alert notification router.
+  #
+  # Receives alerts from vmalert and routes them to configured receivers.
+  # In this stack, all alerts are sent to the webhook-receiver service so
+  # you can inspect the full notification payload.
+  #
+  # Alertmanager UI available at http://localhost:9093.
+  #
+  # This service is only started with --profile alerting.
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: [alerting]
+    ports:
+      - "9093:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+  # ---------------------------------------------------------------------------
+  # webhook-receiver: lightweight HTTP echo server that logs request bodies.
+  #
+  # Receives alert notifications from Alertmanager and prints the full JSON
+  # payload to stdout, so you can verify end-to-end alert delivery with:
+  #
+  #   docker compose -f examples/docker-compose-victoriametrics.yml \
+  #     --profile alerting logs -f webhook-receiver
+  #
+  # Uses mendhak/http-https-echo, a well-maintained (~24M pulls) echo server
+  # that returns the request body and headers as JSON.
+  #
+  # This service is only started with --profile alerting.
+  # ---------------------------------------------------------------------------
+  webhook-receiver:
+    image: mendhak/http-https-echo:35
+    profiles: [alerting]
+    ports:
+      - "8090:8080"
+    environment:
+      - HTTP_PORT=8080
+      - LOG_WITHOUT_NEWLINE=true
 
 volumes:
   vm-data:

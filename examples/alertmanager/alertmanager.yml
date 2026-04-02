@@ -1,0 +1,23 @@
+# Alertmanager configuration for the Sonda alerting example.
+#
+# Routes all alerts to a local webhook receiver so you can see the full
+# notification payload without depending on external services.
+#
+# Usage: part of the `alerting` Docker Compose profile.
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d
+
+global:
+  resolve_timeout: 1m
+
+route:
+  receiver: webhook
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1m
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      - url: http://webhook-receiver:8080
+        send_resolved: true
