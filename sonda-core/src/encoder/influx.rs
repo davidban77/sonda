@@ -15,7 +15,7 @@ use std::io::Write as _;
 use std::time::UNIX_EPOCH;
 
 use crate::model::metric::MetricEvent;
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 use super::Encoder;
 
@@ -122,7 +122,7 @@ impl Encoder for InfluxLineProtocol {
         let timestamp_ns = event
             .timestamp
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?
+            .map_err(|e| SondaError::Encoder(EncoderError::TimestampBeforeEpoch(e)))?
             .as_nanos();
 
         buf.push(b' ');

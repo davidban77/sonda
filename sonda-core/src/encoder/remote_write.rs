@@ -27,7 +27,7 @@ use std::time::UNIX_EPOCH;
 use prost::Message;
 
 use crate::model::metric::MetricEvent;
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 use super::Encoder;
 
@@ -160,7 +160,7 @@ impl Encoder for RemoteWriteEncoder {
         let timestamp_ms = event
             .timestamp
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| SondaError::Encoder(format!("timestamp before Unix epoch: {e}")))?
+            .map_err(|e| SondaError::Encoder(EncoderError::TimestampBeforeEpoch(e)))?
             .as_millis() as i64;
 
         let timeseries = TimeSeries {
@@ -174,9 +174,9 @@ impl Encoder for RemoteWriteEncoder {
         // Serialize the TimeSeries to protobuf bytes.
         let encoded_len = timeseries.encoded_len();
         let mut proto_bytes = Vec::with_capacity(encoded_len);
-        timeseries
-            .encode(&mut proto_bytes)
-            .map_err(|e| SondaError::Encoder(format!("protobuf encode error: {e}")))?;
+        timeseries.encode(&mut proto_bytes).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!("protobuf encode error: {e}")))
+        })?;
 
         // Write a 4-byte little-endian length prefix followed by the protobuf bytes.
         // The RemoteWriteSink uses this prefix to split the buffer into individual
@@ -208,9 +208,9 @@ pub fn parse_length_prefixed_timeseries(data: &[u8]) -> Result<Vec<TimeSeries>, 
 
     while offset < data.len() {
         if offset + 4 > data.len() {
-            return Err(SondaError::Encoder(
+            return Err(SondaError::Encoder(EncoderError::Other(
                 "truncated length prefix in TimeSeries buffer".into(),
-            ));
+            )));
         }
 
         let len = u32::from_le_bytes([
@@ -222,15 +222,16 @@ pub fn parse_length_prefixed_timeseries(data: &[u8]) -> Result<Vec<TimeSeries>, 
         offset += 4;
 
         if offset + len > data.len() {
-            return Err(SondaError::Encoder(format!(
+            return Err(SondaError::Encoder(EncoderError::Other(format!(
                 "truncated TimeSeries protobuf: expected {} bytes, got {}",
                 len,
                 data.len() - offset
-            )));
+            ))));
         }
 
-        let ts = TimeSeries::decode(&data[offset..offset + len])
-            .map_err(|e| SondaError::Encoder(format!("protobuf decode error: {e}")))?;
+        let ts = TimeSeries::decode(&data[offset..offset + len]).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!("protobuf decode error: {e}")))
+        })?;
         result.push(ts);
         offset += len;
     }

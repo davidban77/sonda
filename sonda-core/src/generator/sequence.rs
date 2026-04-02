@@ -1,7 +1,7 @@
 //! Sequence value generator -- steps through an explicit list of values.
 
 use super::ValueGenerator;
-use crate::SondaError;
+use crate::{ConfigError, SondaError};
 
 /// A value generator that steps through an explicit sequence of values.
 ///
@@ -44,9 +44,9 @@ impl SequenceGenerator {
     /// Returns [`SondaError::Config`] if `values` is empty.
     pub fn new(values: Vec<f64>, repeat: bool) -> Result<Self, SondaError> {
         if values.is_empty() {
-            return Err(SondaError::Config(
-                "sequence generator requires at least one value".to_string(),
-            ));
+            return Err(SondaError::Config(ConfigError::invalid(
+                "sequence generator requires at least one value",
+            )));
         }
         Ok(Self { values, repeat })
     }

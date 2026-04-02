@@ -7,7 +7,8 @@ encodes data, or delivers output — it lives here.
 
 ```
 src/
-├── lib.rs              ← public API surface, re-exports
+├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
+│                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
@@ -146,11 +147,26 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 - Define errors in `src/lib.rs` using `thiserror`.
 - Every public function returns `Result<T, SondaError>`.
 - Never `unwrap()` in this crate. Use `?` propagation or explicit error mapping.
+- **Structured error sub-enums**: `SondaError` delegates to typed sub-enums that preserve
+  original error sources via `#[source]`:
+  - `ConfigError` — configuration validation errors. Use `ConfigError::invalid(msg)` to construct.
+  - `GeneratorError` — generator I/O errors. `FileRead { path, source: io::Error }` preserves
+    the original I/O error for programmatic inspection (e.g., `ErrorKind::NotFound`).
+  - `EncoderError` — encoding errors. `SerializationFailed(serde_json::Error)` and
+    `TimestampBeforeEpoch(SystemTimeError)` preserve the original error. `NotSupported(String)`
+    for unsupported event types. `Other(String)` for feature-gated encoder errors (protobuf, snappy).
+  - `RuntimeError` — system/environment errors. `SpawnFailed(#[source] io::Error)` for thread
+    spawn failures (preserves the original `io::Error` via `#[source]`), `ThreadPanicked` for
+    panicked scenario threads, `ScenariosFailed(String)` for collected errors from multi-scenario
+    thread joins. Separated from `ConfigError` so consumers matching on config errors are not
+    confused by system failures.
 - `SondaError::Sink` wraps `std::io::Error` **without** a blanket `#[from]` conversion.
   All I/O errors must be explicitly mapped to the correct variant at each call site:
   - Sink I/O errors: use `.map_err(SondaError::Sink)` or `SondaError::Sink(io_err)`.
-  - Generator file I/O errors: use `SondaError::Generator(format!(...))`.
-  - Config file I/O errors: use `SondaError::Config(format!(...))`.
+  - Generator file I/O errors: use `SondaError::Generator(GeneratorError::FileRead { path, source })`.
+  - Config validation errors: use `SondaError::Config(ConfigError::invalid(msg))`.
+  - Runtime errors: use `SondaError::Runtime(RuntimeError::SpawnFailed(io_err))`.
+  - Multi-scenario thread failures: use `SondaError::Runtime(RuntimeError::ScenariosFailed(msg))`.
 - This prevents generator or config I/O errors from being misclassified as sink errors.
 
 ## Testing

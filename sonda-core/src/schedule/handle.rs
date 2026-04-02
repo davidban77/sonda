@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::schedule::stats::ScenarioStats;
-use crate::SondaError;
+use crate::{RuntimeError, SondaError};
 
 /// A running scenario's lifecycle handle.
 ///
@@ -110,7 +110,7 @@ impl ScenarioHandle {
         match handle.join() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(SondaError::Config("scenario thread panicked".to_string())),
+            Err(_) => Err(SondaError::Runtime(RuntimeError::ThreadPanicked)),
         }
     }
 

@@ -20,7 +20,7 @@ use prost::Message;
 
 use crate::encoder::remote_write::{parse_length_prefixed_timeseries, TimeSeries, WriteRequest};
 use crate::sink::Sink;
-use crate::SondaError;
+use crate::{EncoderError, SondaError};
 
 /// Default batch size in TimeSeries entries (not bytes).
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -103,15 +103,17 @@ impl RemoteWriteSink {
         // Prost-encode the WriteRequest.
         let encoded_len = write_request.encoded_len();
         let mut proto_bytes = Vec::with_capacity(encoded_len);
-        write_request
-            .encode(&mut proto_bytes)
-            .map_err(|e| SondaError::Encoder(format!("protobuf encode error: {e}")))?;
+        write_request.encode(&mut proto_bytes).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!("protobuf encode error: {e}")))
+        })?;
 
         // Snappy-compress using raw (block) format.
         let mut snappy_encoder = snap::raw::Encoder::new();
-        let compressed = snappy_encoder
-            .compress_vec(&proto_bytes)
-            .map_err(|e| SondaError::Encoder(format!("snappy compression error: {e}")))?;
+        let compressed = snappy_encoder.compress_vec(&proto_bytes).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!(
+                "snappy compression error: {e}"
+            )))
+        })?;
 
         // HTTP POST with the required remote write headers.
         let result = self.do_post(&compressed);

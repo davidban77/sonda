@@ -15,7 +15,7 @@ use crate::schedule::log_runner::run_logs_with_sink;
 use crate::schedule::runner::run_with_sink;
 use crate::schedule::stats::ScenarioStats;
 use crate::sink::create_sink;
-use crate::SondaError;
+use crate::{RuntimeError, SondaError};
 
 /// Validate any scenario entry (metrics or logs).
 ///
@@ -129,7 +129,7 @@ pub fn launch_scenario(
                 }
             }
         })
-        .map_err(|e| SondaError::Config(format!("failed to spawn scenario thread: {e}")))?;
+        .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
 
     Ok(ScenarioHandle {
         id,
