@@ -15,7 +15,7 @@ keywords = ["telemetry", "metrics", "observability", "testing", "synthetic"]
 categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace.dependencies]
-sonda-core = { path = "sonda-core", version = "0.3.0", features = ["http"] }
+sonda-core = { path = "sonda-core", version = "0.3.0" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"

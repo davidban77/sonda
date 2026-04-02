@@ -166,10 +166,10 @@ Sink implementations follow a natural progression of complexity:
 | **Stdout** | Buffered stdout via `BufWriter`. Default sink. Zero configuration. |
 | **File** | Buffered file writer. Configurable path. Supports rotation (planned). |
 | **Tcp / Udp** | Raw socket delivery. Targets syslog receivers, statsd, and similar line-protocol endpoints. |
-| **HttpPush** | HTTP POST to a configurable endpoint. Supports custom headers for protocol-specific requirements. Uses `ureq`. |
+| **HttpPush** | HTTP POST to a configurable endpoint (feature-gated behind `http`). Supports custom headers for protocol-specific requirements. Uses `ureq`. |
 | **RemoteWrite** | Prometheus remote write sink (feature-gated). Receives length-prefixed `TimeSeries` from the `RemoteWrite` encoder, batches them into a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs with the correct protocol headers. Requires the `remote-write` Cargo feature. |
 | **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
-| **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
+| **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`) (feature-gated behind `http`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
 | **Channel** | In-memory channel sink (`mpsc::Sender<Vec<u8>>`). For testing and inter-thread communication. |
 | **Memory** | In-memory buffer sink (`Vec<Vec<u8>>`). For testing and embedding. |
 
