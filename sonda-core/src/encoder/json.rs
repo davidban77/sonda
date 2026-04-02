@@ -133,7 +133,7 @@ impl Encoder for JsonLines {
     /// avoiding an intermediate `String` allocation.
     fn encode_metric(&self, event: &MetricEvent, buf: &mut Vec<u8>) -> Result<(), SondaError> {
         let ts_bytes = super::format_rfc3339_millis_array(event.timestamp)?;
-        // Safety: the array contains only ASCII digits, hyphens, colons, 'T', '.', 'Z'.
+        // Invariant: the array contains only ASCII digits, hyphens, colons, 'T', '.', 'Z'.
         let timestamp =
             std::str::from_utf8(&ts_bytes).expect("RFC 3339 timestamp is always valid UTF-8");
 

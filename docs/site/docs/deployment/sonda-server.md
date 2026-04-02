@@ -59,7 +59,7 @@ Error responses:
 
 - **400 Bad Request** -- body cannot be parsed as YAML or JSON.
 - **422 Unprocessable Entity** -- valid YAML/JSON but fails validation (e.g., `rate: 0`).
-- **500 Internal Server Error** -- scenario thread could not be spawned.
+- **500 Internal Server Error** -- scenario thread could not be spawned, or internal state error.
 
 !!! tip "Long-running scenarios"
     Omit the `duration` field from your scenario body to create a scenario that runs

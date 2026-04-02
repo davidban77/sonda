@@ -205,6 +205,9 @@ pub(crate) fn format_rfc3339_millis_array(
         cursor,
         "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z",
     )
+    // Invariant: this holds for years 0000..=9999 (the 4-digit format field).
+    // Years >= 10000 would overflow the 24-byte buffer. SystemTime values
+    // from the Unix epoch (1970) cannot reach year 10000 within u64 range.
     .expect("RFC 3339 millis timestamp is always exactly 24 bytes");
     Ok(arr)
 }

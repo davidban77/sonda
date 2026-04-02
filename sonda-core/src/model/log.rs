@@ -17,6 +17,9 @@ use crate::model::metric::Labels;
 /// lowercase strings (e.g., `"info"`, `"error"`) for YAML and JSON compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
+// `rename_all` is not behind cfg_attr because it applies to both Serialize
+// (unconditional — used by the JSON encoder) and Deserialize (config-gated).
+// Splitting it would require duplicating the attribute under two cfg_attr guards.
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Extremely detailed diagnostic information.

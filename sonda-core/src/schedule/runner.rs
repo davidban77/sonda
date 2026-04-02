@@ -322,8 +322,8 @@ pub fn run_with_sink(
                     st.in_gap = currently_in_gap;
                     st.in_burst = currently_in_burst;
                     st.in_cardinality_spike = currently_in_spike;
-                    // Buffer the metric event for scrape endpoints. The clone
-                    // cost is bounded by MAX_RECENT_METRICS (default 100).
+                    // Buffer the metric event for scrape endpoints. MetricEvent
+                    // fields are Arc-wrapped, so this move is O(1).
                     st.push_metric(event);
                 }
             }
