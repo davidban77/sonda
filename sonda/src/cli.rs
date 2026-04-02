@@ -15,12 +15,58 @@ use clap::{Args, Parser, Subcommand};
 #[command(name = "sonda", version, about = "Synthetic telemetry generator")]
 pub struct Cli {
     /// Suppress all status output (errors are still printed).
-    #[arg(short, long, global = true)]
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
+
+    /// Show the resolved configuration at startup, then run normally.
+    ///
+    /// Mutually exclusive with `--quiet`. Prints the full resolved scenario
+    /// config to stderr before starting the event loop.
+    #[arg(short, long, global = true, conflicts_with = "quiet")]
+    pub verbose: bool,
+
+    /// Parse and validate the scenario config, print it, then exit without
+    /// emitting any events.
+    ///
+    /// Useful for checking that a YAML file is valid and seeing the resolved
+    /// configuration. Works with all subcommands. Orthogonal to `--quiet` and
+    /// `--verbose` — always prints the resolved config.
+    #[arg(long, global = true)]
+    pub dry_run: bool,
 
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,
+}
+
+/// Verbosity level derived from `--quiet` / `--verbose` flags.
+///
+/// `--quiet` and `--verbose` are mutually exclusive (enforced by clap's
+/// `conflicts_with`). The default is [`Verbosity::Normal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verbosity {
+    /// Suppress all banners and status output.
+    Quiet,
+    /// Default: show start and stop banners.
+    Normal,
+    /// Show resolved config at startup, then start and stop banners.
+    Verbose,
+}
+
+impl Verbosity {
+    /// Construct a [`Verbosity`] from the `--quiet` and `--verbose` booleans.
+    ///
+    /// Clap enforces mutual exclusivity, so at most one of `quiet` and
+    /// `verbose` is true.
+    pub fn from_flags(quiet: bool, verbose: bool) -> Self {
+        if quiet {
+            Verbosity::Quiet
+        } else if verbose {
+            Verbosity::Verbose
+        } else {
+            Verbosity::Normal
+        }
+    }
 }
 
 /// Top-level subcommands.
@@ -467,5 +513,103 @@ mod tests {
             err.contains("empty"),
             "error should mention empty key, got: {err}"
         );
+    }
+
+    // ---- Verbosity::from_flags ---------------------------------------------------
+
+    #[test]
+    fn verbosity_default_is_normal() {
+        assert_eq!(Verbosity::from_flags(false, false), Verbosity::Normal);
+    }
+
+    #[test]
+    fn verbosity_quiet_flag() {
+        assert_eq!(Verbosity::from_flags(true, false), Verbosity::Quiet);
+    }
+
+    #[test]
+    fn verbosity_verbose_flag() {
+        assert_eq!(Verbosity::from_flags(false, true), Verbosity::Verbose);
+    }
+
+    // ---- CLI parsing: --dry-run and --verbose flags ----------------------------
+
+    #[test]
+    fn cli_dry_run_flag_is_parsed() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "--dry-run",
+            "metrics",
+            "--name",
+            "test",
+            "--rate",
+            "1",
+        ])
+        .expect("--dry-run should parse");
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn cli_verbose_flag_is_parsed() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "--verbose",
+            "metrics",
+            "--name",
+            "test",
+            "--rate",
+            "1",
+        ])
+        .expect("--verbose should parse");
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn cli_quiet_and_verbose_conflict() {
+        let result = Cli::try_parse_from([
+            "sonda",
+            "--quiet",
+            "--verbose",
+            "metrics",
+            "--name",
+            "test",
+            "--rate",
+            "1",
+        ]);
+        assert!(result.is_err(), "--quiet and --verbose must conflict");
+    }
+
+    #[test]
+    fn cli_dry_run_orthogonal_to_quiet() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "--dry-run",
+            "--quiet",
+            "metrics",
+            "--name",
+            "test",
+            "--rate",
+            "1",
+        ])
+        .expect("--dry-run + --quiet should parse");
+        assert!(cli.dry_run);
+        assert!(cli.quiet);
+    }
+
+    #[test]
+    fn cli_dry_run_orthogonal_to_verbose() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "--dry-run",
+            "--verbose",
+            "metrics",
+            "--name",
+            "test",
+            "--rate",
+            "1",
+        ])
+        .expect("--dry-run + --verbose should parse");
+        assert!(cli.dry_run);
+        assert!(cli.verbose);
     }
 }
