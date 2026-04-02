@@ -20,17 +20,7 @@
 ///
 /// Typically called with `seed ^ tick` (or similar) to produce a
 /// pseudo-random but reproducible value for a given scenario tick.
-///
-/// ```
-/// # use sonda_core::util::splitmix64;
-/// let a = splitmix64(42);
-/// let b = splitmix64(42);
-/// assert_eq!(a, b, "same input always produces the same output");
-///
-/// let c = splitmix64(43);
-/// assert_ne!(a, c, "different inputs produce different outputs");
-/// ```
-pub fn splitmix64(mut z: u64) -> u64 {
+pub(crate) fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);

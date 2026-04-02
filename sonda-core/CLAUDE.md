@@ -9,7 +9,7 @@ encodes data, or delivers output — it lives here.
 src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
-├── util.rs             ← shared utility functions (splitmix64 deterministic hash)
+├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),

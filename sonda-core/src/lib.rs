@@ -10,7 +10,7 @@ pub mod generator;
 pub mod model;
 pub mod schedule;
 pub mod sink;
-pub mod util;
+pub(crate) mod util;
 
 pub use config::BurstConfig;
 pub use config::CardinalitySpikeConfig;
