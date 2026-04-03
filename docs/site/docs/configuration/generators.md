@@ -202,6 +202,47 @@ request_count{instance="web-01",job="app"} 4 1775192672943
     `max: 5` produces `0, 1, 2, 3, 4, 0, 1, 2, ...` -- useful for verifying that your `rate()`
     queries handle counter resets correctly.
 
+### spike
+
+Outputs a constant baseline value with periodic spikes. During a spike window the value is
+`baseline + magnitude`; outside the window the value is `baseline`. Use it for testing alert
+thresholds and anomaly detection rules that trigger on sudden value changes.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `baseline` | float | yes | -- | The normal output value between spikes. |
+| `magnitude` | float | yes | -- | The amount added to baseline during a spike. Negative values create dips below baseline. |
+| `duration_secs` | float | yes | -- | How long each spike lasts in seconds. |
+| `interval_secs` | float | yes | -- | Time between spike starts in seconds. Must be greater than 0. |
+
+```yaml title="Spike generator"
+generator:
+  type: spike
+  baseline: 50.0
+  magnitude: 200.0
+  duration_secs: 10
+  interval_secs: 60
+```
+
+**Shape:** Holds at 50 for most of the 60-second cycle, then jumps to 250 for 10 seconds.
+
+```bash
+sonda metrics --scenario examples/spike-alert-test.yaml --duration 5s
+```
+
+```text title="Output"
+cpu_spike_test{instance="server-01",job="node"} 250 1775195158883
+cpu_spike_test{instance="server-01",job="node"} 250 1775195159888
+cpu_spike_test{instance="server-01",job="node"} 250 1775195160888
+cpu_spike_test{instance="server-01",job="node"} 250 1775195161888
+cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
+```
+
+!!! tip "Negative magnitude for dip testing"
+    Set `magnitude` to a negative value to create periodic dips below the baseline. For example,
+    `baseline: 100.0` with `magnitude: -50.0` produces values that drop from 100 to 50 during
+    the spike window -- useful for testing low-threshold alerts.
+
 ### csv_replay
 
 Replays numeric values from a CSV file. Use it to reproduce real production metric patterns
