@@ -61,7 +61,7 @@ impl ValueGenerator for StepGenerator {
         match self.max {
             Some(m) if m > self.start => {
                 let range = m - self.start;
-                self.start + (raw % range)
+                self.start + (raw.rem_euclid(range))
             }
             _ => self.start + raw,
         }
@@ -197,6 +197,18 @@ mod tests {
         assert_eq!(gen.value(0), 100.0);
         assert_eq!(gen.value(1), 99.0);
         assert_eq!(gen.value(5), 95.0);
+    }
+
+    #[test]
+    fn negative_step_with_wrap_stays_in_range() {
+        let gen = StepGenerator::new(0.0, -1.0, Some(3.0));
+        for tick in 0..20 {
+            let v = gen.value(tick);
+            assert!(
+                v >= 0.0 && v < 3.0,
+                "value {v} at tick {tick} must be in [0.0, 3.0)"
+            );
+        }
     }
 
     #[test]
