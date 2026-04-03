@@ -1,0 +1,21 @@
+name: cpu_usage_realistic
+rate: 1
+duration: 30s
+
+generator:
+  type: sine
+  amplitude: 20
+  period_secs: 120
+  offset: 50
+
+jitter: 3.0
+jitter_seed: 42
+
+labels:
+  instance: server-01
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

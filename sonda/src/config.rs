@@ -64,6 +64,8 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: build_generator_config(args)?,
             encoder: parse_encoder_config(
@@ -376,6 +378,8 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator,
             encoder: parse_log_encoder_config(

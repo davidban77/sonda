@@ -77,6 +77,8 @@ pub fn run_with_sink(
 
     // Build generator and encoder from config.
     let generator = create_generator(&config.generator, config.rate)?;
+    let generator =
+        crate::generator::wrap_with_jitter(generator, config.base.jitter, config.base.jitter_seed);
     let encoder = create_encoder(&config.encoder);
 
     // Build the label set from the config's optional HashMap, wrapped in Arc
@@ -186,6 +188,8 @@ mod tests {
                 sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -347,6 +351,8 @@ mod tests {
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
@@ -695,6 +701,8 @@ mod tests {
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
@@ -895,6 +903,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },

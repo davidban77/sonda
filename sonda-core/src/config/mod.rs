@@ -179,6 +179,14 @@ pub struct BaseScheduleConfig {
     /// cross-scenario signaling is deferred to a future phase.
     #[cfg_attr(feature = "config", serde(default))]
     pub clock_group: Option<String>,
+    /// Optional jitter amplitude. When set, adds uniform noise in
+    /// `[-jitter, +jitter]` to every generated value. Defaults to `None` (no jitter).
+    #[cfg_attr(feature = "config", serde(default))]
+    pub jitter: Option<f64>,
+    /// Optional seed for jitter noise. Defaults to `0` when absent.
+    /// Different seeds produce different noise sequences.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub jitter_seed: Option<u64>,
 }
 
 /// Full configuration for a single metric scenario run.
@@ -550,6 +558,79 @@ generator:
     }
 
     // -----------------------------------------------------------------------
+    // jitter deserialization
+    // -----------------------------------------------------------------------
+
+    /// jitter and jitter_seed deserialize from YAML on ScenarioConfig.
+    #[test]
+    fn scenario_config_jitter_deserializes_from_yaml() {
+        let yaml = r#"
+name: jitter_test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+jitter: 3.5
+jitter_seed: 42
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.jitter, Some(3.5));
+        assert_eq!(config.jitter_seed, Some(42));
+    }
+
+    /// jitter defaults to None when not specified in YAML.
+    #[test]
+    fn scenario_config_jitter_defaults_to_none() {
+        let yaml = r#"
+name: no_jitter
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.jitter.is_none());
+        assert!(config.jitter_seed.is_none());
+    }
+
+    /// jitter_seed defaults to None when only jitter is specified.
+    #[test]
+    fn scenario_config_jitter_without_seed() {
+        let yaml = r#"
+name: jitter_no_seed
+rate: 10
+generator:
+  type: sine
+  amplitude: 20
+  period_secs: 60
+  offset: 50
+jitter: 5.0
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.jitter, Some(5.0));
+        assert!(config.jitter_seed.is_none());
+    }
+
+    /// jitter deserializes from YAML on LogScenarioConfig.
+    #[test]
+    fn log_scenario_config_jitter_deserializes_from_yaml() {
+        let yaml = r#"
+name: log_jitter
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test"
+      field_pools: {}
+jitter: 2.0
+jitter_seed: 99
+"#;
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.jitter, Some(2.0));
+        assert_eq!(config.jitter_seed, Some(99));
+    }
+
+    // -----------------------------------------------------------------------
     // LogScenarioConfig: labels deserialization
     // -----------------------------------------------------------------------
 
@@ -677,6 +758,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -699,6 +782,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -721,6 +806,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("10s".to_string()),
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -754,6 +841,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: Some("my-group".to_string()),
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -776,6 +865,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -802,6 +893,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -825,6 +918,8 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -1120,6 +1215,8 @@ gaps:
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
+            jitter: None,
+            jitter_seed: None,
         };
         let cloned = base.clone();
         assert_eq!(cloned.name, "test");
@@ -1150,6 +1247,8 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("1s".to_string()),
                 clock_group: Some("group-a".to_string()),
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1178,6 +1277,8 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -1213,6 +1314,8 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
