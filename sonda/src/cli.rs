@@ -234,6 +234,15 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub spike_seed: Option<u64>,
 
+    /// Optional jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to
+    /// every generated value for more realistic output.
+    #[arg(long)]
+    pub jitter: Option<f64>,
+
+    /// Optional seed for jitter noise. Defaults to `0` when absent.
+    #[arg(long)]
+    pub jitter_seed: Option<u64>,
+
     /// Static label attached to every emitted event (repeatable).
     ///
     /// Format: `key=value`. Keys must match `[a-zA-Z_][a-zA-Z0-9_]*`.
@@ -386,6 +395,15 @@ pub struct LogsArgs {
     /// RNG seed for the `random` spike strategy.
     #[arg(long)]
     pub spike_seed: Option<u64>,
+
+    /// Optional jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to
+    /// every generated value for more realistic output.
+    #[arg(long)]
+    pub jitter: Option<f64>,
+
+    /// Optional seed for jitter noise. Defaults to `0` when absent.
+    #[arg(long)]
+    pub jitter_seed: Option<u64>,
 
     /// Write output to a file at this path instead of stdout.
     ///

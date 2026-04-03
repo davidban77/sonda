@@ -211,6 +211,9 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
         ))));
     }
 
+    // Jitter amplitude must be finite and non-negative.
+    validate_jitter(config.base.jitter)?;
+
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
 
@@ -297,6 +300,9 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
         }
     }
 
+    // Jitter amplitude must be finite and non-negative.
+    validate_jitter(config.base.jitter)?;
+
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
 
@@ -313,6 +319,35 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
         #[cfg(feature = "remote-write")]
         crate::encoder::EncoderConfig::RemoteWrite => None,
     }
+}
+
+/// Validate the optional jitter amplitude for semantic correctness.
+///
+/// Checks:
+/// - `jitter` must not be NaN.
+/// - `jitter` must be finite (not infinite).
+/// - `jitter` must be non-negative (>= 0).
+///
+/// Returns `Ok(())` when `jitter` is `None` (no jitter configured).
+fn validate_jitter(jitter: Option<f64>) -> Result<(), SondaError> {
+    if let Some(j) = jitter {
+        if j.is_nan() {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "jitter must not be NaN",
+            )));
+        }
+        if j.is_infinite() {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "jitter must be finite",
+            )));
+        }
+        if j < 0.0 {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "jitter must be non-negative",
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Validate that an encoder's precision (if set) does not exceed 17.
@@ -1609,5 +1644,166 @@ generator:
             seed: None,
         }]);
         assert!(validate_config(&config).is_err());
+    }
+
+    // ---- validate_config: jitter validation ----------------------------------
+
+    #[test]
+    fn validate_config_jitter_none_is_accepted() {
+        let config = minimal_config_with_rate(10.0);
+        assert!(
+            validate_config(&config).is_ok(),
+            "jitter=None must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_zero_is_accepted() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(0.0);
+        assert!(
+            validate_config(&config).is_ok(),
+            "jitter=0.0 must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_positive_is_accepted() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(5.0);
+        assert!(
+            validate_config(&config).is_ok(),
+            "jitter=5.0 must be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_nan_returns_err() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(f64::NAN);
+        let result = validate_config(&config);
+        assert!(result.is_err(), "jitter=NaN must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("NaN"),
+            "error must mention 'jitter' and 'NaN', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_positive_infinity_returns_err() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(f64::INFINITY);
+        let result = validate_config(&config);
+        assert!(result.is_err(), "jitter=+Inf must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("finite"),
+            "error must mention 'jitter' and 'finite', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_negative_infinity_returns_err() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(f64::NEG_INFINITY);
+        let result = validate_config(&config);
+        assert!(result.is_err(), "jitter=-Inf must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("finite"),
+            "error must mention 'jitter' and 'finite', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_config_jitter_negative_returns_err() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.jitter = Some(-1.0);
+        let result = validate_config(&config);
+        assert!(result.is_err(), "jitter=-1.0 must be rejected");
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("non-negative"),
+            "error must mention 'jitter' and 'non-negative', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_log_config_jitter_nan_returns_err() {
+        let log_config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                name: "logs".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: Some(f64::NAN),
+                jitter_seed: None,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            },
+            encoder: crate::encoder::EncoderConfig::JsonLines { precision: None },
+        };
+        let result = validate_log_config(&log_config);
+        assert!(
+            result.is_err(),
+            "log config with jitter=NaN must be rejected"
+        );
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("NaN"),
+            "error must mention 'jitter' and 'NaN', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_log_config_jitter_negative_returns_err() {
+        let log_config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                name: "logs".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: Some(-0.5),
+                jitter_seed: None,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: None,
+            },
+            encoder: crate::encoder::EncoderConfig::JsonLines { precision: None },
+        };
+        let result = validate_log_config(&log_config);
+        assert!(
+            result.is_err(),
+            "log config with jitter=-0.5 must be rejected"
+        );
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("jitter") && msg.contains("non-negative"),
+            "error must mention 'jitter' and 'non-negative', got: {msg}"
+        );
     }
 }

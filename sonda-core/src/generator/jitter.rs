@@ -182,6 +182,19 @@ mod tests {
         }
     }
 
+    // ---- Regression anchor ----------------------------------------------------
+
+    #[test]
+    fn regression_anchor_known_output() {
+        let inner = Box::new(crate::generator::constant::Constant::new(100.0));
+        let gen = JitterWrapper::new(inner, 5.0, 42);
+        let v = gen.value(0);
+        // Pin the exact value to catch accidental changes to JITTER_MAGIC or splitmix64.
+        // Computed from: splitmix64(42 ^ 0 ^ 0xa076_1d64_78bd_642f) => hash,
+        // then unit = hash / u64::MAX, noise = unit * 10.0 - 5.0, result = 100.0 + noise.
+        assert_eq!(v, 102.70657953697628);
+    }
+
     // ---- JITTER_MAGIC decorrelates from UniformRandom ------------------------
 
     #[test]
