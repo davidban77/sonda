@@ -26,13 +26,17 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
-│   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike
+│   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
+│   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
+│   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
+│   │                      TickResult). Owns all rate control, gap/burst/spike window handling,
+│   │                      stats tracking, and shutdown. Signal runners provide a TickFn closure.
 │   ├── stats.rs        ← ScenarioStats (live telemetry + recent_metrics buffer for scrape endpoints)
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
 │   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API, supports phase_offset)
-│   ├── runner.rs       ← the main event loop (metrics)
-│   ├── log_runner.rs   ← the log event loop (logs)
+│   ├── runner.rs       ← metric event loop: builds generator/encoder/labels, delegates to core_loop
+│   ├── log_runner.rs   ← log event loop: builds log generator/encoder/labels, delegates to core_loop
 │   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi, respects phase_offset per entry)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory

@@ -3,6 +3,7 @@
 //! The scheduler controls *when* events are emitted. It does not know
 //! *what* is being emitted — that is the generator and encoder's job.
 
+pub(crate) mod core_loop;
 pub mod handle;
 pub mod launch;
 pub mod log_runner;
@@ -161,6 +162,97 @@ impl CardinalitySpikeWindow {
                 format!("{}{:016x}", self.prefix, mixed)
             }
         }
+    }
+}
+
+/// Resolved schedule configuration parsed from a [`BaseScheduleConfig`].
+///
+/// Holds the parsed `Duration` values for gap, burst, and spike windows.
+/// This is the shared input to the [`core_loop::run_schedule_loop`] function,
+/// eliminating the need for each signal runner to duplicate the parsing logic.
+///
+/// Constructed via [`ParsedSchedule::from_base_config`].
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedSchedule {
+    /// Total run duration. `None` means run indefinitely.
+    pub total_duration: Option<Duration>,
+    /// Optional recurring gap window.
+    pub gap_window: Option<GapWindow>,
+    /// Optional recurring burst window.
+    pub burst_window: Option<BurstWindow>,
+    /// Resolved cardinality spike windows.
+    pub spike_windows: Vec<CardinalitySpikeWindow>,
+}
+
+impl ParsedSchedule {
+    /// Parse a [`ParsedSchedule`] from a [`BaseScheduleConfig`].
+    ///
+    /// Converts duration strings into `Duration` values and resolves spike
+    /// window defaults. This is the single authoritative location for schedule
+    /// parsing — both the metrics and log runners call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError`] if any duration string is invalid.
+    pub fn from_base_config(
+        config: &crate::config::BaseScheduleConfig,
+    ) -> Result<Self, crate::SondaError> {
+        use crate::config::validate::parse_duration;
+
+        let total_duration: Option<Duration> =
+            config.duration.as_deref().map(parse_duration).transpose()?;
+
+        let gap_window: Option<GapWindow> = config
+            .gaps
+            .as_ref()
+            .map(|g| -> Result<GapWindow, crate::SondaError> {
+                Ok(GapWindow {
+                    every: parse_duration(&g.every)?,
+                    duration: parse_duration(&g.r#for)?,
+                })
+            })
+            .transpose()?;
+
+        let burst_window: Option<BurstWindow> = config
+            .bursts
+            .as_ref()
+            .map(|b| -> Result<BurstWindow, crate::SondaError> {
+                Ok(BurstWindow {
+                    every: parse_duration(&b.every)?,
+                    duration: parse_duration(&b.r#for)?,
+                    multiplier: b.multiplier,
+                })
+            })
+            .transpose()?;
+
+        let spike_windows: Vec<CardinalitySpikeWindow> = config
+            .cardinality_spikes
+            .as_ref()
+            .map(|spikes| {
+                spikes
+                    .iter()
+                    .map(|s| {
+                        Ok(CardinalitySpikeWindow {
+                            label: s.label.clone(),
+                            every: parse_duration(&s.every)?,
+                            duration: parse_duration(&s.r#for)?,
+                            cardinality: s.cardinality,
+                            strategy: s.strategy,
+                            prefix: s.prefix.clone().unwrap_or_else(|| format!("{}_", s.label)),
+                            seed: s.seed.unwrap_or(0),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, crate::SondaError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
+            total_duration,
+            gap_window,
+            burst_window,
+            spike_windows,
+        })
     }
 }
 

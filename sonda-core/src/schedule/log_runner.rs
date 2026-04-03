@@ -1,23 +1,22 @@
 //! The log scenario event loop.
 //!
-//! Mirrors the structure of [`super::runner`] but drives a `LogGenerator`
-//! and calls `Encoder::encode_log` instead of `Encoder::encode_metric`.
+//! The log runner ties together the log generator, encoder, and sink with the
+//! shared schedule loop from [`core_loop::run_schedule_loop`](super::core_loop::run_schedule_loop).
+//! Only the log-specific per-tick work (log event generation, label injection,
+//! encoding) lives here; all schedule infrastructure (rate control, gap/burst/spike
+//! windows, stats tracking, shutdown handling) is in the shared loop.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use std::thread;
-use std::time::{Duration, Instant};
 
-use crate::config::validate::parse_duration;
 use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
 use crate::model::metric::Labels;
+use crate::schedule::core_loop::{self, TickContext, TickResult};
+use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
-use crate::schedule::{
-    is_in_burst, is_in_gap, is_in_spike, time_until_gap_end, BurstWindow, CardinalitySpikeWindow,
-    GapWindow,
-};
+use crate::schedule::ParsedSchedule;
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
@@ -39,10 +38,11 @@ pub fn run_logs(config: &LogScenarioConfig) -> Result<(), SondaError> {
 
 /// Run a log scenario to completion, writing encoded events into the provided sink.
 ///
-/// This function is the core log event loop implementation. It accepts any
-/// [`Sink`] implementation, enabling tests to use a
-/// [`MemorySink`](crate::sink::memory::MemorySink) instead of the
-/// config-specified sink.
+/// This function builds the log generator, encoder, and label set from the
+/// config, then delegates to the shared schedule loop via
+/// [`core_loop::run_schedule_loop`](super::core_loop::run_schedule_loop).
+/// The log-specific per-tick work (event generation, label injection, encoding,
+/// and sink writing) is captured in a closure passed to the shared loop.
 ///
 /// # Parameters
 ///
@@ -57,18 +57,6 @@ pub fn run_logs(config: &LogScenarioConfig) -> Result<(), SondaError> {
 ///   update, not during encode/write. Pass `None` to skip stats collection with
 ///   no overhead (e.g., in direct CLI usage or tests).
 ///
-/// # Steps
-///
-/// 1. Parses the config and builds the log generator and encoder.
-/// 2. Enters a tight rate-control loop:
-///    - Checks shutdown flag — exits cleanly if cleared.
-///    - Checks duration — exits if exceeded.
-///    - Checks gap window — sleeps until gap ends if currently in one (gap takes priority over burst).
-///    - Checks burst window — uses a shorter effective interval during bursts.
-///    - Generates a log event, encodes it, writes to sink.
-///    - Sleeps for the remaining inter-event interval (accounting for elapsed work).
-/// 3. Flushes the sink before returning, even if the loop exited via an error.
-///
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
@@ -80,63 +68,16 @@ pub fn run_logs_with_sink(
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    // Parse the optional total duration.
-    let total_duration: Option<Duration> =
-        config.duration.as_deref().map(parse_duration).transpose()?;
-
-    // Build the gap window from config, if present.
-    let gap_window: Option<GapWindow> = config
-        .gaps
-        .as_ref()
-        .map(|g| -> Result<GapWindow, SondaError> {
-            Ok(GapWindow {
-                every: parse_duration(&g.every)?,
-                duration: parse_duration(&g.r#for)?,
-            })
-        })
-        .transpose()?;
-
-    // Build the burst window from config, if present.
-    let burst_window: Option<BurstWindow> = config
-        .bursts
-        .as_ref()
-        .map(|b| -> Result<BurstWindow, SondaError> {
-            Ok(BurstWindow {
-                every: parse_duration(&b.every)?,
-                duration: parse_duration(&b.r#for)?,
-                multiplier: b.multiplier,
-            })
-        })
-        .transpose()?;
-
-    // Build cardinality spike windows from config, if present.
-    let spike_windows: Vec<CardinalitySpikeWindow> = config
-        .cardinality_spikes
-        .as_ref()
-        .map(|spikes| {
-            spikes
-                .iter()
-                .map(|s| {
-                    Ok(CardinalitySpikeWindow {
-                        label: s.label.clone(),
-                        every: parse_duration(&s.every)?,
-                        duration: parse_duration(&s.r#for)?,
-                        cardinality: s.cardinality,
-                        strategy: s.strategy,
-                        prefix: s.prefix.clone().unwrap_or_else(|| format!("{}_", s.label)),
-                        seed: s.seed.unwrap_or(0),
-                    })
-                })
-                .collect::<Result<Vec<_>, SondaError>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+    // Parse the schedule (duration, gap/burst/spike windows) from the shared
+    // BaseScheduleConfig. This is the single authoritative parsing location —
+    // no duplication with the metric runner.
+    let schedule = ParsedSchedule::from_base_config(&config.base)?;
 
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;
     let encoder = create_encoder(&config.encoder);
 
-    // Build labels from config, mirroring the metrics runner pattern.
+    // Build labels from config.
     let labels: Labels = if let Some(ref label_map) = config.labels {
         let pairs: Vec<(&str, &str)> = label_map
             .iter()
@@ -147,163 +88,45 @@ pub fn run_logs_with_sink(
         Labels::default()
     };
 
-    // The base inter-event interval (at normal rate, no burst).
-    let base_interval = Duration::from_secs_f64(1.0 / config.rate);
-
     // Pre-allocate encode buffer — reused every tick to avoid per-event allocation.
     let mut buf: Vec<u8> = Vec::with_capacity(512);
 
-    // Record the wall-clock start time once. The next_deadline tracks the
-    // absolute time at which the next event should be emitted. Unlike a pure
-    // tick-counter approach, tracking the deadline directly avoids catch-up
-    // accumulation across burst/normal transitions.
-    let start = Instant::now();
-    let mut next_deadline = start;
-    let mut tick: u64 = 0;
+    // Build the per-tick closure that performs log-specific work:
+    // generate log event → inject labels + spike labels → encode → write.
+    let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+        // Generate the log event and inject scenario-level labels.
+        let mut event = generator.generate(ctx.tick);
 
-    // Stats tracking: snapshot of tick count and wall clock taken once per
-    // second to compute current_rate. Only used when stats is Some.
-    let mut rate_window_tick: u64 = 0;
-    let mut rate_window_start = start;
-
-    // Run the event loop, capturing any error so we can still flush before returning.
-    let loop_result = (|| -> Result<(), SondaError> {
-        loop {
-            // Check shutdown flag first — highest priority exit path.
-            // SeqCst ensures we see the store from the signal handler promptly.
-            if let Some(flag) = shutdown {
-                if !flag.load(Ordering::SeqCst) {
-                    break;
+        // Inject cardinality spike labels when inside a spike window.
+        if ctx.spike_windows.is_empty() {
+            event.labels = labels.clone();
+        } else {
+            let mut tl = labels.clone();
+            for sw in ctx.spike_windows {
+                if is_in_spike(ctx.elapsed, sw) {
+                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
                 }
             }
-
-            let elapsed = start.elapsed();
-
-            // Check duration limit.
-            if let Some(total) = total_duration {
-                if elapsed >= total {
-                    break;
-                }
-            }
-
-            // Check gap window — sleep through it rather than busy-wait.
-            // Gap always takes priority over burst: no events during a gap.
-            let currently_in_gap = if let Some(ref gap) = gap_window {
-                if is_in_gap(elapsed, gap) {
-                    // Update stats to reflect gap state before sleeping.
-                    if let Some(ref s) = stats {
-                        if let Ok(mut st) = s.write() {
-                            st.in_gap = true;
-                            st.in_burst = false;
-                        }
-                    }
-                    let sleep_for = time_until_gap_end(elapsed, gap);
-                    if sleep_for > Duration::ZERO {
-                        thread::sleep(sleep_for);
-                    }
-                    // After sleeping through the gap, reset the next_deadline to
-                    // now so we do not try to "catch up" for events suppressed by
-                    // the gap. Also re-derive tick from elapsed time at base rate
-                    // so the generator tick counter stays approximately in sync
-                    // with wall-clock time.
-                    let now = Instant::now();
-                    next_deadline = now;
-                    tick = (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
-                    // Re-check duration before emitting.
-                    continue;
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            // Determine the effective inter-event interval for this tick.
-            // During a burst, divide the base interval by the burst multiplier
-            // to produce a proportionally shorter interval (higher rate).
-            // Outside a burst, use the base interval unchanged.
-            let currently_in_burst;
-            let effective_interval = if let Some(ref burst) = burst_window {
-                if let Some(multiplier) = is_in_burst(elapsed, burst) {
-                    currently_in_burst = true;
-                    // multiplier is validated to be > 0, so division is safe.
-                    Duration::from_secs_f64(base_interval.as_secs_f64() / multiplier)
-                } else {
-                    currently_in_burst = false;
-                    base_interval
-                }
-            } else {
-                currently_in_burst = false;
-                base_interval
-            };
-
-            // Deadline-based rate control: if we are ahead of schedule, sleep
-            // the remaining delta. If we are already behind (deadline passed),
-            // emit immediately without sleeping — this naturally absorbs the
-            // overhead of encode/write without accumulating drift.
-            let now = Instant::now();
-            if now < next_deadline {
-                thread::sleep(next_deadline - now);
-            }
-
-            // Generate the log event and inject scenario-level labels.
-            let mut event = generator.generate(tick);
-
-            // Inject cardinality spike labels when inside a spike window.
-            let currently_in_spike;
-            if spike_windows.is_empty() {
-                currently_in_spike = false;
-                event.labels = labels.clone();
-            } else {
-                let mut tl = labels.clone();
-                let mut any_spike = false;
-                for sw in &spike_windows {
-                    if is_in_spike(elapsed, sw) {
-                        tl.insert(sw.label.clone(), sw.label_value_for_tick(tick));
-                        any_spike = true;
-                    }
-                }
-                currently_in_spike = any_spike;
-                event.labels = tl;
-            }
-
-            // Encode and write.
-            buf.clear();
-            encoder.encode_log(&event, &mut buf)?;
-            let bytes_written = buf.len() as u64;
-            sink.write(&buf)?;
-
-            // Update live stats (only when a stats arc was provided).
-            if let Some(ref s) = stats {
-                // Compute current_rate from a 1-second window.
-                let window_elapsed = rate_window_start.elapsed();
-                let current_rate = if window_elapsed >= Duration::from_secs(1) {
-                    let events_in_window = tick - rate_window_tick;
-                    let rate = events_in_window as f64 / window_elapsed.as_secs_f64();
-                    rate_window_tick = tick;
-                    rate_window_start = Instant::now();
-                    rate
-                } else {
-                    s.read().map(|st| st.current_rate).unwrap_or(0.0)
-                };
-
-                if let Ok(mut st) = s.write() {
-                    st.total_events += 1;
-                    st.bytes_emitted += bytes_written;
-                    st.current_rate = current_rate;
-                    st.in_gap = currently_in_gap;
-                    st.in_burst = currently_in_burst;
-                    st.in_cardinality_spike = currently_in_spike;
-                }
-            }
-
-            // Advance the deadline by one effective interval. This preserves
-            // accurate timing even if encode/write takes non-trivial time.
-            next_deadline += effective_interval;
-            tick += 1;
+            event.labels = tl;
         }
-        Ok(())
-    })();
+
+        // Encode and write.
+        buf.clear();
+        encoder.encode_log(&event, &mut buf)?;
+        let bytes_written = buf.len() as u64;
+        sink.write(&buf)?;
+
+        Ok(TickResult {
+            bytes_written,
+            metric_event: None,
+        })
+    };
+
+    // Run the shared schedule loop. The tick closure owns the sink borrow for
+    // per-tick writes; the loop itself handles rate control, gap/burst/spike
+    // windows, stats tracking, and shutdown. We flush after the loop returns.
+    let loop_result =
+        core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn);
 
     // Always flush buffered data before returning, even on error paths.
     // If the loop succeeded, propagate any flush error.
