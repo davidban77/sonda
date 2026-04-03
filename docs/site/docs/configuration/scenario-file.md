@@ -165,6 +165,9 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 | `m` | `5m` | Minutes |
 | `h` | `1h` | Hours |
 
+Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds
+and `0.5m` means 30 seconds.
+
 ## Log scenario files
 
 Log scenarios use a different generator section but share the same structure for gaps, bursts,

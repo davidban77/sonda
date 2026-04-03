@@ -226,7 +226,7 @@ sonda metrics [OPTIONS]
 | `--scenario <FILE>` | path | YAML scenario file. CLI flags override file values. |
 | `--name <NAME>` | string | Metric name. Required if no `--scenario`. |
 | `--rate <RATE>` | float | Events per second. Required if no `--scenario`. |
-| `--duration <DURATION>` | string | Run duration (e.g. `30s`, `5m`). Omit for indefinite. |
+| `--duration <DURATION>` | string | Run duration (e.g. `30s`, `5m`, `1.5s`). Fractional values supported. Omit for indefinite. |
 
 ### Generator
 
@@ -333,7 +333,7 @@ sonda logs [OPTIONS]
 | `--scenario <FILE>` | path | -- | YAML log scenario file. |
 | `--mode <MODE>` | string | -- | Generator mode: `template` or `replay`. Required if no `--scenario`. |
 | `--rate <RATE>` | float | `10.0` | Events per second. |
-| `--duration <DURATION>` | string | indefinite | Run duration. |
+| `--duration <DURATION>` | string | indefinite | Run duration (e.g. `10s`, `1.5s`). Fractional values supported. |
 
 ### Template mode
 
