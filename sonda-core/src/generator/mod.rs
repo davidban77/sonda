@@ -185,6 +185,11 @@ pub fn create_generator(
                     "spike generator requires interval_secs > 0",
                 )));
             }
+            if *duration_secs < 0.0 {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "spike generator requires duration_secs >= 0",
+                )));
+            }
             Ok(Box::new(SpikeGenerator::new(
                 *baseline,
                 *magnitude,
@@ -632,6 +637,35 @@ mod tests {
             result.is_err(),
             "negative interval_secs must return an error"
         );
+    }
+
+    #[test]
+    fn factory_spike_negative_duration_returns_error() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: -5.0,
+            interval_secs: 60.0,
+        };
+        let result = create_generator(&config, 1.0);
+        assert!(
+            result.is_err(),
+            "negative duration_secs must return an error"
+        );
+    }
+
+    #[test]
+    fn factory_spike_zero_duration_succeeds() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 0.0,
+            interval_secs: 60.0,
+        };
+        let gen = create_generator(&config, 1.0).expect("duration_secs=0 is valid");
+        // With zero duration, all ticks should return baseline
+        assert_eq!(gen.value(0), 50.0);
+        assert_eq!(gen.value(30), 50.0);
     }
 
     // ---- Config deserialization tests ----------------------------------------

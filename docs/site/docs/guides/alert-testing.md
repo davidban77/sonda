@@ -506,6 +506,7 @@ See [Docker Deployment](../deployment/docker.md) for the full stack configuratio
 | Precise `for:` duration | `sequence` | `for-duration-test.yaml` |
 | Compound alert | multi-scenario | `multi-metric-correlation.yaml` |
 | Cardinality explosion | any + `cardinality_spikes` | `cardinality-alert-test.yaml` |
+| Periodic spike / anomaly | `spike` | `spike-alert-test.yaml` |
 | Incident replay (inline) | `sequence` | `sequence-alert-test.yaml` |
 | Incident replay (file) | `csv_replay` | `csv-replay-metrics.yaml` |
 | Push to VictoriaMetrics | any | `vm-push-scenario.yaml` |
