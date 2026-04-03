@@ -13,6 +13,7 @@ sonda metrics --scenario examples/basic-metrics.yaml
 |------|-----------|---------|------|-------------|
 | `basic-metrics.yaml` | sine | prometheus_text | stdout | 1000 evt/s sine wave with labels and a recurring gap |
 | `simple-constant.yaml` | constant | prometheus_text | stdout | Minimal `up=1` metric at 10 evt/s for 10 seconds |
+| `step-counter.yaml` | step | prometheus_text | stdout | Monotonic counter with wrap-around at 1000 |
 
 ## Sink Types
 

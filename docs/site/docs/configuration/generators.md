@@ -162,6 +162,46 @@ cpu_spike_test{instance="server-01",job="node"} 10 1774279708031
 cpu_spike_test{instance="server-01",job="node"} 95 1774279709031
 ```
 
+### step
+
+Produces a monotonically increasing counter value: `start + tick * step_size`. With `max` set,
+the value wraps around using modular arithmetic, simulating a counter reset. This is the go-to
+generator for testing PromQL `rate()` and `increase()` queries.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `start` | float | no | `0.0` | Initial value at tick 0. |
+| `step_size` | float | yes | -- | Increment applied per tick. |
+| `max` | float | no | none | Wrap-around threshold. When set and greater than `start`, the value resets to `start` upon reaching `max`. |
+
+```yaml title="Step generator"
+generator:
+  type: step
+  start: 0
+  step_size: 1.0
+  max: 1000
+```
+
+**Shape:** A linear ramp from `start`, incrementing by `step_size` each tick. Without `max`, it
+grows without bound. With `max`, it wraps back to `start` when it reaches the threshold.
+
+```bash
+sonda metrics --scenario examples/step-counter.yaml --duration 3s
+```
+
+```text title="Output"
+request_count{instance="web-01",job="app"} 0 1775192670938
+request_count{instance="web-01",job="app"} 1 1775192671439
+request_count{instance="web-01",job="app"} 2 1775192671939
+request_count{instance="web-01",job="app"} 3 1775192672443
+request_count{instance="web-01",job="app"} 4 1775192672943
+```
+
+!!! tip "Simulating counter resets"
+    Set `max` to a low value to see wrap-around behavior. For example, `start: 0`, `step_size: 1`,
+    `max: 5` produces `0, 1, 2, 3, 4, 0, 1, 2, ...` -- useful for verifying that your `rate()`
+    queries handle counter resets correctly.
+
 ### csv_replay
 
 Replays numeric values from a CSV file. Use it to reproduce real production metric patterns
