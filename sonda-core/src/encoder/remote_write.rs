@@ -145,8 +145,8 @@ impl Encoder for RemoteWriteEncoder {
 
         for (key, value) in event.labels.iter() {
             labels.push(Label {
-                name: key.clone(),
-                value: value.clone(),
+                name: key.to_string(),
+                value: value.to_string(),
             });
         }
 

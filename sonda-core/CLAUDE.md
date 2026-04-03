@@ -13,8 +13,10 @@ src/
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
-│   │                      MetricEvent (ValidatedMetricName name, Arc<Labels>), Labels, from_parts()
-│   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels)
+│   │                      MetricEvent (ValidatedMetricName name, Arc<Labels>), Labels, from_parts().
+│   │                      Labels::iter() returns (&str, &str). Labels::new() is #[cfg(test)] pub(crate).
+│   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels).
+│                          Severity has explicit Ord/PartialOrd (rank-based, not derived from variant order).
 ├── generator/
 │   ├── mod.rs          ← ValueGenerator trait + factory
 │   ├── constant.rs
@@ -26,7 +28,7 @@ src/
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
-│   ├── mod.rs          ← Scheduler, GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
+│   ├── mod.rs          ← GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
 │   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
 │   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
 │   │                      TickResult). Owns all rate control, gap/burst/spike window handling,
@@ -64,7 +66,8 @@ src/
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,
     │                      CardinalitySpikeConfig, SpikeStrategy
-    └── validate.rs     ← config validation logic, parse_duration, validate_cardinality_spike_config
+    └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
+                           validate_cardinality_spike_config
 ```
 
 ## Cargo Features

@@ -72,7 +72,7 @@ impl<'a> Serialize for LabelsRef<'a> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (k, v) in self.0.iter() {
-            map.serialize_entry(k.as_str(), v.as_str())?;
+            map.serialize_entry(k, v)?;
         }
         map.end()
     }

@@ -8,7 +8,7 @@
 //! No business logic lives here beyond translating user-facing arguments into
 //! the `sonda_core` config types.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 
 use anyhow::{bail, Context, Result};
@@ -428,7 +428,7 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
                 // Replace all templates with the single CLI-supplied message.
                 *templates = vec![TemplateConfig {
                     message: msg.clone(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }];
             }
             if let Some(ref sw) = args.severity_weights {
@@ -555,7 +555,7 @@ fn build_log_generator_config(mode: &str, args: &LogsArgs) -> Result<LogGenerato
             Ok(LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message,
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights,
                 seed: args.seed,

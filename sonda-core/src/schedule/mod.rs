@@ -36,25 +36,6 @@ pub struct BurstWindow {
     pub multiplier: f64,
 }
 
-/// Schedule configuration for a scenario.
-///
-/// This struct is defined here for future use by the runner and any caller that
-/// needs to inspect or serialize the resolved schedule. It is not yet consumed
-/// by the runner (which reads directly from `ScenarioConfig`); the runner will
-/// be refactored to accept a `Schedule` in a later slice.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct Schedule {
-    /// Target events per second.
-    pub rate: f64,
-    /// Total run duration. None means run indefinitely.
-    pub duration: Option<Duration>,
-    /// Optional recurring gap window.
-    pub gap: Option<GapWindow>,
-    /// Optional recurring burst window (post-MVP).
-    pub burst: Option<BurstWindow>,
-}
-
 /// Returns `Some(multiplier)` if the scheduler should be in a burst at the given elapsed time,
 /// or `None` if no burst is active.
 ///
@@ -483,22 +464,6 @@ mod tests {
         let g = gap(10, 2);
         let s = format!("{g:?}");
         assert!(s.contains("GapWindow"), "Debug output must name the struct");
-    }
-
-    // ---- Schedule: Clone and Debug contracts ---------------------------------
-
-    #[test]
-    fn schedule_is_cloneable_and_debuggable() {
-        let sched = Schedule {
-            rate: 100.0,
-            duration: Some(Duration::from_secs(30)),
-            gap: Some(gap(10, 2)),
-            burst: None,
-        };
-        let cloned = sched.clone();
-        assert_eq!(cloned.rate, 100.0);
-        let s = format!("{sched:?}");
-        assert!(s.contains("Schedule"));
     }
 
     // ---- BurstWindow: Clone and Debug contracts ------------------------------

@@ -9,10 +9,10 @@ use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConf
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
-/// Supported units:
+/// Supported units (fractional values accepted, e.g. `"1.5s"`, `"0.5m"`):
 /// - `ms` — milliseconds (e.g. `"100ms"`)
-/// - `s`  — seconds      (e.g. `"30s"`)
-/// - `m`  — minutes      (e.g. `"5m"`)
+/// - `s`  — seconds      (e.g. `"30s"`, `"1.5s"`)
+/// - `m`  — minutes      (e.g. `"5m"`, `"0.5m"`)
 /// - `h`  — hours        (e.g. `"1h"`)
 ///
 /// Returns [`SondaError::Config`] if the string is empty, has no recognized
@@ -25,14 +25,14 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
     }
 
     // Determine unit suffix and numeric portion.
-    let (numeric_str, multiplier_ms): (&str, u64) = if let Some(stripped) = s.strip_suffix("ms") {
-        (stripped, 1)
+    let (numeric_str, multiplier_ms): (&str, f64) = if let Some(stripped) = s.strip_suffix("ms") {
+        (stripped, 1.0)
     } else if let Some(stripped) = s.strip_suffix('h') {
-        (stripped, 3_600_000)
+        (stripped, 3_600_000.0)
     } else if let Some(stripped) = s.strip_suffix('m') {
-        (stripped, 60_000)
+        (stripped, 60_000.0)
     } else if let Some(stripped) = s.strip_suffix('s') {
-        (stripped, 1_000)
+        (stripped, 1_000.0)
     } else {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "unrecognized duration unit in {:?}: expected one of ms, s, m, h",
@@ -55,21 +55,30 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
         ))));
     }
 
-    let value: u64 = numeric_str.parse().map_err(|_| {
+    let value: f64 = numeric_str.parse().map_err(|_| {
         SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} has an invalid numeric part {:?}",
             s, numeric_str
         )))
     })?;
 
-    if value == 0 {
+    if value.is_nan() || value.is_infinite() || value <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} must be greater than zero",
             s
         ))));
     }
 
-    Ok(Duration::from_millis(value * multiplier_ms))
+    let total_ms = value * multiplier_ms;
+    // Guard against overflow: f64 can represent values well beyond u64 range.
+    if total_ms > u64::MAX as f64 {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "duration {:?} overflows millisecond representation",
+            s
+        ))));
+    }
+
+    Ok(Duration::from_micros((total_ms * 1_000.0) as u64))
 }
 
 /// Parse an optional phase offset string into a [`Duration`].
@@ -83,19 +92,24 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
         Ok(d) => Ok(Some(d)),
         Err(_) => {
             // Check if it was rejected because the value is zero.
+            // Strip any recognized suffix, then parse the numeric part as f64.
             let trimmed = s.trim();
-            let numeric_end = trimmed
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(trimmed.len());
-            if let Ok(0) = trimmed[..numeric_end].parse::<u64>() {
-                Ok(None) // "0s", "0ms", "0m", "0h" all mean no delay
-            } else {
-                Err(SondaError::Config(ConfigError::invalid(format!(
-                    "invalid phase_offset {:?}: {}",
-                    s,
-                    parse_duration(s).unwrap_err()
-                ))))
+            let numeric_str = trimmed
+                .strip_suffix("ms")
+                .or_else(|| trimmed.strip_suffix('h'))
+                .or_else(|| trimmed.strip_suffix('m'))
+                .or_else(|| trimmed.strip_suffix('s'))
+                .unwrap_or("");
+            if let Ok(v) = numeric_str.parse::<f64>() {
+                if v == 0.0 {
+                    return Ok(None); // "0s", "0ms", "0m", "0h", "0.0s" all mean no delay
+                }
             }
+            Err(SondaError::Config(ConfigError::invalid(format!(
+                "invalid phase_offset {:?}: {}",
+                s,
+                parse_duration(s).unwrap_err()
+            ))))
         }
     }
 }
@@ -441,10 +455,55 @@ mod tests {
     }
 
     #[test]
-    fn parse_duration_fractional_not_supported_returns_err() {
-        // The parser expects integer values only.
-        let result = parse_duration("1.5s");
-        assert!(result.is_err(), "'1.5s' must return Err (fractional)");
+    fn parse_duration_fractional_seconds() {
+        let d = parse_duration("1.5s").expect("1.5s must parse");
+        assert_eq!(d.as_millis(), 1500);
+    }
+
+    #[test]
+    fn parse_duration_fractional_minutes() {
+        let d = parse_duration("0.5m").expect("0.5m must parse");
+        assert_eq!(d.as_secs(), 30);
+    }
+
+    #[test]
+    fn parse_duration_fractional_hours() {
+        let d = parse_duration("0.5h").expect("0.5h must parse");
+        assert_eq!(d.as_secs(), 1800);
+    }
+
+    #[test]
+    fn parse_duration_fractional_milliseconds() {
+        let d = parse_duration("1.5ms").expect("1.5ms must parse");
+        // 1.5ms = 1500 microseconds
+        assert_eq!(d.as_micros(), 1500);
+    }
+
+    #[test]
+    fn parse_duration_fractional_preserves_sub_millisecond_precision() {
+        let d = parse_duration("0.1s").expect("0.1s must parse");
+        assert_eq!(d.as_millis(), 100);
+    }
+
+    #[test]
+    fn parse_duration_integer_values_still_work_after_f64_switch() {
+        // Ensure backward compatibility: integer values parse identically.
+        let d = parse_duration("30s").expect("30s must parse");
+        assert_eq!(d.as_secs(), 30);
+        let d = parse_duration("100ms").expect("100ms must parse");
+        assert_eq!(d.as_millis(), 100);
+    }
+
+    #[test]
+    fn parse_duration_zero_fractional_returns_err() {
+        let result = parse_duration("0.0s");
+        assert!(result.is_err(), "'0.0s' must return Err (zero duration)");
+    }
+
+    #[test]
+    fn parse_duration_infinity_returns_err() {
+        let result = parse_duration("infs");
+        assert!(result.is_err(), "'infs' must return Err (infinite)");
     }
 
     #[test]
