@@ -154,6 +154,29 @@ This encoder must be paired with the `remote_write` sink, which handles batching
 compression, and HTTP POSTing with the correct protocol headers. See
 [Sinks - remote_write](sinks.md#remote_write) for details.
 
+## otlp
+
+OTLP protobuf format. Encodes metrics as OTLP `Gauge` data points and logs as OTLP
+`LogRecord` messages, using length-prefixed protobuf serialization.
+
+!!! warning "Feature flag and build requirement"
+    This encoder requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker
+    images do **not** include this feature. You must build from source:
+    `cargo build --features otlp -p sonda`.
+
+No additional parameters.
+
+```yaml title="OTLP encoder"
+encoder:
+  type: otlp
+```
+
+This encoder must be paired with the `otlp_grpc` sink, which handles batching and gRPC delivery
+to an OpenTelemetry Collector. See [Sinks - otlp_grpc](sinks.md#otlp_grpc) for details.
+
+The encoder supports both metrics and logs. Set the sink's `signal_type` to match your scenario
+type (`metrics` or `logs`).
+
 ## Value precision
 
 The `prometheus_text`, `influx_lp`, and `json_lines` encoders accept an optional `precision`
@@ -188,18 +211,19 @@ The `--precision` flag works with `--encoder` or on its own. When you pass `--pr
 sonda metrics --scenario examples/basic-metrics.yaml --precision 2
 ```
 
-The `syslog` and `remote_write` encoders do not support `precision`. Syslog encodes log events
-only (no numeric values), and remote write uses binary protobuf encoding.
+The `syslog`, `remote_write`, and `otlp` encoders do not support `precision`. Syslog encodes log
+events only (no numeric values), and remote write and OTLP use binary protobuf encoding.
 
 See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml)
 for a complete scenario that demonstrates precision with multiple encoders.
 
 ## Encoder compatibility
 
-| Encoder | Metrics | Logs | Precision |
-|---------|---------|------|-----------|
-| `prometheus_text` | yes | no | yes |
-| `influx_lp` | yes | no | yes |
-| `json_lines` | yes | yes | yes |
-| `syslog` | no | yes | -- |
-| `remote_write` | yes | no | -- |
+| Encoder | Metrics | Logs | Precision | Feature flag |
+|---------|---------|------|-----------|--------------|
+| `prometheus_text` | yes | no | yes | -- |
+| `influx_lp` | yes | no | yes | -- |
+| `json_lines` | yes | yes | yes | -- |
+| `syslog` | no | yes | -- | -- |
+| `remote_write` | yes | no | -- | `remote-write` |
+| `otlp` | yes | yes | -- | `otlp` |

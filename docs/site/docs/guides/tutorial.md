@@ -209,11 +209,15 @@ The same metric looks different in each format:
     <14>1 2026-03-31T21:40:38.941Z sonda sonda - - [sonda app="myservice"] synthetic log event
     ```
 
-!!! warning "remote_write encoder"
+!!! warning "Feature-gated encoders"
     The `remote_write` encoder produces Prometheus remote write protobuf format. It requires
     the `remote-write` feature flag when building from source (`cargo build --features remote-write`).
-    Pre-built binaries and Docker images include it by default. If you build without this flag and
-    try to use `remote_write`, you will get a compilation error.
+    Pre-built binaries and Docker images include it by default.
+
+    The `otlp` encoder produces OTLP protobuf format for metrics and logs. It requires
+    the `otlp` feature flag (`cargo build --features otlp`). Pre-built binaries and Docker
+    images do **not** include this feature -- you must build from source.
+
     See [Encoders](../configuration/encoders.md) for details.
 
 With the right format chosen, the next question is: where should the data go?
@@ -225,7 +229,7 @@ With the right format chosen, the next question is: where should the data go?
 So far everything has gone to stdout. In production testing, you need data flowing to
 real backends -- over HTTP, TCP, or directly into Kafka or Loki.
 
-Sonda supports eight sinks:
+Sonda supports nine sinks:
 
 | Sink | Description | CLI flag |
 |------|-------------|----------|
@@ -237,6 +241,7 @@ Sonda supports eight sinks:
 | `loki` | Push logs to Grafana Loki | YAML only |
 | `kafka` | Publish to a Kafka topic | YAML only |
 | `remote_write` | Prometheus remote write protocol | YAML only |
+| `otlp_grpc` | OTLP/gRPC to an OpenTelemetry Collector | YAML only |
 
 ### stdout (default)
 
@@ -382,6 +387,32 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
     ```
 
     See `examples/kafka-sink.yaml` for the complete example with generator and encoder config.
+
+??? example "OTLP/gRPC sink setup"
+    Push metrics or logs to an OpenTelemetry Collector via gRPC. Requires the `otlp` feature
+    flag when building from source and a Collector listening on port 4317:
+
+    ```bash
+    cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml
+    ```
+
+    ```yaml title="examples/otlp-metrics.yaml (key fields)"
+    encoder:
+      type: otlp
+    sink:
+      type: otlp_grpc
+      endpoint: "http://localhost:4317"
+      signal_type: metrics
+      batch_size: 100
+    ```
+
+    For logs, use `signal_type: logs` and run with `sonda logs`:
+
+    ```bash
+    cargo run --features otlp -- logs --scenario examples/otlp-logs.yaml
+    ```
+
+    See [Sinks - otlp_grpc](../configuration/sinks.md#otlp_grpc) for the full configuration reference.
 
 For full sink configuration details, see [Sinks](../configuration/sinks.md).
 
@@ -787,7 +818,27 @@ sink:
 
 Compatible targets include VictoriaMetrics, Prometheus, Thanos Receive, and Cortex/Mimir.
 
-### 3. Scrape via sonda-server
+### 3. OTLP/gRPC (OpenTelemetry Collector)
+
+Push directly to an OpenTelemetry Collector via gRPC. This requires building with `--features otlp`:
+
+```bash
+cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml
+```
+
+```yaml title="examples/otlp-metrics.yaml (excerpt)"
+encoder:
+  type: otlp
+sink:
+  type: otlp_grpc
+  endpoint: "http://localhost:4317"
+  signal_type: metrics
+```
+
+The Collector routes data to any configured exporter (Prometheus, Jaeger, Loki, etc.), making this
+the most flexible backend integration option.
+
+### 4. Scrape via sonda-server
 
 Point Prometheus at sonda-server's metrics endpoint:
 

@@ -25,6 +25,7 @@ Sonda has two kinds of batching depending on the sink type:
 | `kafka` | Application-level | 64 KiB | No | bytes |
 | `loki` | Application-level | 100 entries | Yes | entries |
 | `remote_write` | Application-level | 100 entries | Yes | entries |
+| `otlp_grpc` | Application-level | 100 entries | Yes | entries |
 
 ### OS-level buffering (stdout, file, tcp)
 
@@ -35,11 +36,11 @@ or when Sonda explicitly flushes at the end of the scenario.
 This is why you see stdout output appear in bursts -- the terminal receives a chunk of lines each
 time the buffer flushes, rather than one line per event.
 
-### Application-level batching (http_push, kafka, loki, remote_write)
+### Application-level batching (http_push, kafka, loki, remote_write, otlp_grpc)
 
 These sinks manage their own internal buffer. Each call to `write()` appends data to the buffer.
-When the buffer reaches the configured threshold, the entire batch is sent as a single HTTP POST
-or Kafka record.
+When the buffer reaches the configured threshold, the entire batch is sent as a single HTTP POST,
+Kafka record, or gRPC call.
 
 This means data does not appear at the destination until either:
 
@@ -53,7 +54,7 @@ buffering.
 
 ## Configuring batch size
 
-Three sinks let you tune the batch threshold via the `batch_size` field in the sink config.
+Four sinks let you tune the batch threshold via the `batch_size` field in the sink config.
 
 === "http_push"
 
@@ -89,6 +90,20 @@ Three sinks let you tune the batch threshold via the `batch_size` field in the s
       type: loki
       url: "http://localhost:3100"
       batch_size: 20  # flush every 20 log lines
+    ```
+
+=== "otlp_grpc"
+
+    `batch_size` is in **data points / log records**. Default: `100`.
+
+    ```yaml title="Smaller OTLP batches"
+    encoder:
+      type: otlp
+    sink:
+      type: otlp_grpc
+      endpoint: "http://localhost:4317"
+      signal_type: metrics
+      batch_size: 10  # flush every 10 data points
     ```
 
 ??? tip "Choosing a batch size"

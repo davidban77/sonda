@@ -28,6 +28,15 @@ sonda metrics --scenario examples/basic-metrics.yaml
 
 See [Sinks](../configuration/sinks.md) for configuration details on each sink type.
 
+## OTLP / OpenTelemetry
+
+| File | Signal | Encoder | Sink | Description |
+|------|--------|---------|------|-------------|
+| `otlp-metrics.yaml` | metrics | otlp | otlp_grpc | Push sine wave metrics to an OTEL Collector via gRPC* |
+| `otlp-logs.yaml` | logs | otlp | otlp_grpc | Push template logs to an OTEL Collector via gRPC* |
+
+*Requires building from source with `--features otlp`. Pre-built binaries do not include OTLP support. Run with: `cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml`
+
 ## Encoding Formats
 
 | File | Generator | Encoder | Sink | Description |
@@ -39,7 +48,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `remote-write-vm.yaml` | sine | remote_write | remote_write | Protobuf remote write to VictoriaMetrics* |
 | `multi-format-test.yaml` | constant | influx_lp | file | InfluxDB line protocol for pipeline validation |
 
-*Pre-built binaries include remote-write support. When building from source, add `--features remote-write`. See [Encoders](../configuration/encoders.md) for details.
+*Pre-built binaries include remote-write support. When building from source, add `--features remote-write`. OTLP support requires `--features otlp` (not included in pre-built binaries). See [Encoders](../configuration/encoders.md) for details.
 
 ## Scheduling
 
