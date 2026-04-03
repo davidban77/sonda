@@ -6,7 +6,7 @@
 //! `LogEvent`. No mutable state is required, satisfying the `&self` contract of
 //! [`LogGenerator`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::model::log::{LogEvent, Severity};
 use crate::model::metric::Labels;
@@ -22,7 +22,10 @@ pub(crate) struct TemplateEntry {
     pub message: String,
     /// Maps each placeholder name to its pool of possible values.
     /// e.g. `{"ip": ["10.0.0.1", "10.0.0.2"], "endpoint": ["/api", "/health"]}`.
-    pub field_pools: HashMap<String, Vec<String>>,
+    ///
+    /// Uses `BTreeMap` for deterministic iteration order, consistent with the
+    /// rest of the codebase's convention for ordered maps.
+    pub field_pools: BTreeMap<String, Vec<String>>,
 }
 
 /// A log generator that produces events by selecting from message templates and
@@ -208,7 +211,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "Request from {ip} to {endpoint}".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert(
                     "ip".into(),
                     vec!["10.0.0.1".into(), "10.0.0.2".into(), "10.0.0.3".into()],
@@ -224,7 +227,7 @@ mod tests {
     fn make_weighted_generator(seed: u64) -> LogTemplateGenerator {
         let entry = TemplateEntry {
             message: "msg".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let weights = vec![
             (Severity::Info, 0.7),
@@ -381,11 +384,11 @@ mod tests {
     fn two_templates_selected_round_robin() {
         let entry_a = TemplateEntry {
             message: "template-A".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let entry_b = TemplateEntry {
             message: "template-B".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry_a, entry_b], vec![], 0);
 
@@ -497,15 +500,15 @@ mod tests {
     fn tick_above_u32_max_selects_correct_template() {
         let entry_a = TemplateEntry {
             message: "template-A".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let entry_b = TemplateEntry {
             message: "template-B".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let entry_c = TemplateEntry {
             message: "template-C".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry_a, entry_b, entry_c], vec![], 0);
         // tick = 4_294_967_296: u64 modulo 4_294_967_296 % 3 = 1
@@ -522,15 +525,15 @@ mod tests {
     fn tick_at_u64_max_selects_correct_template() {
         let entry_a = TemplateEntry {
             message: "template-A".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let entry_b = TemplateEntry {
             message: "template-B".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let entry_c = TemplateEntry {
             message: "template-C".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry_a, entry_b, entry_c], vec![], 0);
         // u64::MAX % 3 = 0
@@ -549,7 +552,7 @@ mod tests {
     fn template_with_no_placeholders_returns_literal() {
         let entry = TemplateEntry {
             message: "plain message with no placeholders".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
         let event = gen.generate(0);
@@ -562,7 +565,7 @@ mod tests {
         // A {name} that is NOT in field_pools should be copied literally.
         let entry = TemplateEntry {
             message: "hello {unknown} world".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
         let event = gen.generate(0);
@@ -576,7 +579,7 @@ mod tests {
     fn template_with_unclosed_brace_copies_brace_literally() {
         let entry = TemplateEntry {
             message: "trailing open brace {".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
         let event = gen.generate(0);
@@ -591,7 +594,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "{a}{b}".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("a".into(), vec!["ALPHA".into()]);
                 m.insert("b".into(), vec!["BETA".into()]);
                 m
@@ -607,7 +610,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "{x} and {x} again".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("x".into(), vec!["VAL".into()]);
                 m
             },
@@ -622,7 +625,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "{start}middle{end}".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("start".into(), vec!["[BEGIN]".into()]);
                 m.insert("end".into(), vec!["[END]".into()]);
                 m
@@ -638,7 +641,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "{sole}".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("sole".into(), vec!["ONLY".into()]);
                 m
             },
@@ -653,7 +656,7 @@ mod tests {
     fn template_empty_message_returns_empty_string() {
         let entry = TemplateEntry {
             message: String::new(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
         let event = gen.generate(0);
@@ -665,7 +668,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "{known} then {mystery} then {known}".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("known".into(), vec!["K".into()]);
                 m
             },
@@ -683,7 +686,7 @@ mod tests {
         // `{}` is not a valid field name (no pool entry) so should be kept literally.
         let entry = TemplateEntry {
             message: "before {} after".into(),
-            field_pools: HashMap::new(),
+            field_pools: BTreeMap::new(),
         };
         let gen = LogTemplateGenerator::new(vec![entry], vec![], 0);
         let event = gen.generate(0);
@@ -697,7 +700,7 @@ mod tests {
         let entry = TemplateEntry {
             message: "no placeholders here".into(),
             field_pools: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("phantom".into(), vec!["ghost".into()]);
                 m
             },

@@ -17,7 +17,7 @@ sonda-core via `validate_entry` and `launch_scenario`. The server crate is pure 
 ```
 src/
 ├── main.rs             ← entrypoint: CLI arg parsing, axum router setup, tokio runtime,
-│                         graceful shutdown (Ctrl+C stops all running scenarios)
+│                         graceful shutdown (Ctrl+C stops all scenarios + joins threads with 5s timeout)
 ├── routes/
 │   ├── mod.rs          ← router() function wires all routes; re-exports submodules
 │   ├── health.rs       ← GET /health → {"status": "ok"}

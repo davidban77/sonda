@@ -7,10 +7,11 @@ mod routes;
 mod state;
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::state::AppState;
 
@@ -73,6 +74,17 @@ async fn shutdown_signal(state: AppState) {
     if let Ok(scenarios) = state.scenarios.read() {
         for handle in scenarios.values() {
             handle.stop();
+        }
+    }
+
+    // Join scenario threads with a timeout so sinks can flush before exit.
+    // Requires a write lock because join() consumes the inner JoinHandle.
+    if let Ok(mut scenarios) = state.scenarios.write() {
+        for (id, handle) in scenarios.iter_mut() {
+            match handle.join(Some(Duration::from_secs(5))) {
+                Ok(_) => info!(scenario = %id, "scenario thread joined"),
+                Err(e) => warn!(scenario = %id, error = %e, "scenario thread join failed"),
+            }
         }
     }
 }

@@ -379,6 +379,8 @@ impl std::ops::DerefMut for LogScenarioConfig {
 
 #[cfg(all(test, feature = "config"))]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -723,7 +725,7 @@ clock_group: compound-alert
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
                     message: "test".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),
@@ -827,7 +829,7 @@ clock_group: compound-alert
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
                     message: "test".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),
@@ -1180,7 +1182,7 @@ gaps:
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
                     message: "test".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),

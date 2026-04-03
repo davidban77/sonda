@@ -140,7 +140,7 @@ pub fn run_logs_with_sink(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use super::*;
     use crate::config::{BaseScheduleConfig, GapConfig, LogScenarioConfig};
@@ -171,7 +171,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "synthetic log event".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),

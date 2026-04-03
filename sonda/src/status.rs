@@ -432,7 +432,7 @@ fn format_rate(rate: f64) -> String {
 mod tests {
     use super::*;
 
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::time::Duration;
 
     use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig};
@@ -807,7 +807,7 @@ mod tests {
         let config = LogGeneratorConfig::Template {
             templates: vec![TemplateConfig {
                 message: "test".to_string(),
-                field_pools: HashMap::new(),
+                field_pools: BTreeMap::new(),
             }],
             severity_weights: None,
             seed: None,
@@ -824,11 +824,11 @@ mod tests {
             templates: vec![
                 TemplateConfig {
                     message: "msg1".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 },
                 TemplateConfig {
                     message: "msg2".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 },
             ],
             severity_weights: Some(weights),
@@ -893,7 +893,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test message".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),
@@ -1247,7 +1247,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: None,

@@ -112,9 +112,12 @@ pub struct Labels {
 impl Labels {
     /// Create a new label set from key-value pairs without validation.
     ///
-    /// Duplicate keys are resolved by last-write-wins. Prefer [`Labels::from_pairs`]
-    /// for validated construction.
-    pub fn new(pairs: Vec<(String, String)>) -> Self {
+    /// This constructor is available only in test builds. Production code
+    /// should use [`Labels::from_pairs`] which validates label keys.
+    ///
+    /// Duplicate keys are resolved by last-write-wins.
+    #[cfg(test)]
+    pub(crate) fn new(pairs: Vec<(String, String)>) -> Self {
         let inner = pairs.into_iter().collect();
         Self { inner }
     }
@@ -141,8 +144,11 @@ impl Labels {
     }
 
     /// Returns an iterator over the label key-value pairs in sorted key order.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
-        self.inner.iter()
+    ///
+    /// Returns `(&str, &str)` rather than `(&String, &String)` for idiomatic Rust
+    /// usage. The underlying `BTreeMap` iteration order is preserved.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.inner.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
     /// Returns the number of labels in this set.
@@ -391,7 +397,7 @@ mod tests {
     fn labels_iter_yields_keys_in_sorted_order() {
         let labels =
             Labels::from_pairs(&[("zone", "eu1"), ("host", "server1"), ("env", "prod")]).unwrap();
-        let keys: Vec<&str> = labels.iter().map(|(k, _)| k.as_str()).collect();
+        let keys: Vec<&str> = labels.iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["env", "host", "zone"]);
     }
 
@@ -549,7 +555,7 @@ mod tests {
         let mut labels = Labels::from_pairs(&[("b", "2")]).unwrap();
         labels.insert("a".to_string(), "1".to_string());
         labels.insert("c".to_string(), "3".to_string());
-        let keys: Vec<&str> = labels.iter().map(|(k, _)| k.as_str()).collect();
+        let keys: Vec<&str> = labels.iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
     }
 

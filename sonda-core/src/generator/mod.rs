@@ -15,7 +15,7 @@ pub mod sequence;
 pub mod sine;
 pub mod uniform;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use self::constant::Constant;
 use self::csv_replay::CsvReplayGenerator;
@@ -198,8 +198,11 @@ pub struct TemplateConfig {
     /// The message template. Use `{field_name}` for dynamic placeholders.
     pub message: String,
     /// Maps placeholder names to their value pools.
+    ///
+    /// Uses `BTreeMap` for deterministic iteration order, matching the
+    /// codebase convention for ordered maps.
     #[cfg_attr(feature = "config", serde(default))]
-    pub field_pools: HashMap<String, Vec<String>>,
+    pub field_pools: BTreeMap<String, Vec<String>>,
 }
 
 /// Configuration for a log generator, used for YAML deserialization.
@@ -750,7 +753,7 @@ seed: 42
             templates: vec![TemplateConfig {
                 message: "event {id}".into(),
                 field_pools: {
-                    let mut m = HashMap::new();
+                    let mut m = BTreeMap::new();
                     m.insert("id".into(), vec!["1".into(), "2".into(), "3".into()]);
                     m
                 },
@@ -770,7 +773,7 @@ seed: 42
         let config = LogGeneratorConfig::Template {
             templates: vec![TemplateConfig {
                 message: "static message".into(),
-                field_pools: HashMap::new(),
+                field_pools: BTreeMap::new(),
             }],
             severity_weights: None,
             seed: None,
@@ -784,7 +787,7 @@ seed: 42
         let config = LogGeneratorConfig::Template {
             templates: vec![TemplateConfig {
                 message: "msg".into(),
-                field_pools: HashMap::new(),
+                field_pools: BTreeMap::new(),
             }],
             severity_weights: {
                 let mut m = HashMap::new();

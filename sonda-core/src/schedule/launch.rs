@@ -144,7 +144,7 @@ pub fn launch_scenario(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -195,7 +195,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test log".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),
@@ -242,7 +242,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "indefinite log".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(1),
@@ -346,7 +346,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "msg".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),
@@ -562,7 +562,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "stat tracking log".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(42),
@@ -806,7 +806,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "delayed log".to_string(),
-                    field_pools: HashMap::new(),
+                    field_pools: BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(0),

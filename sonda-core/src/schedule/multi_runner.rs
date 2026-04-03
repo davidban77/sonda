@@ -146,7 +146,7 @@ mod tests {
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
                     message: "test log event".to_string(),
-                    field_pools: std::collections::HashMap::new(),
+                    field_pools: std::collections::BTreeMap::new(),
                 }],
                 severity_weights: None,
                 seed: Some(42),
@@ -271,7 +271,7 @@ mod tests {
                     generator: LogGeneratorConfig::Template {
                         templates: vec![TemplateConfig {
                             message: "shutdown test".to_string(),
-                            field_pools: std::collections::HashMap::new(),
+                            field_pools: std::collections::BTreeMap::new(),
                         }],
                         severity_weights: None,
                         seed: Some(0),

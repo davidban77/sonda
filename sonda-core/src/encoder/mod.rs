@@ -776,4 +776,141 @@ sink:
         format_rfc3339_millis(ts, &mut buf).unwrap();
         assert_eq!(buf.len(), RFC3339_MILLIS_LEN);
     }
+
+    // ---------------------------------------------------------------------------
+    // format_rfc3339_millis: edge-case tests for Gregorian calendar conversion
+    // ---------------------------------------------------------------------------
+
+    /// Leap year: Feb 29 in a divisible-by-4 year that is not a century year.
+    #[test]
+    fn format_rfc3339_millis_leap_year_feb_29_2024() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2024-02-29T00:00:00.000Z
+        // Days from 1970-01-01 to 2024-02-29:
+        // 54 full years (1970-2023): 13 leap years (72,76,...2020) + 41 regular
+        // = 13*366 + 41*365 = 4758 + 14965 = 19723 days to 2024-01-01
+        // + 31 (Jan) + 28 (Feb 1-28) = 59, but Feb 29 is day 60
+        // Actually, compute more precisely.
+        // 2024-02-29 00:00:00 UTC = 1709164800 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_secs(1_709_164_800);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2024-02-29T00:00:00.000Z"
+        );
+    }
+
+    /// Non-leap year: Mar 1 follows Feb 28 (no Feb 29).
+    #[test]
+    fn format_rfc3339_millis_non_leap_year_mar_1_2023() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2023-03-01T00:00:00.000Z = 1677628800 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_secs(1_677_628_800);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2023-03-01T00:00:00.000Z"
+        );
+    }
+
+    /// Century boundary: year 2000 IS a leap year (divisible by 400).
+    #[test]
+    fn format_rfc3339_millis_century_leap_year_2000_feb_29() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2000-02-29T00:00:00.000Z = 951782400 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_secs(951_782_400);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2000-02-29T00:00:00.000Z"
+        );
+    }
+
+    /// Century boundary: year 1900 is NOT a leap year (divisible by 100 but
+    /// not by 400). Since 1900 is before the Unix epoch, we test 2100 instead.
+    /// 2100-03-01 should follow 2100-02-28 (no Feb 29).
+    #[test]
+    fn format_rfc3339_millis_century_non_leap_year_2100_mar_1() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2100-03-01T00:00:00.000Z = 4107542400 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_secs(4_107_542_400);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2100-03-01T00:00:00.000Z"
+        );
+    }
+
+    /// 2100-02-28 should be valid (last day of Feb in non-leap century year).
+    #[test]
+    fn format_rfc3339_millis_century_non_leap_year_2100_feb_28() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2100-02-28T23:59:59.999Z = 4107542400 - 1 ms from midnight Mar 1
+        let ts = UNIX_EPOCH + Duration::from_millis(4_107_542_400_000 - 1);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2100-02-28T23:59:59.999Z"
+        );
+    }
+
+    /// Dec 31 → Jan 1 transition (year boundary): last second of year.
+    #[test]
+    fn format_rfc3339_millis_dec_31_to_jan_1_transition() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2025-12-31T23:59:59.999Z
+        // 2026-01-01T00:00:00.000Z = 1767225600 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_millis(1_767_225_600_000 - 1);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2025-12-31T23:59:59.999Z"
+        );
+    }
+
+    /// Jan 1 midnight of a new year.
+    #[test]
+    fn format_rfc3339_millis_jan_1_midnight() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2026-01-01T00:00:00.000Z = 1767225600 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_secs(1_767_225_600);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2026-01-01T00:00:00.000Z"
+        );
+    }
+
+    /// Leap year Dec 31 → Jan 1 transition (end of a 366-day year).
+    #[test]
+    fn format_rfc3339_millis_leap_year_dec_31_to_jan_1() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2024-12-31T23:59:59.999Z
+        // 2025-01-01T00:00:00.000Z = 1735689600 epoch seconds
+        let ts = UNIX_EPOCH + Duration::from_millis(1_735_689_600_000 - 1);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2024-12-31T23:59:59.999Z"
+        );
+    }
+
+    /// Mid-day timestamp with non-zero milliseconds.
+    #[test]
+    fn format_rfc3339_millis_mid_day_with_millis() {
+        use std::time::{Duration, UNIX_EPOCH};
+        // 2024-06-15T14:30:45.123Z
+        // Compute: 2024-06-15 14:30:45.123 UTC
+        // 2024-01-01 = 1704067200 epoch seconds
+        // + 31 (Jan) + 29 (Feb, leap) + 31 (Mar) + 30 (Apr) + 31 (May) + 14 (Jun 1-14) = 166 days
+        // 166 * 86400 = 14342400
+        // + 14*3600 + 30*60 + 45 = 50400 + 1800 + 45 = 52245
+        // Total = 1704067200 + 14342400 + 52245 = 1718461845
+        let ts = UNIX_EPOCH + Duration::from_millis(1_718_461_845_123);
+        let arr = format_rfc3339_millis_array(ts).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&arr).unwrap(),
+            "2024-06-15T14:30:45.123Z"
+        );
+    }
 }

@@ -15,7 +15,7 @@ use crate::model::metric::Labels;
 ///
 /// Variants map to the conventional log severity ladder. Serializes to and from
 /// lowercase strings (e.g., `"info"`, `"error"`) for YAML and JSON compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 // `rename_all` is not behind cfg_attr because it applies to both Serialize
 // (unconditional — used by the JSON encoder) and Deserialize (config-gated).
@@ -34,6 +34,36 @@ pub enum Severity {
     Error,
     /// Severe error events that will likely cause the application to abort.
     Fatal,
+}
+
+impl Severity {
+    /// Returns a numeric rank for this severity level.
+    ///
+    /// Lower ranks represent less-severe levels. This defines the canonical
+    /// ordering independently of enum variant declaration order, so reordering
+    /// the variants in source code never silently breaks `Ord`.
+    const fn rank(self) -> u8 {
+        match self {
+            Severity::Trace => 0,
+            Severity::Debug => 1,
+            Severity::Info => 2,
+            Severity::Warn => 3,
+            Severity::Error => 4,
+            Severity::Fatal => 5,
+        }
+    }
+}
+
+impl Ord for Severity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank().cmp(&other.rank())
+    }
+}
+
+impl PartialOrd for Severity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// A structured log entry with a timestamp, severity, message, labels, and arbitrary fields.
@@ -380,6 +410,67 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Severity: explicit ordering tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_ordering_follows_severity_ladder() {
+        assert!(Severity::Trace < Severity::Debug);
+        assert!(Severity::Debug < Severity::Info);
+        assert!(Severity::Info < Severity::Warn);
+        assert!(Severity::Warn < Severity::Error);
+        assert!(Severity::Error < Severity::Fatal);
+    }
+
+    #[test]
+    fn severity_equal_variants_compare_as_equal() {
+        assert_eq!(
+            Severity::Info.cmp(&Severity::Info),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            Severity::Fatal.cmp(&Severity::Fatal),
+            std::cmp::Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn severity_partial_ord_consistent_with_ord() {
+        assert_eq!(
+            Severity::Trace.partial_cmp(&Severity::Fatal),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            Severity::Fatal.partial_cmp(&Severity::Trace),
+            Some(std::cmp::Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn severity_sort_produces_ascending_order() {
+        let mut levels = vec![
+            Severity::Fatal,
+            Severity::Trace,
+            Severity::Warn,
+            Severity::Debug,
+            Severity::Error,
+            Severity::Info,
+        ];
+        levels.sort();
+        assert_eq!(
+            levels,
+            vec![
+                Severity::Trace,
+                Severity::Debug,
+                Severity::Info,
+                Severity::Warn,
+                Severity::Error,
+                Severity::Fatal,
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // LogEvent: Send + Sync contract
     // -----------------------------------------------------------------------
 
@@ -425,11 +516,11 @@ mod tests {
         let event = LogEvent::new(Severity::Info, "test".to_string(), labels, BTreeMap::new());
 
         assert_eq!(event.labels.len(), 2);
-        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
-        assert_eq!(label_pairs[0].0.as_str(), "device");
-        assert_eq!(label_pairs[0].1.as_str(), "wlan0");
-        assert_eq!(label_pairs[1].0.as_str(), "hostname");
-        assert_eq!(label_pairs[1].1.as_str(), "router-01");
+        let label_pairs: Vec<(&str, &str)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0, "device");
+        assert_eq!(label_pairs[0].1, "wlan0");
+        assert_eq!(label_pairs[1].0, "hostname");
+        assert_eq!(label_pairs[1].1, "router-01");
     }
 
     #[test]
@@ -445,11 +536,11 @@ mod tests {
         );
 
         assert_eq!(event.labels.len(), 2);
-        let label_pairs: Vec<(&String, &String)> = event.labels.iter().collect();
-        assert_eq!(label_pairs[0].0.as_str(), "env");
-        assert_eq!(label_pairs[0].1.as_str(), "staging");
-        assert_eq!(label_pairs[1].0.as_str(), "region");
-        assert_eq!(label_pairs[1].1.as_str(), "us_west");
+        let label_pairs: Vec<(&str, &str)> = event.labels.iter().collect();
+        assert_eq!(label_pairs[0].0, "env");
+        assert_eq!(label_pairs[0].1, "staging");
+        assert_eq!(label_pairs[1].0, "region");
+        assert_eq!(label_pairs[1].1, "us_west");
     }
 
     #[test]
@@ -467,8 +558,8 @@ mod tests {
         let cloned = original.clone();
 
         assert_eq!(cloned.labels.len(), 2);
-        let original_pairs: Vec<(&String, &String)> = original.labels.iter().collect();
-        let cloned_pairs: Vec<(&String, &String)> = cloned.labels.iter().collect();
+        let original_pairs: Vec<(&str, &str)> = original.labels.iter().collect();
+        let cloned_pairs: Vec<(&str, &str)> = cloned.labels.iter().collect();
         assert_eq!(original_pairs, cloned_pairs);
     }
 
