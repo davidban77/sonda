@@ -402,7 +402,11 @@ impl Encoder for OtlpEncoder {
             })),
         };
 
-        // Serialize the Metric to protobuf bytes.
+        // Serialize the Metric to protobuf bytes via an intermediate buffer.
+        // This mirrors the pattern in remote_write.rs. Both could be optimized
+        // to encode directly into `buf` (write 4 placeholder bytes, encode at
+        // offset, backfill length) but the intermediate Vec keeps the logic
+        // straightforward and consistent across protobuf encoders.
         let encoded_len = metric.encoded_len();
         let mut proto_bytes = Vec::with_capacity(encoded_len);
         metric.encode(&mut proto_bytes).map_err(|e| {
@@ -444,7 +448,8 @@ impl Encoder for OtlpEncoder {
             attributes,
         };
 
-        // Serialize the LogRecord to protobuf bytes.
+        // Serialize the LogRecord to protobuf bytes via an intermediate buffer.
+        // See the comment in encode_metric() for the rationale on this pattern.
         let encoded_len = log_record.encoded_len();
         let mut proto_bytes = Vec::with_capacity(encoded_len);
         log_record.encode(&mut proto_bytes).map_err(|e| {

@@ -317,7 +317,8 @@ fn parse_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderC
         }),
         "json_lines" => Ok(EncoderConfig::JsonLines { precision }),
         other => bail!(
-            "unknown encoder {:?}: expected one of prometheus_text, influx_lp, json_lines",
+            "unknown encoder \"{}\": expected one of prometheus_text, influx_lp, json_lines \
+             (otlp, remote_write, syslog are available via YAML scenario files)",
             other
         ),
     }

@@ -739,6 +739,144 @@ mod kafka_matrix {
 }
 
 // ---------------------------------------------------------------------------
+// Section 7b: OTLP encoder × MemorySink (feature-gated)
+//
+// When the "otlp" feature is enabled, verify that the OTLP encoder produces
+// non-empty protobuf bytes for both metric and log events when written to
+// a MemorySink. Since the output is binary protobuf (not text), we verify
+// non-emptiness and length-prefix structure rather than string contents.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "otlp")]
+mod otlp_matrix {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use sonda_core::encoder::otlp::OtlpEncoder;
+    use sonda_core::encoder::Encoder;
+    use sonda_core::model::log::{LogEvent, Severity};
+
+    #[test]
+    fn otlp_x_memory_metric_produces_nonempty_output() {
+        let encoder = OtlpEncoder::new();
+        let event = test_event();
+        let mut buf = Vec::new();
+        encoder
+            .encode_metric(&event, &mut buf)
+            .expect("otlp encode_metric must succeed");
+
+        let mut sink = MemorySink::new();
+        sink.write(&buf).unwrap();
+        sink.flush().unwrap();
+
+        assert!(
+            !sink.buffer.is_empty(),
+            "otlp encoder must produce non-empty metric output"
+        );
+    }
+
+    #[test]
+    fn otlp_x_memory_metric_has_valid_length_prefix() {
+        let encoder = OtlpEncoder::new();
+        let event = test_event();
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).unwrap();
+
+        // The first 4 bytes are a little-endian u32 length prefix.
+        assert!(
+            buf.len() >= 4,
+            "otlp output must contain at least 4 bytes for length prefix"
+        );
+        let prefix_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        assert_eq!(
+            buf.len(),
+            4 + prefix_len,
+            "buffer length must equal 4-byte prefix + declared payload length"
+        );
+    }
+
+    #[test]
+    fn otlp_x_memory_log_produces_nonempty_output() {
+        let encoder = OtlpEncoder::new();
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let labels = Labels::from_pairs(&[("env", "test")]).unwrap();
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Info,
+            "test log message".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        let mut buf = Vec::new();
+        encoder
+            .encode_log(&event, &mut buf)
+            .expect("otlp encode_log must succeed");
+
+        let mut sink = MemorySink::new();
+        sink.write(&buf).unwrap();
+        sink.flush().unwrap();
+
+        assert!(
+            !sink.buffer.is_empty(),
+            "otlp encoder must produce non-empty log output"
+        );
+    }
+
+    #[test]
+    fn otlp_x_memory_log_has_valid_length_prefix() {
+        let encoder = OtlpEncoder::new();
+        let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let labels = Labels::from_pairs(&[("env", "test")]).unwrap();
+        let event = LogEvent::with_timestamp(
+            ts,
+            Severity::Warn,
+            "warning log".to_string(),
+            labels,
+            BTreeMap::new(),
+        );
+
+        let mut buf = Vec::new();
+        encoder.encode_log(&event, &mut buf).unwrap();
+
+        assert!(
+            buf.len() >= 4,
+            "otlp log output must contain at least 4 bytes for length prefix"
+        );
+        let prefix_len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        assert_eq!(
+            buf.len(),
+            4 + prefix_len,
+            "buffer length must equal 4-byte prefix + declared payload length"
+        );
+    }
+
+    #[test]
+    fn otlp_x_memory_multi_metric_accumulates_in_sink() {
+        let encoder = OtlpEncoder::new();
+        let mut sink = MemorySink::new();
+
+        for i in 0..3u64 {
+            let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000 + i * 1000);
+            let labels = Labels::from_pairs(&[("idx", &i.to_string())]).unwrap();
+            let event = MetricEvent::with_timestamp("otlp_multi".to_string(), i as f64, labels, ts)
+                .unwrap();
+            let mut buf = Vec::new();
+            encoder.encode_metric(&event, &mut buf).unwrap();
+            sink.write(&buf).unwrap();
+        }
+        sink.flush().unwrap();
+
+        // Each event produces a length-prefixed message; the sink buffer should
+        // contain all three concatenated.
+        assert!(
+            sink.buffer.len() > 12,
+            "3 otlp metrics must produce more than 12 bytes (3 × 4-byte prefix minimum)"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Section 8: Multi-event encode → write pipeline for each encoder
 //
 // Encode multiple events in sequence and verify each one contributes a line
