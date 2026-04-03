@@ -13,8 +13,8 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | Category | Options |
 |----------|---------|
 | **Generators** | constant, sine, sawtooth, uniform random, sequence, step, spike, CSV replay |
-| **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write |
-| **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki |
+| **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write, OTLP |
+| **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
 | **Signals** | metrics, logs (template and replay modes) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
@@ -167,6 +167,7 @@ for what they use:
 | `http` | no | `ureq` (rustls) | HTTP push and Loki sinks |
 | `remote-write` | no | `prost`, `snap`, `ureq` | Prometheus remote write encoder and sink |
 | `kafka` | no | `rskafka`, `tokio`, `chrono` | Kafka sink |
+| `otlp` | no | `tonic`, `prost`, `tokio` | OTLP protobuf encoder and gRPC sink |
 
 Generators, encoders, and the stdout/file/TCP/UDP/memory/channel sinks are always
 available with no optional dependencies. Library consumers who build configs in code

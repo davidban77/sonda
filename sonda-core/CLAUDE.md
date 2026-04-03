@@ -48,6 +48,8 @@ src/
 │   ├── prometheus.rs   ← Prometheus text exposition format
 │   ├── influx.rs       ← Influx Line Protocol (post-MVP)
 │   ├── json.rs         ← JSON Lines (post-MVP)
+│   ├── otlp.rs         ← OTLP protobuf: hand-written prost structs for metrics + logs,
+│   │                      OtlpEncoder (Metric/LogRecord), parser helpers (feature = "otlp")
 │   ├── remote_write.rs ← Prometheus remote write protobuf (feature = "remote-write")
 │   └── syslog.rs       ← RFC 5424 syslog format (log-only)
 ├── sink/
@@ -61,7 +63,9 @@ src/
 │   ├── remote_write.rs ← Prometheus remote write sink (batches TimeSeries, snappy, feature = "remote-write")
 │   ├── channel.rs      ← in-memory channel sink (mpsc::Sender<Vec<u8>>, for testing)
 │   ├── memory.rs       ← in-memory buffer sink (Vec<Vec<u8>>, for testing and embedding)
-│   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
+│   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
+│   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
+│                          unary call to OTEL Collector (feature = "otlp")
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, labels, sink, phase_offset, clock_group,
@@ -82,6 +86,7 @@ src/
 | `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
 | `kafka` | no | Enables `rskafka` + `tokio` for the Kafka sink. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
+| `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
 
 When the `config` feature is disabled:
 - All config types (`ScenarioConfig`, `EncoderConfig`, `SinkConfig`, `GeneratorConfig`, etc.) remain

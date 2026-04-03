@@ -1,0 +1,34 @@
+# Push metrics to an OpenTelemetry Collector via OTLP/gRPC.
+#
+# Prerequisites:
+#   - An OTEL Collector running on localhost:4317 (default gRPC port).
+#
+# Usage:
+#   cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml
+#
+# The encoder serializes each metric as an OTLP Gauge data point in protobuf
+# format. The sink batches data points and sends them as
+# ExportMetricsServiceRequest via gRPC.
+
+name: cpu_usage
+rate: 10
+duration: 60s
+
+generator:
+  type: sine
+  amplitude: 50
+  offset: 50
+  period_secs: 30
+
+labels:
+  host: server-01
+  service: web
+
+encoder:
+  type: otlp
+
+sink:
+  type: otlp_grpc
+  endpoint: "http://localhost:4317"
+  signal_type: metrics
+  batch_size: 100
