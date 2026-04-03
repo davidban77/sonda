@@ -338,6 +338,15 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             };
             format!("csv_replay (file: {file}, column: {col}, {hdr}, {rpt})")
         }
+        GeneratorConfig::Step {
+            start,
+            step_size,
+            max,
+        } => {
+            let start_val = start.unwrap_or(0.0);
+            let max_str = max.map(|m| format!(", max: {m}")).unwrap_or_default();
+            format!("step (start: {start_val}, step: {step_size}{max_str})")
+        }
     }
 }
 

@@ -19,7 +19,7 @@ A metric that always outputs zero isn't very useful for testing. Generators let 
 the values Sonda emits -- smooth waves for latency simulation, random noise for jitter,
 or exact sequences to trigger alert thresholds.
 
-Sonda ships six generators:
+Sonda ships seven generators:
 
 | Generator | Description | Best for |
 |-----------|-------------|----------|
@@ -28,11 +28,12 @@ Sonda ships six generators:
 | `sawtooth` | Linear ramp, resets at period | Queue depth, buffer fill |
 | `uniform` | Random value in [min, max] | Jitter, noisy signals |
 | `sequence` | Cycles through an explicit list | Alert threshold testing |
+| `step` | Monotonic counter with optional wrap | `rate()` and `increase()` testing |
 | `csv_replay` | Replays values from a CSV file | Reproducing real incidents |
 
 !!! note "YAML-only generators"
-    Sequence and csv_replay require a scenario file -- they have no CLI flag equivalents. All
-    other generators are available via `--value-mode`.
+    Sequence, step, and csv_replay require a scenario file -- they have no CLI flag equivalents.
+    All other generators are available via `--value-mode`.
 
 ### constant
 
@@ -83,7 +84,7 @@ sink:
   type: stdout
 ```
 
-??? tip "More generators: sawtooth, uniform, csv_replay"
+??? tip "More generators: sawtooth, uniform, step, csv_replay"
     **sawtooth** -- A linear ramp from 0 to 1 that resets every period. Useful for simulating
     queue fill and drain cycles:
 
@@ -98,6 +99,13 @@ sink:
     ```bash
     sonda metrics --name jitter_ms --rate 2 --duration 5s \
       --value-mode uniform --min 1 --max 100
+    ```
+
+    **step** -- A monotonic counter that increments by `step_size` each tick. Set `max` to
+    simulate counter resets, perfect for testing `rate()` and `increase()`:
+
+    ```bash
+    sonda metrics --scenario examples/step-counter.yaml --duration 5s
     ```
 
     **csv_replay** -- Replays recorded values from a CSV file. Point it at real incident data

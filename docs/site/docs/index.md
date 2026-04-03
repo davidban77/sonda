@@ -46,7 +46,7 @@ beyond quick one-offs -- [Getting Started](getting-started.md#using-a-scenario-f
 
 | Category | Options |
 |----------|---------|
-| **Generators** | constant, sine, sawtooth, uniform random, sequence, CSV replay |
+| **Generators** | constant, sine, sawtooth, uniform random, sequence, step counter, CSV replay |
 | **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes |

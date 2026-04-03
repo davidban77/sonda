@@ -103,7 +103,7 @@ Built-in generator implementations:
 | **UniformRandom** | Returns a uniformly distributed random value within `[min, max]`. Seeded for deterministic replay. |
 | **Sine** | Returns a sine wave with configurable amplitude, period, and offset. |
 | **Sawtooth** | Returns a linearly rising wave that resets at the period boundary. |
-| **Counter** | Monotonically increasing value with configurable step. Resets on overflow. |
+| **Step** | Monotonically increasing value with configurable step. Wraps at optional max. |
 | **MicroBurst** | Returns the base generator value normally, but spikes to a multiplied value for a configurable window. |
 | **GaugeStyle** | Returns a value that random-walks within bounds — simulates a real gauge metric. |
 | **Sequence** | Steps through an explicit list of `f64` values. Cycles when `repeat` is true; clamps to the last value when false. Useful for replaying short incident patterns inline. |
