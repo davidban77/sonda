@@ -146,6 +146,7 @@ fn print_metrics_config(c: &ScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_jitter_line(&c.jitter, &c.jitter_seed);
     print_phase_offset_line(&c.phase_offset);
     print_clock_group_line(&c.clock_group);
     eprintln!();
@@ -170,6 +171,7 @@ fn print_logs_config(c: &LogScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_jitter_line(&c.jitter, &c.jitter_seed);
     print_phase_offset_line(&c.phase_offset);
     print_clock_group_line(&c.clock_group);
     eprintln!();
@@ -213,6 +215,16 @@ fn print_spikes_lines(spikes: &Option<Vec<CardinalitySpikeConfig>>) {
                 s.label, s.every, s.r#for, s.cardinality
             );
         }
+    }
+}
+
+/// Print the jitter line if jitter is configured.
+fn print_jitter_line(jitter: &Option<f64>, jitter_seed: &Option<u64>) {
+    if let Some(j) = jitter {
+        let seed_str = jitter_seed
+            .map(|s| format!(", seed: {s}"))
+            .unwrap_or_default();
+        eprintln!("  jitter:     +/-{j}{seed_str}");
     }
 }
 
@@ -900,6 +912,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -920,6 +934,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -985,6 +1001,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 0.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1108,6 +1126,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Sine {
                 amplitude: 50.0,
@@ -1135,6 +1155,8 @@ mod tests {
                 },
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Replay {
                 file: "/var/log/app.log".to_string(),
@@ -1253,6 +1275,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: Some("alert-group".to_string()),
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1274,6 +1298,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("2s".to_string()),
                 clock_group: Some("log-sync".to_string()),
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {

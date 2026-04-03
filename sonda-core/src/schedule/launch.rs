@@ -171,6 +171,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -191,6 +193,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -218,6 +222,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -238,6 +244,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -290,6 +298,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -316,6 +326,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -342,6 +354,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -375,6 +389,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -512,6 +528,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -558,6 +576,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -653,6 +673,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -696,6 +718,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -802,6 +826,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {

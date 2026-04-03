@@ -26,6 +26,7 @@ src/
 │   ├── sequence.rs     ← explicit value sequence (incident pattern modeling)
 │   ├── step.rs         ← monotonic step counter with optional wrap-around (rate/increase testing)
 │   ├── spike.rs        ← baseline with periodic spikes (anomaly/alert testing)
+│   ├── jitter.rs       ← JitterWrapper: adds deterministic uniform noise to any ValueGenerator
 │   ├── csv_replay.rs   ← CSV file-based replay for metric values
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
@@ -63,7 +64,8 @@ src/
 │   └── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
-    │                      gaps, bursts, cardinality_spikes, labels, sink, phase_offset, clock_group),
+    │                      gaps, bursts, cardinality_spikes, labels, sink, phase_offset, clock_group,
+    │                      jitter, jitter_seed),
     │                      ScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,

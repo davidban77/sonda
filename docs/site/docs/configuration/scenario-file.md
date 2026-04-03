@@ -46,6 +46,9 @@ encoder:
 sink:
   type: stdout
 
+jitter: 2.5
+jitter_seed: 42
+
 phase_offset: "5s"
 clock_group: alert-test
 ```
@@ -67,6 +70,8 @@ sonda metrics --scenario full-example.yaml
 | `encoder` | object | no | `prometheus_text` | Output format. See [Encoders](encoders.md). |
 | `sink` | object | no | `stdout` | Output destination. See [Sinks](sinks.md). |
 | `labels` | map | no | none | Static key-value labels attached to every event. |
+| `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](generators.md#jitter). |
+| `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
 
 ### Gap window
 

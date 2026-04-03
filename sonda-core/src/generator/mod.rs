@@ -8,6 +8,7 @@
 
 pub mod constant;
 pub mod csv_replay;
+pub mod jitter;
 pub mod log_replay;
 pub mod log_template;
 pub mod sawtooth;
@@ -16,6 +17,8 @@ pub mod sine;
 pub mod spike;
 pub mod step;
 pub mod uniform;
+
+pub use self::jitter::JitterWrapper;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -222,6 +225,29 @@ pub fn create_generator(
             *step_size,
             *max,
         ))),
+    }
+}
+
+/// Optionally wrap a generator with jitter noise.
+///
+/// Returns the generator unchanged if `jitter` is `None` or `Some(0.0)`.
+/// When jitter is positive, wraps the generator in a [`JitterWrapper`] that
+/// adds deterministic uniform noise in `[-jitter, +jitter]` to every value.
+///
+/// # Parameters
+///
+/// - `generator` — the inner generator to wrap.
+/// - `jitter` — the jitter amplitude. `None` or `Some(0.0)` means no jitter.
+/// - `jitter_seed` — optional seed for the noise sequence. Defaults to `0`
+///   when `None`.
+pub fn wrap_with_jitter(
+    generator: Box<dyn ValueGenerator>,
+    jitter: Option<f64>,
+    jitter_seed: Option<u64>,
+) -> Box<dyn ValueGenerator> {
+    match jitter {
+        Some(j) if j != 0.0 => Box::new(JitterWrapper::new(generator, j, jitter_seed.unwrap_or(0))),
+        _ => generator,
     }
 }
 
@@ -958,6 +984,72 @@ sink:
 
     // ---- Send + Sync contract tests ------------------------------------------
 
+    // ---- wrap_with_jitter factory tests ----------------------------------------
+
+    #[test]
+    fn wrap_with_jitter_none_returns_unchanged() {
+        let config = GeneratorConfig::Constant { value: 42.0 };
+        let gen = create_generator(&config, 1.0).expect("constant factory");
+        let wrapped = wrap_with_jitter(gen, None, None);
+        for tick in 0..100 {
+            assert_eq!(
+                wrapped.value(tick),
+                42.0,
+                "jitter=None must return original values at tick {tick}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_with_jitter_zero_returns_unchanged() {
+        let config = GeneratorConfig::Constant { value: 42.0 };
+        let gen = create_generator(&config, 1.0).expect("constant factory");
+        let wrapped = wrap_with_jitter(gen, Some(0.0), Some(99));
+        for tick in 0..100 {
+            assert_eq!(
+                wrapped.value(tick),
+                42.0,
+                "jitter=0.0 must return original values at tick {tick}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_with_jitter_positive_produces_values_in_range() {
+        let base = 100.0;
+        let jitter_amp = 5.0;
+        let config = GeneratorConfig::Constant { value: base };
+        let gen = create_generator(&config, 1.0).expect("constant factory");
+        let wrapped = wrap_with_jitter(gen, Some(jitter_amp), Some(42));
+        for tick in 0..10_000 {
+            let v = wrapped.value(tick);
+            assert!(
+                v >= base - jitter_amp && v <= base + jitter_amp,
+                "value {v} at tick {tick} outside [{}, {}]",
+                base - jitter_amp,
+                base + jitter_amp
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_with_jitter_seed_none_defaults_to_zero() {
+        let config = GeneratorConfig::Constant { value: 50.0 };
+        let gen_none = create_generator(&config, 1.0).expect("factory");
+        let gen_zero = create_generator(&config, 1.0).expect("factory");
+        let wrapped_none = wrap_with_jitter(gen_none, Some(5.0), None);
+        let wrapped_zero = wrap_with_jitter(gen_zero, Some(5.0), Some(0));
+        for tick in 0..100 {
+            assert_eq!(
+                wrapped_none.value(tick),
+                wrapped_zero.value(tick),
+                "jitter_seed=None must equal jitter_seed=Some(0) at tick {tick}"
+            );
+        }
+    }
+
+    // ---- Send + Sync contract tests ------------------------------------------
+
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
@@ -972,6 +1064,7 @@ sink:
         assert_send_sync::<crate::generator::spike::SpikeGenerator>();
         assert_send_sync::<crate::generator::csv_replay::CsvReplayGenerator>();
         assert_send_sync::<crate::generator::step::StepGenerator>();
+        assert_send_sync::<crate::generator::jitter::JitterWrapper>();
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------

@@ -116,7 +116,7 @@ cpu_usage{host="web-01"} 90.45084971874738 1774277940081
 ```
 
 The sine wave oscillates between 0 and 100 (offset 50 +/- amplitude 50), completing one full
-cycle every 10 seconds. The [Tutorial](guides/tutorial.md#generators) covers all seven generators
+cycle every 10 seconds. The [Tutorial](guides/tutorial.md#generators) covers all eight generators
 in detail.
 
 ## Using a scenario file

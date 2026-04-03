@@ -266,6 +266,13 @@ sonda metrics [OPTIONS]
 | `--spike-prefix <PREFIX>` | string | `{label}_` | Prefix for generated spike label values. |
 | `--spike-seed <INT>` | integer | `0` | RNG seed for the `random` strategy. |
 
+### Jitter
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--jitter <FLOAT>` | float | none | Jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. Must be non-negative. |
+| `--jitter-seed <INT>` | integer | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
+
 ### Labels, encoder, output
 
 | Flag | Type | Default | Description |
@@ -368,6 +375,11 @@ The same gap and burst flags from `sonda metrics` are available for logs:
 The same cardinality spike flags from `sonda metrics` are available for logs:
 `--spike-label`, `--spike-every`, `--spike-for`, `--spike-cardinality`,
 `--spike-strategy`, `--spike-prefix`, `--spike-seed`.
+
+### Jitter
+
+The same jitter flags from `sonda metrics` are available for logs:
+`--jitter`, `--jitter-seed`.
 
 ### Examples
 

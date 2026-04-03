@@ -64,6 +64,8 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: args.jitter,
+                jitter_seed: args.jitter_seed,
             },
             generator: build_generator_config(args)?,
             encoder: parse_encoder_config(
@@ -132,6 +134,14 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
         || args.spike_cardinality.is_some()
     {
         config.cardinality_spikes = build_spike_config(args)?;
+    }
+
+    // Jitter: override if either jitter flag is present.
+    if let Some(jitter) = args.jitter {
+        config.base.jitter = Some(jitter);
+    }
+    if let Some(jitter_seed) = args.jitter_seed {
+        config.base.jitter_seed = Some(jitter_seed);
     }
 
     // Labels: CLI labels are merged on top of (not replacing) the file labels.
@@ -376,6 +386,8 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: args.jitter,
+                jitter_seed: args.jitter_seed,
             },
             generator,
             encoder: parse_log_encoder_config(
@@ -457,6 +469,14 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
         || args.spike_cardinality.is_some()
     {
         config.cardinality_spikes = build_log_spike_config(args)?;
+    }
+
+    // Jitter: override if either jitter flag is present.
+    if let Some(jitter) = args.jitter {
+        config.base.jitter = Some(jitter);
+    }
+    if let Some(jitter_seed) = args.jitter_seed {
+        config.base.jitter_seed = Some(jitter_seed);
     }
 
     // Encoder: override when the user explicitly passes --encoder.
@@ -697,6 +717,8 @@ mod tests {
             spike_strategy: None,
             spike_prefix: None,
             spike_seed: None,
+            jitter: None,
+            jitter_seed: None,
             labels: vec![],
             encoder: None,
             precision: None,
@@ -1313,6 +1335,48 @@ mod tests {
         let _sink = create_sink(&config.sink, None).expect("sink factory should succeed");
     }
 
+    // ---- Jitter CLI flags: metrics -----------------------------------------
+
+    #[test]
+    fn jitter_flag_sets_config_jitter_from_flags_only() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            jitter: Some(3.5),
+            jitter_seed: Some(42),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("jitter flags should produce valid config");
+        assert_eq!(config.base.jitter, Some(3.5));
+        assert_eq!(config.base.jitter_seed, Some(42));
+    }
+
+    #[test]
+    fn jitter_flag_overrides_yaml_jitter() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            jitter: Some(7.0),
+            jitter_seed: Some(99),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("jitter override should succeed");
+        assert_eq!(config.base.jitter, Some(7.0));
+        assert_eq!(config.base.jitter_seed, Some(99));
+    }
+
+    #[test]
+    fn no_jitter_flags_leaves_jitter_none() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("config without jitter should succeed");
+        assert_eq!(config.base.jitter, None);
+        assert_eq!(config.base.jitter_seed, None);
+    }
+
     // =========================================================================
     // Slice 2.5 — load_log_config tests
     // =========================================================================
@@ -1340,6 +1404,8 @@ mod tests {
             spike_strategy: None,
             spike_prefix: None,
             spike_seed: None,
+            jitter: None,
+            jitter_seed: None,
             output: None,
             message: None,
             severity_weights: None,
@@ -2549,5 +2615,48 @@ mod tests {
             Some("node-"),
             "log spike prefix must be passed through"
         );
+    }
+
+    // ---- Jitter CLI flags: logs ---------------------------------------------
+
+    #[test]
+    fn log_jitter_flag_sets_config_jitter_from_flags_only() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            jitter: Some(2.5),
+            jitter_seed: Some(77),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log jitter flags should produce valid config");
+        assert_eq!(config.base.jitter, Some(2.5));
+        assert_eq!(config.base.jitter_seed, Some(77));
+    }
+
+    #[test]
+    fn log_jitter_flag_overrides_yaml_jitter() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
+        let args = crate::cli::LogsArgs {
+            scenario: Some(path),
+            jitter: Some(4.0),
+            jitter_seed: Some(123),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log jitter override should succeed");
+        assert_eq!(config.base.jitter, Some(4.0));
+        assert_eq!(config.base.jitter_seed, Some(123));
+    }
+
+    #[test]
+    fn log_no_jitter_flags_leaves_jitter_none() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("log config without jitter should succeed");
+        assert_eq!(config.base.jitter, None);
+        assert_eq!(config.base.jitter_seed, None);
     }
 }

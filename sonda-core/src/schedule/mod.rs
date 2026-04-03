@@ -905,6 +905,8 @@ mod tests {
             sink: crate::sink::SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
+            jitter: None,
+            jitter_seed: None,
         }
     }
 

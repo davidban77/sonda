@@ -322,3 +322,59 @@ generator:
 ```
 
 Each line becomes the `message` field of a log event with `info` severity.
+
+## Jitter
+
+Jitter adds deterministic uniform noise to any metric generator's output. Instead of clean,
+perfectly smooth values, you get realistic-looking fluctuations -- the kind you see in real
+production metrics.
+
+!!! info "Why jitter?"
+    A sine wave is useful for testing alert thresholds, but real CPU metrics are never perfectly
+    smooth. Adding jitter lets you verify that your alerting rules and dashboards handle noisy
+    signals correctly.
+
+Jitter is configured at the scenario level (a sibling of `generator`, not nested inside it)
+because it wraps any generator transparently.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every value. |
+| `jitter_seed` | integer | no | `0` | Seed for deterministic noise. Same seed produces the same noise sequence. |
+
+```yaml title="Sine wave with jitter"
+name: cpu_usage_realistic
+rate: 1
+duration: 30s
+generator:
+  type: sine
+  amplitude: 20
+  period_secs: 120
+  offset: 50
+jitter: 3.0
+jitter_seed: 42
+labels:
+  instance: server-01
+  job: node
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+```
+
+```bash
+sonda metrics --scenario examples/jitter-sine.yaml --duration 3s
+```
+
+Without jitter, a sine wave with `offset: 50` outputs exactly `50.0` at tick 0. With
+`jitter: 3.0`, the value lands somewhere in `[47.0, 53.0]` -- different each tick, but
+reproducible across runs when `jitter_seed` is set.
+
+!!! tip "Works with every metric generator"
+    Jitter wraps the generator's output, so it works with `constant`, `sine`, `sawtooth`,
+    `uniform`, `sequence`, `step`, `spike`, and `csv_replay`. It does not apply to log generators.
+
+??? tip "When to skip `jitter_seed`"
+    If you omit `jitter_seed`, it defaults to `0`. Two scenarios with the same `jitter` value
+    and no explicit seed produce identical noise sequences. Set different seeds when you need
+    independent noise on multiple scenarios.

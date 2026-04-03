@@ -167,6 +167,8 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                jitter: None,
+                jitter_seed: None,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
