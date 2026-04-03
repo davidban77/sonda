@@ -410,6 +410,8 @@ fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::Kafka { topic, .. } => format!("kafka: {topic}"),
         #[cfg(feature = "http")]
         SinkConfig::Loki { url, .. } => format!("loki: {url}"),
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc: {endpoint}"),
     }
 }
 
@@ -424,6 +426,8 @@ fn encoder_display(encoder: &EncoderConfig) -> String {
         EncoderConfig::Syslog { .. } => ("syslog", None),
         #[cfg(feature = "remote-write")]
         EncoderConfig::RemoteWrite => ("remote_write", None),
+        #[cfg(feature = "otlp")]
+        EncoderConfig::Otlp => ("otlp", None),
     };
     match precision {
         Some(p) => format!("{name} (precision: {p})"),
@@ -629,6 +633,18 @@ mod tests {
         assert_eq!(sink_display(&config), "kafka: sonda-events");
     }
 
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn sink_display_otlp_grpc() {
+        use sonda_core::sink::otlp_grpc::OtlpSignalType;
+        let config = SinkConfig::OtlpGrpc {
+            endpoint: "http://localhost:4317".to_string(),
+            signal_type: OtlpSignalType::Metrics,
+            batch_size: None,
+        };
+        assert_eq!(sink_display(&config), "otlp_grpc: http://localhost:4317");
+    }
+
     // -----------------------------------------------------------------------
     // encoder_display: all EncoderConfig variants
     // -----------------------------------------------------------------------
@@ -705,6 +721,12 @@ mod tests {
     #[test]
     fn encoder_display_remote_write() {
         assert_eq!(encoder_display(&EncoderConfig::RemoteWrite), "remote_write");
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn encoder_display_otlp() {
+        assert_eq!(encoder_display(&EncoderConfig::Otlp), "otlp");
     }
 
     // -----------------------------------------------------------------------

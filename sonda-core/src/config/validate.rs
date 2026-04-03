@@ -318,6 +318,8 @@ fn encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Option<u8> {
         crate::encoder::EncoderConfig::Syslog { .. } => None,
         #[cfg(feature = "remote-write")]
         crate::encoder::EncoderConfig::RemoteWrite => None,
+        #[cfg(feature = "otlp")]
+        crate::encoder::EncoderConfig::Otlp => None,
     }
 }
 

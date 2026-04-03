@@ -1,0 +1,35 @@
+# Push logs to an OpenTelemetry Collector via OTLP/gRPC.
+#
+# Prerequisites:
+#   - An OTEL Collector running on localhost:4317 (default gRPC port).
+#
+# Usage:
+#   cargo run --features otlp -- logs --scenario examples/otlp-logs.yaml
+#
+# The encoder serializes each log event as an OTLP LogRecord in protobuf
+# format. The sink batches log records and sends them as
+# ExportLogsServiceRequest via gRPC.
+
+name: app_logs
+rate: 5
+duration: 30s
+
+generator:
+  type: template
+  templates:
+    - message: "Request processed in {latency}ms"
+      field_pools:
+        latency: ["10", "50", "100", "500"]
+
+labels:
+  host: server-01
+  service: web
+
+encoder:
+  type: otlp
+
+sink:
+  type: otlp_grpc
+  endpoint: "http://localhost:4317"
+  signal_type: logs
+  batch_size: 50

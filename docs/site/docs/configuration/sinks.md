@@ -208,3 +208,53 @@ sink:
 ```
 
 The sink POSTs to `{url}/loki/api/v1/push`.
+
+## otlp_grpc
+
+Batches OTLP protobuf data and delivers it via gRPC to an OpenTelemetry Collector. Designed to
+be paired with the `otlp` encoder, which produces length-prefixed protobuf `Metric` or `LogRecord`
+bytes. The sink accumulates entries and, on flush or when `batch_size` is reached, wraps them in
+an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends via gRPC unary call.
+
+!!! warning "Feature flag and build requirement"
+    This sink requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker
+    images do **not** include this feature. You must build from source:
+    `cargo build --features otlp -p sonda`.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `endpoint` | string | yes | -- | gRPC endpoint URL of the OTEL Collector (e.g. `"http://localhost:4317"`). |
+| `signal_type` | string | yes | -- | `"metrics"` or `"logs"` -- must match the scenario signal type. |
+| `batch_size` | integer | no | `100` | Flush threshold in number of data points or log records. |
+
+```yaml title="OTLP gRPC sink (metrics)"
+encoder:
+  type: otlp
+sink:
+  type: otlp_grpc
+  endpoint: "http://localhost:4317"
+  signal_type: metrics
+  batch_size: 100
+```
+
+```yaml title="OTLP gRPC sink (logs)"
+encoder:
+  type: otlp
+sink:
+  type: otlp_grpc
+  endpoint: "http://localhost:4317"
+  signal_type: logs
+  batch_size: 50
+```
+
+Scenario-level `labels` are automatically converted to OTLP `Resource` attributes, so they appear
+as resource metadata in the Collector's output.
+
+Compatible receivers:
+
+| Backend | Default gRPC port |
+|---------|-------------------|
+| OpenTelemetry Collector | `4317` |
+| Grafana Alloy | `4317` |
+| Datadog Agent (OTLP) | `4317` |
+| Elastic APM Server | `8200` |

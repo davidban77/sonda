@@ -145,6 +145,7 @@ Built-in encoder implementations:
 | **InfluxLineProtocol** | InfluxDB line protocol. Tags become measurement tags; value field is mapped to a configurable field key. |
 | **JsonLines** | One JSON object per line. Compatible with Elasticsearch, Loki, and generic HTTP ingest. |
 | **RemoteWrite** | Prometheus remote-write protobuf (feature-gated). Encodes each metric as a length-prefixed `TimeSeries` message. Must be paired with the `RemoteWrite` sink, which batches, wraps in a `WriteRequest`, snappy-compresses, and POSTs with the correct protocol headers. Targets VictoriaMetrics, vmagent, Prometheus, Thanos, Cortex, Mimir, and Grafana Cloud. |
+| **Otlp** | OTLP protobuf (feature-gated). Encodes metric events as length-prefixed `Metric` messages and log events as length-prefixed `LogRecord` messages. Must be paired with the `OtlpGrpc` sink, which batches and sends via gRPC to an OpenTelemetry Collector. Requires the `otlp` Cargo feature. |
 
 Encoders pre-build any invariant content (label serialization prefixes, metric name validation) at construction time to avoid per-event work. The `encode` methods write into a caller-provided `Vec<u8>` buffer to minimize allocations.
 
@@ -170,6 +171,7 @@ Sink implementations follow a natural progression of complexity:
 | **RemoteWrite** | Prometheus remote write sink (feature-gated). Receives length-prefixed `TimeSeries` from the `RemoteWrite` encoder, batches them into a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs with the correct protocol headers. Requires the `remote-write` Cargo feature. |
 | **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
 | **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`) (feature-gated behind `http`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
+| **OtlpGrpc** | OTLP/gRPC sink (feature-gated). Receives length-prefixed `Metric` or `LogRecord` messages from the `Otlp` encoder, batches them into `ExportMetricsServiceRequest` or `ExportLogsServiceRequest`, and sends via gRPC unary call to an OpenTelemetry Collector (default port 4317). Requires the `otlp` Cargo feature. |
 | **Channel** | In-memory channel sink (`mpsc::Sender<Vec<u8>>`). For testing and inter-thread communication. |
 | **Memory** | In-memory buffer sink (`Vec<Vec<u8>>`). For testing and embedding. |
 
@@ -183,6 +185,7 @@ Sink implementations follow a natural progression of complexity:
 | `http` | no | `ureq` (+ rustls, ring, webpki) | Enables `HttpPush` and `Loki` sinks. |
 | `kafka` | no | `rskafka`, `tokio` | Enables the Kafka sink. |
 | `remote-write` | no | `prost`, `snap`, `ureq` | Enables Prometheus remote write encoder and sink. |
+| `otlp` | no | `tonic`, `prost`, `tokio` | Enables OTLP protobuf encoder and gRPC sink. |
 
 The CLI (`sonda`) and HTTP server (`sonda-server`) enable all features they need in their own `Cargo.toml`. End users of the pre-built binary or Docker image get every feature enabled.
 

@@ -11,6 +11,8 @@ pub mod kafka;
 #[cfg(feature = "http")]
 pub mod loki;
 pub mod memory;
+#[cfg(feature = "otlp")]
+pub mod otlp_grpc;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
 pub mod stdout;
@@ -166,6 +168,29 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
     },
+
+    /// Batch OTLP protobuf data and deliver via gRPC to an OpenTelemetry Collector.
+    ///
+    /// This sink is designed to be paired with the `otlp` encoder, which produces
+    /// length-prefixed protobuf `Metric` or `LogRecord` bytes. The sink accumulates
+    /// entries and, on flush or when `batch_size` is reached, wraps them in the
+    /// appropriate OTLP export request and sends via gRPC.
+    ///
+    /// Requires the `otlp` Cargo feature to be enabled.
+    #[cfg(feature = "otlp")]
+    #[cfg_attr(feature = "config", serde(rename = "otlp_grpc"))]
+    OtlpGrpc {
+        /// gRPC endpoint URL, e.g. `"http://localhost:4317"`.
+        endpoint: String,
+
+        /// Whether to send metrics or logs.
+        signal_type: otlp_grpc::OtlpSignalType,
+
+        /// Flush threshold in number of data points / log records.
+        /// Defaults to 100 if not specified.
+        #[cfg_attr(feature = "config", serde(default))]
+        batch_size: Option<usize>,
+    },
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -214,6 +239,35 @@ pub fn create_sink(
             let bs = batch_size.unwrap_or(100);
             let loki_labels = labels.cloned().unwrap_or_default();
             Ok(Box::new(loki::LokiSink::new(url.clone(), loki_labels, bs)?))
+        }
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc {
+            endpoint,
+            signal_type,
+            batch_size,
+        } => {
+            let bs = batch_size.unwrap_or(otlp_grpc::DEFAULT_BATCH_SIZE);
+            // Convert scenario labels to OTLP Resource attributes.
+            let resource_attrs: Vec<crate::encoder::otlp::KeyValue> = labels
+                .map(|l| {
+                    l.iter()
+                        .map(|(k, v)| crate::encoder::otlp::KeyValue {
+                            key: k.clone(),
+                            value: Some(crate::encoder::otlp::AnyValue {
+                                value: Some(crate::encoder::otlp::any_value::Value::StringValue(
+                                    v.clone(),
+                                )),
+                            }),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Box::new(otlp_grpc::OtlpGrpcSink::new(
+                endpoint,
+                *signal_type,
+                bs,
+                resource_attrs,
+            )?))
         }
     }
 }
