@@ -9,10 +9,10 @@ use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConf
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
-/// Supported units:
+/// Supported units (fractional values accepted, e.g. `"1.5s"`, `"0.5m"`):
 /// - `ms` — milliseconds (e.g. `"100ms"`)
-/// - `s`  — seconds      (e.g. `"30s"`)
-/// - `m`  — minutes      (e.g. `"5m"`)
+/// - `s`  — seconds      (e.g. `"30s"`, `"1.5s"`)
+/// - `m`  — minutes      (e.g. `"5m"`, `"0.5m"`)
 /// - `h`  — hours        (e.g. `"1h"`)
 ///
 /// Returns [`SondaError::Config`] if the string is empty, has no recognized
@@ -62,7 +62,7 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
         )))
     })?;
 
-    if value.is_nan() || value <= 0.0 {
+    if value.is_nan() || value.is_infinite() || value <= 0.0 {
         return Err(SondaError::Config(ConfigError::invalid(format!(
             "duration {:?} must be greater than zero",
             s
@@ -498,6 +498,12 @@ mod tests {
     fn parse_duration_zero_fractional_returns_err() {
         let result = parse_duration("0.0s");
         assert!(result.is_err(), "'0.0s' must return Err (zero duration)");
+    }
+
+    #[test]
+    fn parse_duration_infinity_returns_err() {
+        let result = parse_duration("infs");
+        assert!(result.is_err(), "'infs' must return Err (infinite)");
     }
 
     #[test]
