@@ -159,6 +159,8 @@ task stack:down
 
 **Testing alert rules?** Start with [Alert Testing](alert-testing.md).
 
+**Validating alert rules in CI/CD?** See [CI Alert Validation](ci-alert-validation.md).
+
 **Quick pipeline smoke tests (no Docker)?** See [Pipeline Validation](pipeline-validation.md).
 
 **Browsing all example scenarios?** See [Example Scenarios](examples.md).

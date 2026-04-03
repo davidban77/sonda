@@ -258,6 +258,9 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 **Testing more alert patterns?** See [Alert Testing](alert-testing.md) for threshold, gap,
 sequence, and multi-metric scenarios.
 
+**Validating alert rules in CI/CD?** See [CI Alert Validation](ci-alert-validation.md) to
+automate this pipeline in GitHub Actions.
+
 **Validating recording rules?** Check [Recording Rules](recording-rules.md).
 
 **Running automated e2e tests?** See [E2E Testing](e2e-testing.md).

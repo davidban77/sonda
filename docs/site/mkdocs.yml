@@ -62,6 +62,7 @@ nav:
     - Tutorial: guides/tutorial.md
     - Alert Testing: guides/alert-testing.md
     - Alerting Pipeline: guides/alerting-pipeline.md
+    - CI Alert Validation: guides/ci-alert-validation.md
     - Pipeline Validation: guides/pipeline-validation.md
     - Recording Rules: guides/recording-rules.md
     - Example Scenarios: guides/examples.md
