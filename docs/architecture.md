@@ -122,7 +122,7 @@ A schedule controls when events are emitted: their rate, duration, and any inten
 - **GapWindow** — a recurring silent period defined as `(gap_every, gap_for)`. During a gap, no events are emitted and the scheduler sleeps rather than busy-waiting.
 - **BurstWindow** — a recurring high-rate period defined as `(burst_every, burst_for, burst_multiplier)`. During a burst, the effective rate is multiplied.
 
-The scheduler uses `std::time::Instant` for elapsed tracking and `std::io::BufWriter` for output batching. It does not use async in the MVP — a tight synchronous loop with precise sleep intervals is sufficient for the target rate range and avoids tokio overhead in the CLI path.
+The scheduler uses `std::time::Instant` for elapsed tracking and `std::io::BufWriter` for output batching. A shared schedule loop (`core_loop.rs`) handles all rate control, gap/burst/spike window logic, and stats tracking for both metrics and logs. Signal-specific event construction is delegated to a per-signal callback, eliminating duplication between the metric and log runners. The loop is synchronous — tight sleep intervals are sufficient for the target rate range and avoid tokio overhead in the CLI path.
 
 > **Concurrency (post-MVP):** Multiple concurrent scenarios will be supported in a future expansion. The plan is `std::thread` per scenario with `mpsc` channels feeding a shared sink, before introducing tokio. This keeps the core synchronous and avoids making tokio a core dependency.
 
@@ -356,4 +356,4 @@ Cardinality spikes are implemented as time-windowed label injection. Each spike 
 
 Two strategies control value generation: `counter` produces sequential deterministic values (`prefix + tick % cardinality`), while `random` uses a SplitMix64 hash of `seed ^ index` to produce hex-string values that look random but are reproducible. Both strategies guarantee exactly `cardinality` distinct values per window.
 
-Spike windows are evaluated per-tick in the metric and log runners alongside gap and burst windows. Gap windows take priority: if a gap and spike overlap, the gap suppresses all output. Multiple spike configurations can be stacked on a single scenario, each injecting a different label key.
+Spike windows are evaluated per-tick in the shared schedule loop (`core_loop.rs`) alongside gap and burst windows. The same loop drives both metric and log runners — signal-specific work (event construction, encoding, sink writing) is delegated to a per-signal callback while all rate control, window handling, and stats tracking live in the shared loop. Gap windows take priority: if a gap and spike overlap, the gap suppresses all output. Multiple spike configurations can be stacked on a single scenario, each injecting a different label key.
