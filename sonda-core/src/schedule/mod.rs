@@ -3,6 +3,7 @@
 //! The scheduler controls *when* events are emitted. It does not know
 //! *what* is being emitted — that is the generator and encoder's job.
 
+pub(crate) mod core_loop;
 pub mod handle;
 pub mod launch;
 pub mod log_runner;
@@ -161,6 +162,97 @@ impl CardinalitySpikeWindow {
                 format!("{}{:016x}", self.prefix, mixed)
             }
         }
+    }
+}
+
+/// Resolved schedule configuration parsed from a [`BaseScheduleConfig`].
+///
+/// Holds the parsed `Duration` values for gap, burst, and spike windows.
+/// This is the shared input to the [`core_loop::run_schedule_loop`] function,
+/// eliminating the need for each signal runner to duplicate the parsing logic.
+///
+/// Constructed via [`ParsedSchedule::from_base_config`].
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedSchedule {
+    /// Total run duration. `None` means run indefinitely.
+    pub total_duration: Option<Duration>,
+    /// Optional recurring gap window.
+    pub gap_window: Option<GapWindow>,
+    /// Optional recurring burst window.
+    pub burst_window: Option<BurstWindow>,
+    /// Resolved cardinality spike windows.
+    pub spike_windows: Vec<CardinalitySpikeWindow>,
+}
+
+impl ParsedSchedule {
+    /// Parse a [`ParsedSchedule`] from a [`BaseScheduleConfig`].
+    ///
+    /// Converts duration strings into `Duration` values and resolves spike
+    /// window defaults. This is the single authoritative location for schedule
+    /// parsing — both the metrics and log runners call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError`] if any duration string is invalid.
+    pub fn from_base_config(
+        config: &crate::config::BaseScheduleConfig,
+    ) -> Result<Self, crate::SondaError> {
+        use crate::config::validate::parse_duration;
+
+        let total_duration: Option<Duration> =
+            config.duration.as_deref().map(parse_duration).transpose()?;
+
+        let gap_window: Option<GapWindow> = config
+            .gaps
+            .as_ref()
+            .map(|g| -> Result<GapWindow, crate::SondaError> {
+                Ok(GapWindow {
+                    every: parse_duration(&g.every)?,
+                    duration: parse_duration(&g.r#for)?,
+                })
+            })
+            .transpose()?;
+
+        let burst_window: Option<BurstWindow> = config
+            .bursts
+            .as_ref()
+            .map(|b| -> Result<BurstWindow, crate::SondaError> {
+                Ok(BurstWindow {
+                    every: parse_duration(&b.every)?,
+                    duration: parse_duration(&b.r#for)?,
+                    multiplier: b.multiplier,
+                })
+            })
+            .transpose()?;
+
+        let spike_windows: Vec<CardinalitySpikeWindow> = config
+            .cardinality_spikes
+            .as_ref()
+            .map(|spikes| {
+                spikes
+                    .iter()
+                    .map(|s| {
+                        Ok(CardinalitySpikeWindow {
+                            label: s.label.clone(),
+                            every: parse_duration(&s.every)?,
+                            duration: parse_duration(&s.r#for)?,
+                            cardinality: s.cardinality,
+                            strategy: s.strategy,
+                            prefix: s.prefix.clone().unwrap_or_else(|| format!("{}_", s.label)),
+                            seed: s.seed.unwrap_or(0),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, crate::SondaError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
+            total_duration,
+            gap_window,
+            burst_window,
+            spike_windows,
+        })
     }
 }
 
@@ -831,6 +923,127 @@ mod tests {
         let s = spike(10, 2, 100);
         let debug = format!("{s:?}");
         assert!(debug.contains("CardinalitySpikeWindow"));
+    }
+
+    // ---- ParsedSchedule::from_base_config -------------------------------------
+
+    /// Helper to build a minimal `BaseScheduleConfig` for testing.
+    fn base_config() -> crate::config::BaseScheduleConfig {
+        crate::config::BaseScheduleConfig {
+            name: "test".to_string(),
+            rate: 10.0,
+            duration: None,
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            labels: None,
+            sink: crate::sink::SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+        }
+    }
+
+    #[test]
+    fn parsed_schedule_no_optionals() {
+        let cfg = base_config();
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        assert!(parsed.total_duration.is_none());
+        assert!(parsed.gap_window.is_none());
+        assert!(parsed.burst_window.is_none());
+        assert!(parsed.spike_windows.is_empty());
+    }
+
+    #[test]
+    fn parsed_schedule_with_duration() {
+        let mut cfg = base_config();
+        cfg.duration = Some("30s".to_string());
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        assert_eq!(parsed.total_duration, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn parsed_schedule_with_gaps() {
+        let mut cfg = base_config();
+        cfg.gaps = Some(crate::config::GapConfig {
+            every: "60s".to_string(),
+            r#for: "10s".to_string(),
+        });
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        let gap = parsed.gap_window.unwrap();
+        assert_eq!(gap.every, Duration::from_secs(60));
+        assert_eq!(gap.duration, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parsed_schedule_with_bursts() {
+        let mut cfg = base_config();
+        cfg.bursts = Some(crate::config::BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 5.0,
+        });
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        let burst = parsed.burst_window.unwrap();
+        assert_eq!(burst.every, Duration::from_secs(10));
+        assert_eq!(burst.duration, Duration::from_secs(2));
+        assert!((burst.multiplier - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parsed_schedule_spike_defaults_prefix_and_seed() {
+        let mut cfg = base_config();
+        cfg.cardinality_spikes = Some(vec![crate::config::CardinalitySpikeConfig {
+            label: "pod_name".to_string(),
+            every: "2m".to_string(),
+            r#for: "30s".to_string(),
+            cardinality: 50,
+            strategy: crate::config::SpikeStrategy::Counter,
+            prefix: None,
+            seed: None,
+        }]);
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        assert_eq!(parsed.spike_windows.len(), 1);
+        let sw = &parsed.spike_windows[0];
+        assert_eq!(
+            sw.prefix, "pod_name_",
+            "prefix defaults to label + underscore"
+        );
+        assert_eq!(sw.seed, 0, "seed defaults to 0");
+        assert_eq!(sw.every, Duration::from_secs(120));
+        assert_eq!(sw.duration, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parsed_schedule_spike_custom_prefix_and_seed() {
+        let mut cfg = base_config();
+        cfg.cardinality_spikes = Some(vec![crate::config::CardinalitySpikeConfig {
+            label: "host".to_string(),
+            every: "1m".to_string(),
+            r#for: "10s".to_string(),
+            cardinality: 10,
+            strategy: crate::config::SpikeStrategy::Random,
+            prefix: Some("srv-".to_string()),
+            seed: Some(42),
+        }]);
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        let sw = &parsed.spike_windows[0];
+        assert_eq!(sw.prefix, "srv-");
+        assert_eq!(sw.seed, 42);
+    }
+
+    #[test]
+    fn parsed_schedule_empty_spikes_vec() {
+        let mut cfg = base_config();
+        cfg.cardinality_spikes = Some(vec![]);
+        let parsed = ParsedSchedule::from_base_config(&cfg).unwrap();
+        assert!(parsed.spike_windows.is_empty());
+    }
+
+    #[test]
+    fn parsed_schedule_invalid_duration_returns_error() {
+        let mut cfg = base_config();
+        cfg.duration = Some("not_a_duration".to_string());
+        assert!(ParsedSchedule::from_base_config(&cfg).is_err());
     }
 
     // ---- splitmix64: determinism anchor --------------------------------------
