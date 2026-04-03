@@ -13,6 +13,7 @@ pub mod log_template;
 pub mod sawtooth;
 pub mod sequence;
 pub mod sine;
+pub mod step;
 pub mod uniform;
 
 use std::collections::{BTreeMap, HashMap};
@@ -24,6 +25,7 @@ use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
 use self::sequence::SequenceGenerator;
 use self::sine::Sine;
+use self::step::StepGenerator;
 use self::uniform::UniformRandom;
 use crate::model::log::{LogEvent, Severity};
 use crate::{ConfigError, SondaError};
@@ -114,6 +116,20 @@ pub enum GeneratorConfig {
         /// is returned for all ticks beyond the file length.
         repeat: Option<bool>,
     },
+    /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
+    ///
+    /// Useful for testing `rate()` and `increase()` PromQL functions.
+    #[cfg_attr(feature = "config", serde(rename = "step"))]
+    Step {
+        /// Initial value at tick 0. Defaults to 0.0 when absent.
+        #[cfg_attr(feature = "config", serde(default))]
+        start: Option<f64>,
+        /// Increment applied per tick.
+        step_size: f64,
+        /// Optional wrap-around threshold. When set and greater than `start`,
+        /// the value wraps via modular arithmetic.
+        max: Option<f64>,
+    },
 }
 
 /// Construct a `Box<dyn ValueGenerator>` from the given configuration.
@@ -159,6 +175,15 @@ pub fn create_generator(
             has_header.unwrap_or(true),
             repeat.unwrap_or(true),
         )?)),
+        GeneratorConfig::Step {
+            start,
+            step_size,
+            max,
+        } => Ok(Box::new(StepGenerator::new(
+            start.unwrap_or(0.0),
+            *step_size,
+            *max,
+        ))),
     }
 }
 
@@ -457,6 +482,70 @@ mod tests {
         assert!(result.is_err(), "empty sequence must return an error");
     }
 
+    // ---- Step factory tests ---------------------------------------------------
+
+    #[test]
+    fn factory_step_linear_growth() {
+        let config = GeneratorConfig::Step {
+            start: None,
+            step_size: 1.0,
+            max: None,
+        };
+        let gen = create_generator(&config, 1.0).expect("step factory");
+        assert_eq!(gen.value(0), 0.0);
+        assert_eq!(gen.value(1), 1.0);
+        assert_eq!(gen.value(100), 100.0);
+    }
+
+    #[test]
+    fn factory_step_with_start() {
+        let config = GeneratorConfig::Step {
+            start: Some(10.0),
+            step_size: 2.0,
+            max: None,
+        };
+        let gen = create_generator(&config, 1.0).expect("step factory with start");
+        assert_eq!(gen.value(0), 10.0);
+        assert_eq!(gen.value(1), 12.0);
+        assert_eq!(gen.value(5), 20.0);
+    }
+
+    #[test]
+    fn factory_step_with_wrap() {
+        let config = GeneratorConfig::Step {
+            start: Some(0.0),
+            step_size: 1.0,
+            max: Some(3.0),
+        };
+        let gen = create_generator(&config, 1.0).expect("step factory with wrap");
+        assert_eq!(gen.value(0), 0.0);
+        assert_eq!(gen.value(3), 0.0, "should wrap at max");
+        assert_eq!(gen.value(4), 1.0);
+    }
+
+    #[test]
+    fn factory_step_start_none_defaults_to_zero() {
+        let config_none = GeneratorConfig::Step {
+            start: None,
+            step_size: 1.0,
+            max: None,
+        };
+        let config_zero = GeneratorConfig::Step {
+            start: Some(0.0),
+            step_size: 1.0,
+            max: None,
+        };
+        let gen_none = create_generator(&config_none, 1.0).expect("step start=None");
+        let gen_zero = create_generator(&config_zero, 1.0).expect("step start=0");
+        for tick in 0..10 {
+            assert_eq!(
+                gen_none.value(tick),
+                gen_zero.value(tick),
+                "start=None must equal start=Some(0.0) at tick {tick}"
+            );
+        }
+    }
+
     // ---- Config deserialization tests ----------------------------------------
     // These tests require the `config` feature (serde_yaml_ng).
 
@@ -539,6 +628,66 @@ mod tests {
                 assert_eq!(period_secs, 60.0);
             }
             _ => panic!("expected Sawtooth variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn deserialize_step_config_full() {
+        let yaml = "type: step\nstart: 10.0\nstep_size: 2.5\nmax: 100.0\n";
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize step");
+        match config {
+            GeneratorConfig::Step {
+                start,
+                step_size,
+                max,
+            } => {
+                assert_eq!(start, Some(10.0));
+                assert_eq!(step_size, 2.5);
+                assert_eq!(max, Some(100.0));
+            }
+            _ => panic!("expected Step variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn deserialize_step_config_minimal() {
+        let yaml = "type: step\nstep_size: 1.0\n";
+        let config: GeneratorConfig =
+            serde_yaml_ng::from_str(yaml).expect("deserialize step minimal");
+        match config {
+            GeneratorConfig::Step {
+                start,
+                step_size,
+                max,
+            } => {
+                assert_eq!(start, None, "start should default to None when omitted");
+                assert_eq!(step_size, 1.0);
+                assert_eq!(max, None, "max should be None when omitted");
+            }
+            _ => panic!("expected Step variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn deserialize_step_config_integer_values() {
+        // YAML integers should coerce to f64
+        let yaml = "type: step\nstart: 0\nstep_size: 1\nmax: 1000\n";
+        let config: GeneratorConfig =
+            serde_yaml_ng::from_str(yaml).expect("deserialize step with integers");
+        match config {
+            GeneratorConfig::Step {
+                start,
+                step_size,
+                max,
+            } => {
+                assert_eq!(start, Some(0.0));
+                assert_eq!(step_size, 1.0);
+                assert_eq!(max, Some(1000.0));
+            }
+            _ => panic!("expected Step variant"),
         }
     }
 
@@ -657,6 +806,7 @@ sink:
         assert_send_sync::<crate::generator::constant::Constant>();
         assert_send_sync::<crate::generator::sequence::SequenceGenerator>();
         assert_send_sync::<crate::generator::csv_replay::CsvReplayGenerator>();
+        assert_send_sync::<crate::generator::step::StepGenerator>();
     }
 
     // ---- LogGeneratorConfig deserialization tests ----------------------------
