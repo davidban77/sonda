@@ -1,4 +1,4 @@
-//! Shared schedule loop for all signal types.
+//! Shared schedule loop for metrics and log signal types.
 //!
 //! The core loop handles the schedule infrastructure that is identical across
 //! metrics and logs: duration checking, shutdown handling, gap window sleeping,
@@ -9,6 +9,11 @@
 //! to a caller-provided [`TickFn`] closure. This eliminates the duplication
 //! between the metrics runner and the log runner while keeping each signal
 //! type's event logic self-contained.
+//!
+//! **Note:** [`TickResult`] currently carries an `Option<MetricEvent>` for the
+//! stats recent-metrics buffer, which couples this module to the metrics model.
+//! If additional signal types (traces, flows) are added, this should be
+//! generalized via a trait object or generic parameter.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
