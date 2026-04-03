@@ -13,6 +13,7 @@ pub mod log_template;
 pub mod sawtooth;
 pub mod sequence;
 pub mod sine;
+pub mod spike;
 pub mod step;
 pub mod uniform;
 
@@ -25,6 +26,7 @@ use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
 use self::sequence::SequenceGenerator;
 use self::sine::Sine;
+use self::spike::SpikeGenerator;
 use self::step::StepGenerator;
 use self::uniform::UniformRandom;
 use crate::model::log::{LogEvent, Severity};
@@ -102,6 +104,18 @@ pub enum GeneratorConfig {
         /// is returned for all ticks beyond the sequence length.
         repeat: Option<bool>,
     },
+    /// A generator that outputs a baseline value with periodic spikes.
+    #[cfg_attr(feature = "config", serde(rename = "spike"))]
+    Spike {
+        /// The normal output value between spikes.
+        baseline: f64,
+        /// The amount added to baseline during a spike.
+        magnitude: f64,
+        /// How long each spike lasts in seconds.
+        duration_secs: f64,
+        /// Time between spike starts in seconds.
+        interval_secs: f64,
+    },
     /// A generator that replays numeric values from a CSV file.
     #[cfg_attr(feature = "config", serde(rename = "csv_replay"))]
     CsvReplay {
@@ -160,6 +174,25 @@ pub fn create_generator(
             max,
             period_secs,
         } => Ok(Box::new(Sawtooth::new(*min, *max, *period_secs, rate))),
+        GeneratorConfig::Spike {
+            baseline,
+            magnitude,
+            duration_secs,
+            interval_secs,
+        } => {
+            if *interval_secs <= 0.0 {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "spike generator requires interval_secs > 0",
+                )));
+            }
+            Ok(Box::new(SpikeGenerator::new(
+                *baseline,
+                *magnitude,
+                *duration_secs,
+                *interval_secs,
+                rate,
+            )))
+        }
         GeneratorConfig::Sequence { values, repeat } => Ok(Box::new(SequenceGenerator::new(
             values.clone(),
             repeat.unwrap_or(true),
@@ -546,6 +579,61 @@ mod tests {
         }
     }
 
+    // ---- Spike factory tests --------------------------------------------------
+
+    #[test]
+    fn factory_spike_returns_baseline_outside_window() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 10.0,
+            interval_secs: 60.0,
+        };
+        let gen = create_generator(&config, 1.0).expect("spike factory");
+        // tick 15 is outside the 10-tick spike window
+        assert_eq!(gen.value(15), 50.0);
+    }
+
+    #[test]
+    fn factory_spike_returns_spike_inside_window() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 10.0,
+            interval_secs: 60.0,
+        };
+        let gen = create_generator(&config, 1.0).expect("spike factory");
+        // tick 5 is inside the 10-tick spike window
+        assert_eq!(gen.value(5), 250.0);
+    }
+
+    #[test]
+    fn factory_spike_zero_interval_returns_error() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 10.0,
+            interval_secs: 0.0,
+        };
+        let result = create_generator(&config, 1.0);
+        assert!(result.is_err(), "interval_secs=0 must return an error");
+    }
+
+    #[test]
+    fn factory_spike_negative_interval_returns_error() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 10.0,
+            interval_secs: -1.0,
+        };
+        let result = create_generator(&config, 1.0);
+        assert!(
+            result.is_err(),
+            "negative interval_secs must return an error"
+        );
+    }
+
     // ---- Config deserialization tests ----------------------------------------
     // These tests require the `config` feature (serde_yaml_ng).
 
@@ -754,6 +842,48 @@ mod tests {
 
     #[cfg(feature = "config")]
     #[test]
+    fn deserialize_spike_config() {
+        let yaml =
+            "type: spike\nbaseline: 50.0\nmagnitude: 200.0\nduration_secs: 10\ninterval_secs: 60\n";
+        let config: GeneratorConfig = serde_yaml_ng::from_str(yaml).expect("deserialize spike");
+        match config {
+            GeneratorConfig::Spike {
+                baseline,
+                magnitude,
+                duration_secs,
+                interval_secs,
+            } => {
+                assert_eq!(baseline, 50.0);
+                assert_eq!(magnitude, 200.0);
+                assert_eq!(duration_secs, 10.0);
+                assert_eq!(interval_secs, 60.0);
+            }
+            _ => panic!("expected Spike variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn deserialize_spike_config_negative_magnitude() {
+        let yaml =
+            "type: spike\nbaseline: 100.0\nmagnitude: -50.0\nduration_secs: 5\ninterval_secs: 20\n";
+        let config: GeneratorConfig =
+            serde_yaml_ng::from_str(yaml).expect("deserialize spike negative magnitude");
+        match config {
+            GeneratorConfig::Spike {
+                baseline,
+                magnitude,
+                ..
+            } => {
+                assert_eq!(baseline, 100.0);
+                assert_eq!(magnitude, -50.0);
+            }
+            _ => panic!("expected Spike variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
     fn deserialize_example_yaml_scenario_file() {
         // Validate the example file from examples/sequence-alert-test.yaml
         let yaml = "\
@@ -805,6 +935,7 @@ sink:
         assert_send_sync::<crate::generator::sawtooth::Sawtooth>();
         assert_send_sync::<crate::generator::constant::Constant>();
         assert_send_sync::<crate::generator::sequence::SequenceGenerator>();
+        assert_send_sync::<crate::generator::spike::SpikeGenerator>();
         assert_send_sync::<crate::generator::csv_replay::CsvReplayGenerator>();
         assert_send_sync::<crate::generator::step::StepGenerator>();
     }
