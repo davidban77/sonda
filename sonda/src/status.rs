@@ -319,6 +319,14 @@ fn generator_display(gen: &GeneratorConfig) -> String {
                 )
             }
         }
+        GeneratorConfig::Spike {
+            baseline,
+            magnitude,
+            duration_secs,
+            interval_secs,
+        } => format!(
+            "spike (baseline: {baseline}, magnitude: {magnitude}, duration: {duration_secs}s, interval: {interval_secs}s)"
+        ),
         GeneratorConfig::CsvReplay {
             file,
             column,
@@ -777,6 +785,20 @@ mod tests {
             repeat: None,
         };
         assert_eq!(generator_display(&config), "sequence ([10.0], repeat)");
+    }
+
+    #[test]
+    fn generator_display_spike() {
+        let config = GeneratorConfig::Spike {
+            baseline: 50.0,
+            magnitude: 200.0,
+            duration_secs: 10.0,
+            interval_secs: 60.0,
+        };
+        assert_eq!(
+            generator_display(&config),
+            "spike (baseline: 50, magnitude: 200, duration: 10s, interval: 60s)"
+        );
     }
 
     #[test]

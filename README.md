@@ -12,7 +12,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 
 | Category | Options |
 |----------|---------|
-| **Generators** | constant, sine, sawtooth, uniform random, sequence, step, CSV replay |
+| **Generators** | constant, sine, sawtooth, uniform random, sequence, step, spike, CSV replay |
 | **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes |

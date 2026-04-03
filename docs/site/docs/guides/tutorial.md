@@ -29,10 +29,11 @@ Sonda ships seven generators:
 | `uniform` | Random value in [min, max] | Jitter, noisy signals |
 | `sequence` | Cycles through an explicit list | Alert threshold testing |
 | `step` | Monotonic counter with optional wrap | `rate()` and `increase()` testing |
+| `spike` | Baseline with periodic spikes | Anomaly detection, alert thresholds |
 | `csv_replay` | Replays values from a CSV file | Reproducing real incidents |
 
 !!! note "YAML-only generators"
-    Sequence, step, and csv_replay require a scenario file -- they have no CLI flag equivalents.
+    Sequence, step, spike, and csv_replay require a scenario file -- they have no CLI flag equivalents.
     All other generators are available via `--value-mode`.
 
 ### constant

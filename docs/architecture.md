@@ -104,7 +104,7 @@ Built-in generator implementations:
 | **Sine** | Returns a sine wave with configurable amplitude, period, and offset. |
 | **Sawtooth** | Returns a linearly rising wave that resets at the period boundary. |
 | **Step** | Monotonically increasing value with configurable step. Wraps at optional max. |
-| **MicroBurst** | Returns the base generator value normally, but spikes to a multiplied value for a configurable window. |
+| **Spike** | Outputs baseline value with periodic spikes of configurable magnitude and duration. |
 | **GaugeStyle** | Returns a value that random-walks within bounds — simulates a real gauge metric. |
 | **Sequence** | Steps through an explicit list of `f64` values. Cycles when `repeat` is true; clamps to the last value when false. Useful for replaying short incident patterns inline. |
 | **CsvReplay** | Replays numeric values read from a CSV file at construction time. Supports header rows, column selection, and repeat/clamp behavior. Enables recording production metric values (e.g., via Prometheus or VictoriaMetrics export) and replaying them exactly. |

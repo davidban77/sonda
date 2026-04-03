@@ -25,6 +25,7 @@ src/
 │   ├── sawtooth.rs
 │   ├── sequence.rs     ← explicit value sequence (incident pattern modeling)
 │   ├── step.rs         ← monotonic step counter with optional wrap-around (rate/increase testing)
+│   ├── spike.rs        ← baseline with periodic spikes (anomaly/alert testing)
 │   ├── csv_replay.rs   ← CSV file-based replay for metric values
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
