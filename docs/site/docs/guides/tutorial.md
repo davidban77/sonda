@@ -19,7 +19,7 @@ A metric that always outputs zero isn't very useful for testing. Generators let 
 the values Sonda emits -- smooth waves for latency simulation, random noise for jitter,
 or exact sequences to trigger alert thresholds.
 
-Sonda ships seven generators:
+Sonda ships eight generators:
 
 | Generator | Description | Best for |
 |-----------|-------------|----------|
@@ -136,6 +136,24 @@ sink:
     ```
 
     For full generator configuration details, see [Generators](../configuration/generators.md).
+
+!!! tip "Add realism with jitter"
+    Real metrics are never perfectly smooth. Add `jitter` to any generator to introduce
+    deterministic uniform noise:
+
+    ```yaml
+    generator:
+      type: sine
+      amplitude: 20
+      period_secs: 120
+      offset: 50
+    jitter: 3.0
+    jitter_seed: 42
+    ```
+
+    This adds noise in the range `[-3.0, +3.0]` to every value. Set `jitter_seed` for
+    reproducible noise across runs. See [Generators - Jitter](../configuration/generators.md#jitter)
+    for details.
 
 You've seen what values Sonda can generate. Next, let's look at how those values get formatted on the wire.
 
