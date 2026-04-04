@@ -138,10 +138,18 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub period_secs: Option<f64>,
 
-    /// Sine wave vertical offset, or the constant value for `--value-mode constant`.
+    /// Fixed value emitted by the `constant` generator.
+    ///
+    /// Shorthand for `--value-mode constant` with the given value. Conflicts
+    /// with `--offset` — use one or the other.
+    #[arg(long, conflicts_with = "offset")]
+    pub value: Option<f64>,
+
+    /// Sine wave vertical offset (or legacy constant value).
     ///
     /// For `sine`: sets the midpoint around which the wave oscillates.
-    /// For `constant`: this is the emitted value. Default: `0.0`.
+    /// For backward compatibility, also accepted as the constant value when
+    /// `--value-mode constant` (prefer `--value` instead). Default: `0.0`.
     #[arg(long)]
     pub offset: Option<f64>,
 
@@ -629,5 +637,47 @@ mod tests {
         .expect("--dry-run + --verbose should parse");
         assert!(cli.dry_run);
         assert!(cli.verbose);
+    }
+
+    // ---- --value flag: parsing and conflict with --offset --------------------
+
+    #[test]
+    fn cli_value_flag_is_parsed() {
+        let cli = Cli::try_parse_from([
+            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "42",
+        ])
+        .expect("--value should parse");
+        match cli.command {
+            Commands::Metrics(args) => {
+                assert_eq!(args.value, Some(42.0));
+            }
+            _ => panic!("expected Metrics command"),
+        }
+    }
+
+    #[test]
+    fn cli_value_and_offset_conflict() {
+        let result = Cli::try_parse_from([
+            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "42", "--offset", "10",
+        ]);
+        assert!(
+            result.is_err(),
+            "--value and --offset must conflict at the clap level"
+        );
+    }
+
+    #[test]
+    fn cli_value_flag_without_value_mode_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "1",
+        ])
+        .expect("--value without --value-mode should be accepted (defaults to constant)");
+        match cli.command {
+            Commands::Metrics(args) => {
+                assert_eq!(args.value, Some(1.0));
+                assert!(args.value_mode.is_none());
+            }
+            _ => panic!("expected Metrics command"),
+        }
     }
 }

@@ -233,9 +233,10 @@ sonda metrics [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--value-mode <MODE>` | string | `constant` | Generator type: `constant`, `uniform`, `sine`, `sawtooth`. |
+| `--value <FLOAT>` | float | `0.0` | Fixed value for the `constant` generator. Conflicts with `--offset`. |
 | `--amplitude <FLOAT>` | float | `1.0` | Sine wave amplitude. |
 | `--period-secs <FLOAT>` | float | `60.0` | Sine or sawtooth period in seconds. |
-| `--offset <FLOAT>` | float | `0.0` | Sine midpoint or constant value. |
+| `--offset <FLOAT>` | float | `0.0` | Sine midpoint. Also accepted as constant value for backward compatibility (prefer `--value`). Conflicts with `--value`. |
 | `--min <FLOAT>` | float | `0.0` | Uniform or sawtooth minimum. |
 | `--max <FLOAT>` | float | `1.0` | Uniform or sawtooth maximum. |
 | `--seed <INT>` | integer | `0` | RNG seed for deterministic uniform output. |

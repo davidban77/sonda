@@ -23,14 +23,18 @@ generator:
 **Shape:** A flat horizontal line at the configured value.
 
 ```bash
-sonda metrics --name up --rate 2 --duration 2s
+sonda metrics --name up --rate 2 --duration 2s --value 1
 ```
 
 ```text title="Output"
-up 0 1774279693496
-up 0 1774279694001
-up 0 1774279694501
+up 1 1774279693496
+up 1 1774279694001
+up 1 1774279694501
 ```
+
+Use `--value` from the CLI to set the constant value directly. For backward compatibility,
+`--offset` is also accepted in constant mode, but `--value` is preferred as it reads more
+clearly.
 
 When no generator is configured, the default is `constant` with `value: 0.0`.
 
