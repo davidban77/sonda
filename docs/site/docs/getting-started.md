@@ -176,6 +176,24 @@ sonda logs --mode template --rate 2 --duration 3s
 For richer logs with field pools, severity weights, and multiple templates, see the
 [Tutorial](guides/tutorial.md#generating-logs).
 
+## Sending to a backend
+
+You don't need a YAML file to push data to a real backend. Use `--sink` and `--endpoint`
+to send metrics or logs directly from the CLI:
+
+```bash
+# Push metrics to VictoriaMetrics / Prometheus via remote write
+sonda metrics --name cpu_usage --rate 10 --duration 30s \
+  --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+
+# Push logs to Grafana Loki
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 --label app=myservice
+```
+
+The [Tutorial](guides/tutorial.md#sinks) covers all sink types in detail.
+
 ## What next
 
 You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every generator,

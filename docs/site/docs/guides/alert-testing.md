@@ -261,37 +261,38 @@ The fastest path to end-to-end alert testing: push metrics into a TSDB and verif
 
 === "HTTP Push"
 
-    POST metrics directly to VictoriaMetrics using the Prometheus text import API:
+    POST metrics directly to VictoriaMetrics using the Prometheus text import API.
+    No scenario file needed:
+
+    ```bash
+    sonda metrics --name cpu_usage --rate 1 --duration 180s --value 95 \
+      --label instance=server-01 --label job=node \
+      --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+      --content-type "text/plain"
+    ```
+
+    Or use a scenario file for generators that require YAML (sequence, csv_replay):
 
     ```bash
     sonda metrics --scenario examples/vm-push-scenario.yaml
     ```
 
-    ```yaml title="examples/vm-push-scenario.yaml (key fields)"
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
-    ```
-
 === "Remote Write"
 
     Use the Prometheus remote write protocol for native compatibility with any
-    remote-write receiver:
+    remote-write receiver. No scenario file needed:
+
+    ```bash
+    sonda metrics --name cpu_usage --rate 1 --duration 180s --value 95 \
+      --label instance=server-01 --label job=node \
+      --encoder remote_write \
+      --sink remote_write --endpoint http://localhost:8428/api/v1/write
+    ```
+
+    Or use a scenario file:
 
     ```bash
     sonda metrics --scenario examples/remote-write-vm.yaml
-    ```
-
-    ```yaml title="examples/remote-write-vm.yaml (key fields)"
-    encoder:
-      type: remote_write
-    sink:
-      type: remote_write
-      url: "http://localhost:8428/api/v1/write"
-      batch_size: 100
     ```
 
 !!! warning "Remote write requires a feature flag when building from source"

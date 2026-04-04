@@ -32,8 +32,9 @@ is in the wrong crate.
 
 ```
 sonda [--quiet | --verbose] [--dry-run] metrics --scenario <file.yaml>
-sonda [--quiet | --verbose] [--dry-run] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]...
+sonda [--quiet | --verbose] [--dry-run] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]... [--sink <type> --endpoint <url> ...]
 sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml>
+sonda [--quiet | --verbose] [--dry-run] logs --mode <mode> [--sink <type> --endpoint <url> ...]
 sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml>
 ```
 
