@@ -785,7 +785,16 @@ end-to-end validation. Sonda supports three approaches.
 
 ### 1. HTTP Push (import API)
 
-POST metrics directly to a backend's import endpoint:
+POST metrics directly to a backend's import endpoint. You can use CLI flags for quick
+ad-hoc runs without writing a scenario file:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink http_push --endpoint http://victoriametrics:8428/api/v1/import/prometheus \
+  --content-type "text/plain"
+```
+
+Or use a scenario file for more control:
 
 ```bash
 sonda metrics --scenario examples/victoriametrics-metrics.yaml
@@ -801,7 +810,16 @@ sink:
 
 ### 2. Remote Write
 
-Use the Prometheus remote write protocol for native compatibility:
+Use the Prometheus remote write protocol for native compatibility. CLI flags let you
+set up a quick ad-hoc run:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+```
+
+Or use a scenario file:
 
 ```bash
 sonda metrics --scenario examples/remote-write-vm.yaml
@@ -820,10 +838,19 @@ Compatible targets include VictoriaMetrics, Prometheus, Thanos Receive, and Cort
 
 ### 3. OTLP/gRPC (OpenTelemetry Collector)
 
-Push directly to an OpenTelemetry Collector via gRPC. This requires building with `--features otlp`:
+Push directly to an OpenTelemetry Collector via gRPC. This requires building with `--features otlp`.
+Use CLI flags for a quick test:
 
 ```bash
-cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
+```
+
+Or use a scenario file:
+
+```bash
+sonda metrics --scenario examples/otlp-metrics.yaml
 ```
 
 ```yaml title="examples/otlp-metrics.yaml (excerpt)"
