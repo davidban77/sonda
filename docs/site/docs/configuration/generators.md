@@ -253,18 +253,54 @@ captured from monitoring systems.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file` | string | yes | -- | Path to the CSV file. |
-| `column` | integer | no | `0` | Zero-based column index to read. |
+| `column` | integer | no | `0` | Zero-based column index to read. Mutually exclusive with `columns`. |
+| `columns` | list | no | -- | Multi-column mode. Each entry: `{index: <int>, name: <string>}`. Mutually exclusive with `column`. |
 | `has_header` | boolean | no | `true` | Whether to skip the first row as a header. |
 | `repeat` | boolean | no | `true` | When true, cycles back to the start. When false, holds the last value. |
 
-```yaml title="CSV replay generator"
-generator:
-  type: csv_replay
-  file: examples/sample-cpu-values.csv
-  column: 1
-  has_header: true
-  repeat: true
-```
+!!! warning "column vs columns"
+    `column` and `columns` are mutually exclusive. Use `column` to replay a single metric, or
+    `columns` to replay multiple metrics from the same file simultaneously. Setting both is an error.
+
+=== "Single column"
+
+    ```yaml title="Single-column CSV replay"
+    generator:
+      type: csv_replay
+      file: examples/sample-cpu-values.csv
+      column: 1
+      has_header: true
+      repeat: true
+    ```
+
+=== "Multi-column"
+
+    ```yaml title="Multi-column CSV replay"
+    name: ignored_when_columns_set  # each column entry provides its own metric name
+    rate: 1
+    generator:
+      type: csv_replay
+      file: examples/sample-multi-column.csv
+      has_header: true
+      repeat: true
+      columns:
+        - index: 1
+          name: cpu_percent
+        - index: 2
+          name: mem_percent
+        - index: 3
+          name: disk_io_mbps
+    labels:
+      instance: prod-server-42
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    This expands into three independent metric streams — `cpu_percent`, `mem_percent`, and
+    `disk_io_mbps` — all sharing the same `labels`, `rate`, `sink`, and other scenario fields.
 
 **Shape:** Follows the exact pattern recorded in the CSV file -- the values are replayed verbatim,
 one per tick.
