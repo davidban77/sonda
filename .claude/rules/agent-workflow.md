@@ -82,13 +82,16 @@ full signal path.
 
 **When to use:** the orchestrator launches `@smoke` alongside UAT when the changeset touches:
 - `docker-compose*.yml` files
+- Helm charts (`helm/`) or Kubernetes manifests
 - Infrastructure configs (`examples/alertmanager/`, alert rules, etc.)
-- Documentation that includes Docker/infra walkthrough steps
+- Documentation that includes Docker, Kubernetes, or infra walkthrough steps
 
 **When NOT to use:** pure code changes, pure docs without infra components.
 
-The smoke agent gracefully handles missing Docker by falling back to static validation and
-reporting SKIPPED. It always tears down what it started.
+The smoke agent uses **k3d** for Kubernetes smoke tests (creates ephemeral `sonda-smoke` cluster)
+and **Docker Compose** for compose-based stacks. It gracefully handles missing tools (Docker, k3d,
+Helm) by falling back to static validation and reporting SKIPPED. It always tears down what it
+started.
 
 Uses Sonnet model for cost efficiency — the work is procedural (run commands, check output),
 not reasoning-heavy.
