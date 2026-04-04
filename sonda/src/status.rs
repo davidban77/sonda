@@ -1153,7 +1153,10 @@ mod tests {
 
     #[test]
     fn print_config_metrics_with_all_optional_fields_does_not_panic() {
-        use sonda_core::config::{BurstConfig, CardinalitySpikeConfig, GapConfig, SpikeStrategy};
+        use sonda_core::config::{
+            BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy,
+            GapConfig, SpikeStrategy,
+        };
 
         let mut labels = HashMap::new();
         labels.insert("hostname".to_string(), "web-01".to_string());
@@ -1182,7 +1185,13 @@ mod tests {
                     prefix: None,
                     seed: None,
                 }]),
-                dynamic_labels: None,
+                dynamic_labels: Some(vec![DynamicLabelConfig {
+                    key: "instance".to_string(),
+                    strategy: DynamicLabelStrategy::Counter {
+                        prefix: Some("node-".to_string()),
+                        cardinality: 5,
+                    },
+                }]),
                 labels: Some(labels),
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
