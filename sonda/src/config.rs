@@ -2743,9 +2743,7 @@ mod tests {
 
     #[test]
     fn value_flag_alone_produces_constant_generator() {
-        // --value with no --offset (they conflict at the clap level).
-        // Verifies that --value alone, without any --value-mode, produces
-        // a constant generator with the specified value.
+        // --value alone (no --value-mode) defaults to constant mode.
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),

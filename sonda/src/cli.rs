@@ -637,7 +637,7 @@ mod tests {
         assert!(cli.verbose);
     }
 
-    // ---- --value flag: parsing and conflict with --offset --------------------
+    // ---- --value flag: parsing and validation --------------------------------
 
     #[test]
     fn cli_value_flag_is_parsed() {
