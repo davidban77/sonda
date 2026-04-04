@@ -63,6 +63,7 @@ nav:
     - Alert Testing: guides/alert-testing.md
     - Alerting Pipeline: guides/alerting-pipeline.md
     - CI Alert Validation: guides/ci-alert-validation.md
+    - Synthetic Monitoring: guides/synthetic-monitoring.md
     - Pipeline Validation: guides/pipeline-validation.md
     - Recording Rules: guides/recording-rules.md
     - Example Scenarios: guides/examples.md
