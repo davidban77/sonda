@@ -1,0 +1,32 @@
+# CI alert validation scenario
+#
+# Pushes a constant high-CPU metric to VictoriaMetrics for alert rule
+# validation in CI. Designed for short-lived service containers in
+# GitHub Actions: pushes for 30 seconds at 1 event/second, giving
+# vmalert enough evaluation cycles to fire a `for: 5s` alert.
+#
+# Usage:
+#   sonda metrics --scenario examples/ci-alert-validation.yaml
+#
+# Requires VictoriaMetrics at localhost:8428.
+
+name: docker_alert_cpu
+rate: 1
+duration: 30s
+
+generator:
+  type: constant
+  value: 95.0
+
+labels:
+  host: ci-test-node
+  region: us-east-1
+  service: payment-service
+  env: ci
+
+encoder:
+  type: prometheus_text
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"

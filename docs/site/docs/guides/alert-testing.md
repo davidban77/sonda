@@ -519,6 +519,9 @@ See [Docker Deployment](../deployment/docker.md) for the full stack configuratio
 **Verifying alerts fire end-to-end?** See [Alerting Pipeline](alerting-pipeline.md) to run
 vmalert, Alertmanager, and a webhook receiver with Docker Compose.
 
+**Validating alert rules in CI?** See [CI Alert Validation](ci-alert-validation.md) to catch
+broken rules before they reach production.
+
 **Validating a pipeline change?** See [Pipeline Validation](pipeline-validation.md).
 
 **Verifying recording rules?** Check [Recording Rules](recording-rules.md).
