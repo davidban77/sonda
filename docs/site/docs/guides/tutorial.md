@@ -38,10 +38,10 @@ Sonda ships eight generators:
 
 ### constant
 
-The default generator. Set the value with `--offset`:
+The default generator. Set the value with `--value`:
 
 ```bash
-sonda metrics --name up --rate 1 --duration 3s --offset 1
+sonda metrics --name up --rate 1 --duration 3s --value 1
 ```
 
 ### sine
@@ -169,7 +169,7 @@ The same metric looks different in each format:
 
     ```bash
     sonda metrics --name http_rps --rate 1 --duration 3s \
-      --offset 42 --label env=prod
+      --value 42 --label env=prod
     ```
 
     ```text
@@ -180,7 +180,7 @@ The same metric looks different in each format:
 
     ```bash
     sonda metrics --name http_rps --rate 1 --duration 3s \
-      --offset 42 --label env=prod --encoder influx_lp
+      --value 42 --label env=prod --encoder influx_lp
     ```
 
     ```text
@@ -191,7 +191,7 @@ The same metric looks different in each format:
 
     ```bash
     sonda metrics --name http_rps --rate 1 --duration 3s \
-      --offset 42 --label env=prod --encoder json_lines
+      --value 42 --label env=prod --encoder json_lines
     ```
 
     ```json

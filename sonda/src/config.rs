@@ -22,6 +22,40 @@ use sonda_core::sink::SinkConfig;
 
 use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
 
+/// Validate CLI flag combinations that are invalid regardless of the scenario
+/// file contents.
+///
+/// Currently checks:
+/// - `--value` is only valid with `--value-mode constant` (or the implicit
+///   constant default). Using it with `sine`, `uniform`, or `sawtooth` is an
+///   error.
+/// - `--offset` is only valid with `--value-mode sine`. Using it with
+///   `constant`, `uniform`, or `sawtooth` is an error.
+///
+/// # Errors
+///
+/// Returns an error when `--value` is paired with a non-constant mode, or
+/// when `--offset` is paired with a non-sine mode.
+fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
+    if args.value.is_some() {
+        let mode = args.value_mode.as_deref().unwrap_or("constant");
+        if mode != "constant" {
+            bail!(
+                "--value is only valid with --value-mode constant, \
+                 but --value-mode is {:?}",
+                mode
+            );
+        }
+    }
+    if args.offset.is_some() {
+        let mode = args.value_mode.as_deref().unwrap_or("constant");
+        if mode != "sine" {
+            bail!("--offset is only valid with --value-mode sine");
+        }
+    }
+    Ok(())
+}
+
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
 ///
 /// If `--scenario` is given the file is read and deserialized first. Any CLI
@@ -37,7 +71,11 @@ use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
 /// - `--name` or `--rate` are absent and no scenario file was provided.
 /// - An unrecognized `--encoder` value is given.
 /// - Both `--gap-every` and `--gap-for` are not provided together.
+/// - `--value` is provided with a non-constant mode.
+/// - `--offset` is provided with a non-sine mode.
 pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
+    validate_cli_flags(args)?;
+
     let mut config = if let Some(ref path) = args.scenario {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read scenario file {}", path.display()))?;
@@ -107,6 +145,7 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     // We check whether any generator flag was provided so we don't accidentally
     // replace a fully-specified file generator with a half-specified CLI one.
     if args.value_mode.is_some()
+        || args.value.is_some()
         || args.amplitude.is_some()
         || args.period_secs.is_some()
         || args.offset.is_some()
@@ -184,7 +223,8 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
 ///
 /// Defaults when flags are absent:
 /// - mode: `constant`
-/// - constant value / sine offset: `0.0`
+/// - constant value: `0.0` (via `--value`)
+/// - sine offset: `0.0`
 /// - amplitude: `1.0`
 /// - period_secs: `60.0`
 /// - min: `0.0`, max: `1.0`
@@ -193,7 +233,7 @@ fn build_generator_config(args: &MetricsArgs) -> Result<GeneratorConfig> {
     let mode = args.value_mode.as_deref().unwrap_or("constant");
     match mode {
         "constant" => Ok(GeneratorConfig::Constant {
-            value: args.offset.unwrap_or(0.0),
+            value: args.value.unwrap_or(0.0),
         }),
         "uniform" => Ok(GeneratorConfig::Uniform {
             min: args.min.unwrap_or(0.0),
@@ -700,6 +740,7 @@ mod tests {
             rate: None,
             duration: None,
             value_mode: None,
+            value: None,
             amplitude: None,
             period_secs: None,
             offset: None,
@@ -736,7 +777,7 @@ mod tests {
             rate: Some(10.0),
             duration: Some("5s".to_string()),
             value_mode: Some("constant".to_string()),
-            offset: Some(1.0),
+            value: Some(1.0),
             ..default_args()
         };
 
@@ -2659,5 +2700,251 @@ mod tests {
         let config = load_log_config(&args).expect("log config without jitter should succeed");
         assert_eq!(config.base.jitter, None);
         assert_eq!(config.base.jitter_seed, None);
+    }
+
+    // =========================================================================
+    // --value flag tests (constant generator)
+    // =========================================================================
+
+    #[test]
+    fn value_flag_sets_constant_generator_value() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(42.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--value must produce valid config");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(value, 42.0, "--value must set constant generator value");
+            }
+            other => panic!("expected Constant generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_flag_with_explicit_constant_mode_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(99.0),
+            value_mode: Some("constant".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--value with --value-mode constant must succeed");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(value, 99.0);
+            }
+            other => panic!("expected Constant generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_flag_alone_produces_constant_generator() {
+        // --value alone (no --value-mode) defaults to constant mode.
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(7.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--value without --offset must succeed");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(value, 7.0);
+            }
+            other => panic!("expected Constant generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_flag_with_sine_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(5.0),
+            value_mode: Some("sine".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--value with sine must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--value") && msg.contains("constant"),
+            "error must mention --value and constant, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn value_flag_with_uniform_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(5.0),
+            value_mode: Some("uniform".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--value with uniform must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--value") && msg.contains("constant"),
+            "error must mention --value and constant, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn value_flag_with_sawtooth_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            value: Some(5.0),
+            value_mode: Some("sawtooth".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--value with sawtooth must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--value") && msg.contains("constant"),
+            "error must mention --value and constant, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn offset_with_constant_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(3.14),
+            value_mode: Some("constant".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset with constant must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn value_flag_triggers_generator_override_on_yaml_config() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/basic.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            value: Some(55.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--value must override YAML generator");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(
+                    value, 55.0,
+                    "--value must override YAML generator to Constant"
+                );
+            }
+            other => panic!("expected Constant generator after --value override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offset_without_value_mode_returns_error() {
+        // When --offset is provided with no --value-mode, the implicit default
+        // is "constant". Since --offset is only valid with sine, this must fail.
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(3.14),
+            // value_mode: None — implicit constant default
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset without --value-mode must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn value_flag_overrides_non_constant_yaml_generator() {
+        // The with-labels.yaml fixture has a sine generator. Using --value
+        // without --value-mode should override it to a constant generator.
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/with-labels.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            value: Some(5.0),
+            // value_mode: None — not explicitly set; --value triggers the override
+            ..default_args()
+        };
+        let config =
+            load_config(&args).expect("--value must override sine YAML generator to constant");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(
+                    value, 5.0,
+                    "--value must override sine generator to Constant with value 5.0"
+                );
+            }
+            other => {
+                panic!("expected Constant generator after --value override of sine, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn offset_with_sine_mode_builds_sine_generator() {
+        let args = MetricsArgs {
+            name: Some("cpu".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("sine".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--offset with sine must succeed");
+        match config.generator {
+            GeneratorConfig::Sine { offset, .. } => {
+                assert!(
+                    (offset - 10.0).abs() < f64::EPSILON,
+                    "--offset must set sine midpoint, got {offset}"
+                );
+            }
+            other => panic!("expected Sine generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offset_with_uniform_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("uniform".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset with uniform must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn offset_with_sawtooth_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("sawtooth".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset with sawtooth must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
     }
 }

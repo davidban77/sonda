@@ -229,7 +229,7 @@ You can override the cardinality from the CLI for a quick single-metric test:
 
 ```bash
 sonda -q metrics --name cardinality_test --rate 50 --duration 60s \
-  --value-mode constant --offset 1 \
+  --value 1 \
   --label job=capacity_test --label env=load-test \
   --spike-label pod_name --spike-every 60s --spike-for 30s \
   --spike-cardinality 5000 --spike-prefix "pod-"

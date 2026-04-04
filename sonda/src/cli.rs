@@ -138,10 +138,16 @@ pub struct MetricsArgs {
     #[arg(long)]
     pub period_secs: Option<f64>,
 
-    /// Sine wave vertical offset, or the constant value for `--value-mode constant`.
+    /// Fixed value emitted by the `constant` generator.
     ///
-    /// For `sine`: sets the midpoint around which the wave oscillates.
-    /// For `constant`: this is the emitted value. Default: `0.0`.
+    /// Only valid when `--value-mode` is `constant` (the default).
+    #[arg(long)]
+    pub value: Option<f64>,
+
+    /// Sine wave vertical offset.
+    ///
+    /// Sets the midpoint around which the wave oscillates. Used when
+    /// `--value-mode sine`. Default: `0.0`.
     #[arg(long)]
     pub offset: Option<f64>,
 
@@ -629,5 +635,36 @@ mod tests {
         .expect("--dry-run + --verbose should parse");
         assert!(cli.dry_run);
         assert!(cli.verbose);
+    }
+
+    // ---- --value flag: parsing and validation --------------------------------
+
+    #[test]
+    fn cli_value_flag_is_parsed() {
+        let cli = Cli::try_parse_from([
+            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "42",
+        ])
+        .expect("--value should parse");
+        match cli.command {
+            Commands::Metrics(args) => {
+                assert_eq!(args.value, Some(42.0));
+            }
+            _ => panic!("expected Metrics command"),
+        }
+    }
+
+    #[test]
+    fn cli_value_flag_without_value_mode_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "1",
+        ])
+        .expect("--value without --value-mode should be accepted (defaults to constant)");
+        match cli.command {
+            Commands::Metrics(args) => {
+                assert_eq!(args.value, Some(1.0));
+                assert!(args.value_mode.is_none());
+            }
+            _ => panic!("expected Metrics command"),
+        }
     }
 }
