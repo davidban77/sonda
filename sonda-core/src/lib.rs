@@ -21,6 +21,7 @@ pub use config::LogScenarioConfig;
 pub use config::MultiScenarioConfig;
 pub use config::ScenarioEntry;
 pub use config::SpikeStrategy;
+pub use config::{expand_entry, expand_scenario};
 pub use model::log::LogEvent;
 pub use model::log::Severity;
 pub use model::metric::Labels;

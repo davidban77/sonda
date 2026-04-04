@@ -168,7 +168,36 @@ dynamic_labels:
     values: [us-east-1, us-west-2, eu-west-1]
 ```
 
+### Multi-column CSV replay
 
+Replay multiple metrics from a single CSV file. Each `columns` entry becomes an
+independent scenario -- same rate, labels, and sink -- with its own metric name:
+
+```yaml
+# examples/csv-replay-multi-column.yaml
+name: system_metrics
+rate: 1
+duration: 60s
+generator:
+  type: csv_replay
+  file: examples/sample-multi-column.csv
+  has_header: true
+  columns:
+    - index: 1
+      name: cpu_percent
+    - index: 2
+      name: mem_percent
+labels:
+  instance: prod-server-42
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+```
+
+```bash
+sonda metrics --scenario examples/csv-replay-multi-column.yaml
+```
 ## CLI global flags
 
 | Flag | Short | Description |

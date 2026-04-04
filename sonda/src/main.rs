@@ -46,35 +46,94 @@ fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Metrics(ref args) => {
             let config = config::load_config(args)?;
-            let entry = sonda_core::ScenarioEntry::Metrics(config);
-            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+            // Expand multi-column csv_replay into N independent scenarios.
+            let expanded =
+                sonda_core::expand_scenario(config).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let entries: Vec<sonda_core::ScenarioEntry> = expanded
+                .into_iter()
+                .map(sonda_core::ScenarioEntry::Metrics)
+                .collect();
+
+            for (i, entry) in entries.iter().enumerate() {
+                sonda_core::validate_entry(entry)
+                    .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
+            }
 
             if cli.dry_run {
-                status::print_config(&entry);
+                for entry in &entries {
+                    status::print_config(entry);
+                }
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_config(&entry);
+                for entry in &entries {
+                    status::print_config(entry);
+                }
             }
 
-            status::print_start(&entry, verbosity);
-            let mut handle = sonda_core::launch_scenario(
-                "cli-metrics".to_string(),
-                entry,
-                Arc::clone(&running),
-                None,
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let join_result = handle.join(None);
-            status::print_stop(
-                &handle.name,
-                handle.elapsed(),
-                &handle.stats_snapshot(),
-                verbosity,
-            );
-            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+            if entries.len() == 1 {
+                // Single scenario — original code path.
+                let entry = entries.into_iter().next().expect("len checked above");
+                status::print_start(&entry, verbosity);
+                let mut handle = sonda_core::launch_scenario(
+                    "cli-metrics".to_string(),
+                    entry,
+                    Arc::clone(&running),
+                    None,
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let join_result = handle.join(None);
+                status::print_stop(
+                    &handle.name,
+                    handle.elapsed(),
+                    &handle.stats_snapshot(),
+                    verbosity,
+                );
+                join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                // Multi-column expansion — launch all scenarios concurrently.
+                let run_start = Instant::now();
+                let mut handles = Vec::with_capacity(entries.len());
+                for (i, entry) in entries.into_iter().enumerate() {
+                    status::print_start(&entry, verbosity);
+                    let id = format!("cli-metrics-{i}");
+                    let handle = sonda_core::launch_scenario(id, entry, Arc::clone(&running), None)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    handles.push(handle);
+                }
+
+                let mut errors: Vec<String> = Vec::new();
+                let mut total_events: u64 = 0;
+                let mut total_bytes: u64 = 0;
+                let mut total_errors: u64 = 0;
+                let scenario_count = handles.len();
+
+                for mut handle in handles {
+                    if let Err(e) = handle.join(None) {
+                        errors.push(e.to_string());
+                    }
+                    let stats = handle.stats_snapshot();
+                    status::print_stop(&handle.name, handle.elapsed(), &stats, verbosity);
+                    total_events += stats.total_events;
+                    total_bytes += stats.bytes_emitted;
+                    total_errors += stats.errors;
+                }
+
+                let total_elapsed = run_start.elapsed();
+                let agg = status::AggregateStats {
+                    scenario_count,
+                    total_events,
+                    total_bytes,
+                    total_errors,
+                };
+                status::print_summary(&agg, total_elapsed, verbosity);
+
+                if !errors.is_empty() {
+                    return Err(anyhow::anyhow!("{}", errors.join("; ")));
+                }
+            }
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
@@ -110,6 +169,17 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
+
+            // Expand multi-column csv_replay entries into N independent scenarios.
+            let mut expanded_scenarios: Vec<sonda_core::ScenarioEntry> = Vec::new();
+            for entry in config.scenarios {
+                let entries =
+                    sonda_core::expand_entry(entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+                expanded_scenarios.extend(entries);
+            }
+            let config = sonda_core::MultiScenarioConfig {
+                scenarios: expanded_scenarios,
+            };
 
             // Validate each scenario entry before launching any of them.
             for (i, entry) in config.scenarios.iter().enumerate() {

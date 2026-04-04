@@ -9,8 +9,9 @@ pub mod validate;
 use std::collections::HashMap;
 
 use crate::encoder::EncoderConfig;
-use crate::generator::{GeneratorConfig, LogGeneratorConfig};
+use crate::generator::{CsvColumnSpec, GeneratorConfig, LogGeneratorConfig};
 use crate::sink::SinkConfig;
+use crate::{ConfigError, SondaError};
 
 /// Gap window configuration — a recurring silent period within a scenario.
 ///
@@ -402,6 +403,114 @@ impl ScenarioEntry {
 pub struct MultiScenarioConfig {
     /// The list of scenarios to run concurrently.
     pub scenarios: Vec<ScenarioEntry>,
+}
+
+/// Validate the `column` / `columns` fields of a `CsvReplay` generator config.
+///
+/// Returns an error when:
+/// - Both `column` and `columns` are set (mutually exclusive).
+/// - `columns` is `Some` but the list is empty.
+///
+/// This validation is called before expansion so that invalid configs are
+/// rejected early with a clear error message.
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] with a descriptive message.
+fn validate_csv_columns(
+    column: &Option<usize>,
+    columns: &Option<Vec<CsvColumnSpec>>,
+) -> Result<(), SondaError> {
+    if let Some(ref cols) = columns {
+        if column.is_some() {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "csv_replay: 'column' and 'columns' are mutually exclusive; use one or the other",
+            )));
+        }
+        if cols.is_empty() {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "csv_replay: 'columns' must not be empty; provide at least one column spec or omit the field",
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Expand a [`ScenarioConfig`] that uses multi-column `csv_replay` into N
+/// independent single-column scenarios.
+///
+/// When the `generator` is `CsvReplay` with `columns: Some(specs)`, this
+/// function returns one `ScenarioConfig` per column spec. Each expanded config
+/// has:
+/// - `name` set to the column spec's `name`.
+/// - `generator.column` set to `Some(spec.index)`.
+/// - `generator.columns` set to `None`.
+/// - All other fields (rate, duration, labels, sink, encoder, gaps, bursts,
+///   jitter, etc.) cloned from the parent.
+///
+/// When `columns` is `None`, returns `vec![config]` unchanged.
+///
+/// # Errors
+///
+/// Returns [`SondaError::Config`] if:
+/// - Both `column` and `columns` are set.
+/// - `columns` is an empty list.
+pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
+    // Only the CsvReplay variant can have `columns`.
+    let columns = match &config.generator {
+        GeneratorConfig::CsvReplay {
+            columns, column, ..
+        } => {
+            validate_csv_columns(column, columns)?;
+            columns.clone()
+        }
+        _ => None,
+    };
+
+    let specs = match columns {
+        Some(specs) => specs,
+        None => return Ok(vec![config]),
+    };
+
+    let expanded = specs
+        .into_iter()
+        .map(|spec| {
+            let mut child = config.clone();
+            child.base.name = spec.name;
+            // Replace the generator's column/columns fields.
+            if let GeneratorConfig::CsvReplay {
+                ref mut column,
+                ref mut columns,
+                ..
+            } = child.generator
+            {
+                *column = Some(spec.index);
+                *columns = None;
+            }
+            child
+        })
+        .collect();
+
+    Ok(expanded)
+}
+
+/// Expand a [`ScenarioEntry`] that uses multi-column `csv_replay`.
+///
+/// For `ScenarioEntry::Metrics`, delegates to [`expand_scenario`] and wraps
+/// the results back in `ScenarioEntry::Metrics`. For `ScenarioEntry::Logs`,
+/// returns the entry unchanged (log scenarios do not use `csv_replay`).
+///
+/// # Errors
+///
+/// Propagates errors from [`expand_scenario`].
+pub fn expand_entry(entry: ScenarioEntry) -> Result<Vec<ScenarioEntry>, SondaError> {
+    match entry {
+        ScenarioEntry::Metrics(config) => {
+            let expanded = expand_scenario(config)?;
+            Ok(expanded.into_iter().map(ScenarioEntry::Metrics).collect())
+        }
+        other => Ok(vec![other]),
+    }
 }
 
 /// Full configuration for a single log scenario run.
@@ -1725,5 +1834,387 @@ dynamic_labels:
         );
         let static_labels = config.labels.as_ref().unwrap();
         assert_eq!(static_labels.get("env"), Some(&"prod".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // csv_replay multi-column: YAML deserialization
+    // -----------------------------------------------------------------------
+
+    /// csv_replay with `columns` deserializes correctly from YAML.
+    #[test]
+    fn csv_replay_columns_deserializes_from_yaml() {
+        let yaml = r#"
+name: multi_col
+rate: 1
+generator:
+  type: csv_replay
+  file: data.csv
+  has_header: true
+  columns:
+    - index: 1
+      name: cpu_percent
+    - index: 2
+      name: mem_percent
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match &config.generator {
+            GeneratorConfig::CsvReplay {
+                columns, column, ..
+            } => {
+                assert!(
+                    column.is_none(),
+                    "column should be None when columns is set"
+                );
+                let cols = columns.as_ref().expect("columns should be Some");
+                assert_eq!(cols.len(), 2);
+                assert_eq!(cols[0].index, 1);
+                assert_eq!(cols[0].name, "cpu_percent");
+                assert_eq!(cols[1].index, 2);
+                assert_eq!(cols[1].name, "mem_percent");
+            }
+            other => panic!("expected CsvReplay variant, got {other:?}"),
+        }
+    }
+
+    /// csv_replay without `columns` deserializes with columns as None.
+    #[test]
+    fn csv_replay_without_columns_field_has_none() {
+        let yaml = r#"
+name: single_col
+rate: 1
+generator:
+  type: csv_replay
+  file: data.csv
+  column: 1
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match &config.generator {
+            GeneratorConfig::CsvReplay {
+                columns, column, ..
+            } => {
+                assert_eq!(*column, Some(1));
+                assert!(
+                    columns.is_none(),
+                    "columns should be None when not specified"
+                );
+            }
+            other => panic!("expected CsvReplay variant, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+    use crate::encoder::EncoderConfig;
+    use crate::generator::{CsvColumnSpec, GeneratorConfig};
+    use crate::sink::SinkConfig;
+
+    /// Build a base `ScenarioConfig` with a csv_replay generator for testing.
+    fn csv_replay_config(
+        name: &str,
+        column: Option<usize>,
+        columns: Option<Vec<CsvColumnSpec>>,
+    ) -> ScenarioConfig {
+        ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 10.0,
+                duration: Some("30s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: Some([("host".to_string(), "srv1".to_string())].into()),
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: Some(0.5),
+                jitter_seed: Some(42),
+                dynamic_labels: None,
+            },
+            generator: GeneratorConfig::CsvReplay {
+                file: "data.csv".to_string(),
+                column,
+                has_header: Some(true),
+                repeat: Some(true),
+                columns,
+            },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: pass-through (no columns)
+    // -----------------------------------------------------------------------
+
+    /// When columns is None, expand_scenario returns the config unchanged.
+    #[test]
+    fn pass_through_when_no_columns() {
+        let config = csv_replay_config("single_metric", Some(1), None);
+        let result = expand_scenario(config.clone()).expect("must succeed");
+        assert_eq!(result.len(), 1, "should return exactly one config");
+        assert_eq!(result[0].name, "single_metric");
+    }
+
+    /// A non-csv_replay generator passes through unchanged.
+    #[test]
+    fn non_csv_replay_passes_through() {
+        let config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "const_metric".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+                dynamic_labels: None,
+            },
+            generator: GeneratorConfig::Constant { value: 42.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        };
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "const_metric");
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: two-column expansion
+    // -----------------------------------------------------------------------
+
+    /// Two columns expand into two configs with correct names and column indices.
+    #[test]
+    fn two_column_expansion() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu_percent".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "mem_percent".to_string(),
+            },
+        ];
+        let config = csv_replay_config("parent", None, Some(cols));
+        let result = expand_scenario(config).expect("must succeed");
+
+        assert_eq!(result.len(), 2, "should produce two expanded configs");
+
+        // First expanded config
+        assert_eq!(result[0].name, "cpu_percent");
+        match &result[0].generator {
+            GeneratorConfig::CsvReplay {
+                column,
+                columns,
+                file,
+                has_header,
+                repeat,
+                ..
+            } => {
+                assert_eq!(*column, Some(1));
+                assert!(columns.is_none(), "columns must be None after expansion");
+                assert_eq!(file, "data.csv", "file must be inherited");
+                assert_eq!(*has_header, Some(true), "has_header must be inherited");
+                assert_eq!(*repeat, Some(true), "repeat must be inherited");
+            }
+            other => panic!("expected CsvReplay, got {other:?}"),
+        }
+
+        // Second expanded config
+        assert_eq!(result[1].name, "mem_percent");
+        match &result[1].generator {
+            GeneratorConfig::CsvReplay {
+                column, columns, ..
+            } => {
+                assert_eq!(*column, Some(2));
+                assert!(columns.is_none());
+            }
+            other => panic!("expected CsvReplay, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: three-column expansion
+    // -----------------------------------------------------------------------
+
+    /// Three columns expand into three configs.
+    #[test]
+    fn three_column_expansion() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "mem".to_string(),
+            },
+            CsvColumnSpec {
+                index: 3,
+                name: "disk_io".to_string(),
+            },
+        ];
+        let config = csv_replay_config("parent", None, Some(cols));
+        let result = expand_scenario(config).expect("must succeed");
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "cpu");
+        assert_eq!(result[1].name, "mem");
+        assert_eq!(result[2].name, "disk_io");
+
+        // Verify each has the correct column index
+        for (i, expected_col) in [(0, 1), (1, 2), (2, 3)] {
+            match &result[i].generator {
+                GeneratorConfig::CsvReplay { column, .. } => {
+                    assert_eq!(*column, Some(expected_col), "config[{i}] column");
+                }
+                other => panic!("expected CsvReplay, got {other:?}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: inherited fields
+    // -----------------------------------------------------------------------
+
+    /// Expanded configs inherit all schedule/delivery fields from the parent.
+    #[test]
+    fn expanded_configs_inherit_parent_fields() {
+        let cols = vec![CsvColumnSpec {
+            index: 1,
+            name: "metric_a".to_string(),
+        }];
+        let config = csv_replay_config("parent", None, Some(cols));
+        let result = expand_scenario(config).expect("must succeed");
+
+        assert_eq!(result.len(), 1);
+        let child = &result[0];
+
+        // Schedule fields
+        assert_eq!(child.rate, 10.0, "rate must be inherited");
+        assert_eq!(
+            child.duration.as_deref(),
+            Some("30s"),
+            "duration must be inherited"
+        );
+
+        // Labels
+        let labels = child.labels.as_ref().expect("labels must be inherited");
+        assert_eq!(labels.get("host").map(|s| s.as_str()), Some("srv1"));
+
+        // Jitter
+        assert_eq!(child.jitter, Some(0.5));
+        assert_eq!(child.jitter_seed, Some(42));
+
+        // Encoder and sink
+        assert!(matches!(
+            child.encoder,
+            EncoderConfig::PrometheusText { .. }
+        ));
+        assert!(matches!(child.sink, SinkConfig::Stdout));
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: error — column and columns both set
+    // -----------------------------------------------------------------------
+
+    /// Setting both column and columns returns an error.
+    #[test]
+    fn column_and_columns_both_set_returns_error() {
+        let cols = vec![CsvColumnSpec {
+            index: 1,
+            name: "cpu".to_string(),
+        }];
+        let config = csv_replay_config("conflict", Some(1), Some(cols));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error must mention mutual exclusivity, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: error — empty columns list
+    // -----------------------------------------------------------------------
+
+    /// An empty columns list returns an error.
+    #[test]
+    fn empty_columns_list_returns_error() {
+        let config = csv_replay_config("empty", None, Some(vec![]));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must not be empty"),
+            "error must mention empty list, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_entry: metrics wrapping
+    // -----------------------------------------------------------------------
+
+    /// expand_entry wraps expanded metrics configs back in ScenarioEntry::Metrics.
+    #[test]
+    fn expand_entry_metrics_two_columns() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "mem".to_string(),
+            },
+        ];
+        let config = csv_replay_config("parent", None, Some(cols));
+        let entry = ScenarioEntry::Metrics(config);
+        let result = expand_entry(entry).expect("must succeed");
+
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0], ScenarioEntry::Metrics(_)));
+        assert!(matches!(result[1], ScenarioEntry::Metrics(_)));
+    }
+
+    /// expand_entry passes log entries through unchanged.
+    #[test]
+    fn expand_entry_logs_passes_through() {
+        use crate::generator::{LogGeneratorConfig, TemplateConfig};
+        use std::collections::BTreeMap;
+
+        let entry = ScenarioEntry::Logs(LogScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "app_logs".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+                dynamic_labels: None,
+            },
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        });
+        let result = expand_entry(entry).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], ScenarioEntry::Logs(_)));
     }
 }

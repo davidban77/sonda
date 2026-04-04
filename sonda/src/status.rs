@@ -379,6 +379,7 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             column,
             has_header,
             repeat,
+            columns,
         } => {
             let col = column.unwrap_or(0);
             let hdr = if has_header.unwrap_or(true) {
@@ -391,7 +392,15 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             } else {
                 "clamp"
             };
-            format!("csv_replay (file: {file}, column: {col}, {hdr}, {rpt})")
+            if let Some(ref cols) = columns {
+                let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+                format!(
+                    "csv_replay (file: {file}, columns: [{}], {hdr}, {rpt})",
+                    names.join(", ")
+                )
+            } else {
+                format!("csv_replay (file: {file}, column: {col}, {hdr}, {rpt})")
+            }
         }
         GeneratorConfig::Step {
             start,
@@ -877,6 +886,7 @@ mod tests {
             column: Some(2),
             has_header: Some(true),
             repeat: Some(false),
+            columns: None,
         };
         assert_eq!(
             generator_display(&config),
@@ -891,6 +901,7 @@ mod tests {
             column: None,
             has_header: None,
             repeat: None,
+            columns: None,
         };
         assert_eq!(
             generator_display(&config),

@@ -18,7 +18,7 @@ src/
 │   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels).
 │                          Severity has explicit Ord/PartialOrd (rank-based, not derived from variant order).
 ├── generator/
-│   ├── mod.rs          ← ValueGenerator trait + factory
+│   ├── mod.rs          ← ValueGenerator trait + factory, CsvColumnSpec (multi-column csv_replay)
 │   ├── constant.rs
 │   ├── uniform.rs
 │   ├── sine.rs
@@ -75,7 +75,9 @@ src/
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,
     │                      CardinalitySpikeConfig, SpikeStrategy,
-    │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList)
+    │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
+    │                      expand_scenario (csv_replay multi-column fan-out),
+    │                      expand_entry (entry-level wrapper for expand_scenario)
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
                            validate_cardinality_spike_config, validate_dynamic_label_config
 ```

@@ -44,6 +44,31 @@ pub trait ValueGenerator: Send + Sync {
     fn value(&self, tick: u64) -> f64;
 }
 
+/// Specification for a single CSV column in a multi-column `csv_replay`
+/// configuration.
+///
+/// When the `columns` field is set on a `CsvReplay` generator config, each
+/// `CsvColumnSpec` specifies a column index and the metric name to use when
+/// that column is expanded into its own independent scenario.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// columns:
+///   - index: 1
+///     name: cpu_percent
+///   - index: 2
+///     name: mem_percent
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct CsvColumnSpec {
+    /// Zero-based column index in the CSV file.
+    pub index: usize,
+    /// Metric name for the expanded scenario.
+    pub name: String,
+}
+
 /// Configuration for a value generator, used for YAML deserialization.
 ///
 /// The `type` field selects which generator to instantiate. Additional fields
@@ -125,6 +150,9 @@ pub enum GeneratorConfig {
         /// Path to the CSV file containing numeric values.
         file: String,
         /// Zero-based column index to read. Defaults to 0 when absent.
+        ///
+        /// Mutually exclusive with `columns`. If both are set, validation
+        /// returns an error.
         column: Option<usize>,
         /// Whether to skip the first data row as a header. Defaults to true
         /// when absent.
@@ -132,6 +160,14 @@ pub enum GeneratorConfig {
         /// When true (default), the values cycle. When false, the last value
         /// is returned for all ticks beyond the file length.
         repeat: Option<bool>,
+        /// Optional multi-column specification. When set, the config layer
+        /// expands this single scenario into N independent single-column
+        /// scenarios before launch.
+        ///
+        /// Mutually exclusive with `column`. If both are set, validation
+        /// returns an error. An empty list is also an error.
+        #[cfg_attr(feature = "config", serde(default))]
+        columns: Option<Vec<CsvColumnSpec>>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -210,6 +246,7 @@ pub fn create_generator(
             column,
             has_header,
             repeat,
+            columns: _,
         } => Ok(Box::new(CsvReplayGenerator::new(
             file,
             column.unwrap_or(0),
