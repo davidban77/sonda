@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0](https://github.com/davidban77/sonda/compare/v0.4.0...v0.5.0) (2026-04-04)
+
+
+### Features
+
+* add --value flag for constant generator ([#143](https://github.com/davidban77/sonda/issues/143)) ([9454759](https://github.com/davidban77/sonda/commit/945475944e7d9a0065f7ffd1843d01a07c9d00fa))
+* add jitter option for realistic generator noise ([#134](https://github.com/davidban77/sonda/issues/134)) ([b479912](https://github.com/davidban77/sonda/commit/b479912a50162eb8d89355ce586fcf005649fc5f))
+* add OTLP encoder and gRPC sink for OpenTelemetry ([#136](https://github.com/davidban77/sonda/issues/136)) ([89248df](https://github.com/davidban77/sonda/commit/89248dfbbd43776e2aef58eb328062e75042776b))
+* add spike generator for anomaly simulation ([#133](https://github.com/davidban77/sonda/issues/133)) ([a8fff47](https://github.com/davidban77/sonda/commit/a8fff476be2bd8abece93a7f9cbc364f3ed0545d))
+* add step generator for monotonic counters ([#131](https://github.com/davidban77/sonda/issues/131)) ([ddbd316](https://github.com/davidban77/sonda/commit/ddbd316f206d40ffd910bae3b5530391e32e0a65))
+
+
+### Documentation
+
+* add capacity planning with synthetic load guide ([#142](https://github.com/davidban77/sonda/issues/142)) ([a8ea617](https://github.com/davidban77/sonda/commit/a8ea61751c82b4d801734c3f812f6996cc58e241))
+* add CI/CD alert rule validation guide ([#137](https://github.com/davidban77/sonda/issues/137)) ([95a2e1f](https://github.com/davidban77/sonda/commit/95a2e1ff3ae9429bff5398466bc5b3aae9598aa5))
+* add network automation testing guide ([#96](https://github.com/davidban77/sonda/issues/96)) ([#141](https://github.com/davidban77/sonda/issues/141)) ([88478b6](https://github.com/davidban77/sonda/commit/88478b666574f04022f22aeba3a32dab88560be6))
+* add network device telemetry guide ([#97](https://github.com/davidban77/sonda/issues/97)) ([#140](https://github.com/davidban77/sonda/issues/140)) ([479a5ae](https://github.com/davidban77/sonda/commit/479a5ae013e267930095880bbb6deb8a08138db1))
+* add synthetic monitoring guide ([#99](https://github.com/davidban77/sonda/issues/99)) ([#138](https://github.com/davidban77/sonda/issues/138)) ([3751429](https://github.com/davidban77/sonda/commit/375142932a861dc03773714c3482444cccf33405))
+
+
+### Miscellaneous
+
+* add Kubernetes/k3d smoke testing to smoke agent ([#139](https://github.com/davidban77/sonda/issues/139)) ([4901475](https://github.com/davidban77/sonda/commit/49014750ac602ba09ac0faf08366c431a151ad8f))
+
 ## [0.4.0](https://github.com/davidban77/sonda/compare/v0.3.0...v0.4.0) (2026-04-03)
 
 
