@@ -91,6 +91,15 @@ sink:
   batch_size: 32768
 ```
 
+**CLI equivalent** -- use `--sink http_push` with `--endpoint`, `--content-type`, and
+optionally `--batch-size`:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+  --content-type "text/plain"
+```
+
 ### Pushing to VictoriaMetrics
 
 ```yaml title="VictoriaMetrics via HTTP push"
@@ -141,6 +150,14 @@ sink:
   batch_size: 100
 ```
 
+**CLI equivalent** -- use `--encoder remote_write --sink remote_write --endpoint`:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+```
+
 Compatible endpoints:
 
 | Backend | URL |
@@ -170,6 +187,13 @@ sink:
   type: kafka
   brokers: "127.0.0.1:9092"
   topic: sonda-metrics
+```
+
+**CLI equivalent** -- use `--sink kafka --brokers --topic`:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink kafka --brokers 127.0.0.1:9092 --topic sonda-metrics
 ```
 
 Events are buffered until 64 KiB is accumulated, then published as a single Kafka record to
@@ -205,6 +229,14 @@ sink:
   type: loki
   url: "http://localhost:3100"
   batch_size: 50
+```
+
+**CLI equivalent** -- use `--sink loki --endpoint` and `--label` for stream labels:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 \
+  --label job=sonda --label env=dev
 ```
 
 The sink POSTs to `{url}/loki/api/v1/push`.
@@ -245,6 +277,20 @@ sink:
   endpoint: "http://localhost:4317"
   signal_type: logs
   batch_size: 50
+```
+
+**CLI equivalents:**
+
+```bash
+# Metrics
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
+
+# Logs (--signal-type defaults to "logs" automatically)
+sonda logs --mode template --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317
 ```
 
 Scenario-level `labels` are automatically converted to OTLP `Resource` attributes, so they appear

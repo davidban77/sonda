@@ -156,14 +156,17 @@ For full end-to-end validation, spin up Sonda alongside a backend and verify dat
 The project includes a ready-to-use e2e test suite in `tests/e2e/`. See [E2E Testing](e2e-testing.md)
 for the full suite with Prometheus, VictoriaMetrics, Kafka, and Loki.
 
-For a quick single-scenario check against VictoriaMetrics:
+For a quick single-scenario check against VictoriaMetrics -- no YAML file needed:
 
 ```bash
 # Start the stack
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
 
-# Push data
-sonda metrics --scenario examples/e2e-scenario.yaml
+# Push data (CLI only, no scenario file)
+sonda metrics --name e2e_pipeline_check --rate 1 --duration 10s --value 99 \
+  --label test=pipeline --label env=ci \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+  --content-type "text/plain"
 
 # Wait for ingestion, then verify
 sleep 5
@@ -175,25 +178,10 @@ curl -s "http://localhost:8428/api/v1/query?query=e2e_pipeline_check" \
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-```yaml title="examples/e2e-scenario.yaml"
-name: e2e_pipeline_check
-rate: 1
-duration: 10s
+The same scenario also exists as a YAML file at `examples/e2e-scenario.yaml` if you prefer:
 
-generator:
-  type: constant
-  value: 99.0
-
-labels:
-  test: pipeline
-  env: ci
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+```bash
+sonda metrics --scenario examples/e2e-scenario.yaml
 ```
 
 Single-scenario checks validate one signal type. For full pipeline coverage, test metrics and logs together.

@@ -39,8 +39,19 @@ cpu_usage{host="web-01"} 100 1774997348440
 cpu_usage{host="web-01"} 85.35533905932738 1774997348943
 ```
 
-One command, shaped values, labeled output. Define reusable scenarios in YAML for anything
-beyond quick one-offs -- [Getting Started](getting-started.md#using-a-scenario-file) shows you how.
+One command, shaped values, labeled output. Send that same metric straight to a backend --
+no YAML needed:
+
+```bash
+# Push to Prometheus / VictoriaMetrics via remote write
+sonda metrics --name cpu_usage --rate 10 --duration 30s \
+  --value-mode sine --amplitude 50 --offset 50 --period-secs 60 \
+  --label host=web-01 --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+```
+
+Define reusable scenarios in YAML for anything beyond quick one-offs --
+[Getting Started](getting-started.md#using-a-scenario-file) shows you how.
 
 ## Features at a glance
 

@@ -25,17 +25,23 @@ use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
 /// Validate CLI flag combinations that are invalid regardless of the scenario
 /// file contents.
 ///
-/// Currently checks:
+/// Checks:
 /// - `--value` is only valid with `--value-mode constant` (or the implicit
 ///   constant default). Using it with `sine`, `uniform`, or `sawtooth` is an
 ///   error.
 /// - `--offset` is only valid with `--value-mode sine`. Using it with
 ///   `constant`, `uniform`, or `sawtooth` is an error.
+/// - Sink companion flags (`--endpoint`, `--brokers`, `--topic`, etc.) require
+///   `--sink` to be present.
+/// - `--sink http_push` requires `--endpoint`.
+/// - `--sink remote_write` requires `--endpoint`.
+/// - `--sink loki` requires `--endpoint`.
+/// - `--sink otlp_grpc` requires `--endpoint` and `--signal-type`.
+/// - `--sink kafka` requires `--brokers` and `--topic`.
 ///
 /// # Errors
 ///
-/// Returns an error when `--value` is paired with a non-constant mode, or
-/// when `--offset` is paired with a non-sine mode.
+/// Returns an error when any of the above constraints are violated.
 fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
     if args.value.is_some() {
         let mode = args.value_mode.as_deref().unwrap_or("constant");
@@ -53,7 +59,265 @@ fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
             bail!("--offset is only valid with --value-mode sine");
         }
     }
+
+    validate_sink_flags(
+        &SinkFlags {
+            sink: args.sink.as_deref(),
+            endpoint: args.endpoint.as_deref(),
+            signal_type: args.signal_type.as_deref(),
+            brokers: args.brokers.as_deref(),
+            topic: args.topic.as_deref(),
+            content_type: args.content_type.as_deref(),
+            batch_size: args.batch_size,
+        },
+        true, // metrics subcommand requires explicit --signal-type for otlp_grpc
+    )?;
+
     Ok(())
+}
+
+/// Validate CLI flag combinations for the logs subcommand.
+///
+/// Mirrors [`validate_cli_flags`] for metrics but allows `--signal-type` to
+/// default to `"logs"` when `--sink otlp_grpc` is used.
+fn validate_log_cli_flags(args: &LogsArgs) -> Result<()> {
+    validate_sink_flags(
+        &SinkFlags {
+            sink: args.sink.as_deref(),
+            endpoint: args.endpoint.as_deref(),
+            signal_type: args.signal_type.as_deref(),
+            brokers: args.brokers.as_deref(),
+            topic: args.topic.as_deref(),
+            content_type: args.content_type.as_deref(),
+            batch_size: args.batch_size,
+        },
+        false, // logs subcommand defaults signal_type to "logs"
+    )
+}
+
+/// Collected sink-related CLI flag values for validation and construction.
+struct SinkFlags<'a> {
+    sink: Option<&'a str>,
+    endpoint: Option<&'a str>,
+    signal_type: Option<&'a str>,
+    brokers: Option<&'a str>,
+    topic: Option<&'a str>,
+    content_type: Option<&'a str>,
+    batch_size: Option<usize>,
+}
+
+/// Shared validation for sink-related CLI flags.
+///
+/// When `require_signal_type` is true (metrics subcommand), `--sink otlp_grpc`
+/// requires an explicit `--signal-type`. When false (logs subcommand), the
+/// signal type defaults to `"logs"`.
+fn validate_sink_flags(flags: &SinkFlags<'_>, require_signal_type: bool) -> Result<()> {
+    let SinkFlags {
+        sink,
+        endpoint,
+        signal_type,
+        brokers,
+        topic,
+        content_type,
+        batch_size,
+    } = *flags;
+    // Orphaned companion flags without --sink.
+    if sink.is_none() {
+        let orphans: Vec<&str> = [
+            endpoint.map(|_| "--endpoint"),
+            signal_type.map(|_| "--signal-type"),
+            brokers.map(|_| "--brokers"),
+            topic.map(|_| "--topic"),
+            content_type.map(|_| "--content-type"),
+            batch_size.map(|_| "--batch-size"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !orphans.is_empty() {
+            bail!("{} requires --sink to be specified", orphans.join(", "));
+        }
+        return Ok(());
+    }
+
+    let sink_type = sink.expect("checked above");
+    match sink_type {
+        "http_push" => {
+            if endpoint.is_none() {
+                bail!("--sink http_push requires --endpoint");
+            }
+        }
+        "remote_write" => {
+            if endpoint.is_none() {
+                bail!("--sink remote_write requires --endpoint");
+            }
+        }
+        "loki" => {
+            if endpoint.is_none() {
+                bail!("--sink loki requires --endpoint");
+            }
+        }
+        "otlp_grpc" => {
+            if endpoint.is_none() {
+                bail!("--sink otlp_grpc requires --endpoint");
+            }
+            if require_signal_type && signal_type.is_none() {
+                bail!("--sink otlp_grpc requires --signal-type (metrics or logs)");
+            }
+        }
+        "kafka" => {
+            if brokers.is_none() {
+                bail!("--sink kafka requires --brokers");
+            }
+            if topic.is_none() {
+                bail!("--sink kafka requires --topic");
+            }
+        }
+        other => bail!(
+            "unknown sink type {:?}: expected one of http_push, remote_write, loki, otlp_grpc, kafka",
+            other
+        ),
+    }
+
+    Ok(())
+}
+
+/// Build a [`SinkConfig`] from the `--sink` flag and its companion flags.
+///
+/// Each sink variant is feature-gated. When a required feature is not compiled
+/// in, a clear error message is returned indicating which feature to enable.
+///
+/// # CLI-only limitations
+///
+/// For the `http_push` sink, `headers` is always `None` when constructed from
+/// CLI flags because there is no `--header` CLI flag. Users who need custom
+/// HTTP headers must use a YAML scenario file where the `headers` map can be
+/// specified directly.
+///
+/// # Arguments
+///
+/// * `sink_type` - The `--sink` flag value (e.g. `"http_push"`).
+/// * `endpoint` - The `--endpoint` URL.
+/// * `signal_type` - The `--signal-type` for OTLP (e.g. `"metrics"` or `"logs"`).
+/// * `batch_size` - Optional `--batch-size`.
+/// * `content_type` - Optional `--content-type` for `http_push`.
+/// * `brokers` - Kafka `--brokers`.
+/// * `topic` - Kafka `--topic`.
+fn build_sink_config(
+    sink_type: &str,
+    endpoint: Option<&str>,
+    signal_type: Option<&str>,
+    batch_size: Option<usize>,
+    content_type: Option<&str>,
+    brokers: Option<&str>,
+    topic: Option<&str>,
+) -> Result<SinkConfig> {
+    match sink_type {
+        "http_push" => {
+            #[cfg(feature = "http")]
+            {
+                Ok(SinkConfig::HttpPush {
+                    url: endpoint
+                        .expect("validated: --endpoint required for http_push")
+                        .to_string(),
+                    content_type: content_type.map(|s| s.to_string()),
+                    batch_size,
+                    // No --header CLI flag exists; users needing custom headers
+                    // must use a YAML scenario file.
+                    headers: None,
+                })
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                // Suppress unused-variable warnings when feature is disabled.
+                let _ = (endpoint, content_type, batch_size);
+                bail!("--sink http_push requires the http feature: cargo build -F http")
+            }
+        }
+        "remote_write" => {
+            #[cfg(feature = "remote-write")]
+            {
+                Ok(SinkConfig::RemoteWrite {
+                    url: endpoint
+                        .expect("validated: --endpoint required for remote_write")
+                        .to_string(),
+                    batch_size,
+                })
+            }
+            #[cfg(not(feature = "remote-write"))]
+            {
+                let _ = (endpoint, batch_size);
+                bail!(
+                    "--sink remote_write requires the remote-write feature: \
+                     cargo build -F remote-write"
+                )
+            }
+        }
+        "loki" => {
+            #[cfg(feature = "http")]
+            {
+                Ok(SinkConfig::Loki {
+                    url: endpoint
+                        .expect("validated: --endpoint required for loki")
+                        .to_string(),
+                    batch_size,
+                })
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                let _ = (endpoint, batch_size);
+                bail!("--sink loki requires the http feature: cargo build -F http")
+            }
+        }
+        "otlp_grpc" => {
+            #[cfg(feature = "otlp")]
+            {
+                let sig = signal_type.unwrap_or("logs");
+                let parsed_signal = match sig {
+                    "metrics" => sonda_core::sink::otlp_grpc::OtlpSignalType::Metrics,
+                    "logs" => sonda_core::sink::otlp_grpc::OtlpSignalType::Logs,
+                    other => bail!(
+                        "unknown signal type {:?}: expected one of metrics, logs",
+                        other
+                    ),
+                };
+                Ok(SinkConfig::OtlpGrpc {
+                    endpoint: endpoint
+                        .expect("validated: --endpoint required for otlp_grpc")
+                        .to_string(),
+                    signal_type: parsed_signal,
+                    batch_size,
+                })
+            }
+            #[cfg(not(feature = "otlp"))]
+            {
+                let _ = (endpoint, signal_type, batch_size);
+                bail!("--sink otlp_grpc requires the otlp feature: cargo build -F otlp")
+            }
+        }
+        "kafka" => {
+            #[cfg(feature = "kafka")]
+            {
+                Ok(SinkConfig::Kafka {
+                    brokers: brokers
+                        .expect("validated: --brokers required for kafka")
+                        .to_string(),
+                    topic: topic
+                        .expect("validated: --topic required for kafka")
+                        .to_string(),
+                })
+            }
+            #[cfg(not(feature = "kafka"))]
+            {
+                let _ = (brokers, topic);
+                bail!("--sink kafka requires the kafka feature: cargo build -F kafka")
+            }
+        }
+        other => bail!(
+            "unknown sink type {:?}: expected one of http_push, remote_write, loki, otlp_grpc, kafka",
+            other
+        ),
+    }
 }
 
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
@@ -121,6 +385,20 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
         config.sink = SinkConfig::File {
             path: path.display().to_string(),
         };
+    }
+
+    // --sink overrides the sink using the build_sink_config factory.
+    // (clap enforces --sink and --output are mutually exclusive.)
+    if let Some(ref sink_type) = args.sink {
+        config.sink = build_sink_config(
+            sink_type,
+            args.endpoint.as_deref(),
+            args.signal_type.as_deref(),
+            args.batch_size,
+            args.content_type.as_deref(),
+            args.brokers.as_deref(),
+            args.topic.as_deref(),
+        )?;
     }
 
     Ok(config)
@@ -348,6 +626,10 @@ fn build_labels(args: &MetricsArgs) -> Option<HashMap<String, String>> {
 ///
 /// When `precision` is `Some`, the value is propagated into text-based encoder
 /// variants so the encoder can limit decimal places in formatted metric values.
+///
+/// `remote_write` and `otlp` encoders are available when the corresponding
+/// Cargo features are compiled in. When the feature is absent, a clear error
+/// message is returned indicating which feature to enable.
 fn parse_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderConfig> {
     match encoder {
         "prometheus_text" => Ok(EncoderConfig::PrometheusText { precision }),
@@ -356,9 +638,36 @@ fn parse_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderC
             precision,
         }),
         "json_lines" => Ok(EncoderConfig::JsonLines { precision }),
+        "remote_write" => {
+            #[cfg(feature = "remote-write")]
+            {
+                let _ = precision; // remote_write has no precision field
+                Ok(EncoderConfig::RemoteWrite)
+            }
+            #[cfg(not(feature = "remote-write"))]
+            {
+                let _ = precision;
+                bail!(
+                    "--encoder remote_write requires the remote-write feature: \
+                     cargo build -F remote-write"
+                )
+            }
+        }
+        "otlp" => {
+            #[cfg(feature = "otlp")]
+            {
+                let _ = precision; // otlp has no precision field
+                Ok(EncoderConfig::Otlp)
+            }
+            #[cfg(not(feature = "otlp"))]
+            {
+                let _ = precision;
+                bail!("--encoder otlp requires the otlp feature: cargo build -F otlp")
+            }
+        }
         other => bail!(
-            "unknown encoder \"{}\": expected one of prometheus_text, influx_lp, json_lines \
-             (otlp, remote_write, syslog are available via YAML scenario files)",
+            "unknown encoder \"{}\": expected one of prometheus_text, influx_lp, json_lines, \
+             remote_write, otlp (syslog is available via YAML scenario files)",
             other
         ),
     }
@@ -366,7 +675,7 @@ fn parse_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderC
 
 /// Parse the `--encoder` flag value into a log-appropriate [`EncoderConfig`].
 ///
-/// Log encoders are a subset: `json_lines` and `syslog`.
+/// Log encoders are a subset: `json_lines`, `syslog`, and `otlp` (feature-gated).
 /// When `precision` is `Some`, the value is propagated into text-based encoder
 /// variants so the encoder can limit decimal places in formatted values.
 fn parse_log_encoder_config(encoder: &str, precision: Option<u8>) -> Result<EncoderConfig> {
@@ -376,8 +685,20 @@ fn parse_log_encoder_config(encoder: &str, precision: Option<u8>) -> Result<Enco
             hostname: None,
             app_name: None,
         }),
+        "otlp" => {
+            #[cfg(feature = "otlp")]
+            {
+                let _ = precision;
+                Ok(EncoderConfig::Otlp)
+            }
+            #[cfg(not(feature = "otlp"))]
+            {
+                let _ = precision;
+                bail!("--encoder otlp requires the otlp feature: cargo build -F otlp")
+            }
+        }
         other => bail!(
-            "unknown log encoder {:?}: expected one of json_lines, syslog",
+            "unknown log encoder {:?}: expected one of json_lines, syslog, otlp",
             other
         ),
     }
@@ -402,6 +723,8 @@ fn parse_log_encoder_config(encoder: &str, precision: Option<u8>) -> Result<Enco
 /// - `--burst-every`, `--burst-for`, and `--burst-multiplier` are not all
 ///   provided together.
 pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
+    validate_log_cli_flags(args)?;
+
     let mut config = if let Some(ref path) = args.scenario {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read scenario file {}", path.display()))?;
@@ -446,6 +769,26 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
         config.sink = SinkConfig::File {
             path: path.display().to_string(),
         };
+    }
+
+    // --sink overrides the sink using the build_sink_config factory.
+    // For the logs subcommand, --signal-type defaults to "logs" when --sink
+    // otlp_grpc is used so the user doesn't need to specify it explicitly.
+    if let Some(ref sink_type) = args.sink {
+        let signal = args.signal_type.as_deref().or(if sink_type == "otlp_grpc" {
+            Some("logs")
+        } else {
+            None
+        });
+        config.sink = build_sink_config(
+            sink_type,
+            args.endpoint.as_deref(),
+            signal,
+            args.batch_size,
+            args.content_type.as_deref(),
+            args.brokers.as_deref(),
+            args.topic.as_deref(),
+        )?;
     }
 
     Ok(config)
@@ -765,6 +1108,13 @@ mod tests {
             encoder: None,
             precision: None,
             output: None,
+            sink: None,
+            endpoint: None,
+            signal_type: None,
+            batch_size: None,
+            content_type: None,
+            brokers: None,
+            topic: None,
         }
     }
 
@@ -1449,6 +1799,13 @@ mod tests {
             jitter: None,
             jitter_seed: None,
             output: None,
+            sink: None,
+            endpoint: None,
+            signal_type: None,
+            batch_size: None,
+            content_type: None,
+            brokers: None,
+            topic: None,
             message: None,
             severity_weights: None,
             seed: None,
@@ -2945,6 +3302,673 @@ mod tests {
         assert!(
             msg.contains("--offset") && msg.contains("sine"),
             "error must mention --offset and sine, got: {msg}"
+        );
+    }
+
+    // =========================================================================
+    // --sink and --encoder CLI flags for complex sinks
+    // =========================================================================
+
+    // ---- --sink http_push ---------------------------------------------------
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_http_push_with_endpoint_produces_http_push_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/api/v1/write".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("http_push sink should produce valid config");
+        match &config.sink {
+            SinkConfig::HttpPush { url, .. } => {
+                assert_eq!(url, "http://localhost:9090/api/v1/write");
+            }
+            other => panic!("expected SinkConfig::HttpPush, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_http_push_with_batch_size_sets_batch_size() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090".to_string()),
+            batch_size: Some(200),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("http_push with batch_size should work");
+        match &config.sink {
+            SinkConfig::HttpPush { batch_size, .. } => {
+                assert_eq!(*batch_size, Some(200));
+            }
+            other => panic!("expected SinkConfig::HttpPush, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_http_push_with_content_type_sets_content_type() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090".to_string()),
+            content_type: Some("application/json".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("http_push with content_type should work");
+        match &config.sink {
+            SinkConfig::HttpPush { content_type, .. } => {
+                assert_eq!(content_type.as_deref(), Some("application/json"));
+            }
+            other => panic!("expected SinkConfig::HttpPush, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_http_push_without_endpoint_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("http_push without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint"),
+            "error must mention --endpoint, got: {msg}"
+        );
+    }
+
+    // ---- --sink loki --------------------------------------------------------
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_loki_with_endpoint_produces_loki_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("loki".to_string()),
+            endpoint: Some("http://localhost:3100".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("loki sink should produce valid config");
+        match &config.sink {
+            SinkConfig::Loki { url, .. } => {
+                assert_eq!(url, "http://localhost:3100");
+            }
+            other => panic!("expected SinkConfig::Loki, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_loki_without_endpoint_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("loki".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("loki without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint"),
+            "error must mention --endpoint, got: {msg}"
+        );
+    }
+
+    // ---- --sink remote_write ------------------------------------------------
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn sink_remote_write_with_endpoint_produces_remote_write_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("remote_write".to_string()),
+            endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("remote_write sink should produce valid config");
+        match &config.sink {
+            SinkConfig::RemoteWrite { url, .. } => {
+                assert_eq!(url, "http://localhost:8428/api/v1/write");
+            }
+            other => panic!("expected SinkConfig::RemoteWrite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_remote_write_without_endpoint_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("remote_write".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("remote_write without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint"),
+            "error must mention --endpoint, got: {msg}"
+        );
+    }
+
+    // ---- --sink otlp_grpc ---------------------------------------------------
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn sink_otlp_grpc_with_endpoint_and_signal_type_produces_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("otlp_grpc".to_string()),
+            endpoint: Some("http://localhost:4317".to_string()),
+            signal_type: Some("metrics".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("otlp_grpc sink should produce valid config");
+        match &config.sink {
+            SinkConfig::OtlpGrpc {
+                endpoint,
+                signal_type,
+                ..
+            } => {
+                assert_eq!(endpoint, "http://localhost:4317");
+                assert_eq!(
+                    *signal_type,
+                    sonda_core::sink::otlp_grpc::OtlpSignalType::Metrics
+                );
+            }
+            other => panic!("expected SinkConfig::OtlpGrpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_otlp_grpc_without_endpoint_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("otlp_grpc".to_string()),
+            signal_type: Some("metrics".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("otlp_grpc without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint"),
+            "error must mention --endpoint, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sink_otlp_grpc_metrics_without_signal_type_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("otlp_grpc".to_string()),
+            endpoint: Some("http://localhost:4317".to_string()),
+            ..default_args()
+        };
+        let err =
+            load_config(&args).expect_err("otlp_grpc for metrics without --signal-type must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--signal-type"),
+            "error must mention --signal-type, got: {msg}"
+        );
+    }
+
+    // ---- --sink kafka -------------------------------------------------------
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn sink_kafka_with_brokers_and_topic_produces_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            topic: Some("telemetry".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("kafka sink should produce valid config");
+        match &config.sink {
+            SinkConfig::Kafka { brokers, topic } => {
+                assert_eq!(brokers, "127.0.0.1:9092");
+                assert_eq!(topic, "telemetry");
+            }
+            other => panic!("expected SinkConfig::Kafka, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sink_kafka_without_brokers_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("kafka".to_string()),
+            topic: Some("telemetry".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("kafka without --brokers must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--brokers"),
+            "error must mention --brokers, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sink_kafka_without_topic_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("kafka without --topic must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--topic"),
+            "error must mention --topic, got: {msg}"
+        );
+    }
+
+    // ---- Orphaned companion flags (--endpoint without --sink) ----------------
+
+    #[test]
+    fn endpoint_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            endpoint: Some("http://localhost:9090".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--endpoint without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn brokers_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--brokers without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn topic_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            topic: Some("telemetry".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--topic without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    // ---- Unknown sink type --------------------------------------------------
+
+    #[test]
+    fn unknown_sink_type_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("mystical_sink".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("unknown sink type must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mystical_sink"),
+            "error must mention the unknown type, got: {msg}"
+        );
+    }
+
+    // ---- --encoder remote_write and otlp ------------------------------------
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn encoder_remote_write_produces_remote_write_encoder_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: Some("remote_write".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("remote_write encoder should parse");
+        assert!(
+            matches!(config.encoder, EncoderConfig::RemoteWrite),
+            "encoder should be RemoteWrite, got {:?}",
+            config.encoder
+        );
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn encoder_otlp_produces_otlp_encoder_config() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            encoder: Some("otlp".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("otlp encoder should parse");
+        assert!(
+            matches!(config.encoder, EncoderConfig::Otlp),
+            "encoder should be Otlp, got {:?}",
+            config.encoder
+        );
+    }
+
+    // ---- Logs subcommand: --sink flags --------------------------------------
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn logs_sink_loki_with_endpoint_produces_loki_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("loki".to_string()),
+            endpoint: Some("http://localhost:3100".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs loki sink should work");
+        match &config.sink {
+            SinkConfig::Loki { url, .. } => {
+                assert_eq!(url, "http://localhost:3100");
+            }
+            other => panic!("expected SinkConfig::Loki, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn logs_sink_otlp_grpc_defaults_signal_type_to_logs() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("otlp_grpc".to_string()),
+            endpoint: Some("http://localhost:4317".to_string()),
+            // signal_type intentionally omitted — should default to "logs"
+            ..default_logs_args()
+        };
+        let config =
+            load_log_config(&args).expect("logs otlp_grpc should default signal_type to logs");
+        match &config.sink {
+            SinkConfig::OtlpGrpc { signal_type, .. } => {
+                assert_eq!(
+                    *signal_type,
+                    sonda_core::sink::otlp_grpc::OtlpSignalType::Logs,
+                    "signal_type should default to Logs for the logs subcommand"
+                );
+            }
+            other => panic!("expected SinkConfig::OtlpGrpc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logs_endpoint_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            endpoint: Some("http://localhost:9090".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --endpoint without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn logs_sink_http_push_with_endpoint_works() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs http_push sink should work");
+        match &config.sink {
+            SinkConfig::HttpPush { url, .. } => {
+                assert_eq!(url, "http://localhost:9090/push");
+            }
+            other => panic!("expected SinkConfig::HttpPush, got {other:?}"),
+        }
+    }
+
+    // ---- Logs subcommand: --encoder otlp ------------------------------------
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn logs_encoder_otlp_produces_otlp_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            encoder: Some("otlp".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs otlp encoder should parse");
+        assert!(
+            matches!(config.encoder, EncoderConfig::Otlp),
+            "encoder should be Otlp, got {:?}",
+            config.encoder
+        );
+    }
+
+    // =========================================================================
+    // Orphan sink-companion flags without --sink (metrics path)
+    // =========================================================================
+
+    #[test]
+    fn metrics_content_type_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            content_type: Some("application/json".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--content-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn metrics_signal_type_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            signal_type: Some("metrics".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--signal-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn metrics_batch_size_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            batch_size: Some(100),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--batch-size without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    // =========================================================================
+    // Orphan sink-companion flags without --sink (logs path)
+    // =========================================================================
+
+    #[test]
+    fn logs_content_type_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            content_type: Some("application/json".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --content-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_signal_type_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            signal_type: Some("logs".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --signal-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_batch_size_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            batch_size: Some(100),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --batch-size without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    // =========================================================================
+    // Logs subcommand: --sink remote_write and --sink kafka happy paths
+    // =========================================================================
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn logs_sink_remote_write_with_endpoint_produces_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("remote_write".to_string()),
+            endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs remote_write sink should work");
+        match &config.sink {
+            SinkConfig::RemoteWrite { url, .. } => {
+                assert_eq!(url, "http://localhost:8428/api/v1/write");
+            }
+            other => panic!("expected SinkConfig::RemoteWrite, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn logs_sink_kafka_with_brokers_and_topic_produces_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            topic: Some("test".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs kafka sink should work");
+        match &config.sink {
+            SinkConfig::Kafka { brokers, topic } => {
+                assert_eq!(brokers, "127.0.0.1:9092");
+                assert_eq!(topic, "test");
+            }
+            other => panic!("expected SinkConfig::Kafka, got {other:?}"),
+        }
+    }
+
+    // =========================================================================
+    // Logs subcommand: --sink kafka error paths
+    // =========================================================================
+
+    #[test]
+    fn logs_sink_kafka_without_brokers_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            topic: Some("test".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs kafka without --brokers must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--brokers"),
+            "error must mention --brokers, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_sink_kafka_without_topic_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs kafka without --topic must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--topic"),
+            "error must mention --topic, got: {msg}"
         );
     }
 }
