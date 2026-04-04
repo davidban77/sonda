@@ -140,16 +140,14 @@ pub struct MetricsArgs {
 
     /// Fixed value emitted by the `constant` generator.
     ///
-    /// Only valid when `--value-mode` is `constant` (the default). Conflicts
-    /// with `--offset` — use one or the other.
-    #[arg(long, conflicts_with = "offset")]
+    /// Only valid when `--value-mode` is `constant` (the default).
+    #[arg(long)]
     pub value: Option<f64>,
 
-    /// Sine wave vertical offset (or legacy constant value).
+    /// Sine wave vertical offset.
     ///
-    /// For `sine`: sets the midpoint around which the wave oscillates.
-    /// For backward compatibility, also accepted as the constant value when
-    /// `--value-mode constant` (prefer `--value` instead). Default: `0.0`.
+    /// Sets the midpoint around which the wave oscillates. Used when
+    /// `--value-mode sine`. Default: `0.0`.
     #[arg(long)]
     pub offset: Option<f64>,
 
@@ -653,17 +651,6 @@ mod tests {
             }
             _ => panic!("expected Metrics command"),
         }
-    }
-
-    #[test]
-    fn cli_value_and_offset_conflict() {
-        let result = Cli::try_parse_from([
-            "sonda", "metrics", "--name", "up", "--rate", "1", "--value", "42", "--offset", "10",
-        ]);
-        assert!(
-            result.is_err(),
-            "--value and --offset must conflict at the clap level"
-        );
     }
 
     #[test]

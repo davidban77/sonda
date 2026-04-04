@@ -29,10 +29,13 @@ use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
 /// - `--value` is only valid with `--value-mode constant` (or the implicit
 ///   constant default). Using it with `sine`, `uniform`, or `sawtooth` is an
 ///   error.
+/// - `--offset` is only valid with `--value-mode sine`. Using it with
+///   `constant`, `uniform`, or `sawtooth` is an error.
 ///
 /// # Errors
 ///
-/// Returns an error when `--value` is paired with a non-constant mode.
+/// Returns an error when `--value` is paired with a non-constant mode, or
+/// when `--offset` is paired with a non-sine mode.
 fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
     if args.value.is_some() {
         let mode = args.value_mode.as_deref().unwrap_or("constant");
@@ -42,6 +45,12 @@ fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
                  but --value-mode is {:?}",
                 mode
             );
+        }
+    }
+    if args.offset.is_some() {
+        let mode = args.value_mode.as_deref().unwrap_or("constant");
+        if mode != "sine" {
+            bail!("--offset is only valid with --value-mode sine");
         }
     }
     Ok(())
@@ -63,6 +72,7 @@ fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
 /// - An unrecognized `--encoder` value is given.
 /// - Both `--gap-every` and `--gap-for` are not provided together.
 /// - `--value` is provided with a non-constant mode.
+/// - `--offset` is provided with a non-sine mode.
 pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     validate_cli_flags(args)?;
 
@@ -213,7 +223,7 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
 ///
 /// Defaults when flags are absent:
 /// - mode: `constant`
-/// - constant value: `0.0` (prefer `--value`, fall back to `--offset`)
+/// - constant value: `0.0` (via `--value`)
 /// - sine offset: `0.0`
 /// - amplitude: `1.0`
 /// - period_secs: `60.0`
@@ -223,7 +233,7 @@ fn build_generator_config(args: &MetricsArgs) -> Result<GeneratorConfig> {
     let mode = args.value_mode.as_deref().unwrap_or("constant");
     match mode {
         "constant" => Ok(GeneratorConfig::Constant {
-            value: args.value.or(args.offset).unwrap_or(0.0),
+            value: args.value.unwrap_or(0.0),
         }),
         "uniform" => Ok(GeneratorConfig::Uniform {
             min: args.min.unwrap_or(0.0),
@@ -767,7 +777,7 @@ mod tests {
             rate: Some(10.0),
             duration: Some("5s".to_string()),
             value_mode: Some("constant".to_string()),
-            offset: Some(1.0),
+            value: Some(1.0),
             ..default_args()
         };
 
@@ -2803,7 +2813,7 @@ mod tests {
     }
 
     #[test]
-    fn offset_still_works_for_constant_mode_backward_compat() {
+    fn offset_with_constant_mode_returns_error() {
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),
@@ -2811,16 +2821,12 @@ mod tests {
             value_mode: Some("constant".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("--offset for constant must still work");
-        match config.generator {
-            GeneratorConfig::Constant { value } => {
-                assert_eq!(
-                    value, 3.14,
-                    "--offset must still set constant value for backward compat"
-                );
-            }
-            other => panic!("expected Constant generator, got {other:?}"),
-        }
+        let err = load_config(&args).expect_err("--offset with constant must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
     }
 
     #[test]
@@ -2844,9 +2850,9 @@ mod tests {
     }
 
     #[test]
-    fn offset_backward_compat_without_explicit_value_mode() {
+    fn offset_without_value_mode_returns_error() {
         // When --offset is provided with no --value-mode, the implicit default
-        // is "constant". The offset value should become the constant value.
+        // is "constant". Since --offset is only valid with sine, this must fail.
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),
@@ -2854,16 +2860,12 @@ mod tests {
             // value_mode: None — implicit constant default
             ..default_args()
         };
-        let config = load_config(&args).expect("--offset without --value-mode must succeed");
-        match config.generator {
-            GeneratorConfig::Constant { value } => {
-                assert!(
-                    (value - 3.14).abs() < f64::EPSILON,
-                    "--offset must set constant value when value_mode is implicit, got {value}"
-                );
-            }
-            other => panic!("expected Constant generator, got {other:?}"),
-        }
+        let err = load_config(&args).expect_err("--offset without --value-mode must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
     }
 
     #[test]
@@ -2891,5 +2893,60 @@ mod tests {
                 panic!("expected Constant generator after --value override of sine, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn offset_with_sine_mode_builds_sine_generator() {
+        let args = MetricsArgs {
+            name: Some("cpu".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("sine".to_string()),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--offset with sine must succeed");
+        match config.generator {
+            GeneratorConfig::Sine { offset, .. } => {
+                assert!(
+                    (offset - 10.0).abs() < f64::EPSILON,
+                    "--offset must set sine midpoint, got {offset}"
+                );
+            }
+            other => panic!("expected Sine generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offset_with_uniform_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("uniform".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset with uniform must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn offset_with_sawtooth_mode_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(10.0),
+            value_mode: Some("sawtooth".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--offset with sawtooth must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--offset") && msg.contains("sine"),
+            "error must mention --offset and sine, got: {msg}"
+        );
     }
 }

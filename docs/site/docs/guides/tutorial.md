@@ -44,10 +44,6 @@ The default generator. Set the value with `--value`:
 sonda metrics --name up --rate 1 --duration 3s --value 1
 ```
 
-!!! note "Backward compatibility"
-    `--offset` is still accepted for constant mode, but `--value` is the preferred flag
-    because it reads more clearly.
-
 ### sine
 
 Produces a smooth wave defined by amplitude, offset (midpoint), and period:

@@ -32,9 +32,7 @@ up 1 1774279694001
 up 1 1774279694501
 ```
 
-Use `--value` from the CLI to set the constant value directly. For backward compatibility,
-`--offset` is also accepted in constant mode, but `--value` is preferred as it reads more
-clearly.
+Use `--value` from the CLI to set the constant value directly.
 
 When no generator is configured, the default is `constant` with `value: 0.0`.
 
