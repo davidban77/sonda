@@ -1,0 +1,32 @@
+# Dynamic Labels: Log Scenario
+#
+# Demonstrates dynamic labels with log scenarios. The "pod_name" label
+# rotates through api-0, api-1, api-2 on every emitted log event.
+#
+# Usage:
+#   sonda logs --scenario examples/dynamic-labels-logs.yaml
+
+name: app_logs
+rate: 5
+duration: 10s
+
+generator:
+  type: template
+  templates:
+    - message: "Request handled successfully"
+  severity_weights:
+    info: 1.0
+  seed: 42
+
+dynamic_labels:
+  - key: pod_name
+    prefix: "api-"
+    cardinality: 3
+
+labels:
+  app: sonda
+
+encoder:
+  type: json_lines
+sink:
+  type: stdout

@@ -1,0 +1,29 @@
+# Dynamic Labels: Region Rotation
+#
+# Cycles the "region" label through an explicit list of AWS region names.
+# Useful when you need specific, meaningful label values rather than
+# sequential counters.
+#
+# Usage:
+#   sonda metrics --scenario examples/dynamic-labels-regions.yaml
+
+name: api_latency_seconds
+rate: 5
+duration: 10s
+
+generator:
+  type: uniform
+  min: 0.01
+  max: 2.5
+
+dynamic_labels:
+  - key: region
+    values: [us-east-1, us-west-2, eu-west-1]
+
+labels:
+  service: api-gateway
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
