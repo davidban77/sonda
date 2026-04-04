@@ -68,5 +68,6 @@ nav:
     - Recording Rules: guides/recording-rules.md
     - Network Device Telemetry: guides/network-device-telemetry.md
     - Network Automation Testing: guides/network-automation-testing.md
+    - Capacity Planning: guides/capacity-planning.md
     - Example Scenarios: guides/examples.md
     - E2E Testing: guides/e2e-testing.md

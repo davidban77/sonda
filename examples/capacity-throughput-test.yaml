@@ -1,0 +1,81 @@
+# Capacity Planning: Throughput Test
+#
+# Generates high-volume metrics to stress-test pipeline ingestion rate.
+# Use this to find the maximum sustained throughput your backend can handle.
+#
+# Runs 3 concurrent metric streams at 1000 events/sec each (3000 total),
+# pushing to VictoriaMetrics via HTTP. Adjust rates up or down to find
+# your saturation point.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda run --scenario examples/capacity-throughput-test.yaml
+
+scenarios:
+  - signal_type: metrics
+    name: throughput_http_requests
+    rate: 1000
+    duration: 60s
+    generator:
+      type: sine
+      amplitude: 200.0
+      period_secs: 30
+      offset: 500.0
+    jitter: 10.0
+    jitter_seed: 1
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+
+  - signal_type: metrics
+    name: throughput_cpu_usage
+    rate: 1000
+    duration: 60s
+    generator:
+      type: sine
+      amplitude: 30.0
+      period_secs: 60
+      offset: 50.0
+    jitter: 2.0
+    jitter_seed: 2
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+
+  - signal_type: metrics
+    name: throughput_memory_bytes
+    rate: 1000
+    duration: 60s
+    generator:
+      type: sine
+      amplitude: 500000000.0
+      period_secs: 120
+      offset: 2000000000.0
+    jitter: 10000000.0
+    jitter_seed: 3
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
