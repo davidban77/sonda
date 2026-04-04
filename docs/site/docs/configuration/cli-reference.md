@@ -279,9 +279,21 @@ sonda metrics [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--label <KEY=VALUE>` | string | none | Static label (repeatable). |
-| `--encoder <FORMAT>` | string | `prometheus_text` | Output format: `prometheus_text`, `influx_lp`, `json_lines`. |
+| `--encoder <FORMAT>` | string | `prometheus_text` | Output format: `prometheus_text`, `influx_lp`, `json_lines`, `remote_write`, `otlp`. The last two require the `remote-write` and `otlp` Cargo features. |
 | `--precision <INT>` | integer | full f64 | Decimal places for metric values (0--17). See [Encoders - Value precision](encoders.md#value-precision). |
-| `--output <FILE>` | path | stdout | Write to file instead of stdout. |
+| `--output <FILE>` | path | stdout | Write to file instead of stdout. Mutually exclusive with `--sink`. |
+
+### Sink
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--sink <TYPE>` | string | none | Sink type: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`. Mutually exclusive with `--output`. |
+| `--endpoint <URL>` | string | none | URL for `http_push`, `remote_write`, `loki`, and `otlp_grpc` sinks. Required for those types. |
+| `--signal-type <TYPE>` | string | none | OTLP signal type: `metrics` or `logs`. Required for `--sink otlp_grpc` in the metrics subcommand. |
+| `--batch-size <N>` | integer | varies | Batch size for batching sinks. Meaning varies by sink (bytes for `http_push`, entries for others). |
+| `--content-type <TYPE>` | string | `application/octet-stream` | Content-Type header for `http_push`. |
+| `--brokers <STRING>` | string | none | Comma-separated Kafka broker addresses. Required for `--sink kafka`. |
+| `--topic <STRING>` | string | none | Kafka topic name. Required for `--sink kafka`. |
 
 ### Examples
 
@@ -326,6 +338,29 @@ Scenario file with overrides:
 sonda metrics --scenario examples/basic-metrics.yaml --duration 5s --rate 2
 ```
 
+Send metrics to an HTTP endpoint:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink http_push --endpoint http://localhost:9090/api/v1/write
+```
+
+Send metrics via Prometheus remote write:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+```
+
+Send metrics to an OTLP collector:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
+```
+
 ## sonda logs
 
 Generate synthetic log events and write them to the configured sink.
@@ -362,9 +397,17 @@ sonda logs [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--label <KEY=VALUE>` | string | none | Static label (repeatable). |
-| `--encoder <FORMAT>` | string | `json_lines` | Output format: `json_lines`, `syslog`. |
+| `--encoder <FORMAT>` | string | `json_lines` | Output format: `json_lines`, `syslog`, `otlp`. The last one requires the `otlp` Cargo feature. |
 | `--precision <INT>` | integer | full f64 | Decimal places for numeric values (0--17). Only applies to `json_lines`. |
-| `--output <FILE>` | path | stdout | Write to file instead of stdout. |
+| `--output <FILE>` | path | stdout | Write to file instead of stdout. Mutually exclusive with `--sink`. |
+
+### Sink
+
+The same sink flags from `sonda metrics` are available for logs:
+`--sink`, `--endpoint`, `--signal-type`, `--batch-size`, `--content-type`, `--brokers`, `--topic`.
+
+When `--sink otlp_grpc` is used with the logs subcommand, `--signal-type` defaults to `logs`
+automatically, so you typically do not need to specify it.
 
 ### Gaps and bursts
 
@@ -408,6 +451,22 @@ Scenario file:
 
 ```bash
 sonda logs --scenario examples/log-template.yaml --duration 5s
+```
+
+Send logs to Loki:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 \
+  --label app=myservice --label env=staging
+```
+
+Send logs to an OTLP collector:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317
 ```
 
 ## sonda run

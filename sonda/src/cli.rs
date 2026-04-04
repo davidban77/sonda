@@ -277,8 +277,54 @@ pub struct MetricsArgs {
     /// Shorthand for `sink: file` in a YAML scenario. Parent directories are
     /// created automatically if they do not exist. Takes precedence over any
     /// sink configured in the scenario file.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "sink")]
     pub output: Option<PathBuf>,
+
+    /// Sink type for delivering encoded events.
+    ///
+    /// Accepted values: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`.
+    /// Mutually exclusive with `--output`. For OTLP, Kafka, and remote write sinks,
+    /// the corresponding Cargo feature must be compiled in.
+    #[arg(long, conflicts_with = "output")]
+    pub sink: Option<String>,
+
+    /// Endpoint URL for the selected sink.
+    ///
+    /// Required for `--sink http_push`, `--sink remote_write`, `--sink loki`,
+    /// and `--sink otlp_grpc`.
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// OTLP signal type: `metrics` or `logs`.
+    ///
+    /// Required for `--sink otlp_grpc` in the metrics subcommand (where the
+    /// signal type is ambiguous). In the logs subcommand this defaults to `logs`.
+    #[arg(long)]
+    pub signal_type: Option<String>,
+
+    /// Batch size for batching sinks (number of entries or bytes, depending on sink).
+    ///
+    /// Optional for `http_push`, `remote_write`, `loki`, and `otlp_grpc`.
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+
+    /// Content-Type header for the `http_push` sink.
+    ///
+    /// Optional; defaults to `application/octet-stream` when not specified.
+    #[arg(long)]
+    pub content_type: Option<String>,
+
+    /// Comma-separated Kafka broker addresses (e.g. `127.0.0.1:9092`).
+    ///
+    /// Required for `--sink kafka`.
+    #[arg(long)]
+    pub brokers: Option<String>,
+
+    /// Kafka topic name.
+    ///
+    /// Required for `--sink kafka`.
+    #[arg(long)]
+    pub topic: Option<String>,
 }
 
 /// Arguments for the `logs` subcommand.
@@ -415,8 +461,54 @@ pub struct LogsArgs {
     ///
     /// Shorthand for `sink: file` in a YAML scenario. Takes precedence over
     /// any sink configured in the scenario file.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "sink")]
     pub output: Option<PathBuf>,
+
+    /// Sink type for delivering encoded events.
+    ///
+    /// Accepted values: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`.
+    /// Mutually exclusive with `--output`. For OTLP, Kafka, and remote write sinks,
+    /// the corresponding Cargo feature must be compiled in.
+    #[arg(long, conflicts_with = "output")]
+    pub sink: Option<String>,
+
+    /// Endpoint URL for the selected sink.
+    ///
+    /// Required for `--sink http_push`, `--sink remote_write`, `--sink loki`,
+    /// and `--sink otlp_grpc`.
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// OTLP signal type: `metrics` or `logs`.
+    ///
+    /// For the logs subcommand this defaults to `logs` when `--sink otlp_grpc`
+    /// is used, so typically you do not need to specify it.
+    #[arg(long)]
+    pub signal_type: Option<String>,
+
+    /// Batch size for batching sinks (number of entries or bytes, depending on sink).
+    ///
+    /// Optional for `http_push`, `remote_write`, `loki`, and `otlp_grpc`.
+    #[arg(long)]
+    pub batch_size: Option<usize>,
+
+    /// Content-Type header for the `http_push` sink.
+    ///
+    /// Optional; defaults to `application/octet-stream` when not specified.
+    #[arg(long)]
+    pub content_type: Option<String>,
+
+    /// Comma-separated Kafka broker addresses (e.g. `127.0.0.1:9092`).
+    ///
+    /// Required for `--sink kafka`.
+    #[arg(long)]
+    pub brokers: Option<String>,
+
+    /// Kafka topic name.
+    ///
+    /// Required for `--sink kafka`.
+    #[arg(long)]
+    pub topic: Option<String>,
 
     /// A single static message template for use with `--mode template`.
     ///
