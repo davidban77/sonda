@@ -1,0 +1,69 @@
+# Capacity Planning: Cardinality Stress Test
+#
+# Tests how your TSDB handles cardinality explosions. Starts with a steady
+# baseline, then injects periodic spikes of unique label values to simulate
+# pod churn, ephemeral containers, or misconfigured service discovery.
+#
+# The first scenario injects 500 unique pod_name values every 60 seconds
+# (for a 20-second window). The second injects 200 unique endpoint values
+# on a different cadence. Together they stress both the index and the
+# ingestion path.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda run --scenario examples/capacity-cardinality-stress.yaml
+
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    rate: 50
+    duration: 180s
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    cardinality_spikes:
+      - label: pod_name
+        every: 60s
+        for: 20s
+        cardinality: 500
+        strategy: counter
+        prefix: "pod-"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+
+  - signal_type: metrics
+    name: http_request_duration_seconds
+    rate: 50
+    duration: 180s
+    generator:
+      type: sine
+      amplitude: 0.3
+      period_secs: 30
+      offset: 0.5
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    cardinality_spikes:
+      - label: endpoint
+        every: 45s
+        for: 15s
+        cardinality: 200
+        strategy: counter
+        prefix: "/api/v1/resource/"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"

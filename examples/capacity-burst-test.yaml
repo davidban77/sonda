@@ -1,0 +1,65 @@
+# Capacity Planning: Burst and Traffic Spike Test
+#
+# Simulates traffic spikes to test whether your pipeline handles sudden
+# load increases without dropping data. The base rate of 500 events/sec
+# jumps to 5000 events/sec during burst windows (10x multiplier).
+#
+# Use this to validate buffer sizing, queue depth, and backpressure
+# handling in your ingest pipeline.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda run --scenario examples/capacity-burst-test.yaml
+
+scenarios:
+  - signal_type: metrics
+    name: burst_http_requests
+    rate: 500
+    duration: 120s
+    generator:
+      type: sine
+      amplitude: 100.0
+      period_secs: 30
+      offset: 300.0
+    jitter: 5.0
+    jitter_seed: 10
+    labels:
+      job: capacity_test
+      service: api-gateway
+      env: load-test
+    bursts:
+      every: 30s
+      for: 5s
+      multiplier: 10.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
+
+  - signal_type: metrics
+    name: burst_queue_depth
+    rate: 100
+    duration: 120s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 30
+      offset: 100.0
+    labels:
+      job: capacity_test
+      service: message-broker
+      env: load-test
+    bursts:
+      every: 30s
+      for: 5s
+      multiplier: 10.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: http_push
+      url: "http://localhost:8428/api/v1/import/prometheus"
+      content_type: "text/plain"
