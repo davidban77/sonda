@@ -9,7 +9,8 @@ by validating alert rules against real metric data in your CI pipeline.
 
 ## How it works
 
-The approach is straightforward: spin up a VictoriaMetrics service container in GitHub Actions,
+The approach is straightforward: spin up VictoriaMetrics as a service container in GitHub Actions,
+start vmalert via `docker run` (so you can mount your alert rules file from the workspace),
 push synthetic metrics that match each alert rule's conditions, wait for the evaluation interval,
 then query the API to verify the alert fired. If it didn't, the CI job fails and the PR is blocked.
 
@@ -71,33 +72,33 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      vmalert:
-        image: victoriametrics/vmalert:v1.108.1
-        ports:
-          - 8880:8880
-        options: >-
-          --health-cmd "wget -q -O /dev/null http://127.0.0.1:8880/health"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Sonda
         run: curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
 
-      - name: Copy alert rules into vmalert
+      - name: Start vmalert
         run: |
-          docker cp examples/alertmanager/alert-rules.yml \
-            $(docker ps -qf "ancestor=victoriametrics/vmalert:v1.108.1"):/rules/alert-rules.yml
-
-      - name: Configure and restart vmalert
-        run: |
-          VMALERT_ID=$(docker ps -qf "ancestor=victoriametrics/vmalert:v1.108.1")
-          docker stop "$VMALERT_ID"
-          docker start "$VMALERT_ID"
-          sleep 5
+          docker run -d --name vmalert \
+            --network ${{ job.container.network }} \
+            -v ${{ github.workspace }}/examples/alertmanager/alert-rules.yml:/rules/alert-rules.yml:ro \
+            -p 8880:8880 \
+            victoriametrics/vmalert:v1.108.1 \
+            --datasource.url=http://victoriametrics:8428 \
+            --remoteWrite.url=http://victoriametrics:8428 \
+            --rule=/rules/alert-rules.yml \
+            --httpListenAddr=:8880 \
+            --evaluationInterval=5s
+          # Wait for vmalert to become healthy
+          for i in $(seq 1 15); do
+            if wget -q -O /dev/null http://localhost:8880/health 2>/dev/null; then
+              echo "vmalert is healthy"
+              break
+            fi
+            echo "Waiting for vmalert... ($i/15)"
+            sleep 2
+          done
 
       - name: Push metrics above critical threshold
         run: |
@@ -133,13 +134,19 @@ jobs:
           [ "$(echo "$VALUE > 90" | bc -l)" = "1" ] || {
             echo "FAIL: expected value > 90, got $VALUE"; exit 1;
           }
+
+      - name: Stop vmalert
+        if: always()
+        run: docker rm -f vmalert 2>/dev/null || true
 ```
 
-!!! warning "Service container networking"
-    GitHub Actions service containers run in the same Docker network as the runner. They are
-    accessible at `localhost` on their mapped ports. The `vmalert` container needs to reach
-    `victoriametrics` -- in service containers, use the service name as the hostname in
-    the vmalert command flags.
+!!! warning "Why vmalert is not a service container"
+    GitHub Actions service containers don't support volume mounts from the workspace.
+    Since vmalert needs the alert rules file at startup, it runs as a `docker run` step
+    after checkout instead. The `--network ${{ job.container.network }}` flag connects it
+    to the same Docker network as the service containers, so it can reach `victoriametrics`
+    by hostname. VictoriaMetrics stays as a service container because it doesn't need any
+    workspace files.
 
 ---
 
@@ -161,27 +168,35 @@ on:
 Adjust the `paths` filter to match where your alert rules live. If you have rules in multiple
 files, use a glob: `"alerts/**/*.yml"`.
 
-### Service containers
+### Service containers and vmalert
 
-VictoriaMetrics and vmalert run as GitHub Actions
-[service containers](https://docs.github.com/en/actions/using-containerized-services/about-service-containers).
-They start automatically before the first step and stop when the job finishes -- no manual
-Docker Compose setup needed.
+VictoriaMetrics runs as a GitHub Actions
+[service container](https://docs.github.com/en/actions/using-containerized-services/about-service-containers).
+It starts automatically before the first step and stops when the job finishes -- no manual
+Docker setup needed. The health check ensures VictoriaMetrics is ready before steps run.
+
+vmalert runs as a separate `docker run` step instead of a service container. This is necessary
+because vmalert needs the alert rules file from your repository, and GitHub Actions service
+containers don't support volume mounts from the workspace.
 
 ```yaml
-services:
-  victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.108.1
-    ports:
-      - 8428:8428
-    options: >-
-      --health-cmd "wget -q -O /dev/null http://127.0.0.1:8428/health"
-      --health-interval 5s
-      --health-timeout 5s
-      --health-retries 10
+- name: Start vmalert
+  run: |
+    docker run -d --name vmalert \
+      --network ${{ job.container.network }} \
+      -v ${{ github.workspace }}/examples/alertmanager/alert-rules.yml:/rules/alert-rules.yml:ro \
+      -p 8880:8880 \
+      victoriametrics/vmalert:v1.108.1 \
+      --datasource.url=http://victoriametrics:8428 \
+      --remoteWrite.url=http://victoriametrics:8428 \
+      --rule=/rules/alert-rules.yml \
+      --httpListenAddr=:8880 \
+      --evaluationInterval=5s
 ```
 
-The health check ensures the service is ready before steps run.
+The `--network` flag connects vmalert to the same Docker network as the service containers,
+so it can reach `victoriametrics` by hostname. The `-v` flag mounts the alert rules file
+from your checked-out repository.
 
 ### Push metrics that trigger the alert
 
@@ -419,8 +434,9 @@ from the [Alerting Pipeline](alerting-pipeline.md#verify-each-stage) guide.
 | Metric not found in VictoriaMetrics | Metric name mismatch between scenario and rule | Ensure `name:` in scenario matches `expr:` in rule |
 | Alert stuck in `pending` | `sleep` too short for the `for:` duration | Increase wait time to `evaluation_interval + for + margin` |
 | Alert never appears | Label selector in rule doesn't match pushed labels | Check that `labels:` in the scenario include required selectors |
-| `curl` connection refused | Service container not ready | Add or increase health check retries |
-| vmalert returns empty alerts | Rules file not loaded | Verify the rules file is mounted and vmalert was restarted |
+| `curl` connection refused on 8428 | VictoriaMetrics service container not ready | Add or increase health check retries |
+| `curl` connection refused on 8880 | vmalert not running or still starting | Check `docker logs vmalert` and increase the health wait loop |
+| vmalert returns empty alerts | Rules file not loaded | Verify the `-v` mount path in `docker run` matches your rules file location |
 
 ---
 
@@ -430,7 +446,7 @@ from the [Alerting Pipeline](alerting-pipeline.md#verify-each-stage) guide.
 |------|---------|
 | `examples/ci-alert-validation.yaml` | Sonda scenario: constant 95.0 to VictoriaMetrics |
 | `examples/alertmanager/alert-rules.yml` | vmalert rules: HighCpuUsage and ElevatedCpuUsage |
-| `.github/workflows/alert-validation.yml` | GitHub Actions workflow (service containers) |
+| `.github/workflows/alert-validation.yml` | GitHub Actions workflow (VM + vmalert via `docker run`) |
 
 ---
 
