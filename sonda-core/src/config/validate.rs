@@ -5,7 +5,10 @@ use std::time::Duration;
 use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
 use crate::{ConfigError, SondaError};
 
-use super::{BurstConfig, CardinalitySpikeConfig, LogScenarioConfig, ScenarioConfig};
+use super::{
+    BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy,
+    LogScenarioConfig, ScenarioConfig,
+};
 
 /// Parse a human-readable duration string into a [`Duration`].
 ///
@@ -152,6 +155,44 @@ pub fn validate_cardinality_spike_config(spike: &CardinalitySpikeConfig) -> Resu
     Ok(())
 }
 
+/// Validate a [`DynamicLabelConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `key` is a valid Prometheus label key.
+/// - For counter strategy: `cardinality` is greater than zero.
+/// - For values-list strategy: the values list is non-empty.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_dynamic_label_config(dl: &DynamicLabelConfig) -> Result<(), SondaError> {
+    if !is_valid_label_key(&dl.key) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "invalid dynamic_labels key {:?}: must match [a-zA-Z_][a-zA-Z0-9_]*",
+            dl.key
+        ))));
+    }
+
+    match &dl.strategy {
+        DynamicLabelStrategy::Counter { cardinality, .. } => {
+            if *cardinality == 0 {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "dynamic_labels[key={:?}].cardinality must be greater than zero",
+                    dl.key
+                ))));
+            }
+        }
+        DynamicLabelStrategy::ValuesList { values } => {
+            if values.is_empty() {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "dynamic_labels[key={:?}].values must not be empty",
+                    dl.key
+                ))));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate a [`ScenarioConfig`] for semantic correctness.
 ///
 /// Checks:
@@ -200,6 +241,13 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     if let Some(ref spikes) = config.cardinality_spikes {
         for spike in spikes {
             validate_cardinality_spike_config(spike)?;
+        }
+    }
+
+    // Dynamic label consistency: valid key, non-zero cardinality / non-empty values.
+    if let Some(ref dls) = config.dynamic_labels {
+        for dl in dls {
+            validate_dynamic_label_config(dl)?;
         }
     }
 
@@ -297,6 +345,13 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
     if let Some(ref spikes) = config.cardinality_spikes {
         for spike in spikes {
             validate_cardinality_spike_config(spike)?;
+        }
+    }
+
+    // Dynamic label consistency: valid key, non-zero cardinality / non-empty values.
+    if let Some(ref dls) = config.dynamic_labels {
+        for dl in dls {
+            validate_dynamic_label_config(dl)?;
         }
     }
 
@@ -1384,6 +1439,7 @@ generator:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1741,6 +1797,7 @@ generator:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1780,6 +1837,7 @@ generator:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1807,5 +1865,205 @@ generator:
             msg.contains("jitter") && msg.contains("non-negative"),
             "error must mention 'jitter' and 'non-negative', got: {msg}"
         );
+    }
+
+    // ---- validate_dynamic_label_config: happy path ------------------------------
+
+    #[test]
+    fn valid_dynamic_label_counter_returns_ok() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "hostname".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: Some("host-".to_string()),
+                cardinality: 10,
+            },
+        };
+        assert!(validate_dynamic_label_config(&dl).is_ok());
+    }
+
+    #[test]
+    fn valid_dynamic_label_values_list_returns_ok() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "region".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::ValuesList {
+                values: vec!["us-east".to_string(), "eu-west".to_string()],
+            },
+        };
+        assert!(validate_dynamic_label_config(&dl).is_ok());
+    }
+
+    #[test]
+    fn valid_dynamic_label_counter_no_prefix_returns_ok() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "pod".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 5,
+            },
+        };
+        assert!(validate_dynamic_label_config(&dl).is_ok());
+    }
+
+    // ---- validate_dynamic_label_config: error cases -----------------------------
+
+    #[test]
+    fn dynamic_label_invalid_key_returns_error() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "123-bad".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 10,
+            },
+        };
+        let result = validate_dynamic_label_config(&dl);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("123-bad"),
+            "error should mention bad key: {msg}"
+        );
+    }
+
+    #[test]
+    fn dynamic_label_empty_key_returns_error() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: String::new(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 10,
+            },
+        };
+        assert!(validate_dynamic_label_config(&dl).is_err());
+    }
+
+    #[test]
+    fn dynamic_label_counter_zero_cardinality_returns_error() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "host".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 0,
+            },
+        };
+        let result = validate_dynamic_label_config(&dl);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("cardinality"),
+            "error should mention cardinality: {msg}"
+        );
+    }
+
+    #[test]
+    fn dynamic_label_values_list_empty_returns_error() {
+        let dl = crate::config::DynamicLabelConfig {
+            key: "region".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::ValuesList { values: Vec::new() },
+        };
+        let result = validate_dynamic_label_config(&dl);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("values"), "error should mention values: {msg}");
+    }
+
+    // ---- validate_config with dynamic_labels -----------------------------------
+
+    #[test]
+    fn validate_config_with_valid_dynamic_labels_returns_ok() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.dynamic_labels = Some(vec![crate::config::DynamicLabelConfig {
+            key: "hostname".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: Some("host-".to_string()),
+                cardinality: 10,
+            },
+        }]);
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn validate_config_with_invalid_dynamic_label_key_returns_error() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.dynamic_labels = Some(vec![crate::config::DynamicLabelConfig {
+            key: "bad-key".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 5,
+            },
+        }]);
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_log_config_with_valid_dynamic_labels_returns_ok() {
+        let log_config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                name: "test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: Some(vec![crate::config::DynamicLabelConfig {
+                    key: "pod".to_string(),
+                    strategy: crate::config::DynamicLabelStrategy::ValuesList {
+                        values: vec!["a".to_string(), "b".to_string()],
+                    },
+                }]),
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: crate::encoder::EncoderConfig::JsonLines { precision: None },
+        };
+        assert!(validate_log_config(&log_config).is_ok());
+    }
+
+    #[test]
+    fn validate_log_config_with_invalid_dynamic_label_returns_error() {
+        let log_config = crate::config::LogScenarioConfig {
+            base: crate::config::BaseScheduleConfig {
+                name: "test".to_string(),
+                rate: 10.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: Some(vec![crate::config::DynamicLabelConfig {
+                    key: "pod".to_string(),
+                    strategy: crate::config::DynamicLabelStrategy::Counter {
+                        prefix: None,
+                        cardinality: 0,
+                    },
+                }]),
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: crate::generator::LogGeneratorConfig::Template {
+                templates: vec![crate::generator::TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: std::collections::BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
+            },
+            encoder: crate::encoder::EncoderConfig::JsonLines { precision: None },
+        };
+        assert!(validate_log_config(&log_config).is_err());
     }
 }

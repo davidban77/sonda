@@ -32,6 +32,7 @@ src/
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
 │   ├── mod.rs          ← GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
+│   │                      DynamicLabel (always-on rotating label, label_value_for_tick()),
 │   │                      ParsedSchedule (parses BaseScheduleConfig into resolved Duration values)
 │   ├── core_loop.rs    ← pub(crate) shared schedule loop (run_schedule_loop, TickFn, TickContext,
 │   │                      TickResult). Owns all rate control, gap/burst/spike window handling,
@@ -68,14 +69,15 @@ src/
 │                          unary call to OTEL Collector (feature = "otlp")
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
-    │                      gaps, bursts, cardinality_spikes, labels, sink, phase_offset, clock_group,
-    │                      jitter, jitter_seed),
+    │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
+    │                      phase_offset, clock_group, jitter, jitter_seed),
     │                      ScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,
-    │                      CardinalitySpikeConfig, SpikeStrategy
+    │                      CardinalitySpikeConfig, SpikeStrategy,
+    │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList)
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
-                           validate_cardinality_spike_config
+                           validate_cardinality_spike_config, validate_dynamic_label_config
 ```
 
 ## Cargo Features

@@ -42,8 +42,8 @@ pub(crate) struct TickResult {
 
 /// Context passed to the per-tick callback.
 ///
-/// Provides the tick index and the spike window state so the callback can
-/// build the correct labels for this tick.
+/// Provides the tick index, spike window state, and dynamic labels so the
+/// callback can build the correct labels for this tick.
 pub(crate) struct TickContext<'a> {
     /// The monotonically increasing tick counter (0-based).
     pub tick: u64,
@@ -52,6 +52,11 @@ pub(crate) struct TickContext<'a> {
     /// The callback uses these along with `elapsed` to determine which spike
     /// labels to inject.
     pub spike_windows: &'a [super::CardinalitySpikeWindow],
+    /// The resolved dynamic labels from the schedule config.
+    ///
+    /// Dynamic labels are always-on: the callback injects their per-tick value
+    /// into every event regardless of elapsed time.
+    pub dynamic_labels: &'a [super::DynamicLabel],
     /// Elapsed time since the scenario started.
     ///
     /// Used by the callback to evaluate spike window state via [`is_in_spike`].
@@ -189,6 +194,7 @@ pub(crate) fn run_schedule_loop(
         let ctx = TickContext {
             tick,
             spike_windows: &schedule.spike_windows,
+            dynamic_labels: &schedule.dynamic_labels,
             elapsed,
         };
         let result = tick_fn(&ctx)?;
@@ -244,6 +250,7 @@ mod tests {
             gap_window: None,
             burst_window: None,
             spike_windows: Vec::new(),
+            dynamic_labels: Vec::new(),
         }
     }
 
@@ -338,6 +345,7 @@ mod tests {
             }),
             burst_window: None,
             spike_windows: Vec::new(),
+            dynamic_labels: Vec::new(),
         };
 
         let mut event_count: u64 = 0;
@@ -372,6 +380,7 @@ mod tests {
                 multiplier: 5.0,
             }),
             spike_windows: Vec::new(),
+            dynamic_labels: Vec::new(),
         };
 
         let mut event_count: u64 = 0;
@@ -485,6 +494,7 @@ mod tests {
                 prefix: "pod-".to_string(),
                 seed: 0,
             }],
+            dynamic_labels: Vec::new(),
         };
 
         let mut saw_spike_windows = false;

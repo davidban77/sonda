@@ -13,7 +13,7 @@ pub mod stats;
 
 use std::time::Duration;
 
-use crate::config::SpikeStrategy;
+use crate::config::{DynamicLabelStrategy, SpikeStrategy};
 use crate::util::splitmix64;
 
 /// Configuration for a gap window (intentional silent period).
@@ -146,9 +146,51 @@ impl CardinalitySpikeWindow {
     }
 }
 
+/// Resolved configuration for a dynamic label — an always-on rotating label.
+///
+/// Built from a [`DynamicLabelConfig`](crate::config::DynamicLabelConfig)
+/// at runner initialization time. Unlike [`CardinalitySpikeWindow`], dynamic
+/// labels are never gated by a time window — they produce a value on every tick.
+#[derive(Debug, Clone)]
+pub struct DynamicLabel {
+    /// The label key to inject on every tick.
+    pub key: String,
+    /// Prefix for counter-strategy values (e.g. `"host-"`).
+    /// Empty string when using the values-list strategy.
+    pub prefix: String,
+    /// Number of distinct values in the cycle.
+    ///
+    /// For counter strategy this is the configured `cardinality`.
+    /// For values-list strategy this is `values.len()`.
+    pub cardinality: u64,
+    /// Explicit values list (empty for counter strategy).
+    pub values: Vec<String>,
+}
+
+impl DynamicLabel {
+    /// Generate the label value for the given tick.
+    ///
+    /// For the counter strategy, returns `"{prefix}{tick % cardinality}"`.
+    /// For the values-list strategy, returns `values[tick % values.len()]`.
+    ///
+    /// This method is pure: it has no side effects and is deterministic for a
+    /// given tick.
+    pub fn label_value_for_tick(&self, tick: u64) -> String {
+        let index = tick % self.cardinality;
+        if self.values.is_empty() {
+            // Counter strategy
+            format!("{}{}", self.prefix, index)
+        } else {
+            // Values-list strategy
+            self.values[index as usize].clone()
+        }
+    }
+}
+
 /// Resolved schedule configuration parsed from a [`BaseScheduleConfig`].
 ///
-/// Holds the parsed `Duration` values for gap, burst, and spike windows.
+/// Holds the parsed `Duration` values for gap, burst, and spike windows,
+/// and resolved dynamic labels.
 /// This is the shared input to the [`core_loop::run_schedule_loop`] function,
 /// eliminating the need for each signal runner to duplicate the parsing logic.
 ///
@@ -163,6 +205,8 @@ pub(crate) struct ParsedSchedule {
     pub burst_window: Option<BurstWindow>,
     /// Resolved cardinality spike windows.
     pub spike_windows: Vec<CardinalitySpikeWindow>,
+    /// Resolved dynamic labels (always-on, every tick).
+    pub dynamic_labels: Vec<DynamicLabel>,
 }
 
 impl ParsedSchedule {
@@ -228,11 +272,38 @@ impl ParsedSchedule {
             .transpose()?
             .unwrap_or_default();
 
+        let dynamic_labels: Vec<DynamicLabel> = config
+            .dynamic_labels
+            .as_ref()
+            .map(|dls| {
+                dls.iter()
+                    .map(|dl| match &dl.strategy {
+                        DynamicLabelStrategy::Counter {
+                            prefix,
+                            cardinality,
+                        } => DynamicLabel {
+                            key: dl.key.clone(),
+                            prefix: prefix.clone().unwrap_or_else(|| format!("{}_", dl.key)),
+                            cardinality: *cardinality,
+                            values: Vec::new(),
+                        },
+                        DynamicLabelStrategy::ValuesList { values } => DynamicLabel {
+                            key: dl.key.clone(),
+                            prefix: String::new(),
+                            cardinality: values.len() as u64,
+                            values: values.clone(),
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Self {
             total_duration,
             gap_window,
             burst_window,
             spike_windows,
+            dynamic_labels,
         })
     }
 }
@@ -901,6 +972,7 @@ mod tests {
             gaps: None,
             bursts: None,
             cardinality_spikes: None,
+            dynamic_labels: None,
             labels: None,
             sink: crate::sink::SinkConfig::Stdout,
             phase_offset: None,
@@ -1030,5 +1102,271 @@ mod tests {
         );
         // Different inputs produce different outputs.
         assert_ne!(super::splitmix64(0), super::splitmix64(1));
+    }
+
+    // ---- DynamicLabel: counter strategy -----------------------------------------
+
+    /// Counter strategy at tick 0 returns prefix + "0".
+    #[test]
+    fn dynamic_label_counter_tick_zero_returns_first_value() {
+        let dl = DynamicLabel {
+            key: "hostname".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 10,
+            values: Vec::new(),
+        };
+        assert_eq!(dl.label_value_for_tick(0), "host-0");
+    }
+
+    /// Counter strategy cycles through cardinality values.
+    #[test]
+    fn dynamic_label_counter_wraps_at_cardinality() {
+        let dl = DynamicLabel {
+            key: "hostname".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 3,
+            values: Vec::new(),
+        };
+        assert_eq!(dl.label_value_for_tick(0), "host-0");
+        assert_eq!(dl.label_value_for_tick(1), "host-1");
+        assert_eq!(dl.label_value_for_tick(2), "host-2");
+        assert_eq!(dl.label_value_for_tick(3), "host-0");
+        assert_eq!(dl.label_value_for_tick(4), "host-1");
+    }
+
+    /// Counter strategy with cardinality=1 always returns the same value.
+    #[test]
+    fn dynamic_label_counter_cardinality_one() {
+        let dl = DynamicLabel {
+            key: "pod".to_string(),
+            prefix: "pod-".to_string(),
+            cardinality: 1,
+            values: Vec::new(),
+        };
+        assert_eq!(dl.label_value_for_tick(0), "pod-0");
+        assert_eq!(dl.label_value_for_tick(1), "pod-0");
+        assert_eq!(dl.label_value_for_tick(999), "pod-0");
+    }
+
+    /// Counter strategy with empty prefix produces bare index.
+    #[test]
+    fn dynamic_label_counter_empty_prefix() {
+        let dl = DynamicLabel {
+            key: "zone".to_string(),
+            prefix: String::new(),
+            cardinality: 5,
+            values: Vec::new(),
+        };
+        assert_eq!(dl.label_value_for_tick(0), "0");
+        assert_eq!(dl.label_value_for_tick(4), "4");
+        assert_eq!(dl.label_value_for_tick(5), "0");
+    }
+
+    /// Counter strategy at large tick values still wraps correctly.
+    #[test]
+    fn dynamic_label_counter_large_tick() {
+        let dl = DynamicLabel {
+            key: "host".to_string(),
+            prefix: "h-".to_string(),
+            cardinality: 10,
+            values: Vec::new(),
+        };
+        assert_eq!(dl.label_value_for_tick(1_000_000), "h-0");
+        assert_eq!(dl.label_value_for_tick(1_000_007), "h-7");
+    }
+
+    // ---- DynamicLabel: values list strategy --------------------------------------
+
+    /// Values-list strategy at tick 0 returns the first value.
+    #[test]
+    fn dynamic_label_values_tick_zero_returns_first_value() {
+        let dl = DynamicLabel {
+            key: "region".to_string(),
+            prefix: String::new(),
+            cardinality: 3,
+            values: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        };
+        assert_eq!(dl.label_value_for_tick(0), "alpha");
+    }
+
+    /// Values-list strategy cycles through the list.
+    #[test]
+    fn dynamic_label_values_wraps_at_list_length() {
+        let dl = DynamicLabel {
+            key: "region".to_string(),
+            prefix: String::new(),
+            cardinality: 3,
+            values: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        };
+        assert_eq!(dl.label_value_for_tick(0), "alpha");
+        assert_eq!(dl.label_value_for_tick(1), "beta");
+        assert_eq!(dl.label_value_for_tick(2), "gamma");
+        assert_eq!(dl.label_value_for_tick(3), "alpha");
+        assert_eq!(dl.label_value_for_tick(4), "beta");
+    }
+
+    /// Values-list with a single element always returns that element.
+    #[test]
+    fn dynamic_label_values_single_element() {
+        let dl = DynamicLabel {
+            key: "env".to_string(),
+            prefix: String::new(),
+            cardinality: 1,
+            values: vec!["prod".to_string()],
+        };
+        assert_eq!(dl.label_value_for_tick(0), "prod");
+        assert_eq!(dl.label_value_for_tick(100), "prod");
+    }
+
+    // ---- DynamicLabel: determinism ----------------------------------------------
+
+    /// Counter strategy is deterministic: same tick always produces same value.
+    #[test]
+    fn dynamic_label_counter_is_deterministic() {
+        let dl = DynamicLabel {
+            key: "host".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 10,
+            values: Vec::new(),
+        };
+        for tick in 0..100 {
+            assert_eq!(dl.label_value_for_tick(tick), dl.label_value_for_tick(tick));
+        }
+    }
+
+    /// Cardinality ceiling: counter strategy never produces more than `cardinality` distinct values.
+    #[test]
+    fn dynamic_label_counter_respects_cardinality_ceiling() {
+        let dl = DynamicLabel {
+            key: "host".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 5,
+            values: Vec::new(),
+        };
+        let mut seen = std::collections::HashSet::new();
+        for tick in 0..1000 {
+            seen.insert(dl.label_value_for_tick(tick));
+        }
+        assert_eq!(
+            seen.len(),
+            5,
+            "counter with cardinality=5 must produce exactly 5 distinct values, got {}",
+            seen.len()
+        );
+    }
+
+    /// Cardinality ceiling: values-list strategy never produces more distinct values than list length.
+    #[test]
+    fn dynamic_label_values_respects_cardinality_ceiling() {
+        let dl = DynamicLabel {
+            key: "env".to_string(),
+            prefix: String::new(),
+            cardinality: 3,
+            values: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        };
+        let mut seen = std::collections::HashSet::new();
+        for tick in 0..1000 {
+            seen.insert(dl.label_value_for_tick(tick));
+        }
+        assert_eq!(
+            seen.len(),
+            3,
+            "values list with 3 elements must produce exactly 3 distinct values, got {}",
+            seen.len()
+        );
+    }
+
+    // ---- DynamicLabel: Clone and Debug contracts ---------------------------------
+
+    #[test]
+    fn dynamic_label_is_cloneable() {
+        let dl = DynamicLabel {
+            key: "host".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 10,
+            values: Vec::new(),
+        };
+        let cloned = dl.clone();
+        assert_eq!(cloned.key, "host");
+        assert_eq!(cloned.cardinality, 10);
+    }
+
+    #[test]
+    fn dynamic_label_is_debuggable() {
+        let dl = DynamicLabel {
+            key: "host".to_string(),
+            prefix: "host-".to_string(),
+            cardinality: 10,
+            values: Vec::new(),
+        };
+        let debug = format!("{dl:?}");
+        assert!(debug.contains("DynamicLabel"));
+    }
+
+    // ---- ParsedSchedule::from_base_config with dynamic_labels -------------------
+
+    /// ParsedSchedule parses dynamic_labels counter strategy from BaseScheduleConfig.
+    #[test]
+    fn parsed_schedule_parses_dynamic_labels_counter() {
+        let mut config = base_config();
+        config.dynamic_labels = Some(vec![crate::config::DynamicLabelConfig {
+            key: "hostname".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: Some("host-".to_string()),
+                cardinality: 10,
+            },
+        }]);
+        let schedule = ParsedSchedule::from_base_config(&config).expect("must parse");
+        assert_eq!(schedule.dynamic_labels.len(), 1);
+        assert_eq!(schedule.dynamic_labels[0].key, "hostname");
+        assert_eq!(schedule.dynamic_labels[0].prefix, "host-");
+        assert_eq!(schedule.dynamic_labels[0].cardinality, 10);
+        assert!(schedule.dynamic_labels[0].values.is_empty());
+    }
+
+    /// ParsedSchedule parses dynamic_labels values list strategy from BaseScheduleConfig.
+    #[test]
+    fn parsed_schedule_parses_dynamic_labels_values_list() {
+        let mut config = base_config();
+        config.dynamic_labels = Some(vec![crate::config::DynamicLabelConfig {
+            key: "region".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::ValuesList {
+                values: vec!["us-east".to_string(), "eu-west".to_string()],
+            },
+        }]);
+        let schedule = ParsedSchedule::from_base_config(&config).expect("must parse");
+        assert_eq!(schedule.dynamic_labels.len(), 1);
+        assert_eq!(schedule.dynamic_labels[0].key, "region");
+        assert_eq!(schedule.dynamic_labels[0].cardinality, 2);
+        assert_eq!(
+            schedule.dynamic_labels[0].values,
+            vec!["us-east", "eu-west"]
+        );
+    }
+
+    /// ParsedSchedule with no dynamic_labels config produces empty vec.
+    #[test]
+    fn parsed_schedule_no_dynamic_labels_produces_empty_vec() {
+        let config = base_config();
+        let schedule = ParsedSchedule::from_base_config(&config).expect("must parse");
+        assert!(schedule.dynamic_labels.is_empty());
+    }
+
+    /// ParsedSchedule: counter strategy defaults prefix to "{key}_" when prefix is None.
+    #[test]
+    fn parsed_schedule_counter_default_prefix() {
+        let mut config = base_config();
+        config.dynamic_labels = Some(vec![crate::config::DynamicLabelConfig {
+            key: "pod".to_string(),
+            strategy: crate::config::DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 5,
+            },
+        }]);
+        let schedule = ParsedSchedule::from_base_config(&config).expect("must parse");
+        assert_eq!(
+            schedule.dynamic_labels[0].prefix, "pod_",
+            "default prefix must be key + underscore"
+        );
     }
 }

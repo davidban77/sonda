@@ -15,7 +15,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Generators** | constant, sine, sawtooth, uniform random, sequence, step, spike, CSV replay |
 | **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write, OTLP |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
-| **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
+| **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics, logs (template and replay modes) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
@@ -101,6 +101,42 @@ sink:
 
 ```bash
 sonda metrics --scenario examples/basic-metrics.yaml
+```
+
+### Simulating a fleet with dynamic labels
+
+Dynamic labels rotate through a fixed set of values on every tick, simulating
+a fleet of N distinct sources. Unlike cardinality spikes, they are always on --
+no time window required.
+
+```yaml
+# Simulate 10 hosts emitting the same metric
+name: cpu_usage
+rate: 100
+duration: 60s
+generator:
+  type: sine
+  amplitude: 50
+  period_secs: 30
+  offset: 50
+dynamic_labels:
+  - key: hostname
+    prefix: "host-"
+    cardinality: 10
+labels:
+  env: production
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+```
+
+You can also cycle through an explicit list of values:
+
+```yaml
+dynamic_labels:
+  - key: region
+    values: [us-east-1, us-west-2, eu-west-1]
 ```
 
 ## CLI global flags

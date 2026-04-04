@@ -15,6 +15,8 @@ pub(crate) mod util;
 pub use config::BaseScheduleConfig;
 pub use config::BurstConfig;
 pub use config::CardinalitySpikeConfig;
+pub use config::DynamicLabelConfig;
+pub use config::DynamicLabelStrategy;
 pub use config::LogScenarioConfig;
 pub use config::MultiScenarioConfig;
 pub use config::ScenarioEntry;
@@ -546,6 +548,7 @@ mod tests {
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,

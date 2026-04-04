@@ -94,6 +94,75 @@ pub struct CardinalitySpikeConfig {
     pub seed: Option<u64>,
 }
 
+/// Strategy for generating dynamic label values.
+///
+/// Determines how a [`DynamicLabelConfig`] produces per-tick values for the
+/// label key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(untagged))]
+pub enum DynamicLabelStrategy {
+    /// Cycle through an explicit list of values.
+    ///
+    /// The label value at each tick is `values[tick % values.len()]`.
+    /// Cardinality is implicit (length of the list).
+    ValuesList {
+        /// The explicit list of label values to cycle through.
+        values: Vec<String>,
+    },
+    /// Sequential counter: `"{prefix}{tick % cardinality}"`.
+    ///
+    /// Produces deterministic, predictable label values that cycle through
+    /// `cardinality` distinct values indefinitely.
+    Counter {
+        /// Prefix prepended to the counter index (e.g. `"host-"` produces
+        /// `"host-0"`, `"host-1"`, ...).
+        #[cfg_attr(feature = "config", serde(default))]
+        prefix: Option<String>,
+        /// Number of unique label values in the cycle. Must be greater than zero.
+        cardinality: u64,
+    },
+}
+
+/// Configuration for a dynamic label — an always-on rotating label value
+/// attached to every emitted event.
+///
+/// Unlike [`CardinalitySpikeConfig`], dynamic labels are not time-windowed:
+/// they appear in every event for the lifetime of the scenario. This enables
+/// simulating a stable fleet of N distinct sources (e.g., 10 hostnames, 5 pod
+/// names) without a spike/window concept.
+///
+/// # Example YAML (counter strategy)
+///
+/// ```yaml
+/// dynamic_labels:
+///   - key: hostname
+///     prefix: "host-"
+///     cardinality: 10
+/// ```
+///
+/// # Example YAML (values list strategy)
+///
+/// ```yaml
+/// dynamic_labels:
+///   - key: region
+///     values: [us-east-1, us-west-2, eu-west-1]
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct DynamicLabelConfig {
+    /// The label key to attach to every event.
+    ///
+    /// Must be a valid Prometheus label key: `[a-zA-Z_][a-zA-Z0-9_]*`.
+    pub key: String,
+    /// The strategy for generating per-tick label values.
+    ///
+    /// Deserialized via untagged enum: provide either `values: [...]` or
+    /// `prefix: / cardinality:` fields directly alongside `key:`.
+    #[cfg_attr(feature = "config", serde(flatten))]
+    pub strategy: DynamicLabelStrategy,
+}
+
 /// Burst window configuration — a recurring high-rate period within a scenario.
 ///
 /// During a burst the event rate is multiplied by `multiplier`. The burst
@@ -159,6 +228,14 @@ pub struct BaseScheduleConfig {
     /// labels to simulate cardinality explosions.
     #[cfg_attr(feature = "config", serde(default))]
     pub cardinality_spikes: Option<Vec<CardinalitySpikeConfig>>,
+    /// Optional dynamic labels: always-on rotating label values that cycle
+    /// through a fixed set of values on every tick.
+    ///
+    /// Unlike [`CardinalitySpikeConfig`], dynamic labels are never gated by a
+    /// time window — they appear in every emitted event. Use this to simulate
+    /// a fleet of N hosts, pods, or regions.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub dynamic_labels: Option<Vec<DynamicLabelConfig>>,
     /// Static labels attached to every emitted event.
     #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<HashMap<String, String>>,
@@ -754,6 +831,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
@@ -778,6 +856,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -802,6 +881,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("10s".to_string()),
@@ -837,6 +917,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -861,6 +942,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -889,6 +971,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -914,6 +997,7 @@ clock_group: compound-alert
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1211,6 +1295,7 @@ gaps:
             gaps: None,
             bursts: None,
             cardinality_spikes: None,
+            dynamic_labels: None,
             labels: None,
             sink: SinkConfig::Stdout,
             phase_offset: None,
@@ -1243,6 +1328,7 @@ gaps:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("1s".to_string()),
@@ -1273,6 +1359,7 @@ gaps:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1310,6 +1397,7 @@ gaps:
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -1451,5 +1539,191 @@ generator:
             "LogScenarioConfig encoder default must be json_lines, got {:?}",
             config.encoder
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // dynamic_labels deserialization
+    // -----------------------------------------------------------------------
+
+    /// dynamic_labels with counter strategy deserializes from YAML.
+    #[test]
+    fn dynamic_labels_counter_deserializes_from_yaml() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+dynamic_labels:
+  - key: hostname
+    prefix: "host-"
+    cardinality: 10
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let dls = config
+            .dynamic_labels
+            .as_ref()
+            .expect("dynamic_labels must be present");
+        assert_eq!(dls.len(), 1);
+        assert_eq!(dls[0].key, "hostname");
+        match &dls[0].strategy {
+            DynamicLabelStrategy::Counter {
+                prefix,
+                cardinality,
+            } => {
+                assert_eq!(prefix.as_deref(), Some("host-"));
+                assert_eq!(*cardinality, 10);
+            }
+            other => panic!("expected Counter strategy, got {other:?}"),
+        }
+    }
+
+    /// dynamic_labels with values list strategy deserializes from YAML.
+    #[test]
+    fn dynamic_labels_values_list_deserializes_from_yaml() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+dynamic_labels:
+  - key: region
+    values: [us-east-1, us-west-2, eu-west-1]
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let dls = config
+            .dynamic_labels
+            .as_ref()
+            .expect("dynamic_labels must be present");
+        assert_eq!(dls.len(), 1);
+        assert_eq!(dls[0].key, "region");
+        match &dls[0].strategy {
+            DynamicLabelStrategy::ValuesList { values } => {
+                assert_eq!(values, &["us-east-1", "us-west-2", "eu-west-1"]);
+            }
+            other => panic!("expected ValuesList strategy, got {other:?}"),
+        }
+    }
+
+    /// dynamic_labels defaults to None when not specified.
+    #[test]
+    fn dynamic_labels_defaults_to_none() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.dynamic_labels.is_none());
+    }
+
+    /// Multiple dynamic_labels entries deserialize correctly.
+    #[test]
+    fn dynamic_labels_multiple_entries_deserialize() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+dynamic_labels:
+  - key: hostname
+    prefix: "host-"
+    cardinality: 10
+  - key: region
+    values: [us-east, eu-west]
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let dls = config
+            .dynamic_labels
+            .as_ref()
+            .expect("dynamic_labels must be present");
+        assert_eq!(dls.len(), 2);
+        assert_eq!(dls[0].key, "hostname");
+        assert_eq!(dls[1].key, "region");
+    }
+
+    /// dynamic_labels on LogScenarioConfig deserializes from YAML.
+    #[test]
+    fn dynamic_labels_on_log_config_deserializes() {
+        let yaml = r#"
+name: test_logs
+rate: 10
+generator:
+  type: template
+  templates:
+    - message: "test event"
+      field_pools: {}
+dynamic_labels:
+  - key: pod_name
+    prefix: "pod-"
+    cardinality: 5
+"#;
+        let config: LogScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let dls = config
+            .dynamic_labels
+            .as_ref()
+            .expect("dynamic_labels must be present");
+        assert_eq!(dls.len(), 1);
+        assert_eq!(dls[0].key, "pod_name");
+    }
+
+    /// Counter strategy with no prefix defaults prefix to None in config.
+    #[test]
+    fn dynamic_labels_counter_no_prefix_deserializes() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+dynamic_labels:
+  - key: zone
+    cardinality: 3
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let dls = config
+            .dynamic_labels
+            .as_ref()
+            .expect("dynamic_labels must be present");
+        match &dls[0].strategy {
+            DynamicLabelStrategy::Counter {
+                prefix,
+                cardinality,
+            } => {
+                assert!(prefix.is_none(), "prefix should be None when not specified");
+                assert_eq!(*cardinality, 3);
+            }
+            other => panic!("expected Counter strategy, got {other:?}"),
+        }
+    }
+
+    /// static labels and dynamic_labels coexist in the same config.
+    #[test]
+    fn dynamic_labels_and_static_labels_coexist() {
+        let yaml = r#"
+name: test
+rate: 10
+generator:
+  type: constant
+  value: 1.0
+labels:
+  env: prod
+dynamic_labels:
+  - key: hostname
+    prefix: "host-"
+    cardinality: 5
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.labels.is_some(), "static labels must be present");
+        assert!(
+            config.dynamic_labels.is_some(),
+            "dynamic labels must be present"
+        );
+        let static_labels = config.labels.as_ref().unwrap();
+        assert_eq!(static_labels.get("env"), Some(&"prod".to_string()));
     }
 }
