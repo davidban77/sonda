@@ -67,5 +67,6 @@ nav:
     - Pipeline Validation: guides/pipeline-validation.md
     - Recording Rules: guides/recording-rules.md
     - Network Device Telemetry: guides/network-device-telemetry.md
+    - Network Automation Testing: guides/network-automation-testing.md
     - Example Scenarios: guides/examples.md
     - E2E Testing: guides/e2e-testing.md
