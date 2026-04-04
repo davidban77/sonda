@@ -1,0 +1,2634 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Synthetic telemetry generator for testing observability pipelines">
+      
+      
+      
+        <link rel="canonical" href="https://davidban77.github.io/sonda/configuration/cli-reference/">
+      
+      
+        <link rel="prev" href="../sink-batching/">
+      
+      
+        <link rel="next" href="../../deployment/docker/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI Reference - Sonda</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Sonda
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="amber"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="amber"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/davidban77/sonda" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    davidban77/sonda
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Sonda
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/davidban77/sonda" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    davidban77/sonda
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scenario-file/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scenario Files
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../generators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Generators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encoders/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encoders
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sinks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sinks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sink-batching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sink Batching
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#global-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Status output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#start-banner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start banner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stop-banner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stop banner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#color-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Color behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suppressing-banners" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suppressing banners
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dry run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verbose-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbose mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verbosity-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbosity comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda metrics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario-and-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario and identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gaps-and-bursts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps and bursts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cardinality-spikes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jitter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-encoder-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels, encoder, output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda logs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda logs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario-and-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario and rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#template-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Template mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#replay-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replay mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-encoder-output_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels, encoder, output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gaps-and-bursts_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps and bursts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cardinality-spikes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jitter_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#aggregate-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregate summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/kubernetes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kubernetes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../deployment/sonda-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/tutorial/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/alert-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Alert Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/alerting-pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Alerting Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/ci-alert-validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CI Alert Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/synthetic-monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthetic Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/pipeline-validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pipeline Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/recording-rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recording Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/network-device-telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network Device Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/network-automation-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Network Automation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/capacity-planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capacity Planning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Example Scenarios
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/e2e-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    E2E Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#global-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Global options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Status output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#start-banner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Start banner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stop-banner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stop banner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#color-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Color behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suppressing-banners" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suppressing banners
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dry run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verbose-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbose mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verbosity-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verbosity comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda metrics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario-and-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario and identity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gaps-and-bursts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps and bursts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cardinality-spikes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jitter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-encoder-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels, encoder, output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda logs
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda logs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scenario-and-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario and rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#template-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Template mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#replay-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Replay mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#labels-encoder-output_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labels, encoder, output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gaps-and-bursts_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps and bursts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cardinality-spikes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cardinality spikes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jitter_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jitter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="sonda run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#aggregate-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Aggregate summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p>Sonda provides three subcommands: <code>metrics</code> for metric generation, <code>logs</code> for log generation, and
+<code>run</code> for concurrent multi-scenario execution.</p>
+<h2 id="global-options">Global options<a class="headerlink" href="#global-options" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sonda [--quiet | --verbose] [--dry-run] &lt;COMMAND&gt;
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Short</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--quiet</code></td>
+<td><code>-q</code></td>
+<td>Suppress start/stop status banners. Errors still print to stderr.</td>
+</tr>
+<tr>
+<td><code>--verbose</code></td>
+<td><code>-v</code></td>
+<td>Print resolved scenario config at startup, then run normally. Mutually exclusive with <code>--quiet</code>.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>--</td>
+<td>Parse and validate the scenario config, print it, then exit without emitting events.</td>
+</tr>
+<tr>
+<td><code>--help</code></td>
+<td><code>-h</code></td>
+<td>Print help information.</td>
+</tr>
+<tr>
+<td><code>--version</code></td>
+<td><code>-V</code></td>
+<td>Print version.</td>
+</tr>
+</tbody>
+</table>
+<p>Global flags go <strong>before</strong> the subcommand:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sonda<span class="w"> </span>-q<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">1</span><span class="w"> </span>--duration<span class="w"> </span>5s
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sonda<span class="w"> </span>--verbose<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">1</span><span class="w"> </span>--duration<span class="w"> </span>5s
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>examples/multi-scenario.yaml
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sonda<span class="w"> </span>--version
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sonda 0.3.0
+</code></pre></div>
+<h2 id="status-output">Status output<a class="headerlink" href="#status-output" title="Permanent link">&para;</a></h2>
+<p>Sonda prints colored lifecycle banners to stderr when running scenarios. These banners show you
+what is running and how it performed, without interfering with data output on stdout.</p>
+<h3 id="start-banner">Start banner<a class="headerlink" href="#start-banner" title="Permanent link">&para;</a></h3>
+<p>Printed when a scenario begins:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>▶ cpu_usage  signal_type: metrics | rate: 1000/s | encoder: prometheus_text | sink: stdout | duration: 30s
+</code></pre></div>
+<h3 id="stop-banner">Stop banner<a class="headerlink" href="#stop-banner" title="Permanent link">&para;</a></h3>
+<p>Printed when a scenario completes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>■ cpu_usage  completed in 30.0s | events: 30000 | bytes: 1.2 MB | errors: 0
+</code></pre></div>
+<h3 id="color-behavior">Color behavior<a class="headerlink" href="#color-behavior" title="Permanent link">&para;</a></h3>
+<p>Colors are automatic and require no configuration:</p>
+<ul>
+<li><strong>Interactive terminal</strong> -- colors are enabled.</li>
+<li><strong>Piped output</strong> (<code>sonda metrics ... | grep foo</code>) -- colors are disabled on the piped stream. Since banners go to stderr, they stay colored if stderr is still a terminal.</li>
+<li><strong><code>NO_COLOR</code> environment variable</strong> -- set <code>NO_COLOR=1</code> to disable colors everywhere. Sonda respects the <a href="https://no-color.org">no-color.org</a> convention.</li>
+<li><strong>Non-TTY stderr</strong> -- colors are disabled when stderr is redirected to a file or pipe.</li>
+</ul>
+<h3 id="suppressing-banners">Suppressing banners<a class="headerlink" href="#suppressing-banners" title="Permanent link">&para;</a></h3>
+<p>Use <code>--quiet</code> / <code>-q</code> to suppress all status output. Only errors are printed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># No banners, just data on stdout</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>sonda<span class="w"> </span>-q<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>5s
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Useful in scripts and CI pipelines</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>sonda<span class="w"> </span>-q<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>5s<span class="w"> </span>&gt;<span class="w"> </span>/tmp/data.txt
+</code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Status banners go to stderr, data goes to stdout. Even without <code>--quiet</code>, you can
+safely redirect stdout to a file or pipe it to another program -- banners never mix
+with your data.</p>
+</div>
+<h3 id="dry-run">Dry run<a class="headerlink" href="#dry-run" title="Permanent link">&para;</a></h3>
+<p>Use <code>--dry-run</code> to validate a scenario without emitting any events. Sonda parses the
+configuration, prints the resolved settings, and exits. This is useful for catching YAML
+errors and confirming what Sonda <em>would</em> do before committing to a long run.</p>
+<div class="tabbed-set tabbed-alternate" data-tabs="1:3"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><input id="__tabbed_1_3" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">Metrics</label><label for="__tabbed_1_2">Logs</label><label for="__tabbed_1_3">Run (multi-scenario)</label></div>
+<div class="tabbed-content">
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>cpu<span class="w"> </span>--rate<span class="w"> </span><span class="m">10</span><span class="w"> </span>--duration<span class="w"> </span>30s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--value-mode<span class="w"> </span>sine<span class="w"> </span>--amplitude<span class="w"> </span><span class="m">50</span><span class="w"> </span>--offset<span class="w"> </span><span class="m">50</span><span class="w"> </span>--label<span class="w"> </span><span class="nv">host</span><span class="o">=</span>web-01
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>[config] Resolved scenario config:
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  name:       cpu
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>  signal:     metrics
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>  rate:       10/s
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>  duration:   30s
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>  generator:  sine (amplitude: 50, period: 60s, offset: 50)
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>  encoder:    prometheus_text
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>  sink:       stdout
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>  labels:     host=web-01
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>Validation: OK
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>logs<span class="w"> </span>--mode<span class="w"> </span>template<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--message<span class="w"> </span><span class="s2">&quot;Connection timeout&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--severity-weights<span class="w"> </span><span class="s2">&quot;info=0.7,warn=0.2,error=0.1&quot;</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>[config] Resolved scenario config:
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>  name:       logs
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>  signal:     logs
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>  rate:       5/s
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>  duration:   10s
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>  generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2)
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>  encoder:    json_lines
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>  sink:       stdout
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>Validation: OK
+</code></pre></div>
+</div>
+<div class="tabbed-block">
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>examples/multi-scenario.yaml
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>[config] Resolved scenario config:
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  name:       cpu_usage
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  signal:     metrics
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  rate:       100/s
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  duration:   30s
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  generator:  sine (amplitude: 50, period: 60s, offset: 50)
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>  encoder:    prometheus_text
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>  sink:       stdout
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>[config] Resolved scenario config:
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>  name:       app_logs
+<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>  signal:     logs
+<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>  rate:       10/s
+<a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>  duration:   30s
+<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>  generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
+<a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a>  encoder:    json_lines
+<a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>  sink:       file: /tmp/sonda-logs.json
+<a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>
+<a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>Validation: OK
+</code></pre></div>
+</div>
+</div>
+</div>
+<p><code>--dry-run</code> works with scenario files too -- handy for validating YAML before deploying:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>sonda<span class="w"> </span>--dry-run<span class="w"> </span>metrics<span class="w"> </span>--scenario<span class="w"> </span>examples/basic-metrics.yaml
+</code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p><code>--dry-run</code> is orthogonal to <code>--quiet</code> and <code>--verbose</code>. It always prints the resolved
+config regardless of other flags, since its whole purpose is to show you what was parsed.</p>
+</div>
+<h3 id="verbose-mode">Verbose mode<a class="headerlink" href="#verbose-mode" title="Permanent link">&para;</a></h3>
+<p>Use <code>--verbose</code> / <code>-v</code> to print the resolved scenario config at startup, then continue
+running normally. This gives you the same config dump as <code>--dry-run</code>, followed by the
+regular start banner, events, and stop banner.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>sonda<span class="w"> </span>--verbose<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">1</span><span class="w"> </span>--duration<span class="w"> </span>2s
+</code></pre></div>
+<div class="highlight"><span class="filename">Output (stderr)</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>[config] Resolved scenario config:
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>  name:       up
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>  signal:     metrics
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>  rate:       1/s
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>  duration:   2s
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>  generator:  constant (value: 0)
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>  encoder:    prometheus_text
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>  sink:       stdout
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>▶ up  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 2s
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>■ up  completed in 2.0s | events: 3 | bytes: 57 B | errors: 0
+</code></pre></div>
+<p><code>--verbose</code> is mutually exclusive with <code>--quiet</code>. If you pass both, Sonda exits with an error:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>error: the argument &#39;--verbose&#39; cannot be used with &#39;--quiet&#39;
+</code></pre></div>
+<h3 id="verbosity-comparison">Verbosity comparison<a class="headerlink" href="#verbosity-comparison" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Output</th>
+<th>Default</th>
+<th><code>--quiet</code></th>
+<th><code>--verbose</code></th>
+<th><code>--dry-run</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resolved config</td>
+<td>--</td>
+<td>--</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Start banner</td>
+<td>Yes</td>
+<td>--</td>
+<td>Yes</td>
+<td>--</td>
+</tr>
+<tr>
+<td>Event data</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>--</td>
+</tr>
+<tr>
+<td>Stop banner</td>
+<td>Yes</td>
+<td>--</td>
+<td>Yes</td>
+<td>--</td>
+</tr>
+<tr>
+<td>Errors</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<h2 id="sonda-metrics">sonda metrics<a class="headerlink" href="#sonda-metrics" title="Permanent link">&para;</a></h2>
+<p>Generate synthetic metrics and write them to the configured sink.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+</code></pre></div>
+<h3 id="scenario-and-identity">Scenario and identity<a class="headerlink" href="#scenario-and-identity" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--scenario &lt;FILE&gt;</code></td>
+<td>path</td>
+<td>YAML scenario file. CLI flags override file values.</td>
+</tr>
+<tr>
+<td><code>--name &lt;NAME&gt;</code></td>
+<td>string</td>
+<td>Metric name. Required if no <code>--scenario</code>.</td>
+</tr>
+<tr>
+<td><code>--rate &lt;RATE&gt;</code></td>
+<td>float</td>
+<td>Events per second. Required if no <code>--scenario</code>.</td>
+</tr>
+<tr>
+<td><code>--duration &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>Run duration (e.g. <code>30s</code>, <code>5m</code>, <code>1.5s</code>). Fractional values supported. Omit for indefinite.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="generator">Generator<a class="headerlink" href="#generator" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--value-mode &lt;MODE&gt;</code></td>
+<td>string</td>
+<td><code>constant</code></td>
+<td>Generator type: <code>constant</code>, <code>uniform</code>, <code>sine</code>, <code>sawtooth</code>.</td>
+</tr>
+<tr>
+<td><code>--value &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td>--</td>
+<td>Fixed value for the <code>constant</code> generator. Only valid when <code>--value-mode</code> is <code>constant</code> (the default). When omitted, defaults to <code>0.0</code>.</td>
+</tr>
+<tr>
+<td><code>--amplitude &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td><code>1.0</code></td>
+<td>Sine wave amplitude.</td>
+</tr>
+<tr>
+<td><code>--period-secs &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td><code>60.0</code></td>
+<td>Sine or sawtooth period in seconds.</td>
+</tr>
+<tr>
+<td><code>--offset &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td><code>0.0</code></td>
+<td>Sine wave vertical offset. Sets the midpoint around which the wave oscillates. Only valid when <code>--value-mode</code> is <code>sine</code>.</td>
+</tr>
+<tr>
+<td><code>--min &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td><code>0.0</code></td>
+<td>Uniform or sawtooth minimum.</td>
+</tr>
+<tr>
+<td><code>--max &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td><code>1.0</code></td>
+<td>Uniform or sawtooth maximum.</td>
+</tr>
+<tr>
+<td><code>--seed &lt;INT&gt;</code></td>
+<td>integer</td>
+<td><code>0</code></td>
+<td>RNG seed for deterministic uniform output.</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <code>sequence</code> and <code>csv_replay</code> generators are only available via scenario files. They cannot
+be configured with CLI flags alone.</p>
+</div>
+<h3 id="gaps-and-bursts">Gaps and bursts<a class="headerlink" href="#gaps-and-bursts" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--gap-every &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>Gap recurrence interval. Must pair with <code>--gap-for</code>.</td>
+</tr>
+<tr>
+<td><code>--gap-for &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>Gap duration. Must be less than <code>--gap-every</code>.</td>
+</tr>
+<tr>
+<td><code>--burst-every &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>Burst recurrence interval. Must pair with <code>--burst-for</code> and <code>--burst-multiplier</code>.</td>
+</tr>
+<tr>
+<td><code>--burst-for &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>Burst duration. Must be less than <code>--burst-every</code>.</td>
+</tr>
+<tr>
+<td><code>--burst-multiplier &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td>Rate multiplier during bursts.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cardinality-spikes">Cardinality spikes<a class="headerlink" href="#cardinality-spikes" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--spike-label &lt;KEY&gt;</code></td>
+<td>string</td>
+<td>--</td>
+<td>Target label key for the spike. All four required flags must be provided together.</td>
+</tr>
+<tr>
+<td><code>--spike-every &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>--</td>
+<td>Spike recurrence interval (e.g. <code>2m</code>).</td>
+</tr>
+<tr>
+<td><code>--spike-for &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>--</td>
+<td>Spike duration within each cycle (e.g. <code>30s</code>). Must be less than <code>--spike-every</code>.</td>
+</tr>
+<tr>
+<td><code>--spike-cardinality &lt;INT&gt;</code></td>
+<td>integer</td>
+<td>--</td>
+<td>Number of unique label values during the spike.</td>
+</tr>
+<tr>
+<td><code>--spike-strategy &lt;STRATEGY&gt;</code></td>
+<td>string</td>
+<td><code>counter</code></td>
+<td>Value generation strategy: <code>counter</code> or <code>random</code>.</td>
+</tr>
+<tr>
+<td><code>--spike-prefix &lt;PREFIX&gt;</code></td>
+<td>string</td>
+<td><code>{label}_</code></td>
+<td>Prefix for generated spike label values.</td>
+</tr>
+<tr>
+<td><code>--spike-seed &lt;INT&gt;</code></td>
+<td>integer</td>
+<td><code>0</code></td>
+<td>RNG seed for the <code>random</code> strategy.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="jitter">Jitter<a class="headerlink" href="#jitter" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--jitter &lt;FLOAT&gt;</code></td>
+<td>float</td>
+<td>none</td>
+<td>Jitter amplitude. Adds uniform noise in <code>[-jitter, +jitter]</code> to every generated value. Must be non-negative.</td>
+</tr>
+<tr>
+<td><code>--jitter-seed &lt;INT&gt;</code></td>
+<td>integer</td>
+<td><code>0</code></td>
+<td>Seed for deterministic jitter noise. Different seeds produce different noise sequences.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="labels-encoder-output">Labels, encoder, output<a class="headerlink" href="#labels-encoder-output" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--label &lt;KEY=VALUE&gt;</code></td>
+<td>string</td>
+<td>none</td>
+<td>Static label (repeatable).</td>
+</tr>
+<tr>
+<td><code>--encoder &lt;FORMAT&gt;</code></td>
+<td>string</td>
+<td><code>prometheus_text</code></td>
+<td>Output format: <code>prometheus_text</code>, <code>influx_lp</code>, <code>json_lines</code>.</td>
+</tr>
+<tr>
+<td><code>--precision &lt;INT&gt;</code></td>
+<td>integer</td>
+<td>full f64</td>
+<td>Decimal places for metric values (0--17). See <a href="../encoders/#value-precision">Encoders - Value precision</a>.</td>
+</tr>
+<tr>
+<td><code>--output &lt;FILE&gt;</code></td>
+<td>path</td>
+<td>stdout</td>
+<td>Write to file instead of stdout.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h3>
+<p>Simplest metric:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>up<span class="w"> </span>--rate<span class="w"> </span><span class="m">1</span><span class="w"> </span>--duration<span class="w"> </span>5s
+</code></pre></div>
+<p>Sine wave with labels:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>cpu<span class="w"> </span>--rate<span class="w"> </span><span class="m">10</span><span class="w"> </span>--duration<span class="w"> </span>30s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">  </span>--value-mode<span class="w"> </span>sine<span class="w"> </span>--amplitude<span class="w"> </span><span class="m">50</span><span class="w"> </span>--period-secs<span class="w"> </span><span class="m">60</span><span class="w"> </span>--offset<span class="w"> </span><span class="m">50</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">  </span>--label<span class="w"> </span><span class="nv">host</span><span class="o">=</span>web-01<span class="w"> </span>--label<span class="w"> </span><span class="nv">zone</span><span class="o">=</span>us-east-1
+</code></pre></div>
+<p>InfluxDB format to file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>cpu<span class="w"> </span>--rate<span class="w"> </span><span class="m">10</span><span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span>--encoder<span class="w"> </span>influx_lp<span class="w"> </span>--output<span class="w"> </span>/tmp/metrics.influx
+</code></pre></div>
+<p>Limit metric values to 2 decimal places:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--name<span class="w"> </span>cpu<span class="w"> </span>--rate<span class="w"> </span><span class="m">2</span><span class="w"> </span>--duration<span class="w"> </span>2s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span>--value-mode<span class="w"> </span>sine<span class="w"> </span>--amplitude<span class="w"> </span><span class="m">50</span><span class="w"> </span>--period-secs<span class="w"> </span><span class="m">10</span><span class="w"> </span>--offset<span class="w"> </span><span class="m">50</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span>--label<span class="w"> </span><span class="nv">host</span><span class="o">=</span>web-01<span class="w"> </span>--precision<span class="w"> </span><span class="m">2</span>
+</code></pre></div>
+<p>Override precision on an existing YAML scenario:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--scenario<span class="w"> </span>examples/basic-metrics.yaml<span class="w"> </span>--precision<span class="w"> </span><span class="m">2</span><span class="w"> </span>--duration<span class="w"> </span>5s
+</code></pre></div>
+<p>Scenario file with overrides:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>sonda<span class="w"> </span>metrics<span class="w"> </span>--scenario<span class="w"> </span>examples/basic-metrics.yaml<span class="w"> </span>--duration<span class="w"> </span>5s<span class="w"> </span>--rate<span class="w"> </span><span class="m">2</span>
+</code></pre></div>
+<h2 id="sonda-logs">sonda logs<a class="headerlink" href="#sonda-logs" title="Permanent link">&para;</a></h2>
+<p>Generate synthetic log events and write them to the configured sink.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>sonda<span class="w"> </span>logs<span class="w"> </span><span class="o">[</span>OPTIONS<span class="o">]</span>
+</code></pre></div>
+<h3 id="scenario-and-rate">Scenario and rate<a class="headerlink" href="#scenario-and-rate" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--scenario &lt;FILE&gt;</code></td>
+<td>path</td>
+<td>--</td>
+<td>YAML log scenario file.</td>
+</tr>
+<tr>
+<td><code>--mode &lt;MODE&gt;</code></td>
+<td>string</td>
+<td>--</td>
+<td>Generator mode: <code>template</code> or <code>replay</code>. Required if no <code>--scenario</code>.</td>
+</tr>
+<tr>
+<td><code>--rate &lt;RATE&gt;</code></td>
+<td>float</td>
+<td><code>10.0</code></td>
+<td>Events per second.</td>
+</tr>
+<tr>
+<td><code>--duration &lt;DURATION&gt;</code></td>
+<td>string</td>
+<td>indefinite</td>
+<td>Run duration (e.g. <code>10s</code>, <code>1.5s</code>). Fractional values supported.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="template-mode">Template mode<a class="headerlink" href="#template-mode" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--message &lt;TEXT&gt;</code></td>
+<td>string</td>
+<td><code>"synthetic log event"</code></td>
+<td>Static message template.</td>
+</tr>
+<tr>
+<td><code>--severity-weights &lt;SPEC&gt;</code></td>
+<td>string</td>
+<td><code>info=1.0</code></td>
+<td>Comma-separated severity weights (e.g. <code>info=0.7,warn=0.2,error=0.1</code>).</td>
+</tr>
+<tr>
+<td><code>--seed &lt;INT&gt;</code></td>
+<td>integer</td>
+<td><code>0</code></td>
+<td>RNG seed for deterministic output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="replay-mode">Replay mode<a class="headerlink" href="#replay-mode" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--file &lt;PATH&gt;</code></td>
+<td>path</td>
+<td>Log file to replay lines from.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="labels-encoder-output_1">Labels, encoder, output<a class="headerlink" href="#labels-encoder-output_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--label &lt;KEY=VALUE&gt;</code></td>
+<td>string</td>
+<td>none</td>
+<td>Static label (repeatable).</td>
+</tr>
+<tr>
+<td><code>--encoder &lt;FORMAT&gt;</code></td>
+<td>string</td>
+<td><code>json_lines</code></td>
+<td>Output format: <code>json_lines</code>, <code>syslog</code>.</td>
+</tr>
+<tr>
+<td><code>--precision &lt;INT&gt;</code></td>
+<td>integer</td>
+<td>full f64</td>
+<td>Decimal places for numeric values (0--17). Only applies to <code>json_lines</code>.</td>
+</tr>
+<tr>
+<td><code>--output &lt;FILE&gt;</code></td>
+<td>path</td>
+<td>stdout</td>
+<td>Write to file instead of stdout.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="gaps-and-bursts_1">Gaps and bursts<a class="headerlink" href="#gaps-and-bursts_1" title="Permanent link">&para;</a></h3>
+<p>The same gap and burst flags from <code>sonda metrics</code> are available for logs:
+<code>--gap-every</code>, <code>--gap-for</code>, <code>--burst-every</code>, <code>--burst-for</code>, <code>--burst-multiplier</code>.</p>
+<h3 id="cardinality-spikes_1">Cardinality spikes<a class="headerlink" href="#cardinality-spikes_1" title="Permanent link">&para;</a></h3>
+<p>The same cardinality spike flags from <code>sonda metrics</code> are available for logs:
+<code>--spike-label</code>, <code>--spike-every</code>, <code>--spike-for</code>, <code>--spike-cardinality</code>,
+<code>--spike-strategy</code>, <code>--spike-prefix</code>, <code>--spike-seed</code>.</p>
+<h3 id="jitter_1">Jitter<a class="headerlink" href="#jitter_1" title="Permanent link">&para;</a></h3>
+<p>The same jitter flags from <code>sonda metrics</code> are available for logs:
+<code>--jitter</code>, <code>--jitter-seed</code>.</p>
+<h3 id="examples_1">Examples<a class="headerlink" href="#examples_1" title="Permanent link">&para;</a></h3>
+<p>Simple template log:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>sonda<span class="w"> </span>logs<span class="w"> </span>--mode<span class="w"> </span>template<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>10s
+</code></pre></div>
+<p>Custom message with severity weights:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>sonda<span class="w"> </span>logs<span class="w"> </span>--mode<span class="w"> </span>template<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>10s<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span>--message<span class="w"> </span><span class="s2">&quot;Connection timeout&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">  </span>--severity-weights<span class="w"> </span><span class="s2">&quot;info=0.7,warn=0.2,error=0.1&quot;</span>
+</code></pre></div>
+<p>Syslog format:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a>sonda<span class="w"> </span>logs<span class="w"> </span>--mode<span class="w"> </span>template<span class="w"> </span>--rate<span class="w"> </span><span class="m">5</span><span class="w"> </span>--duration<span class="w"> </span>5s<span class="w"> </span>--encoder<span class="w"> </span>syslog
+</code></pre></div>
+<p>Scenario file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a>sonda<span class="w"> </span>logs<span class="w"> </span>--scenario<span class="w"> </span>examples/log-template.yaml<span class="w"> </span>--duration<span class="w"> </span>5s
+</code></pre></div>
+<h2 id="sonda-run">sonda run<a class="headerlink" href="#sonda-run" title="Permanent link">&para;</a></h2>
+<p>Run multiple scenarios concurrently from a multi-scenario YAML file.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>&lt;FILE&gt;
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--scenario &lt;FILE&gt;</code></td>
+<td>path</td>
+<td>Multi-scenario YAML file. Required.</td>
+</tr>
+</tbody>
+</table>
+<p>The file must have a top-level <code>scenarios:</code> list. Each entry includes <code>signal_type: metrics</code> or
+<code>signal_type: logs</code>. See <a href="../scenario-file/#multi-scenario-files">Scenario Files - Multi-scenario files</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a>sonda<span class="w"> </span>run<span class="w"> </span>--scenario<span class="w"> </span>examples/multi-scenario.yaml
+</code></pre></div>
+<h3 id="aggregate-summary">Aggregate summary<a class="headerlink" href="#aggregate-summary" title="Permanent link">&para;</a></h3>
+<p>After all scenarios finish, <code>sonda run</code> prints a summary line that aggregates totals across
+every scenario in the file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a>━━ run complete  scenarios: 2 | events: 3302 | bytes: 174.9 KB | errors: 0 | elapsed: 30.0s
+</code></pre></div>
+<p>The summary includes the scenario count, total events emitted, total bytes written, error count,
+and wall-clock elapsed time. Each individual scenario still prints its own stop banner before
+the aggregate line appears.</p>
+<div class="admonition tip">
+<p class="admonition-title">Tip</p>
+<p>Pipe the summary to a monitoring script to gate CI pipelines -- a non-zero <code>errors</code> count
+means at least one scenario encountered a write failure.</p>
+</div>
+<h2 id="precedence-rules">Precedence rules<a class="headerlink" href="#precedence-rules" title="Permanent link">&para;</a></h2>
+<p>Configuration values are resolved in this order (highest priority wins):</p>
+<ol>
+<li><strong>CLI flags</strong> -- always win when provided.</li>
+<li><strong>YAML scenario file</strong> -- base configuration loaded from disk.</li>
+</ol>
+<p>If neither is provided for a required field, Sonda exits with an error.</p>
+<p>For example, a YAML file sets <code>rate: 100</code> and the CLI passes <code>--rate 500</code>. The effective rate
+is 500.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "content.code.copy", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
