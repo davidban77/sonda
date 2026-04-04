@@ -347,12 +347,23 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
       address: "127.0.0.1:9998"
     ```
 
-??? example "Loki sink setup"
-    Push JSON logs to Grafana Loki:
+### loki
 
-    ```bash
-    sonda logs --scenario examples/loki-json-lines.yaml
-    ```
+Push JSON logs to Grafana Loki. The fastest way is a single CLI command:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 \
+  --label job=sonda --label env=dev
+```
+
+For richer logs with field pools and severity weights, use a scenario file:
+
+```bash
+sonda logs --scenario examples/loki-json-lines.yaml
+```
+
+??? example "Full Loki scenario file"
 
     ```yaml title="examples/loki-json-lines.yaml"
     name: app_logs_loki
@@ -380,12 +391,24 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
       batch_size: 50
     ```
 
-??? example "Kafka sink setup"
-    Publish metrics to a Kafka topic. Requires a Kafka broker reachable at the configured address:
+### kafka
 
-    ```bash
-    sonda metrics --scenario examples/kafka-sink.yaml
-    ```
+Publish metrics to a Kafka topic. Use CLI flags for a quick test:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink kafka --brokers 127.0.0.1:9092 --topic sonda-metrics
+```
+
+Or use a scenario file for full control:
+
+```bash
+sonda metrics --scenario examples/kafka-sink.yaml
+```
+
+??? example "Full Kafka scenario file"
+
+    See `examples/kafka-sink.yaml` for the complete example with generator and encoder config.
 
     ```yaml title="examples/kafka-sink.yaml (key fields)"
     sink:
@@ -394,15 +417,31 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
       topic: sonda-metrics
     ```
 
-    See `examples/kafka-sink.yaml` for the complete example with generator and encoder config.
+### otlp_grpc
 
-??? example "OTLP/gRPC sink setup"
-    Push metrics or logs to an OpenTelemetry Collector via gRPC. Requires the `otlp` feature
-    flag when building from source and a Collector listening on port 4317:
+Push metrics or logs to an OpenTelemetry Collector via gRPC. Use CLI flags:
 
-    ```bash
-    cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml
-    ```
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
+```
+
+For logs, `--signal-type` defaults to `logs` automatically:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317
+```
+
+Or use a scenario file:
+
+```bash
+sonda metrics --scenario examples/otlp-metrics.yaml
+```
+
+??? example "Full OTLP scenario file"
 
     ```yaml title="examples/otlp-metrics.yaml (key fields)"
     encoder:
@@ -414,12 +453,9 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
       batch_size: 100
     ```
 
-    For logs, use `signal_type: logs` and run with `sonda logs`:
-
-    ```bash
-    cargo run --features otlp -- logs --scenario examples/otlp-logs.yaml
-    ```
-
+!!! warning "Feature flag required"
+    OTLP requires the `otlp` Cargo feature. Pre-built binaries do **not** include it --
+    build from source with `cargo build --features otlp -p sonda`.
     See [Sinks - otlp_grpc](../configuration/sinks.md#otlp_grpc) for the full configuration reference.
 
 For full sink configuration details, see [Sinks](../configuration/sinks.md).
@@ -844,7 +880,23 @@ sink:
 
 Compatible targets include VictoriaMetrics, Prometheus, Thanos Receive, and Cortex/Mimir.
 
-### 3. OTLP/gRPC (OpenTelemetry Collector)
+### 3. Loki (logs)
+
+Push logs directly to Grafana Loki:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 \
+  --label app=myservice --label env=staging
+```
+
+Or use a scenario file for richer templates:
+
+```bash
+sonda logs --scenario examples/loki-json-lines.yaml
+```
+
+### 4. OTLP/gRPC (OpenTelemetry Collector)
 
 Push directly to an OpenTelemetry Collector via gRPC. This requires building with `--features otlp`.
 Use CLI flags for a quick test:
@@ -873,7 +925,7 @@ sink:
 The Collector routes data to any configured exporter (Prometheus, Jaeger, Loki, etc.), making this
 the most flexible backend integration option.
 
-### 4. Scrape via sonda-server
+### 5. Scrape via sonda-server
 
 Point Prometheus at sonda-server's metrics endpoint:
 

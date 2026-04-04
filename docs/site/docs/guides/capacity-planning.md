@@ -56,6 +56,24 @@ sonda -q metrics --name throughput_test --rate 1000 --duration 5s \
 If the line count roughly matches `rate * duration`, Sonda is keeping up on the generation side.
 Now push that load into a real backend.
 
+### Single-stream push to VictoriaMetrics
+
+Push a single metric stream directly to VictoriaMetrics with CLI flags -- no YAML needed:
+
+```bash
+sonda -q metrics --name throughput_test --rate 1000 --duration 30s \
+  --value-mode sine --amplitude 50 --period-secs 60 --offset 100 \
+  --label job=capacity_test --label env=load-test \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+  --content-type "text/plain"
+```
+
+Verify the data arrived:
+
+```bash
+curl -s "http://localhost:8428/api/v1/query?query=throughput_test" | jq '.data.result | length'
+```
+
 ### Multi-stream throughput test
 
 This scenario runs 3 metric streams at 1,000 events/sec each -- 3,000 data points per second
