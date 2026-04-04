@@ -128,6 +128,21 @@ See [Recording Rules](recording-rules.md) for the step-by-step guide.
 
 See [Pipeline Validation](pipeline-validation.md) for usage patterns.
 
+## Network Device Telemetry
+
+| File | Signal | Description |
+|------|--------|-------------|
+| `network-device-baseline.yaml` | metrics | Router with 2 uplinks: traffic counters, state, CPU, memory (9 scenarios) |
+| `network-link-failure.yaml` | metrics | Link failure cascade: interface down, traffic shift, error spike (6 scenarios) |
+
+Run with `sonda run`:
+
+```bash
+sonda run --scenario examples/network-device-baseline.yaml
+```
+
+See [Network Device Telemetry](network-device-telemetry.md) for the full walkthrough.
+
 ## Multi-Scenario
 
 | File | Signal | Description |

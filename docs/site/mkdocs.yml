@@ -66,5 +66,6 @@ nav:
     - Synthetic Monitoring: guides/synthetic-monitoring.md
     - Pipeline Validation: guides/pipeline-validation.md
     - Recording Rules: guides/recording-rules.md
+    - Network Device Telemetry: guides/network-device-telemetry.md
     - Example Scenarios: guides/examples.md
     - E2E Testing: guides/e2e-testing.md

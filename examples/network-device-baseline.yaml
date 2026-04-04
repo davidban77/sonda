@@ -1,0 +1,197 @@
+# Network device baseline telemetry: a router with 4 interfaces.
+#
+# Models a core router (rtr-core-01) emitting interface counters and
+# system health metrics. Traffic counters use sawtooth (monotonic ramp),
+# interface state uses constant (all up), and CPU/memory use sine waves.
+#
+# Run with:
+#   sonda run --scenario examples/network-device-baseline.yaml
+#
+# All output goes to stdout in Prometheus text format. To push to
+# VictoriaMetrics or another backend, change the sink in each scenario
+# entry to http_push or remote_write.
+
+scenarios:
+  # --- Interface traffic counters (sawtooth = monotonic ramp) ---
+
+  - signal_type: metrics
+    name: interface_in_octets
+    rate: 1
+    duration: 120s
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 500000000.0
+      period_secs: 300
+    jitter: 1000000.0
+    jitter_seed: 10
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-isp-a
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_in_octets
+    rate: 1
+    duration: 120s
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 300000000.0
+      period_secs: 300
+    jitter: 800000.0
+    jitter_seed: 20
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/1
+      ifAlias: uplink-isp-b
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_out_octets
+    rate: 1
+    duration: 120s
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 450000000.0
+      period_secs: 300
+    jitter: 900000.0
+    jitter_seed: 30
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-isp-a
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_out_octets
+    rate: 1
+    duration: 120s
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 250000000.0
+      period_secs: 300
+    jitter: 600000.0
+    jitter_seed: 40
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/1
+      ifAlias: uplink-isp-b
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  # --- Interface operational state (1 = up) ---
+
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 1
+    duration: 120s
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-isp-a
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 1
+    duration: 120s
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/1
+      ifAlias: uplink-isp-b
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  # --- Interface errors (low baseline with periodic spikes) ---
+
+  - signal_type: metrics
+    name: interface_errors
+    rate: 1
+    duration: 120s
+    generator:
+      type: spike
+      baseline: 0.0
+      magnitude: 12.0
+      duration_secs: 5
+      interval_secs: 60
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-isp-a
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  # --- System health (sine waves for CPU/memory) ---
+
+  - signal_type: metrics
+    name: device_cpu_percent
+    rate: 1
+    duration: 120s
+    generator:
+      type: sine
+      amplitude: 15.0
+      period_secs: 90
+      offset: 35.0
+    jitter: 2.0
+    jitter_seed: 50
+    labels:
+      device: rtr-core-01
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: device_memory_percent
+    rate: 1
+    duration: 120s
+    generator:
+      type: sine
+      amplitude: 10.0
+      period_secs: 120
+      offset: 60.0
+    jitter: 1.5
+    jitter_seed: 60
+    labels:
+      device: rtr-core-01
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
