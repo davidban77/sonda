@@ -103,7 +103,36 @@ sink:
 sonda metrics --scenario examples/basic-metrics.yaml
 ```
 
-### Simulating a fleet with dynamic labels
+## Sending to a backend
+
+Push metrics via Prometheus remote write -- no scenario file needed:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder remote_write \
+  --sink remote_write --endpoint http://localhost:8428/api/v1/write
+```
+
+Send to an OpenTelemetry Collector via OTLP/gRPC:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --encoder otlp \
+  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
+```
+
+Send logs to Grafana Loki:
+
+```bash
+sonda logs --mode template --rate 10 --duration 30s \
+  --sink loki --endpoint http://localhost:3100 --label app=myservice
+```
+
+All complex sinks (`http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`) are available via
+`--sink` and their companion flags. See the
+[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/) for the full list.
+
+## Simulating a fleet with dynamic labels
 
 Dynamic labels rotate through a fixed set of values on every tick, simulating
 a fleet of N distinct sources. Unlike cardinality spikes, they are always on --
