@@ -14,8 +14,8 @@ use owo_colors::Stream::Stderr;
 
 use crate::cli::Verbosity;
 use sonda_core::config::{
-    BurstConfig, CardinalitySpikeConfig, GapConfig, LogScenarioConfig, ScenarioConfig,
-    ScenarioEntry,
+    BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy, GapConfig,
+    LogScenarioConfig, ScenarioConfig, ScenarioEntry,
 };
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -146,6 +146,7 @@ fn print_metrics_config(c: &ScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_dynamic_labels_lines(&c.dynamic_labels);
     print_jitter_line(&c.jitter, &c.jitter_seed);
     print_phase_offset_line(&c.phase_offset);
     print_clock_group_line(&c.clock_group);
@@ -171,6 +172,7 @@ fn print_logs_config(c: &LogScenarioConfig) {
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
     print_spikes_lines(&c.cardinality_spikes);
+    print_dynamic_labels_lines(&c.dynamic_labels);
     print_jitter_line(&c.jitter, &c.jitter_seed);
     print_phase_offset_line(&c.phase_offset);
     print_clock_group_line(&c.clock_group);
@@ -214,6 +216,39 @@ fn print_spikes_lines(spikes: &Option<Vec<CardinalitySpikeConfig>>) {
                 "  spikes:     label={}, every {}, for {}, cardinality={}",
                 s.label, s.every, s.r#for, s.cardinality
             );
+        }
+    }
+}
+
+/// Print dynamic label lines if dynamic labels are configured.
+fn print_dynamic_labels_lines(dynamic_labels: &Option<Vec<DynamicLabelConfig>>) {
+    if let Some(ref list) = dynamic_labels {
+        for dl in list {
+            match &dl.strategy {
+                DynamicLabelStrategy::Counter {
+                    prefix,
+                    cardinality,
+                } => {
+                    let pfx = prefix.as_deref().unwrap_or("");
+                    eprintln!(
+                        "  dynamic:    key={}, counter (prefix={:?}, cardinality={})",
+                        dl.key, pfx, cardinality
+                    );
+                }
+                DynamicLabelStrategy::ValuesList { values } => {
+                    if values.len() <= 5 {
+                        eprintln!("  dynamic:    key={}, values {:?}", dl.key, values);
+                    } else {
+                        eprintln!(
+                            "  dynamic:    key={}, values [{}, {}, ... {} total]",
+                            dl.key,
+                            values[0],
+                            values[1],
+                            values.len()
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -1337,6 +1372,166 @@ mod tests {
                 }],
                 severity_weights: None,
                 seed: None,
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        });
+        print_config(&entry);
+    }
+
+    // -----------------------------------------------------------------------
+    // print_dynamic_labels_lines: no panic, correct skip for None/empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_dynamic_labels_lines_with_none_does_not_panic() {
+        print_dynamic_labels_lines(&None);
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_with_empty_vec_does_not_panic() {
+        print_dynamic_labels_lines(&Some(vec![]));
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_counter_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        print_dynamic_labels_lines(&Some(vec![DynamicLabelConfig {
+            key: "hostname".to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: Some("host-".to_string()),
+                cardinality: 10,
+            },
+        }]));
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_counter_without_prefix_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        print_dynamic_labels_lines(&Some(vec![DynamicLabelConfig {
+            key: "id".to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 5,
+            },
+        }]));
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_values_list_short_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        print_dynamic_labels_lines(&Some(vec![DynamicLabelConfig {
+            key: "region".to_string(),
+            strategy: DynamicLabelStrategy::ValuesList {
+                values: vec![
+                    "us-east-1".to_string(),
+                    "us-west-2".to_string(),
+                    "eu-west-1".to_string(),
+                ],
+            },
+        }]));
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_values_list_long_truncates() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        print_dynamic_labels_lines(&Some(vec![DynamicLabelConfig {
+            key: "zone".to_string(),
+            strategy: DynamicLabelStrategy::ValuesList {
+                values: vec![
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string(),
+                    "d".to_string(),
+                    "e".to_string(),
+                    "f".to_string(),
+                ],
+            },
+        }]));
+    }
+
+    #[test]
+    fn print_dynamic_labels_lines_multiple_entries_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        print_dynamic_labels_lines(&Some(vec![
+            DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: DynamicLabelStrategy::Counter {
+                    prefix: Some("web-".to_string()),
+                    cardinality: 3,
+                },
+            },
+            DynamicLabelConfig {
+                key: "region".to_string(),
+                strategy: DynamicLabelStrategy::ValuesList {
+                    values: vec!["us-east-1".to_string(), "eu-west-1".to_string()],
+                },
+            },
+        ]));
+    }
+
+    #[test]
+    fn print_config_metrics_with_dynamic_labels_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "dyn_labels_metric".to_string(),
+                rate: 10.0,
+                duration: Some("10s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: Some(vec![DynamicLabelConfig {
+                    key: "hostname".to_string(),
+                    strategy: DynamicLabelStrategy::Counter {
+                        prefix: Some("host-".to_string()),
+                        cardinality: 10,
+                    },
+                }]),
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+        print_config(&entry);
+    }
+
+    #[test]
+    fn print_config_logs_with_dynamic_labels_does_not_panic() {
+        use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy};
+        let entry = ScenarioEntry::Logs(LogScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "dyn_labels_logs".to_string(),
+                rate: 5.0,
+                duration: Some("10s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: Some(vec![DynamicLabelConfig {
+                    key: "pod_name".to_string(),
+                    strategy: DynamicLabelStrategy::Counter {
+                        prefix: Some("api-".to_string()),
+                        cardinality: 3,
+                    },
+                }]),
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: LogGeneratorConfig::Template {
+                templates: vec![TemplateConfig {
+                    message: "test".to_string(),
+                    field_pools: BTreeMap::new(),
+                }],
+                severity_weights: None,
+                seed: Some(0),
             },
             encoder: EncoderConfig::JsonLines { precision: None },
         });

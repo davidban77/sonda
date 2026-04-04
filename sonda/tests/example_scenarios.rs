@@ -389,15 +389,185 @@ fn cardinality_spike_yaml_factories_all_succeed() {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-file sanity: both examples produce valid configs that pass validation
+// examples/dynamic-labels-fleet.yaml
 // ---------------------------------------------------------------------------
 
 #[test]
-fn both_example_yamls_pass_full_round_trip() {
+fn dynamic_labels_fleet_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/dynamic-labels-fleet.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("dynamic-labels-fleet.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn dynamic_labels_fleet_yaml_passes_validate_config() {
+    let path = workspace_file("examples/dynamic-labels-fleet.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-fleet.yaml");
+    validate_config(&config)
+        .unwrap_or_else(|e| panic!("dynamic-labels-fleet.yaml failed validation: {e}"));
+}
+
+#[test]
+fn dynamic_labels_fleet_yaml_factories_all_succeed() {
+    let path = workspace_file("examples/dynamic-labels-fleet.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-fleet.yaml");
+
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
+    let v = gen.value(0);
+    assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
+
+    let _enc = create_encoder(&config.encoder);
+    let _sink = create_sink(&config.sink, None)
+        .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-fleet.yaml: {e}"));
+}
+
+#[test]
+fn dynamic_labels_fleet_yaml_has_dynamic_labels() {
+    let path = workspace_file("examples/dynamic-labels-fleet.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-fleet.yaml");
+    let dls = config
+        .dynamic_labels
+        .as_ref()
+        .expect("dynamic_labels must be present");
+    assert_eq!(dls.len(), 1, "must have exactly one dynamic label");
+    assert_eq!(dls[0].key, "hostname");
+}
+
+// ---------------------------------------------------------------------------
+// examples/dynamic-labels-regions.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dynamic_labels_regions_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/dynamic-labels-regions.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("dynamic-labels-regions.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn dynamic_labels_regions_yaml_passes_validate_config() {
+    let path = workspace_file("examples/dynamic-labels-regions.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-regions.yaml");
+    validate_config(&config)
+        .unwrap_or_else(|e| panic!("dynamic-labels-regions.yaml failed validation: {e}"));
+}
+
+#[test]
+fn dynamic_labels_regions_yaml_factories_all_succeed() {
+    let path = workspace_file("examples/dynamic-labels-regions.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-regions.yaml");
+
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
+    let v = gen.value(0);
+    assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
+
+    let _enc = create_encoder(&config.encoder);
+    let _sink = create_sink(&config.sink, None)
+        .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-regions.yaml: {e}"));
+}
+
+#[test]
+fn dynamic_labels_regions_yaml_has_values_list_strategy() {
+    use sonda_core::config::DynamicLabelStrategy;
+    let path = workspace_file("examples/dynamic-labels-regions.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-regions.yaml");
+    let dls = config
+        .dynamic_labels
+        .as_ref()
+        .expect("dynamic_labels must be present");
+    assert_eq!(dls.len(), 1, "must have exactly one dynamic label");
+    assert_eq!(dls[0].key, "region");
+    match &dls[0].strategy {
+        DynamicLabelStrategy::ValuesList { values } => {
+            assert_eq!(values.len(), 3, "must have 3 region values");
+        }
+        other => panic!("expected ValuesList strategy, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// examples/dynamic-labels-multi.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dynamic_labels_multi_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/dynamic-labels-multi.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("dynamic-labels-multi.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn dynamic_labels_multi_yaml_passes_validate_config() {
+    let path = workspace_file("examples/dynamic-labels-multi.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-multi.yaml");
+    validate_config(&config)
+        .unwrap_or_else(|e| panic!("dynamic-labels-multi.yaml failed validation: {e}"));
+}
+
+#[test]
+fn dynamic_labels_multi_yaml_factories_all_succeed() {
+    let path = workspace_file("examples/dynamic-labels-multi.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-multi.yaml");
+
+    let gen = create_generator(&config.generator, config.rate).expect("generator factory");
+    let v = gen.value(0);
+    assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
+
+    let _enc = create_encoder(&config.encoder);
+    let _sink = create_sink(&config.sink, None)
+        .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-multi.yaml: {e}"));
+}
+
+#[test]
+fn dynamic_labels_multi_yaml_has_two_dynamic_labels() {
+    let path = workspace_file("examples/dynamic-labels-multi.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-multi.yaml");
+    let dls = config
+        .dynamic_labels
+        .as_ref()
+        .expect("dynamic_labels must be present");
+    assert_eq!(dls.len(), 2, "must have two dynamic labels");
+    assert_eq!(dls[0].key, "hostname");
+    assert_eq!(dls[1].key, "region");
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file sanity: all examples produce valid configs that pass validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn all_example_yamls_pass_full_round_trip() {
     for filename in &[
         "examples/basic-metrics.yaml",
         "examples/simple-constant.yaml",
         "examples/cardinality-spike.yaml",
+        "examples/dynamic-labels-fleet.yaml",
+        "examples/dynamic-labels-regions.yaml",
+        "examples/dynamic-labels-multi.yaml",
     ] {
         let path = workspace_file(filename);
         let contents = std::fs::read_to_string(&path)
