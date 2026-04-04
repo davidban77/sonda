@@ -1,0 +1,38 @@
+# Alert rules for testing network automation workflows.
+#
+# Designed for short feedback loops: low `for:` durations so alerts fire
+# quickly during synthetic testing. In production you would increase
+# `for:` to avoid false positives from transient flaps.
+#
+# Usage: mount into vmalert alongside the alerting Docker Compose profile.
+# See the Network Automation Testing guide for full instructions.
+
+groups:
+  - name: network-automation-alerts
+    interval: 5s
+    rules:
+      - alert: InterfaceDown
+        expr: interface_oper_state{job="snmp"} == 0
+        for: 10s
+        labels:
+          severity: critical
+          automation: "true"
+        annotations:
+          summary: "Interface {{ $labels.ifName }} is down on {{ $labels.device }}"
+          description: >
+            {{ $labels.ifAlias }} ({{ $labels.ifName }}) on {{ $labels.device }}
+            has been operationally down for more than 10 seconds.
+          runbook_url: "https://runbooks.example.com/network/interface-down"
+
+      - alert: BGPSessionDown
+        expr: bgp_session_state{job="snmp"} == 0
+        for: 10s
+        labels:
+          severity: critical
+          automation: "true"
+        annotations:
+          summary: "BGP session to {{ $labels.bgp_peer }} is down on {{ $labels.device }}"
+          description: >
+            BGP session to AS{{ $labels.bgp_asn }} ({{ $labels.bgp_peer }}) on
+            {{ $labels.device }} has been down for more than 10 seconds.
+          runbook_url: "https://runbooks.example.com/network/bgp-session-down"
