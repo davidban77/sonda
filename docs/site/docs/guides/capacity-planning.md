@@ -258,6 +258,14 @@ sonda -q metrics --name cardinality_test --rate 50 --duration 60s \
     the write path (WAL, network, CPU). High cardinality stresses the index (memory,
     compaction, query planning). Test both dimensions independently, then together.
 
+??? tip "Steady-state fleet simulation with dynamic labels"
+    Cardinality spikes are time-windowed -- ideal for testing label explosions that come and go.
+    If you want **always-on** cardinality (e.g., simulating a stable fleet of 50 hosts), use
+    `dynamic_labels` instead. The label is present on every event, producing a constant number
+    of series for the full duration. See
+    [Dynamic labels](../configuration/scenario-file.md#dynamic-labels) in the scenario file
+    reference.
+
 ---
 
 ## Simulate traffic spikes with bursts

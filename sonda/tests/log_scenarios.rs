@@ -240,6 +240,67 @@ fn log_replay_yaml_has_stdout_sink() {
 }
 
 // ---------------------------------------------------------------------------
+// examples/dynamic-labels-logs.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dynamic_labels_logs_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/dynamic-labels-logs.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("dynamic-labels-logs.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn dynamic_labels_logs_yaml_has_correct_name() {
+    let path = workspace_file("examples/dynamic-labels-logs.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
+    let config: LogScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+    assert_eq!(config.name, "app_logs", "name must be app_logs");
+}
+
+#[test]
+fn dynamic_labels_logs_yaml_has_dynamic_labels() {
+    let path = workspace_file("examples/dynamic-labels-logs.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
+    let config: LogScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+    let dls = config
+        .dynamic_labels
+        .as_ref()
+        .expect("dynamic_labels must be present");
+    assert_eq!(dls.len(), 1, "must have exactly one dynamic label");
+    assert_eq!(dls[0].key, "pod_name");
+}
+
+#[test]
+fn dynamic_labels_logs_yaml_generator_factory_succeeds() {
+    let path = workspace_file("examples/dynamic-labels-logs.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
+    let config: LogScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+    let gen = create_log_generator(&config.generator)
+        .expect("log generator factory must succeed for dynamic-labels-logs.yaml");
+    let event = gen.generate(0);
+    assert!(
+        !event.message.is_empty(),
+        "generated log message must not be empty"
+    );
+}
+
+#[test]
+fn dynamic_labels_logs_yaml_sink_factory_succeeds() {
+    let path = workspace_file("examples/dynamic-labels-logs.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
+    let config: LogScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+    let _sink = create_sink(&config.sink, None)
+        .expect("sink factory must succeed for dynamic-labels-logs.yaml");
+}
+
+// ---------------------------------------------------------------------------
 // LogScenarioConfig YAML fixture: sonda/tests/fixtures
 // ---------------------------------------------------------------------------
 

@@ -113,14 +113,24 @@ pub fn run_with_sink(
         // Generate the value for this tick.
         let value = generator.value(ctx.tick);
 
-        // Build the per-tick label set. In the common case (no spike windows)
-        // this is just an Arc refcount bump — O(1), zero heap allocation.
-        // Only when a cardinality spike is active do we deep-clone the inner
-        // Labels to insert the spike key.
-        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() {
+        // Build the per-tick label set. In the common case (no spike windows
+        // and no dynamic labels) this is just an Arc refcount bump — O(1),
+        // zero heap allocation. Only when a cardinality spike is active or
+        // dynamic labels are configured do we deep-clone the inner Labels to
+        // insert the per-tick values.
+        let needs_dynamic = !ctx.dynamic_labels.is_empty();
+        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
             Arc::clone(&labels)
         } else {
             let mut mutated: Option<Labels> = None;
+            // Inject dynamic labels (always-on, every tick).
+            if needs_dynamic {
+                let tl = mutated.get_or_insert_with(|| (*labels).clone());
+                for dl in ctx.dynamic_labels {
+                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                }
+            }
+            // Inject cardinality spike labels (time-windowed).
             for sw in ctx.spike_windows {
                 if is_in_spike(ctx.elapsed, sw) {
                     let tl = mutated.get_or_insert_with(|| (*labels).clone());
@@ -184,6 +194,7 @@ mod tests {
                 gaps,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout, // not used — tests use run_with_sink directly
                 phase_offset: None,
@@ -347,6 +358,7 @@ mod tests {
                 gaps,
                 bursts,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
@@ -697,6 +709,7 @@ mod tests {
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: Some(vec![spike]),
+                dynamic_labels: None,
                 labels: None,
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
@@ -899,6 +912,7 @@ mod tests {
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -915,5 +929,207 @@ mod tests {
             matches!(result, Err(crate::SondaError::Config(ref e)) if e.to_string().contains("123-invalid")),
             "expected Config error for invalid name, got: {result:?}"
         );
+    }
+
+    // ---- Integration: dynamic labels appear in metric output --------------------
+
+    /// Helper that builds a ScenarioConfig with dynamic_labels.
+    fn make_config_with_dynamic_labels(
+        rate: f64,
+        duration: &str,
+        dynamic_labels: Vec<crate::config::DynamicLabelConfig>,
+    ) -> ScenarioConfig {
+        ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "up".to_string(),
+                rate,
+                duration: Some(duration.to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: Some(dynamic_labels),
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        }
+    }
+
+    /// Dynamic labels with counter strategy appear in every Prometheus line.
+    #[test]
+    fn dynamic_labels_counter_appear_in_metric_output() {
+        let config = make_config_with_dynamic_labels(
+            10.0,
+            "1s",
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("host-".to_string()),
+                    cardinality: 5,
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(
+            !lines.is_empty(),
+            "runner must produce at least one line of output"
+        );
+
+        for line in &lines {
+            assert!(
+                line.contains("hostname=\"host-"),
+                "every metric line must contain dynamic label hostname; line: {line}"
+            );
+        }
+    }
+
+    /// Dynamic labels with values list cycle through the values.
+    #[test]
+    fn dynamic_labels_values_list_cycle_in_metric_output() {
+        let config = make_config_with_dynamic_labels(
+            10.0,
+            "1s",
+            vec![crate::config::DynamicLabelConfig {
+                key: "region".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::ValuesList {
+                    values: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(!lines.is_empty());
+
+        // All lines must contain the label key
+        for line in &lines {
+            assert!(
+                line.contains("region=\""),
+                "every metric line must contain dynamic label region; line: {line}"
+            );
+        }
+
+        // Check that multiple distinct values appear across the output
+        let has_alpha = lines.iter().any(|l| l.contains("region=\"alpha\""));
+        let has_beta = lines.iter().any(|l| l.contains("region=\"beta\""));
+        assert!(
+            has_alpha || has_beta,
+            "at least one distinct dynamic label value should appear in output"
+        );
+    }
+
+    /// Cardinality ceiling is respected: only cardinality distinct values appear.
+    #[test]
+    fn dynamic_labels_counter_respects_cardinality_ceiling_in_output() {
+        let config = make_config_with_dynamic_labels(
+            50.0,
+            "1s",
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("host-".to_string()),
+                    cardinality: 3,
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let mut distinct_values = std::collections::HashSet::new();
+        for line in output.lines() {
+            // Extract the hostname="..." value
+            if let Some(start) = line.find("hostname=\"") {
+                let rest = &line[start + 10..];
+                if let Some(end) = rest.find('"') {
+                    distinct_values.insert(rest[..end].to_string());
+                }
+            }
+        }
+        assert_eq!(
+            distinct_values.len(),
+            3,
+            "with cardinality=3, exactly 3 distinct values must appear, got {:?}",
+            distinct_values
+        );
+    }
+
+    /// Dynamic labels and static labels coexist: both appear in output.
+    #[test]
+    fn dynamic_labels_and_static_labels_coexist_in_output() {
+        let mut config = make_config_with_dynamic_labels(
+            10.0,
+            "1s",
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("host-".to_string()),
+                    cardinality: 5,
+                },
+            }],
+        );
+        let mut label_map = std::collections::HashMap::new();
+        label_map.insert("env".to_string(), "prod".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        for line in output.lines() {
+            assert!(
+                line.contains("env=\"prod\""),
+                "static label must appear; line: {line}"
+            );
+            assert!(
+                line.contains("hostname=\"host-"),
+                "dynamic label must appear; line: {line}"
+            );
+        }
+    }
+
+    /// Dynamic label wins on key collision with static label.
+    #[test]
+    fn dynamic_label_wins_on_key_collision_with_static() {
+        let mut config = make_config_with_dynamic_labels(
+            10.0,
+            "500ms",
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("dynamic-".to_string()),
+                    cardinality: 3,
+                },
+            }],
+        );
+        let mut label_map = std::collections::HashMap::new();
+        label_map.insert("hostname".to_string(), "static-value".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        for line in output.lines() {
+            assert!(
+                line.contains("hostname=\"dynamic-"),
+                "dynamic label must overwrite static label; line: {line}"
+            );
+            assert!(
+                !line.contains("hostname=\"static-value\""),
+                "static value must not appear when dynamic label overrides it; line: {line}"
+            );
+        }
     }
 }

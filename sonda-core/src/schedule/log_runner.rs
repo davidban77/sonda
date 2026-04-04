@@ -97,11 +97,18 @@ pub fn run_logs_with_sink(
         // Generate the log event and inject scenario-level labels.
         let mut event = generator.generate(ctx.tick);
 
-        // Inject cardinality spike labels when inside a spike window.
-        if ctx.spike_windows.is_empty() {
+        // Inject dynamic labels and cardinality spike labels.
+        // Dynamic labels are always-on; spike labels are time-windowed.
+        let needs_dynamic = !ctx.dynamic_labels.is_empty();
+        if ctx.spike_windows.is_empty() && !needs_dynamic {
             event.labels = labels.clone();
         } else {
             let mut tl = labels.clone();
+            // Inject dynamic labels (always-on, every tick).
+            for dl in ctx.dynamic_labels {
+                tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+            }
+            // Inject cardinality spike labels (time-windowed).
             for sw in ctx.spike_windows {
                 if is_in_spike(ctx.elapsed, sw) {
                     tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
@@ -163,6 +170,7 @@ mod tests {
                 gaps: None,
                 bursts: None,
                 cardinality_spikes: None,
+                dynamic_labels: None,
                 labels: None,
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
@@ -638,6 +646,203 @@ sink:
             assert!(
                 parsed["labels"]["pod_name"].is_null(),
                 "without spike config, pod_name must not appear in labels; line: {line}"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Dynamic labels: always-on rotating labels in log output
+    // -------------------------------------------------------------------------
+
+    /// Helper that builds a LogScenarioConfig with dynamic_labels.
+    fn make_config_with_dynamic_labels(
+        rate: f64,
+        duration: Option<&str>,
+        dynamic_labels: Vec<crate::config::DynamicLabelConfig>,
+    ) -> LogScenarioConfig {
+        let mut config = make_config(rate, duration);
+        config.dynamic_labels = Some(dynamic_labels);
+        config
+    }
+
+    /// Dynamic labels with counter strategy appear in every JSON log line.
+    #[test]
+    fn run_logs_dynamic_labels_counter_appear_in_output() {
+        let config = make_config_with_dynamic_labels(
+            10.0,
+            Some("1s"),
+            vec![crate::config::DynamicLabelConfig {
+                key: "pod_name".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("pod-".to_string()),
+                    cardinality: 5,
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(!lines.is_empty(), "runner must produce output");
+
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert!(
+                parsed["labels"]["pod_name"].is_string(),
+                "every JSON line must contain dynamic label pod_name; line: {line}"
+            );
+            let val = parsed["labels"]["pod_name"].as_str().unwrap();
+            assert!(
+                val.starts_with("pod-"),
+                "dynamic label value must start with prefix 'pod-', got: {val}"
+            );
+        }
+    }
+
+    /// Dynamic labels with values list cycle through values in log output.
+    #[test]
+    fn run_logs_dynamic_labels_values_list_cycle_in_output() {
+        let config = make_config_with_dynamic_labels(
+            10.0,
+            Some("1s"),
+            vec![crate::config::DynamicLabelConfig {
+                key: "region".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::ValuesList {
+                    values: vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(!lines.is_empty());
+
+        // All lines must contain the label key
+        for line in &lines {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert!(
+                parsed["labels"]["region"].is_string(),
+                "every JSON line must contain dynamic label region; line: {line}"
+            );
+        }
+
+        // Check multiple distinct values appear
+        let mut distinct_values = std::collections::HashSet::new();
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(v) = parsed["labels"]["region"].as_str() {
+                distinct_values.insert(v.to_string());
+            }
+        }
+        assert!(
+            distinct_values.len() >= 2,
+            "with 3-element values list, at least 2 distinct values should appear: {distinct_values:?}"
+        );
+    }
+
+    /// Cardinality ceiling is respected in log output.
+    #[test]
+    fn run_logs_dynamic_labels_respects_cardinality_ceiling() {
+        let config = make_config_with_dynamic_labels(
+            50.0,
+            Some("1s"),
+            vec![crate::config::DynamicLabelConfig {
+                key: "pod".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("pod-".to_string()),
+                    cardinality: 3,
+                },
+            }],
+        );
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let mut distinct_values = std::collections::HashSet::new();
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(v) = parsed["labels"]["pod"].as_str() {
+                distinct_values.insert(v.to_string());
+            }
+        }
+        assert_eq!(
+            distinct_values.len(),
+            3,
+            "with cardinality=3, exactly 3 distinct values must appear, got {:?}",
+            distinct_values
+        );
+    }
+
+    /// Dynamic labels and static labels coexist in log output.
+    #[test]
+    fn run_logs_dynamic_labels_and_static_labels_coexist() {
+        let mut config = make_config_with_dynamic_labels(
+            10.0,
+            Some("1s"),
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("host-".to_string()),
+                    cardinality: 5,
+                },
+            }],
+        );
+        let mut label_map = HashMap::new();
+        label_map.insert("env".to_string(), "staging".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            assert_eq!(
+                parsed["labels"]["env"], "staging",
+                "static label must be present; line: {line}"
+            );
+            assert!(
+                parsed["labels"]["hostname"].is_string(),
+                "dynamic label must be present; line: {line}"
+            );
+        }
+    }
+
+    /// Dynamic label wins on key collision with static label in log output.
+    #[test]
+    fn run_logs_dynamic_label_wins_on_key_collision() {
+        let mut config = make_config_with_dynamic_labels(
+            10.0,
+            Some("500ms"),
+            vec![crate::config::DynamicLabelConfig {
+                key: "hostname".to_string(),
+                strategy: crate::config::DynamicLabelStrategy::Counter {
+                    prefix: Some("dynamic-".to_string()),
+                    cardinality: 3,
+                },
+            }],
+        );
+        let mut label_map = HashMap::new();
+        label_map.insert("hostname".to_string(), "static-value".to_string());
+        config.labels = Some(label_map);
+
+        let mut sink = MemorySink::new();
+        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+
+        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        for line in output.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
+            let val = parsed["labels"]["hostname"].as_str().unwrap();
+            assert!(
+                val.starts_with("dynamic-"),
+                "dynamic label must overwrite static; got: {val}"
             );
         }
     }

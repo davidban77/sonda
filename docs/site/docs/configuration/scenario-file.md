@@ -35,8 +35,12 @@ cardinality_spikes:
     strategy: counter
     prefix: "pod-"
 
+dynamic_labels:
+  - key: hostname
+    prefix: "host-"
+    cardinality: 10
+
 labels:
-  hostname: web-01
   zone: us-east-1
 
 encoder:
@@ -69,6 +73,7 @@ sonda metrics --scenario full-example.yaml
 | `generator` | object | yes | -- | Value generator configuration. See [Generators](generators.md). |
 | `encoder` | object | no | `prometheus_text` | Output format. See [Encoders](encoders.md). |
 | `sink` | object | no | `stdout` | Output destination. See [Sinks](sinks.md). |
+| `dynamic_labels` | list | no | none | Rotating labels that cycle through values on every tick. See [Dynamic labels](#dynamic-labels). |
 | `labels` | map | no | none | Static key-value labels attached to every event. |
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
@@ -146,6 +151,93 @@ cardinality_spikes:
     Gap windows take priority over spikes. If a gap and spike overlap, the gap suppresses all
     output including spike labels.
 
+### Dynamic labels
+
+Dynamic labels attach a rotating label value to **every** emitted event. They simulate a stable
+fleet of N distinct sources -- hostnames, pod names, regions -- without a time window. Unlike
+[cardinality spikes](#cardinality-spike-window), the label is always present, not just during a
+spike window.
+
+This lets you test dashboards that aggregate by label (e.g., `sum by (hostname)`) and exercise
+high-cardinality query paths in Prometheus or VictoriaMetrics.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `dynamic_labels[].key` | string | yes | -- | Label key to attach. Must be a valid Prometheus label key. |
+| `dynamic_labels[].prefix` | string | no | `"{key}_"` | Prefix for counter strategy values (e.g., `"host-"` produces `host-0`, `host-1`). |
+| `dynamic_labels[].cardinality` | integer | yes (counter) | -- | Number of unique values in the cycle. Must be > 0. |
+| `dynamic_labels[].values` | list | yes (values list) | -- | Explicit list of label values to cycle through. |
+
+**Two strategies**, chosen by which fields you provide:
+
+=== "Counter"
+
+    Provide `prefix` and `cardinality`. Values cycle as `{prefix}0`, `{prefix}1`, ...,
+    `{prefix}{cardinality-1}`, then wrap around.
+
+    ```yaml title="examples/dynamic-labels-fleet.yaml"
+    dynamic_labels:
+      - key: hostname
+        prefix: "host-"
+        cardinality: 10
+    ```
+
+    ```
+    node_cpu_usage{hostname="host-0",...} 50 1712345678000
+    node_cpu_usage{hostname="host-1",...} 50.4 1712345678100
+    ...
+    node_cpu_usage{hostname="host-9",...} 53.7 1712345678900
+    node_cpu_usage{hostname="host-0",...} 54.1 1712345679000
+    ```
+
+    If you omit `prefix`, it defaults to `"{key}_"` (e.g., `hostname_0`, `hostname_1`).
+
+=== "Values list"
+
+    Provide `values` -- an explicit list of strings. The label cycles through the list in order.
+
+    ```yaml title="examples/dynamic-labels-regions.yaml"
+    dynamic_labels:
+      - key: region
+        values: [us-east-1, us-west-2, eu-west-1]
+    ```
+
+    ```
+    api_latency{region="us-east-1",...} 0.42 1712345678000
+    api_latency{region="us-west-2",...} 1.23 1712345678200
+    api_latency{region="eu-west-1",...} 0.87 1712345678400
+    api_latency{region="us-east-1",...} 0.31 1712345678600
+    ```
+
+You can combine multiple dynamic labels in the same scenario. Each label cycles independently
+based on the tick counter:
+
+```yaml title="examples/dynamic-labels-multi.yaml"
+dynamic_labels:
+  - key: hostname
+    prefix: "web-"
+    cardinality: 3
+  - key: region
+    values: [us-east-1, eu-west-1]
+```
+
+```
+request_count{hostname="web-0",region="us-east-1",...} 0
+request_count{hostname="web-1",region="eu-west-1",...} 1
+request_count{hostname="web-2",region="us-east-1",...} 2
+request_count{hostname="web-0",region="eu-west-1",...} 3
+```
+
+!!! tip "Dynamic labels vs. cardinality spikes"
+    Use **dynamic labels** when you want a label to be present on every event (fleet simulation,
+    multi-region testing). Use **cardinality spikes** when you want a label to appear only during
+    recurring time windows (simulating label explosions that come and go).
+
+!!! info "Label merge behavior"
+    Dynamic labels are merged with static `labels:` on every tick. If a dynamic label key
+    collides with a static label key, the dynamic value wins. Dynamic labels work identically
+    for both metric and log scenarios.
+
 ### Multi-scenario fields
 
 These fields are only meaningful in multi-scenario mode (via `sonda run`). They control temporal
@@ -180,9 +272,9 @@ encoder, and sink. The key differences:
 
 - The `generator` uses log-specific types (`template` or `replay`).
 - The default encoder is `json_lines` instead of `prometheus_text`.
-- The optional `labels` field works the same way as for metrics: static key-value pairs attached
-  to every event. Labels appear in JSON Lines output and are used as Loki stream labels when
-  sending to a Loki sink.
+- The optional `labels` and `dynamic_labels` fields work the same way as for metrics. Static
+  labels are key-value pairs attached to every event; dynamic labels rotate values per tick.
+  Both appear in JSON Lines output and are used as Loki stream labels when sending to a Loki sink.
 
 ```yaml title="log-scenario.yaml"
 name: app_logs
