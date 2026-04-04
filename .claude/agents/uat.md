@@ -2,7 +2,7 @@
 name: uat
 description: User acceptance tester. Tests the project from a real user's perspective — builds the binary, runs it, validates observable behavior. Use as the final gate before approving a slice.
 tools: Read, Bash, Glob, Grep
-model: opus
+model: sonnet
 permissionMode: default
 ---
 
