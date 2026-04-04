@@ -2732,15 +2732,14 @@ mod tests {
     }
 
     #[test]
-    fn value_flag_takes_precedence_over_offset_for_constant() {
-        // --value and --offset conflict at the clap level, but if somehow both
-        // were provided, --value should win. Since clap enforces conflicts_with,
-        // we test the build_generator_config logic directly with only --value.
+    fn value_flag_alone_produces_constant_generator() {
+        // --value with no --offset (they conflict at the clap level).
+        // Verifies that --value alone, without any --value-mode, produces
+        // a constant generator with the specified value.
         let args = MetricsArgs {
             name: Some("up".to_string()),
             rate: Some(1.0),
             value: Some(7.0),
-            // offset: None — not provided
             ..default_args()
         };
         let config = load_config(&args).expect("--value without --offset must succeed");
@@ -2841,6 +2840,56 @@ mod tests {
                 );
             }
             other => panic!("expected Constant generator after --value override, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn offset_backward_compat_without_explicit_value_mode() {
+        // When --offset is provided with no --value-mode, the implicit default
+        // is "constant". The offset value should become the constant value.
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            offset: Some(3.14),
+            // value_mode: None — implicit constant default
+            ..default_args()
+        };
+        let config = load_config(&args).expect("--offset without --value-mode must succeed");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert!(
+                    (value - 3.14).abs() < f64::EPSILON,
+                    "--offset must set constant value when value_mode is implicit, got {value}"
+                );
+            }
+            other => panic!("expected Constant generator, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_flag_overrides_non_constant_yaml_generator() {
+        // The with-labels.yaml fixture has a sine generator. Using --value
+        // without --value-mode should override it to a constant generator.
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/with-labels.yaml");
+        let args = MetricsArgs {
+            scenario: Some(path),
+            value: Some(5.0),
+            // value_mode: None — not explicitly set; --value triggers the override
+            ..default_args()
+        };
+        let config =
+            load_config(&args).expect("--value must override sine YAML generator to constant");
+        match config.generator {
+            GeneratorConfig::Constant { value } => {
+                assert_eq!(
+                    value, 5.0,
+                    "--value must override sine generator to Constant with value 5.0"
+                );
+            }
+            other => {
+                panic!("expected Constant generator after --value override of sine, got {other:?}")
+            }
         }
     }
 }

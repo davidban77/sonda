@@ -43,6 +43,12 @@ See the [Getting Started](https://davidban77.github.io/sonda/getting-started/) g
 
 ## Your first metric
 
+Emit a constant value -- the simplest signal for health-check or baseline testing:
+
+```bash
+sonda metrics --name up --rate 1 --duration 5s --value 1
+```
+
 Generate a sine wave metric with labels, 2 samples/sec for 2 seconds:
 
 ```bash

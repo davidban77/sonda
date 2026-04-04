@@ -140,7 +140,7 @@ pub struct MetricsArgs {
 
     /// Fixed value emitted by the `constant` generator.
     ///
-    /// Shorthand for `--value-mode constant` with the given value. Conflicts
+    /// Only valid when `--value-mode` is `constant` (the default). Conflicts
     /// with `--offset` — use one or the other.
     #[arg(long, conflicts_with = "offset")]
     pub value: Option<f64>,
