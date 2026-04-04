@@ -237,11 +237,11 @@ Sonda supports nine sinks:
 | `file` | Write to a file | `--output path` |
 | `tcp` | Stream to a TCP listener | YAML only |
 | `udp` | Send to a UDP endpoint | YAML only |
-| `http_push` | POST batches to an HTTP endpoint | YAML only |
-| `loki` | Push logs to Grafana Loki | YAML only |
-| `kafka` | Publish to a Kafka topic | YAML only |
-| `remote_write` | Prometheus remote write protocol | YAML only |
-| `otlp_grpc` | OTLP/gRPC to an OpenTelemetry Collector | YAML only |
+| `http_push` | POST batches to an HTTP endpoint | `--sink http_push --endpoint <url>` |
+| `loki` | Push logs to Grafana Loki | `--sink loki --endpoint <url>` |
+| `kafka` | Publish to a Kafka topic | `--sink kafka --brokers <addr> --topic <t>` |
+| `remote_write` | Prometheus remote write protocol | `--sink remote_write --endpoint <url>` |
+| `otlp_grpc` | OTLP/gRPC to an OpenTelemetry Collector | `--sink otlp_grpc --endpoint <url> --signal-type <s>` |
 
 ### stdout (default)
 
@@ -261,8 +261,16 @@ sonda metrics --name up --rate 10 --duration 5s --output /tmp/metrics.txt
 
 ### http_push
 
-POST batched data to any HTTP endpoint. This is the most universal YAML-only sink -- it
-works with any backend that accepts HTTP imports:
+POST batched data to any HTTP endpoint. This is the most universal network sink -- it
+works with any backend that accepts HTTP imports. Use CLI flags for quick ad-hoc runs:
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 30s \
+  --sink http_push --endpoint http://localhost:9090/api/v1/push \
+  --content-type "text/plain; version=0.0.4"
+```
+
+Or use a scenario file for full control (including custom headers):
 
 ```bash
 sonda metrics --scenario examples/http-push-sink.yaml

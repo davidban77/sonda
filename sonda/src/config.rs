@@ -187,6 +187,13 @@ fn validate_sink_flags(flags: &SinkFlags<'_>, require_signal_type: bool) -> Resu
 /// Each sink variant is feature-gated. When a required feature is not compiled
 /// in, a clear error message is returned indicating which feature to enable.
 ///
+/// # CLI-only limitations
+///
+/// For the `http_push` sink, `headers` is always `None` when constructed from
+/// CLI flags because there is no `--header` CLI flag. Users who need custom
+/// HTTP headers must use a YAML scenario file where the `headers` map can be
+/// specified directly.
+///
 /// # Arguments
 ///
 /// * `sink_type` - The `--sink` flag value (e.g. `"http_push"`).
@@ -215,6 +222,8 @@ fn build_sink_config(
                         .to_string(),
                     content_type: content_type.map(|s| s.to_string()),
                     batch_size,
+                    // No --header CLI flag exists; users needing custom headers
+                    // must use a YAML scenario file.
                     headers: None,
                 })
             }
@@ -3774,6 +3783,192 @@ mod tests {
             matches!(config.encoder, EncoderConfig::Otlp),
             "encoder should be Otlp, got {:?}",
             config.encoder
+        );
+    }
+
+    // =========================================================================
+    // Orphan sink-companion flags without --sink (metrics path)
+    // =========================================================================
+
+    #[test]
+    fn metrics_content_type_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            content_type: Some("application/json".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--content-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn metrics_signal_type_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            signal_type: Some("metrics".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--signal-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn metrics_batch_size_without_sink_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            batch_size: Some(100),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("--batch-size without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    // =========================================================================
+    // Orphan sink-companion flags without --sink (logs path)
+    // =========================================================================
+
+    #[test]
+    fn logs_content_type_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            content_type: Some("application/json".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --content-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_signal_type_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            signal_type: Some("logs".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --signal-type without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_batch_size_without_sink_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            batch_size: Some(100),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs --batch-size without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--sink"),
+            "error must mention --sink, got: {msg}"
+        );
+    }
+
+    // =========================================================================
+    // Logs subcommand: --sink remote_write and --sink kafka happy paths
+    // =========================================================================
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn logs_sink_remote_write_with_endpoint_produces_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("remote_write".to_string()),
+            endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs remote_write sink should work");
+        match &config.sink {
+            SinkConfig::RemoteWrite { url, .. } => {
+                assert_eq!(url, "http://localhost:8428/api/v1/write");
+            }
+            other => panic!("expected SinkConfig::RemoteWrite, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn logs_sink_kafka_with_brokers_and_topic_produces_config() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            topic: Some("test".to_string()),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("logs kafka sink should work");
+        match &config.sink {
+            SinkConfig::Kafka { brokers, topic } => {
+                assert_eq!(brokers, "127.0.0.1:9092");
+                assert_eq!(topic, "test");
+            }
+            other => panic!("expected SinkConfig::Kafka, got {other:?}"),
+        }
+    }
+
+    // =========================================================================
+    // Logs subcommand: --sink kafka error paths
+    // =========================================================================
+
+    #[test]
+    fn logs_sink_kafka_without_brokers_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            topic: Some("test".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs kafka without --brokers must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--brokers"),
+            "error must mention --brokers, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logs_sink_kafka_without_topic_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(5.0),
+            sink: Some("kafka".to_string()),
+            brokers: Some("127.0.0.1:9092".to_string()),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("logs kafka without --topic must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--topic"),
+            "error must mention --topic, got: {msg}"
         );
     }
 }
