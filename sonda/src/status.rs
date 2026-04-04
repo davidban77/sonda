@@ -514,7 +514,9 @@ mod tests {
 
     use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig};
     use sonda_core::encoder::EncoderConfig;
-    use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
+    use sonda_core::generator::{
+        CsvColumnSpec, GeneratorConfig, LogGeneratorConfig, TemplateConfig,
+    };
     use sonda_core::schedule::stats::ScenarioStats;
     use sonda_core::sink::SinkConfig;
 
@@ -906,6 +908,30 @@ mod tests {
         assert_eq!(
             generator_display(&config),
             "csv_replay (file: data.csv, column: 0, header, repeat)"
+        );
+    }
+
+    #[test]
+    fn generator_display_csv_replay_with_columns() {
+        let config = GeneratorConfig::CsvReplay {
+            file: "/data/metrics.csv".to_string(),
+            column: None,
+            has_header: Some(true),
+            repeat: Some(false),
+            columns: Some(vec![
+                CsvColumnSpec {
+                    index: 1,
+                    name: "cpu_percent".to_string(),
+                },
+                CsvColumnSpec {
+                    index: 2,
+                    name: "mem_percent".to_string(),
+                },
+            ]),
+        };
+        assert_eq!(
+            generator_display(&config),
+            "csv_replay (file: /data/metrics.csv, columns: [cpu_percent, mem_percent], header, clamp)"
         );
     }
 

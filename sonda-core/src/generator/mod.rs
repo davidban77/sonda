@@ -194,6 +194,10 @@ pub enum GeneratorConfig {
 ///
 /// Returns [`SondaError::Config`] if the generator configuration is invalid
 /// (e.g., an empty values list for the sequence generator).
+///
+/// **Note:** [`GeneratorConfig::CsvReplay`] configs with `columns` set must be expanded
+/// via [`crate::config::expand_scenario`] before calling this function. Passing an
+/// unexpanded multi-column config returns a [`ConfigError`].
 pub fn create_generator(
     config: &GeneratorConfig,
     rate: f64,
@@ -246,13 +250,20 @@ pub fn create_generator(
             column,
             has_header,
             repeat,
-            columns: _,
-        } => Ok(Box::new(CsvReplayGenerator::new(
-            file,
-            column.unwrap_or(0),
-            has_header.unwrap_or(true),
-            repeat.unwrap_or(true),
-        )?)),
+            columns,
+        } => {
+            if columns.is_some() {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "csv_replay: call expand_scenario before create_generator when 'columns' is set",
+                )));
+            }
+            Ok(Box::new(CsvReplayGenerator::new(
+                file,
+                column.unwrap_or(0),
+                has_header.unwrap_or(true),
+                repeat.unwrap_or(true),
+            )?))
+        }
         GeneratorConfig::Step {
             start,
             step_size,
@@ -729,6 +740,31 @@ mod tests {
         // With zero duration, all ticks should return baseline
         assert_eq!(gen.value(0), 50.0);
         assert_eq!(gen.value(30), 50.0);
+    }
+
+    #[test]
+    fn factory_csv_replay_with_columns_returns_error() {
+        let config = GeneratorConfig::CsvReplay {
+            file: "data.csv".to_string(),
+            column: None,
+            has_header: None,
+            repeat: None,
+            columns: Some(vec![CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            }]),
+        };
+        let result = create_generator(&config, 1.0);
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("expand_scenario"),
+                    "error must mention expand_scenario, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("csv_replay with columns set must return an error"),
+        }
     }
 
     // ---- Config deserialization tests ----------------------------------------

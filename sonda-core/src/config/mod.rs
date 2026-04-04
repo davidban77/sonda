@@ -2119,6 +2119,37 @@ mod expand_tests {
         assert!(matches!(child.sink, SinkConfig::Stdout));
     }
 
+    /// Expanded configs inherit non-None schedule fields (gaps, bursts) from the parent.
+    #[test]
+    fn expanded_configs_inherit_non_none_gaps_and_bursts() {
+        let cols = vec![CsvColumnSpec {
+            index: 1,
+            name: "metric_a".to_string(),
+        }];
+        let mut config = csv_replay_config("parent", None, Some(cols));
+        config.base.gaps = Some(GapConfig {
+            every: "2m".to_string(),
+            r#for: "20s".to_string(),
+        });
+        config.base.bursts = Some(BurstConfig {
+            every: "10s".to_string(),
+            r#for: "2s".to_string(),
+            multiplier: 3.0,
+        });
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        let child = &result[0];
+
+        let gaps = child.gaps.as_ref().expect("gaps must be inherited");
+        assert_eq!(gaps.every, "2m");
+        assert_eq!(gaps.r#for, "20s");
+
+        let bursts = child.bursts.as_ref().expect("bursts must be inherited");
+        assert_eq!(bursts.every, "10s");
+        assert_eq!(bursts.r#for, "2s");
+        assert_eq!(bursts.multiplier, 3.0);
+    }
+
     // -----------------------------------------------------------------------
     // expand_scenario: error — column and columns both set
     // -----------------------------------------------------------------------
