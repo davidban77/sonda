@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0](https://github.com/davidban77/sonda/compare/v0.6.0...v0.7.0) (2026-04-05)
+
+
+### Features
+
+* add retry/backoff for sink writes ([#159](https://github.com/davidban77/sonda/issues/159)) ([248bf73](https://github.com/davidban77/sonda/commit/248bf7366d9a39665552ad12447219bc6cdc1db2))
+* harden Helm chart, add OTLP to Docker build, fix docs version drift ([#151](https://github.com/davidban77/sonda/issues/151), [#152](https://github.com/davidban77/sonda/issues/152), [#153](https://github.com/davidban77/sonda/issues/153)) ([#156](https://github.com/davidban77/sonda/issues/156)) ([f97ee53](https://github.com/davidban77/sonda/commit/f97ee530d22d5978e5439868224d584337216586))
+
 ## [0.6.0](https://github.com/davidban77/sonda/compare/v0.5.0...v0.6.0) (2026-04-05)
 
 
