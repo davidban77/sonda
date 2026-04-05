@@ -4232,8 +4232,8 @@ mod tests {
 
         // Stdout: non-network sink, retry must be rejected.
         let mut sink = SinkConfig::Stdout;
-        let err = apply_retry_to_sink(&mut sink, retry.clone())
-            .expect_err("retry on stdout must fail");
+        let err =
+            apply_retry_to_sink(&mut sink, retry.clone()).expect_err("retry on stdout must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("not supported") && msg.contains("stdout"),
@@ -4244,8 +4244,8 @@ mod tests {
         let mut sink = SinkConfig::File {
             path: "/tmp/test.txt".to_string(),
         };
-        let err = apply_retry_to_sink(&mut sink, retry.clone())
-            .expect_err("retry on file must fail");
+        let err =
+            apply_retry_to_sink(&mut sink, retry.clone()).expect_err("retry on file must fail");
         assert!(
             err.to_string().contains("not supported"),
             "error should mention unsupported sink type"
@@ -4255,8 +4255,7 @@ mod tests {
         let mut sink = SinkConfig::Udp {
             address: "127.0.0.1:9999".to_string(),
         };
-        let err = apply_retry_to_sink(&mut sink, retry)
-            .expect_err("retry on udp must fail");
+        let err = apply_retry_to_sink(&mut sink, retry).expect_err("retry on udp must fail");
         assert!(
             err.to_string().contains("not supported"),
             "error should mention unsupported sink type"
