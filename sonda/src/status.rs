@@ -15,7 +15,8 @@ use owo_colors::Stream::Stderr;
 use crate::cli::Verbosity;
 use sonda_core::config::{
     BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy, GapConfig,
-    LogScenarioConfig, ScenarioConfig, ScenarioEntry,
+    HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry,
+    SummaryScenarioConfig,
 };
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -43,6 +44,22 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity) {
         ScenarioEntry::Logs(c) => (
             c.name.as_str(),
             "logs",
+            c.rate,
+            encoder_display(&c.encoder),
+            sink_display(&c.sink),
+            c.duration.as_deref(),
+        ),
+        ScenarioEntry::Histogram(c) => (
+            c.name.as_str(),
+            "histogram",
+            c.rate,
+            encoder_display(&c.encoder),
+            sink_display(&c.sink),
+            c.duration.as_deref(),
+        ),
+        ScenarioEntry::Summary(c) => (
+            c.name.as_str(),
+            "summary",
             c.rate,
             encoder_display(&c.encoder),
             sink_display(&c.sink),
@@ -124,6 +141,8 @@ pub fn print_config(entry: &ScenarioEntry) {
     match entry {
         ScenarioEntry::Metrics(c) => print_metrics_config(c),
         ScenarioEntry::Logs(c) => print_logs_config(c),
+        ScenarioEntry::Histogram(c) => print_histogram_config(c),
+        ScenarioEntry::Summary(c) => print_summary_config(c),
     }
 }
 
@@ -166,6 +185,74 @@ fn print_logs_config(c: &LogScenarioConfig) {
         c.duration.as_deref().unwrap_or("indefinite")
     );
     eprintln!("  generator:  {}", log_generator_display(&c.generator));
+    eprintln!("  encoder:    {}", encoder_display(&c.encoder));
+    eprintln!("  sink:       {}", sink_display(&c.sink));
+    print_labels_line(&c.labels);
+    print_gaps_line(&c.gaps);
+    print_bursts_line(&c.bursts);
+    print_spikes_lines(&c.cardinality_spikes);
+    print_dynamic_labels_lines(&c.dynamic_labels);
+    print_jitter_line(&c.jitter, &c.jitter_seed);
+    print_phase_offset_line(&c.phase_offset);
+    print_clock_group_line(&c.clock_group);
+    eprintln!();
+}
+
+/// Print the resolved config for a histogram scenario.
+fn print_histogram_config(c: &HistogramScenarioConfig) {
+    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
+    eprintln!("{header} Resolved scenario config:");
+    eprintln!();
+    eprintln!("  name:       {}", c.name);
+    eprintln!("  signal:     histogram");
+    eprintln!("  rate:       {}/s", format_rate(c.rate));
+    eprintln!(
+        "  duration:   {}",
+        c.duration.as_deref().unwrap_or("indefinite")
+    );
+    eprintln!(
+        "  buckets:    {}",
+        match &c.buckets {
+            Some(b) => format!("{:?}", b),
+            None => "default (Prometheus)".to_string(),
+        }
+    );
+    eprintln!("  distribution: {:?}", c.distribution);
+    eprintln!("  obs/tick:   {}", c.observations_per_tick.unwrap_or(100));
+    eprintln!("  encoder:    {}", encoder_display(&c.encoder));
+    eprintln!("  sink:       {}", sink_display(&c.sink));
+    print_labels_line(&c.labels);
+    print_gaps_line(&c.gaps);
+    print_bursts_line(&c.bursts);
+    print_spikes_lines(&c.cardinality_spikes);
+    print_dynamic_labels_lines(&c.dynamic_labels);
+    print_jitter_line(&c.jitter, &c.jitter_seed);
+    print_phase_offset_line(&c.phase_offset);
+    print_clock_group_line(&c.clock_group);
+    eprintln!();
+}
+
+/// Print the resolved config for a summary scenario.
+fn print_summary_config(c: &SummaryScenarioConfig) {
+    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
+    eprintln!("{header} Resolved scenario config:");
+    eprintln!();
+    eprintln!("  name:       {}", c.name);
+    eprintln!("  signal:     summary");
+    eprintln!("  rate:       {}/s", format_rate(c.rate));
+    eprintln!(
+        "  duration:   {}",
+        c.duration.as_deref().unwrap_or("indefinite")
+    );
+    eprintln!(
+        "  quantiles:  {}",
+        match &c.quantiles {
+            Some(q) => format!("{:?}", q),
+            None => "default [0.5, 0.9, 0.95, 0.99]".to_string(),
+        }
+    );
+    eprintln!("  distribution: {:?}", c.distribution);
+    eprintln!("  obs/tick:   {}", c.observations_per_tick.unwrap_or(100));
     eprintln!("  encoder:    {}", encoder_display(&c.encoder));
     eprintln!("  sink:       {}", sink_display(&c.sink));
     print_labels_line(&c.labels);

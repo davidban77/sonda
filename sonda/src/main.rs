@@ -132,6 +132,70 @@ fn run() -> anyhow::Result<()> {
             );
             join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
+        Commands::Histogram(ref args) => {
+            let config = config::load_histogram_config(args)?;
+            let entry = sonda_core::ScenarioEntry::Histogram(config);
+            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if cli.dry_run {
+                status::print_config(&entry);
+                status::print_dry_run_ok();
+                return Ok(());
+            }
+
+            if verbosity == Verbosity::Verbose {
+                status::print_config(&entry);
+            }
+
+            status::print_start(&entry, verbosity);
+            let mut handle = sonda_core::launch_scenario(
+                "cli-histogram".to_string(),
+                entry,
+                Arc::clone(&running),
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
+            status::print_stop(
+                &handle.name,
+                handle.elapsed(),
+                &handle.stats_snapshot(),
+                verbosity,
+            );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
+        Commands::Summary(ref args) => {
+            let config = config::load_summary_config(args)?;
+            let entry = sonda_core::ScenarioEntry::Summary(config);
+            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if cli.dry_run {
+                status::print_config(&entry);
+                status::print_dry_run_ok();
+                return Ok(());
+            }
+
+            if verbosity == Verbosity::Verbose {
+                status::print_config(&entry);
+            }
+
+            status::print_start(&entry, verbosity);
+            let mut handle = sonda_core::launch_scenario(
+                "cli-summary".to_string(),
+                entry,
+                Arc::clone(&running),
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let join_result = handle.join(None);
+            status::print_stop(
+                &handle.name,
+                handle.elapsed(),
+                &handle.stats_snapshot(),
+                verbosity,
+            );
+            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
 

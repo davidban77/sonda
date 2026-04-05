@@ -5,9 +5,15 @@
 //!
 //! Log generators implement the `LogGenerator` trait and produce `LogEvent`
 //! values. They are constructed via `create_log_generator()`.
+//!
+//! Histogram and summary generators produce multi-valued samples per tick
+//! (bucket counts + count + sum, or quantile values + count + sum). They
+//! hold cumulative state and do not implement `ValueGenerator`. See
+//! [`histogram::HistogramGenerator`] and [`summary::SummaryGenerator`].
 
 pub mod constant;
 pub mod csv_replay;
+pub mod histogram;
 pub mod jitter;
 pub mod log_replay;
 pub mod log_template;
@@ -16,6 +22,7 @@ pub mod sequence;
 pub mod sine;
 pub mod spike;
 pub mod step;
+pub mod summary;
 pub mod uniform;
 
 pub use self::jitter::JitterWrapper;

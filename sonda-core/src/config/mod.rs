@@ -326,11 +326,181 @@ impl std::ops::DerefMut for ScenarioConfig {
     }
 }
 
+/// Distribution model configuration for histogram and summary generators.
+///
+/// Determines how sample values are distributed when the generator produces
+/// observations on each tick. Deserialized from YAML via the `type` tag.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// distribution:
+///   type: exponential
+///   rate: 10.0
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(tag = "type"))]
+pub enum DistributionConfig {
+    /// Exponential distribution with rate parameter lambda.
+    ///
+    /// Mean = 1/lambda. Models latency distributions.
+    #[cfg_attr(feature = "config", serde(rename = "exponential"))]
+    Exponential {
+        /// Rate parameter (lambda). Must be strictly positive.
+        rate: f64,
+    },
+    /// Normal (Gaussian) distribution.
+    #[cfg_attr(feature = "config", serde(rename = "normal"))]
+    Normal {
+        /// Center of the distribution.
+        mean: f64,
+        /// Spread of the distribution. Must be strictly positive.
+        stddev: f64,
+    },
+    /// Uniform distribution over `[min, max]`.
+    #[cfg_attr(feature = "config", serde(rename = "uniform"))]
+    Uniform {
+        /// Lower bound (inclusive).
+        min: f64,
+        /// Upper bound (inclusive).
+        max: f64,
+    },
+}
+
+/// Full configuration for a single histogram scenario run.
+///
+/// Embeds [`BaseScheduleConfig`] for the shared schedule and delivery fields,
+/// adding histogram-specific parameters: bucket boundaries, distribution model,
+/// observations per tick, mean shift, and seed.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// signal_type: histogram
+/// name: http_request_duration_seconds
+/// rate: 1
+/// duration: 5m
+/// buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+/// distribution:
+///   type: exponential
+///   rate: 10.0
+/// observations_per_tick: 100
+/// seed: 42
+/// labels:
+///   method: GET
+/// encoder:
+///   type: prometheus_text
+/// sink:
+///   type: stdout
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct HistogramScenarioConfig {
+    /// Shared schedule and delivery fields.
+    #[cfg_attr(feature = "config", serde(flatten))]
+    pub base: BaseScheduleConfig,
+    /// Histogram bucket upper bounds. When `None`, uses the default Prometheus
+    /// bucket boundaries: `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]`.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub buckets: Option<Vec<f64>>,
+    /// Distribution model for generating observations.
+    pub distribution: DistributionConfig,
+    /// Number of observations to sample per tick. Defaults to 100.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub observations_per_tick: Option<u64>,
+    /// Linear drift applied to the distribution center per second. Defaults to 0.0.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub mean_shift_per_sec: Option<f64>,
+    /// Determinism seed for the RNG. Defaults to 0.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub seed: Option<u64>,
+    /// Output encoder. Defaults to `prometheus_text`.
+    #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
+    pub encoder: EncoderConfig,
+}
+
+impl std::ops::Deref for HistogramScenarioConfig {
+    type Target = BaseScheduleConfig;
+
+    fn deref(&self) -> &BaseScheduleConfig {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for HistogramScenarioConfig {
+    fn deref_mut(&mut self) -> &mut BaseScheduleConfig {
+        &mut self.base
+    }
+}
+
+/// Full configuration for a single summary scenario run.
+///
+/// Embeds [`BaseScheduleConfig`] for the shared schedule and delivery fields,
+/// adding summary-specific parameters: quantile targets, distribution model,
+/// observations per tick, mean shift, and seed.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// signal_type: summary
+/// name: rpc_duration_seconds
+/// rate: 1
+/// duration: 5m
+/// quantiles: [0.5, 0.9, 0.95, 0.99]
+/// distribution:
+///   type: normal
+///   mean: 0.1
+///   stddev: 0.02
+/// observations_per_tick: 100
+/// seed: 42
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct SummaryScenarioConfig {
+    /// Shared schedule and delivery fields.
+    #[cfg_attr(feature = "config", serde(flatten))]
+    pub base: BaseScheduleConfig,
+    /// Quantile targets to compute. When `None`, uses default quantiles:
+    /// `[0.5, 0.9, 0.95, 0.99]`.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub quantiles: Option<Vec<f64>>,
+    /// Distribution model for generating observations.
+    pub distribution: DistributionConfig,
+    /// Number of observations to sample per tick. Defaults to 100.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub observations_per_tick: Option<u64>,
+    /// Linear drift applied to the distribution center per second. Defaults to 0.0.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub mean_shift_per_sec: Option<f64>,
+    /// Determinism seed for the RNG. Defaults to 0.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub seed: Option<u64>,
+    /// Output encoder. Defaults to `prometheus_text`.
+    #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
+    pub encoder: EncoderConfig,
+}
+
+impl std::ops::Deref for SummaryScenarioConfig {
+    type Target = BaseScheduleConfig;
+
+    fn deref(&self) -> &BaseScheduleConfig {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for SummaryScenarioConfig {
+    fn deref_mut(&mut self) -> &mut BaseScheduleConfig {
+        &mut self.base
+    }
+}
+
 /// A single entry in a multi-scenario configuration.
 ///
-/// The `signal_type` tag selects whether this entry is a metrics or logs scenario.
+/// The `signal_type` tag selects whether this entry is a metrics, logs,
+/// histogram, or summary scenario.
 /// Deserialized from a YAML multi-scenario file where each element of the
-/// `scenarios` list carries a `signal_type: metrics` or `signal_type: logs` key.
+/// `scenarios` list carries a `signal_type` key.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "signal_type"))]
@@ -341,6 +511,12 @@ pub enum ScenarioEntry {
     /// A logs scenario entry.
     #[cfg_attr(feature = "config", serde(rename = "logs"))]
     Logs(LogScenarioConfig),
+    /// A histogram scenario entry.
+    #[cfg_attr(feature = "config", serde(rename = "histogram"))]
+    Histogram(HistogramScenarioConfig),
+    /// A summary scenario entry.
+    #[cfg_attr(feature = "config", serde(rename = "summary"))]
+    Summary(SummaryScenarioConfig),
 }
 
 impl ScenarioEntry {
@@ -352,6 +528,8 @@ impl ScenarioEntry {
         match self {
             ScenarioEntry::Metrics(c) => &c.base,
             ScenarioEntry::Logs(c) => &c.base,
+            ScenarioEntry::Histogram(c) => &c.base,
+            ScenarioEntry::Summary(c) => &c.base,
         }
     }
 
@@ -531,6 +709,7 @@ pub fn expand_entry(entry: ScenarioEntry) -> Result<Vec<ScenarioEntry>, SondaErr
             let expanded = expand_scenario(config)?;
             Ok(expanded.into_iter().map(ScenarioEntry::Metrics).collect())
         }
+        // Histogram, Summary, and Logs entries do not support csv_replay expansion.
         other => Ok(vec![other]),
     }
 }
@@ -2373,5 +2552,311 @@ mod expand_tests {
         let result = expand_entry(entry).expect("must succeed");
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], ScenarioEntry::Logs(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // HistogramScenarioConfig deserialization
+    // -----------------------------------------------------------------------
+
+    /// Histogram config deserializes from YAML with all fields.
+    #[test]
+    fn histogram_config_deserializes_from_yaml() {
+        let yaml = r#"
+name: http_request_duration_seconds
+rate: 1
+duration: 5m
+buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+distribution:
+  type: exponential
+  rate: 10.0
+observations_per_tick: 100
+mean_shift_per_sec: 0.001
+seed: 42
+labels:
+  method: GET
+"#;
+        let config: HistogramScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.name, "http_request_duration_seconds");
+        assert_eq!(config.rate, 1.0);
+        assert_eq!(config.buckets.as_ref().unwrap().len(), 11);
+        assert_eq!(config.observations_per_tick, Some(100));
+        assert_eq!(config.mean_shift_per_sec, Some(0.001));
+        assert_eq!(config.seed, Some(42));
+    }
+
+    /// Histogram config with omitted optional fields uses defaults.
+    #[test]
+    fn histogram_config_defaults_when_omitted() {
+        let yaml = r#"
+name: latency
+rate: 1
+distribution:
+  type: exponential
+  rate: 5.0
+"#;
+        let config: HistogramScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.buckets.is_none());
+        assert!(config.observations_per_tick.is_none());
+        assert!(config.mean_shift_per_sec.is_none());
+        assert!(config.seed.is_none());
+    }
+
+    /// Histogram config with normal distribution.
+    #[test]
+    fn histogram_config_normal_distribution() {
+        let yaml = r#"
+name: latency
+rate: 1
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.02
+"#;
+        let config: HistogramScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match config.distribution {
+            DistributionConfig::Normal { mean, stddev } => {
+                assert_eq!(mean, 0.1);
+                assert_eq!(stddev, 0.02);
+            }
+            _ => panic!("expected Normal distribution"),
+        }
+    }
+
+    /// Histogram config with uniform distribution.
+    #[test]
+    fn histogram_config_uniform_distribution() {
+        let yaml = r#"
+name: latency
+rate: 1
+distribution:
+  type: uniform
+  min: 0.0
+  max: 1.0
+"#;
+        let config: HistogramScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match config.distribution {
+            DistributionConfig::Uniform { min, max } => {
+                assert_eq!(min, 0.0);
+                assert_eq!(max, 1.0);
+            }
+            _ => panic!("expected Uniform distribution"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SummaryScenarioConfig deserialization
+    // -----------------------------------------------------------------------
+
+    /// Summary config deserializes from YAML with all fields.
+    #[test]
+    fn summary_config_deserializes_from_yaml() {
+        let yaml = r#"
+name: rpc_duration_seconds
+rate: 1
+duration: 5m
+quantiles: [0.5, 0.9, 0.95, 0.99]
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.02
+observations_per_tick: 100
+seed: 42
+"#;
+        let config: SummaryScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.name, "rpc_duration_seconds");
+        assert_eq!(config.rate, 1.0);
+        assert_eq!(config.quantiles.as_ref().unwrap().len(), 4);
+        assert_eq!(config.observations_per_tick, Some(100));
+        assert_eq!(config.seed, Some(42));
+    }
+
+    /// Summary config with omitted optional fields uses defaults.
+    #[test]
+    fn summary_config_defaults_when_omitted() {
+        let yaml = r#"
+name: rpc_latency
+rate: 1
+distribution:
+  type: exponential
+  rate: 5.0
+"#;
+        let config: SummaryScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.quantiles.is_none());
+        assert!(config.observations_per_tick.is_none());
+        assert!(config.seed.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ScenarioEntry: Histogram and Summary variants
+    // -----------------------------------------------------------------------
+
+    /// Multi-scenario YAML with histogram entry deserializes correctly.
+    #[test]
+    fn multi_scenario_histogram_entry_deserializes() {
+        let yaml = r#"
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    rate: 1
+    duration: 1m
+    distribution:
+      type: exponential
+      rate: 10.0
+"#;
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.scenarios.len(), 1);
+        assert!(matches!(config.scenarios[0], ScenarioEntry::Histogram(_)));
+    }
+
+    /// Multi-scenario YAML with summary entry deserializes correctly.
+    #[test]
+    fn multi_scenario_summary_entry_deserializes() {
+        let yaml = r#"
+scenarios:
+  - signal_type: summary
+    name: rpc_duration_seconds
+    rate: 1
+    duration: 1m
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+"#;
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.scenarios.len(), 1);
+        assert!(matches!(config.scenarios[0], ScenarioEntry::Summary(_)));
+    }
+
+    /// Multi-scenario YAML with mixed metrics, logs, histogram, and summary.
+    #[test]
+    fn multi_scenario_mixed_types_deserialize() {
+        let yaml = r#"
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 10
+    duration: 1m
+    generator:
+      type: constant
+      value: 1.0
+  - signal_type: histogram
+    name: latency_hist
+    rate: 1
+    duration: 1m
+    distribution:
+      type: exponential
+      rate: 10.0
+  - signal_type: summary
+    name: latency_sum
+    rate: 1
+    duration: 1m
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+"#;
+        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.scenarios.len(), 3);
+        assert!(matches!(config.scenarios[0], ScenarioEntry::Metrics(_)));
+        assert!(matches!(config.scenarios[1], ScenarioEntry::Histogram(_)));
+        assert!(matches!(config.scenarios[2], ScenarioEntry::Summary(_)));
+    }
+
+    /// ScenarioEntry::base() works for histogram entries.
+    #[test]
+    fn scenario_entry_base_works_for_histogram() {
+        let yaml = r#"
+signal_type: histogram
+name: test_hist
+rate: 5
+distribution:
+  type: exponential
+  rate: 10.0
+"#;
+        let entry: ScenarioEntry = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(entry.base().name, "test_hist");
+        assert_eq!(entry.base().rate, 5.0);
+    }
+
+    /// ScenarioEntry::base() works for summary entries.
+    #[test]
+    fn scenario_entry_base_works_for_summary() {
+        let yaml = r#"
+signal_type: summary
+name: test_sum
+rate: 5
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.02
+"#;
+        let entry: ScenarioEntry = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(entry.base().name, "test_sum");
+        assert_eq!(entry.base().rate, 5.0);
+    }
+
+    /// expand_entry passes through Histogram and Summary unchanged.
+    #[test]
+    fn expand_entry_passes_through_histogram() {
+        let entry = ScenarioEntry::Histogram(HistogramScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "test_hist".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: crate::sink::SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            buckets: None,
+            distribution: DistributionConfig::Exponential { rate: 10.0 },
+            observations_per_tick: None,
+            mean_shift_per_sec: None,
+            seed: None,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+        let result = expand_entry(entry).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], ScenarioEntry::Histogram(_)));
+    }
+
+    /// expand_entry passes through Summary unchanged.
+    #[test]
+    fn expand_entry_passes_through_summary() {
+        let entry = ScenarioEntry::Summary(SummaryScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "test_sum".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: crate::sink::SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            quantiles: None,
+            distribution: DistributionConfig::Normal {
+                mean: 0.1,
+                stddev: 0.02,
+            },
+            observations_per_tick: None,
+            mean_shift_per_sec: None,
+            seed: None,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+        let result = expand_entry(entry).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0], ScenarioEntry::Summary(_)));
     }
 }

@@ -8,12 +8,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::config::validate::{validate_config, validate_log_config};
+use crate::config::validate::{
+    validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
+};
 use crate::config::ScenarioEntry;
 use crate::schedule::handle::ScenarioHandle;
+use crate::schedule::histogram_runner::run_with_sink as run_histogram_with_sink;
 use crate::schedule::log_runner::run_logs_with_sink;
 use crate::schedule::runner::run_with_sink;
 use crate::schedule::stats::ScenarioStats;
+use crate::schedule::summary_runner::run_with_sink as run_summary_with_sink;
 use crate::sink::create_sink;
 use crate::{RuntimeError, SondaError};
 
@@ -30,6 +34,8 @@ pub fn validate_entry(entry: &ScenarioEntry) -> Result<(), SondaError> {
     match entry {
         ScenarioEntry::Metrics(config) => validate_config(config),
         ScenarioEntry::Logs(config) => validate_log_config(config),
+        ScenarioEntry::Histogram(config) => validate_histogram_config(config),
+        ScenarioEntry::Summary(config) => validate_summary_config(config),
     }
 }
 
@@ -75,6 +81,8 @@ pub fn launch_scenario(
     let (name, target_rate) = match &entry {
         ScenarioEntry::Metrics(c) => (c.name.clone(), c.rate),
         ScenarioEntry::Logs(c) => (c.name.clone(), c.rate),
+        ScenarioEntry::Histogram(c) => (c.name.clone(), c.rate),
+        ScenarioEntry::Summary(c) => (c.name.clone(), c.rate),
     };
 
     let started_at = Instant::now();
@@ -121,6 +129,24 @@ pub fn launch_scenario(
                 ScenarioEntry::Logs(config) => {
                     let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
                     run_logs_with_sink(
+                        &config,
+                        sink.as_mut(),
+                        Some(shutdown_for_thread.as_ref()),
+                        Some(Arc::clone(&stats_for_thread)),
+                    )
+                }
+                ScenarioEntry::Histogram(config) => {
+                    let mut sink = create_sink(&config.sink, None)?;
+                    run_histogram_with_sink(
+                        &config,
+                        sink.as_mut(),
+                        Some(shutdown_for_thread.as_ref()),
+                        Some(Arc::clone(&stats_for_thread)),
+                    )
+                }
+                ScenarioEntry::Summary(config) => {
+                    let mut sink = create_sink(&config.sink, None)?;
+                    run_summary_with_sink(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
