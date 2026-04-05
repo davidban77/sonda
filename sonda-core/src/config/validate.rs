@@ -6,8 +6,9 @@ use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
 use crate::{ConfigError, SondaError};
 
 use super::{
-    BurstConfig, CardinalitySpikeConfig, DynamicLabelConfig, DynamicLabelStrategy,
-    LogScenarioConfig, ScenarioConfig,
+    BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig,
+    DynamicLabelStrategy, HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig,
+    SummaryScenarioConfig,
 };
 
 /// Parse a human-readable duration string into a [`Duration`].
@@ -424,6 +425,280 @@ fn validate_encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Result
     Ok(())
 }
 
+/// Validate a [`DistributionConfig`] for semantic correctness.
+///
+/// Checks:
+/// - Exponential: `rate` must be strictly positive.
+/// - Normal: `stddev` must be strictly positive; `mean` must not be NaN.
+/// - Uniform: `min` and `max` must not be NaN; `min` must be strictly less than `max`.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_distribution_config(dist: &DistributionConfig) -> Result<(), SondaError> {
+    match dist {
+        DistributionConfig::Exponential { rate } => {
+            if rate.is_nan() || *rate <= 0.0 {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "distribution.rate must be positive, got {}",
+                    rate
+                ))));
+            }
+        }
+        DistributionConfig::Normal { stddev, mean } => {
+            if stddev.is_nan() || *stddev <= 0.0 {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "distribution.stddev must be positive, got {}",
+                    stddev
+                ))));
+            }
+            if mean.is_nan() {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "distribution.mean must not be NaN",
+                )));
+            }
+        }
+        DistributionConfig::Uniform { min, max } => {
+            if min.is_nan() || max.is_nan() {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "distribution.min and distribution.max must not be NaN",
+                )));
+            }
+            if *min >= *max {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "distribution.min ({}) must be strictly less than distribution.max ({})",
+                    min, max
+                ))));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate histogram bucket boundaries for semantic correctness.
+///
+/// Checks:
+/// - Buckets must not be empty.
+/// - All values must be strictly positive.
+/// - Values must be strictly sorted (ascending, no duplicates).
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_buckets(buckets: &[f64]) -> Result<(), SondaError> {
+    if buckets.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "buckets must not be empty",
+        )));
+    }
+    for (i, &b) in buckets.iter().enumerate() {
+        if b.is_nan() || b.is_infinite() || b <= 0.0 {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "buckets[{}] must be positive and finite, got {}",
+                i, b
+            ))));
+        }
+    }
+    for window in buckets.windows(2) {
+        if window[1] <= window[0] {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "buckets must be strictly sorted: {} >= {}",
+                window[0], window[1]
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Validate summary quantile targets for semantic correctness.
+///
+/// Checks:
+/// - Quantiles must not be empty.
+/// - All values must be in the open interval `(0, 1)`.
+/// - Values must be strictly sorted (ascending, no duplicates).
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_quantiles(quantiles: &[f64]) -> Result<(), SondaError> {
+    if quantiles.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "quantiles must not be empty",
+        )));
+    }
+    for (i, &q) in quantiles.iter().enumerate() {
+        if q.is_nan() || q <= 0.0 || q >= 1.0 {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "quantiles[{}] must be in (0, 1), got {}",
+                i, q
+            ))));
+        }
+    }
+    for window in quantiles.windows(2) {
+        if window[1] <= window[0] {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "quantiles must be strictly sorted: {} >= {}",
+                window[0], window[1]
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a [`HistogramScenarioConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `rate` is strictly positive.
+/// - `duration`, if provided, is a parseable duration string.
+/// - Gap/burst/spike consistency (delegates to shared validators).
+/// - Bucket boundaries are sorted, positive, non-empty.
+/// - Distribution parameters are valid.
+/// - `observations_per_tick` must be > 0 (when provided).
+/// - Metric name is a valid Prometheus metric name.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
+    if config.rate.is_nan() || config.rate <= 0.0 {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "rate must be positive, got {}",
+            config.rate
+        ))));
+    }
+
+    if let Some(ref dur_str) = config.duration {
+        parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
+    }
+
+    if let Some(ref gap) = config.gaps {
+        let every = parse_duration(&gap.every)
+            .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
+        let for_dur = parse_duration(&gap.r#for)
+            .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
+        if for_dur >= every {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "gaps.for ({:?}) must be less than gaps.every ({:?})",
+                gap.r#for, gap.every
+            ))));
+        }
+    }
+
+    if let Some(ref burst) = config.bursts {
+        validate_burst_config(burst)?;
+    }
+
+    if let Some(ref spikes) = config.cardinality_spikes {
+        for spike in spikes {
+            validate_cardinality_spike_config(spike)?;
+        }
+    }
+
+    if let Some(ref dls) = config.dynamic_labels {
+        for dl in dls {
+            validate_dynamic_label_config(dl)?;
+        }
+    }
+
+    if !is_valid_metric_name(&config.name) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
+            config.name
+        ))));
+    }
+
+    if let Some(ref buckets) = config.buckets {
+        validate_buckets(buckets)?;
+    }
+
+    validate_distribution_config(&config.distribution)?;
+
+    if let Some(obs) = config.observations_per_tick {
+        if obs == 0 {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "observations_per_tick must be greater than zero",
+            )));
+        }
+    }
+
+    validate_jitter(config.base.jitter)?;
+    validate_encoder_precision(&config.encoder)?;
+
+    Ok(())
+}
+
+/// Validate a [`SummaryScenarioConfig`] for semantic correctness.
+///
+/// Checks:
+/// - `rate` is strictly positive.
+/// - `duration`, if provided, is a parseable duration string.
+/// - Gap/burst/spike consistency (delegates to shared validators).
+/// - Quantile targets are in `(0, 1)`, sorted, non-empty.
+/// - Distribution parameters are valid.
+/// - `observations_per_tick` must be > 0 (when provided).
+/// - Metric name is a valid Prometheus metric name.
+///
+/// Returns [`SondaError::Config`] with a descriptive message if validation fails.
+pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
+    if config.rate.is_nan() || config.rate <= 0.0 {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "rate must be positive, got {}",
+            config.rate
+        ))));
+    }
+
+    if let Some(ref dur_str) = config.duration {
+        parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
+    }
+
+    if let Some(ref gap) = config.gaps {
+        let every = parse_duration(&gap.every)
+            .map_err(|e| prepend_context("invalid gaps.every", &gap.every, e))?;
+        let for_dur = parse_duration(&gap.r#for)
+            .map_err(|e| prepend_context("invalid gaps.for", &gap.r#for, e))?;
+        if for_dur >= every {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "gaps.for ({:?}) must be less than gaps.every ({:?})",
+                gap.r#for, gap.every
+            ))));
+        }
+    }
+
+    if let Some(ref burst) = config.bursts {
+        validate_burst_config(burst)?;
+    }
+
+    if let Some(ref spikes) = config.cardinality_spikes {
+        for spike in spikes {
+            validate_cardinality_spike_config(spike)?;
+        }
+    }
+
+    if let Some(ref dls) = config.dynamic_labels {
+        for dl in dls {
+            validate_dynamic_label_config(dl)?;
+        }
+    }
+
+    if !is_valid_metric_name(&config.name) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "invalid metric name {:?}: must match [a-zA-Z_:][a-zA-Z0-9_:]*",
+            config.name
+        ))));
+    }
+
+    if let Some(ref quantiles) = config.quantiles {
+        validate_quantiles(quantiles)?;
+    }
+
+    validate_distribution_config(&config.distribution)?;
+
+    if let Some(obs) = config.observations_per_tick {
+        if obs == 0 {
+            return Err(SondaError::Config(ConfigError::invalid(
+                "observations_per_tick must be greater than zero",
+            )));
+        }
+    }
+
+    validate_jitter(config.base.jitter)?;
+    validate_encoder_precision(&config.encoder)?;
+
+    Ok(())
+}
+
 /// Wrap a `SondaError::Config` from `parse_duration` with additional field context.
 ///
 /// Extracts the inner message string from the error so the final error reads
@@ -442,7 +717,7 @@ fn prepend_context(label: &str, value: &str, err: SondaError) -> SondaError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GapConfig, ScenarioConfig};
+    use crate::config::{BaseScheduleConfig, GapConfig, ScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::GeneratorConfig;
     use crate::sink::SinkConfig;
@@ -2065,5 +2340,307 @@ generator:
             encoder: crate::encoder::EncoderConfig::JsonLines { precision: None },
         };
         assert!(validate_log_config(&log_config).is_err());
+    }
+
+    // ---- validate_buckets ---------------------------------------------------
+
+    #[test]
+    fn validate_buckets_accepts_sorted_positive_values() {
+        assert!(validate_buckets(&[0.005, 0.01, 0.1, 1.0, 10.0]).is_ok());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_empty() {
+        assert!(validate_buckets(&[]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_negative_value() {
+        assert!(validate_buckets(&[-1.0, 0.1, 1.0]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_zero_value() {
+        assert!(validate_buckets(&[0.0, 0.1, 1.0]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_unsorted() {
+        assert!(validate_buckets(&[1.0, 0.5, 2.0]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_duplicates() {
+        assert!(validate_buckets(&[0.1, 0.5, 0.5, 1.0]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_nan() {
+        assert!(validate_buckets(&[0.1, f64::NAN, 1.0]).is_err());
+    }
+
+    #[test]
+    fn validate_buckets_rejects_infinity() {
+        assert!(validate_buckets(&[0.1, f64::INFINITY]).is_err());
+    }
+
+    // ---- validate_quantiles -------------------------------------------------
+
+    #[test]
+    fn validate_quantiles_accepts_valid_targets() {
+        assert!(validate_quantiles(&[0.5, 0.9, 0.95, 0.99]).is_ok());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_empty() {
+        assert!(validate_quantiles(&[]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_zero() {
+        assert!(validate_quantiles(&[0.0, 0.5, 0.99]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_one() {
+        assert!(validate_quantiles(&[0.5, 1.0]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_negative() {
+        assert!(validate_quantiles(&[-0.1, 0.5]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_greater_than_one() {
+        assert!(validate_quantiles(&[0.5, 1.5]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_unsorted() {
+        assert!(validate_quantiles(&[0.99, 0.5]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_duplicates() {
+        assert!(validate_quantiles(&[0.5, 0.5, 0.99]).is_err());
+    }
+
+    #[test]
+    fn validate_quantiles_rejects_nan() {
+        assert!(validate_quantiles(&[0.5, f64::NAN]).is_err());
+    }
+
+    // ---- validate_distribution_config ---------------------------------------
+
+    #[test]
+    fn validate_distribution_exponential_positive_rate() {
+        let dist = DistributionConfig::Exponential { rate: 10.0 };
+        assert!(validate_distribution_config(&dist).is_ok());
+    }
+
+    #[test]
+    fn validate_distribution_exponential_zero_rate() {
+        let dist = DistributionConfig::Exponential { rate: 0.0 };
+        assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_exponential_negative_rate() {
+        let dist = DistributionConfig::Exponential { rate: -1.0 };
+        assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_normal_positive_stddev() {
+        let dist = DistributionConfig::Normal {
+            mean: 0.1,
+            stddev: 0.02,
+        };
+        assert!(validate_distribution_config(&dist).is_ok());
+    }
+
+    #[test]
+    fn validate_distribution_normal_zero_stddev() {
+        let dist = DistributionConfig::Normal {
+            mean: 0.1,
+            stddev: 0.0,
+        };
+        assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_normal_negative_stddev() {
+        let dist = DistributionConfig::Normal {
+            mean: 0.1,
+            stddev: -1.0,
+        };
+        assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_uniform_valid() {
+        let dist = DistributionConfig::Uniform { min: 0.0, max: 1.0 };
+        assert!(validate_distribution_config(&dist).is_ok());
+    }
+
+    #[test]
+    fn validate_distribution_uniform_nan_min() {
+        let dist = DistributionConfig::Uniform {
+            min: f64::NAN,
+            max: 1.0,
+        };
+        assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_uniform_min_greater_than_max() {
+        let dist = DistributionConfig::Uniform { min: 5.0, max: 1.0 };
+        let result = validate_distribution_config(&dist);
+        assert!(
+            result.is_err(),
+            "min > max must be rejected, got {result:?}"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("less than"),
+            "error should mention 'less than', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_distribution_uniform_min_equal_to_max() {
+        let dist = DistributionConfig::Uniform { min: 3.0, max: 3.0 };
+        assert!(
+            validate_distribution_config(&dist).is_err(),
+            "min == max must be rejected"
+        );
+    }
+
+    // ---- validate_histogram_config ------------------------------------------
+
+    /// Helper to build a minimal valid HistogramScenarioConfig.
+    fn make_histogram_config() -> HistogramScenarioConfig {
+        HistogramScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "http_request_duration_seconds".to_string(),
+                rate: 10.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            buckets: None,
+            distribution: DistributionConfig::Exponential { rate: 10.0 },
+            observations_per_tick: Some(100),
+            mean_shift_per_sec: None,
+            seed: Some(42),
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        }
+    }
+
+    #[test]
+    fn validate_histogram_config_accepts_valid() {
+        assert!(validate_histogram_config(&make_histogram_config()).is_ok());
+    }
+
+    #[test]
+    fn validate_histogram_config_rejects_zero_rate() {
+        let mut config = make_histogram_config();
+        config.base.rate = 0.0;
+        assert!(validate_histogram_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_histogram_config_rejects_zero_observations() {
+        let mut config = make_histogram_config();
+        config.observations_per_tick = Some(0);
+        assert!(validate_histogram_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_histogram_config_rejects_unsorted_buckets() {
+        let mut config = make_histogram_config();
+        config.buckets = Some(vec![1.0, 0.5, 2.0]);
+        assert!(validate_histogram_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_histogram_config_rejects_invalid_metric_name() {
+        let mut config = make_histogram_config();
+        config.base.name = "123-invalid".to_string();
+        assert!(validate_histogram_config(&config).is_err());
+    }
+
+    // ---- validate_summary_config --------------------------------------------
+
+    /// Helper to build a minimal valid SummaryScenarioConfig.
+    fn make_summary_config() -> SummaryScenarioConfig {
+        SummaryScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "rpc_duration_seconds".to_string(),
+                rate: 10.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            quantiles: None,
+            distribution: DistributionConfig::Normal {
+                mean: 0.1,
+                stddev: 0.02,
+            },
+            observations_per_tick: Some(100),
+            mean_shift_per_sec: None,
+            seed: Some(42),
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        }
+    }
+
+    #[test]
+    fn validate_summary_config_accepts_valid() {
+        assert!(validate_summary_config(&make_summary_config()).is_ok());
+    }
+
+    #[test]
+    fn validate_summary_config_rejects_zero_rate() {
+        let mut config = make_summary_config();
+        config.base.rate = 0.0;
+        assert!(validate_summary_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_summary_config_rejects_zero_observations() {
+        let mut config = make_summary_config();
+        config.observations_per_tick = Some(0);
+        assert!(validate_summary_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_summary_config_rejects_out_of_range_quantiles() {
+        let mut config = make_summary_config();
+        config.quantiles = Some(vec![0.5, 1.5]);
+        assert!(validate_summary_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_summary_config_rejects_invalid_metric_name() {
+        let mut config = make_summary_config();
+        config.base.name = "123-invalid".to_string();
+        assert!(validate_summary_config(&config).is_err());
     }
 }

@@ -309,10 +309,7 @@ pub async fn post_scenario(
 
     // 3. Assign a unique ID and extract the scenario name before moving entry.
     let id = Uuid::new_v4().to_string();
-    let name = match &entry {
-        ScenarioEntry::Metrics(c) => c.name.clone(),
-        ScenarioEntry::Logs(c) => c.name.clone(),
-    };
+    let name = entry.base().name.clone();
 
     // 4. Launch the scenario on a new OS thread.
     let shutdown = Arc::new(AtomicBool::new(true));

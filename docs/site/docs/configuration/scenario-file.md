@@ -310,7 +310,14 @@ sonda logs --scenario log-scenario.yaml
 ## Multi-scenario files
 
 Run multiple scenarios concurrently from a single file using `sonda run`. Each entry in the
-`scenarios` list must include a `signal_type` field (`metrics` or `logs`).
+`scenarios` list must include a `signal_type` field.
+
+| `signal_type` | Description | Config format |
+|---------------|-------------|---------------|
+| `metrics` | Gauge/counter metrics via a [generator](generators.md#metric-generators) | `generator.type` + standard fields |
+| `logs` | Structured log events | `generator.type: template` or `replay` |
+| `histogram` | Prometheus-style histogram (bucket, count, sum) | `distribution` + histogram fields |
+| `summary` | Prometheus-style summary (quantile, count, sum) | `distribution` + summary fields |
 
 ```yaml title="multi-scenario.yaml"
 scenarios:
@@ -357,6 +364,86 @@ sonda run --scenario multi-scenario.yaml
 
 The `phase_offset` on `memory_usage_percent` delays it by 3 seconds, so CPU spikes first and
 memory follows. Both scenarios share the `alert-test` clock group for synchronized timing.
+
+### Mixing all four signal types
+
+You can combine metrics, logs, histograms, and summaries in one file. Each entry uses its own
+config format based on `signal_type`:
+
+```yaml title="mixed-signals.yaml"
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    rate: 10
+    duration: 60s
+    generator:
+      type: step
+      start: 0
+      step_size: 1.0
+    labels:
+      job: api
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    rate: 1
+    duration: 60s
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      job: api
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: summary
+    name: rpc_duration_seconds
+    rate: 1
+    duration: 60s
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 100
+    labels:
+      service: auth
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: logs
+    name: app_logs
+    rate: 5
+    duration: 60s
+    generator:
+      type: template
+      templates:
+        - message: "Request processed in {duration}ms"
+          field_pools:
+            duration: ["12", "45", "120", "500"]
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+```
+
+```bash
+sonda run --scenario mixed-signals.yaml
+```
+
+!!! info "Histogram and summary entries use different fields"
+    Histogram and summary entries do not have a `generator` block. Instead, they use
+    `distribution`, `buckets`/`quantiles`, and `observations_per_tick` at the top level.
+    See [Generators -- histogram and summary](generators.md#histogram-and-summary-generators)
+    for the full field reference.
 
 ## CLI overrides
 

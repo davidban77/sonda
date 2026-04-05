@@ -8,20 +8,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::config::validate::{validate_config, validate_log_config};
+use crate::config::validate::{
+    validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
+};
 use crate::config::ScenarioEntry;
 use crate::schedule::handle::ScenarioHandle;
+use crate::schedule::histogram_runner::run_with_sink as run_histogram_with_sink;
 use crate::schedule::log_runner::run_logs_with_sink;
 use crate::schedule::runner::run_with_sink;
 use crate::schedule::stats::ScenarioStats;
+use crate::schedule::summary_runner::run_with_sink as run_summary_with_sink;
 use crate::sink::create_sink;
 use crate::{RuntimeError, SondaError};
 
-/// Validate any scenario entry (metrics or logs).
+/// Validate any scenario entry (metrics, logs, histogram, or summary).
 ///
-/// Dispatches to [`validate_config`] or [`validate_log_config`] based on the
-/// entry variant. This centralises the `match ScenarioEntry { ... }` dispatch
-/// so that neither the CLI nor the server needs to duplicate it.
+/// Dispatches to the appropriate validator based on the entry variant. This
+/// centralises the `match ScenarioEntry { ... }` dispatch so that neither
+/// the CLI nor the server needs to duplicate it.
 ///
 /// # Errors
 ///
@@ -30,14 +34,16 @@ pub fn validate_entry(entry: &ScenarioEntry) -> Result<(), SondaError> {
     match entry {
         ScenarioEntry::Metrics(config) => validate_config(config),
         ScenarioEntry::Logs(config) => validate_log_config(config),
+        ScenarioEntry::Histogram(config) => validate_histogram_config(config),
+        ScenarioEntry::Summary(config) => validate_summary_config(config),
     }
 }
 
 /// Launch a single scenario on a new OS thread.
 ///
 /// Creates the sink, wires up the shutdown flag and the stats arc, spawns the
-/// appropriate runner (metrics or logs), and returns a [`ScenarioHandle`] for
-/// lifecycle management.
+/// appropriate runner (metrics, logs, histogram, or summary), and returns a
+/// [`ScenarioHandle`] for lifecycle management.
 ///
 /// This is the single function that both the CLI and sonda-server call to
 /// start a scenario. No scenario launch logic exists outside this function.
@@ -75,6 +81,8 @@ pub fn launch_scenario(
     let (name, target_rate) = match &entry {
         ScenarioEntry::Metrics(c) => (c.name.clone(), c.rate),
         ScenarioEntry::Logs(c) => (c.name.clone(), c.rate),
+        ScenarioEntry::Histogram(c) => (c.name.clone(), c.rate),
+        ScenarioEntry::Summary(c) => (c.name.clone(), c.rate),
     };
 
     let started_at = Instant::now();
@@ -127,6 +135,24 @@ pub fn launch_scenario(
                         Some(Arc::clone(&stats_for_thread)),
                     )
                 }
+                ScenarioEntry::Histogram(config) => {
+                    let mut sink = create_sink(&config.sink, None)?;
+                    run_histogram_with_sink(
+                        &config,
+                        sink.as_mut(),
+                        Some(shutdown_for_thread.as_ref()),
+                        Some(Arc::clone(&stats_for_thread)),
+                    )
+                }
+                ScenarioEntry::Summary(config) => {
+                    let mut sink = create_sink(&config.sink, None)?;
+                    run_summary_with_sink(
+                        &config,
+                        sink.as_mut(),
+                        Some(shutdown_for_thread.as_ref()),
+                        Some(Arc::clone(&stats_for_thread)),
+                    )
+                }
             }
         })
         .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
@@ -150,7 +176,10 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry};
+    use crate::config::{
+        BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig, LogScenarioConfig,
+        ScenarioConfig, ScenarioEntry, SummaryScenarioConfig,
+    };
     use crate::encoder::EncoderConfig;
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
@@ -882,5 +911,128 @@ mod tests {
 
         handle.stop();
         handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    // ---- Histogram helpers --------------------------------------------------
+
+    /// Build a short-lived histogram `ScenarioEntry` (runs for 200ms then stops).
+    fn histogram_entry(name: &str) -> ScenarioEntry {
+        ScenarioEntry::Histogram(HistogramScenarioConfig {
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 50.0,
+                duration: Some("200ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            buckets: None,
+            distribution: DistributionConfig::Exponential { rate: 10.0 },
+            observations_per_tick: Some(50),
+            mean_shift_per_sec: None,
+            seed: Some(42),
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        })
+    }
+
+    /// Build a short-lived summary `ScenarioEntry` (runs for 200ms then stops).
+    fn summary_entry(name: &str) -> ScenarioEntry {
+        ScenarioEntry::Summary(SummaryScenarioConfig {
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 50.0,
+                duration: Some("200ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            quantiles: None,
+            distribution: DistributionConfig::Normal {
+                mean: 0.1,
+                stddev: 0.02,
+            },
+            observations_per_tick: Some(50),
+            mean_shift_per_sec: None,
+            seed: Some(42),
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        })
+    }
+
+    // ---- launch_scenario: histogram runs to completion ----------------------
+
+    /// A short histogram scenario launches, runs to completion, and join returns Ok.
+    #[test]
+    fn launch_histogram_scenario_runs_to_completion() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = histogram_entry("launch_histogram");
+        let mut handle = launch_scenario(
+            "id-histogram".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            None,
+        )
+        .expect("launch must succeed for valid histogram entry");
+
+        let result = handle.join(Some(Duration::from_secs(5)));
+        assert!(
+            result.is_ok(),
+            "histogram scenario must run to completion: {result:?}"
+        );
+    }
+
+    // ---- launch_scenario: summary runs to completion -----------------------
+
+    /// A short summary scenario launches, runs to completion, and join returns Ok.
+    #[test]
+    fn launch_summary_scenario_runs_to_completion() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = summary_entry("launch_summary");
+        let mut handle =
+            launch_scenario("id-summary".to_string(), entry, Arc::clone(&shutdown), None)
+                .expect("launch must succeed for valid summary entry");
+
+        let result = handle.join(Some(Duration::from_secs(5)));
+        assert!(
+            result.is_ok(),
+            "summary scenario must run to completion: {result:?}"
+        );
+    }
+
+    // ---- validate_entry: histogram and summary dispatching ------------------
+
+    /// validate_entry dispatches to validate_histogram_config for a Histogram entry.
+    #[test]
+    fn validate_entry_accepts_valid_histogram_entry() {
+        let entry = histogram_entry("valid_histogram");
+        let result = validate_entry(&entry);
+        assert!(
+            result.is_ok(),
+            "validate_entry must accept a valid histogram entry: {result:?}"
+        );
+    }
+
+    /// validate_entry dispatches to validate_summary_config for a Summary entry.
+    #[test]
+    fn validate_entry_accepts_valid_summary_entry() {
+        let entry = summary_entry("valid_summary");
+        let result = validate_entry(&entry);
+        assert!(
+            result.is_ok(),
+            "validate_entry must accept a valid summary entry: {result:?}"
+        );
     }
 }

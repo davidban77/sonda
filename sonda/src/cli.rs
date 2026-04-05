@@ -76,12 +76,53 @@ pub enum Commands {
     Metrics(MetricsArgs),
     /// Generate synthetic log events and write them to the configured sink.
     Logs(LogsArgs),
+    /// Generate synthetic histogram metrics (bucket, count, sum series).
+    ///
+    /// Produces Prometheus-style histogram data with cumulative bucket counts.
+    /// Requires a `--scenario` file with histogram-specific configuration
+    /// (distribution model, bucket boundaries, observations per tick).
+    Histogram(HistogramArgs),
+    /// Generate synthetic summary metrics (quantile, count, sum series).
+    ///
+    /// Produces Prometheus-style summary data with pre-computed quantile values.
+    /// Requires a `--scenario` file with summary-specific configuration
+    /// (distribution model, quantile targets, observations per tick).
+    Summary(SummaryArgs),
     /// Run multiple scenarios concurrently from a multi-scenario YAML file.
     ///
     /// The scenario file must contain a top-level `scenarios:` list. Each
-    /// entry specifies a `signal_type` of either `metrics` or `logs`, plus
-    /// the scenario-specific configuration fields.
+    /// entry specifies a `signal_type` of either `metrics`, `logs`,
+    /// `histogram`, or `summary`, plus the scenario-specific configuration
+    /// fields.
     Run(RunArgs),
+}
+
+/// Arguments for the `histogram` subcommand.
+///
+/// Requires a `--scenario` file — histogram scenarios are too complex for
+/// inline CLI flags alone.
+#[derive(Debug, Args)]
+pub struct HistogramArgs {
+    /// Path to a YAML histogram scenario file.
+    ///
+    /// The file must contain a histogram scenario configuration with a
+    /// `distribution` field specifying the observation model.
+    #[arg(long)]
+    pub scenario: PathBuf,
+}
+
+/// Arguments for the `summary` subcommand.
+///
+/// Requires a `--scenario` file — summary scenarios are too complex for
+/// inline CLI flags alone.
+#[derive(Debug, Args)]
+pub struct SummaryArgs {
+    /// Path to a YAML summary scenario file.
+    ///
+    /// The file must contain a summary scenario configuration with a
+    /// `distribution` field specifying the observation model.
+    #[arg(long)]
+    pub scenario: PathBuf,
 }
 
 /// Arguments for the `metrics` subcommand.
@@ -582,14 +623,15 @@ pub struct LogsArgs {
 ///
 /// Accepts a YAML file that defines multiple concurrent scenarios under a
 /// top-level `scenarios:` key. Each entry carries a `signal_type` field
-/// (`metrics` or `logs`) along with the full scenario configuration.
+/// (`metrics`, `logs`, `histogram`, or `summary`) along with the full
+/// scenario configuration.
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Path to a multi-scenario YAML file.
     ///
     /// The file must have a top-level `scenarios:` list. Each list entry must
-    /// include a `signal_type: metrics` or `signal_type: logs` field, followed
-    /// by the scenario-specific configuration fields.
+    /// include a `signal_type` field (`metrics`, `logs`, `histogram`, or
+    /// `summary`), followed by the scenario-specific configuration fields.
     #[arg(long)]
     pub scenario: PathBuf,
 }

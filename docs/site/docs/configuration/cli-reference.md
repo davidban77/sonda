@@ -507,6 +507,103 @@ sonda logs --mode template --rate 10 --duration 60s \
   --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
 ```
 
+## sonda histogram
+
+Generate synthetic histogram metrics (cumulative bucket counts, `_count`, `_sum`) and write them
+to the configured sink. Requires a scenario file -- histogram configuration is too complex for
+inline CLI flags.
+
+```bash
+sonda histogram --scenario <FILE>
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--scenario <FILE>` | path | YAML histogram scenario file. Required. |
+
+The scenario file must contain a `distribution` block and may include `buckets`,
+`observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
+[Generators -- histogram](generators.md#histogram) for the full field reference.
+
+```bash
+sonda histogram --scenario examples/histogram.yaml
+```
+
+Dry run to validate config:
+
+```bash
+sonda --dry-run histogram --scenario examples/histogram.yaml
+```
+
+```text title="Output"
+[config] Resolved scenario config:
+
+  name:       http_request_duration_seconds
+  signal:     histogram
+  rate:       1/s
+  duration:   10s
+  buckets:    default (Prometheus)
+  distribution: Exponential { rate: 10.0 }
+  obs/tick:   100
+  encoder:    prometheus_text
+  sink:       stdout
+  labels:     handler=/api/v1/query, method=GET
+
+Validation: OK
+```
+
+!!! note
+    The `histogram` subcommand only accepts `--scenario`. Unlike `sonda metrics`, it does not
+    support inline generator flags. All histogram parameters must be defined in the YAML file.
+
+## sonda summary
+
+Generate synthetic summary metrics (pre-computed quantile values, `_count`, `_sum`) and write
+them to the configured sink. Requires a scenario file.
+
+```bash
+sonda summary --scenario <FILE>
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--scenario <FILE>` | path | YAML summary scenario file. Required. |
+
+The scenario file must contain a `distribution` block and may include `quantiles`,
+`observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
+[Generators -- summary](generators.md#summary) for the full field reference.
+
+```bash
+sonda summary --scenario examples/summary.yaml
+```
+
+Dry run to validate config:
+
+```bash
+sonda --dry-run summary --scenario examples/summary.yaml
+```
+
+```text title="Output"
+[config] Resolved scenario config:
+
+  name:       rpc_duration_seconds
+  signal:     summary
+  rate:       1/s
+  duration:   10s
+  quantiles:  default [0.5, 0.9, 0.95, 0.99]
+  distribution: Normal { mean: 0.1, stddev: 0.02 }
+  obs/tick:   100
+  encoder:    prometheus_text
+  sink:       stdout
+  labels:     method=GetUser, service=auth
+
+Validation: OK
+```
+
+!!! note
+    Like `sonda histogram`, the `summary` subcommand only accepts `--scenario`. All summary
+    parameters must be defined in the YAML file.
+
 ## sonda run
 
 Run multiple scenarios concurrently from a multi-scenario YAML file.
@@ -519,8 +616,9 @@ sonda run --scenario <FILE>
 |------|------|-------------|
 | `--scenario <FILE>` | path | Multi-scenario YAML file. Required. |
 
-The file must have a top-level `scenarios:` list. Each entry includes `signal_type: metrics` or
-`signal_type: logs`. See [Scenario Files - Multi-scenario files](scenario-file.md#multi-scenario-files).
+The file must have a top-level `scenarios:` list. Each entry includes a `signal_type` field:
+`metrics`, `logs`, `histogram`, or `summary`. See
+[Scenario Files - Multi-scenario files](scenario-file.md#multi-scenario-files).
 
 ```bash
 sonda run --scenario examples/multi-scenario.yaml

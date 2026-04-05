@@ -1219,6 +1219,36 @@ pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
         .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
 }
 
+/// Load a histogram scenario from a YAML file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed.
+pub fn load_histogram_config(
+    args: &crate::cli::HistogramArgs,
+) -> Result<sonda_core::config::HistogramScenarioConfig> {
+    let path = &args.scenario;
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    serde_yaml_ng::from_str(&contents)
+        .with_context(|| format!("failed to parse histogram scenario file {}", path.display()))
+}
+
+/// Load a summary scenario from a YAML file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed.
+pub fn load_summary_config(
+    args: &crate::cli::SummaryArgs,
+) -> Result<sonda_core::config::SummaryScenarioConfig> {
+    let path = &args.scenario;
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    serde_yaml_ng::from_str(&contents)
+        .with_context(|| format!("failed to parse summary scenario file {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

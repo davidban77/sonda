@@ -5,11 +5,13 @@
 
 pub(crate) mod core_loop;
 pub mod handle;
+pub mod histogram_runner;
 pub mod launch;
 pub mod log_runner;
 pub mod multi_runner;
 pub mod runner;
 pub mod stats;
+pub mod summary_runner;
 
 use std::time::Duration;
 

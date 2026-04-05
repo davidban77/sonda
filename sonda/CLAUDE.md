@@ -49,11 +49,12 @@ sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml>
 The verbosity model is captured in the `Verbosity` enum (`Quiet`, `Normal`, `Verbose`), constructed
 from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-run` is orthogonal.
 
-The `metrics` subcommand is the MVP entry point. `logs` emits log events. `run` runs multiple
-scenarios concurrently from a single YAML file whose `scenarios:` list carries `signal_type: metrics`
-or `signal_type: logs` entries.
+The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
+Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
+multiple scenarios concurrently from a single YAML file whose `scenarios:` list carries
+`signal_type: metrics`, `logs`, `histogram`, or `summary` entries.
 
-All three subcommands now go through the unified `sonda_core::validate_entry` +
+All subcommands go through the unified `sonda_core::validate_entry` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
 
 The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total

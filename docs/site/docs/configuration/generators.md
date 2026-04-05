@@ -309,6 +309,267 @@ one per tick.
     The CSV file path is relative to the working directory where you run `sonda`, not
     relative to the scenario file.
 
+## Histogram and summary generators
+
+The metric generators above produce a single number per tick -- one value, one time series, one
+line. That works for counters ("how many requests?") and gauges ("what's the CPU usage?"), but
+it cannot answer distribution questions: "how fast are requests?" or "what latency do 99% of
+users experience?"
+
+That is the problem histograms and summaries solve. Instead of recording a single value, they
+observe many individual measurements (e.g., request durations) and produce **multiple time
+series per tick** that describe the shape of those measurements: where the values cluster, how
+they spread, and where the tail ends.
+
+Think of it this way: a counter tells you *how many* requests happened. A histogram tells you
+*how long* each of them took -- broken down into ranges so you can compute percentiles.
+
+!!! info "How real systems work"
+    When you instrument an HTTP handler with a histogram in a Prometheus client library, every
+    request duration is "observed" into the histogram. The client doesn't store each individual
+    duration. Instead, it maintains cumulative counters for predefined bucket boundaries (e.g.,
+    "how many requests took <= 100ms?"). Prometheus scrapes these counters, and you use
+    `histogram_quantile()` to estimate percentiles from the bucket distribution.
+
+    Sonda's histogram generator does the same thing: it samples synthetic observations from a
+    distribution, updates cumulative bucket counters, and emits the result in Prometheus format.
+    The output is indistinguishable from a real instrumented service.
+
+Histogram and summary generators use dedicated subcommands (`sonda histogram`, `sonda summary`)
+and their own top-level scenario format -- not the `generator.type` field used by metric generators.
+For a hands-on walkthrough of testing latency alerts, see the
+[Histograms, Summaries, and Latency Alerts](../guides/histogram-alerts.md) guide.
+
+### histogram
+
+A histogram answers the question: **"what is the distribution of observed values?"** It does
+this by sorting observations into buckets -- ranges with upper boundaries you define. Each
+bucket counts how many observations fell at or below that boundary.
+
+For a metric named `http_request_duration_seconds` with buckets at 0.1, 0.25, and 0.5, each
+tick produces something like:
+
+```text
+http_request_duration_seconds_bucket{le="0.1"}   60   # 60 requests were <= 100ms
+http_request_duration_seconds_bucket{le="0.25"}  85   # 85 requests were <= 250ms
+http_request_duration_seconds_bucket{le="0.5"}   97   # 97 requests were <= 500ms
+http_request_duration_seconds_bucket{le="+Inf"}  100  # all 100 requests
+http_request_duration_seconds_count              100  # total observations
+http_request_duration_seconds_sum                15.2 # total seconds across all requests
+```
+
+Buckets are **cumulative** -- the `le="0.25"` count includes all observations that are also in
+`le="0.1"`. They are also **counters**, so they only increase over time. This is what makes
+`rate()` and `histogram_quantile()` work: Prometheus computes per-second rates from the
+counter deltas, then interpolates between bucket boundaries to estimate any percentile you ask
+for.
+
+??? tip "Choosing bucket boundaries"
+    Bucket boundaries determine the resolution of your percentile estimates. If your SLO is
+    "p99 latency under 500ms" but you have no bucket boundary near 500ms, the estimate will be
+    coarse. The default Prometheus buckets (`0.005` to `10.0`) work for general HTTP latency.
+    For tighter SLOs, add boundaries near your threshold:
+
+    ```yaml
+    buckets: [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5]
+    ```
+
+    More buckets means more time series (one per bucket per label combination), so there is a
+    cardinality tradeoff. For most services, 10-15 buckets is a reasonable starting point.
+
+Each tick, the generator samples `observations_per_tick` values from a configurable distribution,
+updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `_count`, and
+`_sum`. Bucket counts never decrease -- they follow counter semantics.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | string | yes | -- | Base metric name. Sonda appends `_bucket`, `_count`, `_sum` automatically. |
+| `rate` | float | yes | -- | Ticks per second. Each tick produces one full histogram sample. |
+| `duration` | string | no | runs forever | Total run time. |
+| `distribution` | object | yes | -- | Observation distribution model. See [Distribution models](#distribution-models). |
+| `buckets` | list of floats | no | Prometheus defaults | Sorted upper boundaries. Default: `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]`. |
+| `observations_per_tick` | integer | no | `100` | Number of observations sampled per tick. |
+| `mean_shift_per_sec` | float | no | `0.0` | Linear drift applied to the distribution center per second. Simulates latency degradation. |
+| `seed` | integer | no | `0` | RNG seed for deterministic output. Same seed produces the same bucket counts. |
+| `labels` | map | no | none | Static labels attached to every series. |
+| `encoder` | object | no | `prometheus_text` | Output format. |
+| `sink` | object | no | `stdout` | Output destination. |
+
+```yaml title="examples/histogram.yaml"
+name: http_request_duration_seconds
+rate: 1
+duration: 10s
+
+distribution:
+  type: exponential
+  rate: 10.0
+
+observations_per_tick: 100
+seed: 42
+
+labels:
+  method: GET
+  handler: /api/v1/query
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout
+```
+
+**Shape:** N+3 time series per tick (N bucket boundaries + `+Inf` + `_count` + `_sum`). With
+default buckets, that is 14 series per tick. All bucket counters are cumulative and monotonically
+increasing across ticks.
+
+```bash
+sonda histogram --scenario examples/histogram.yaml
+```
+
+```text title="Output (first tick, abbreviated)"
+http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.005",method="GET"} 3 1775409497421
+http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.01",method="GET"} 11 1775409497421
+http_request_duration_seconds_bucket{handler="/api/v1/query",le="0.025",method="GET"} 26 1775409497421
+...
+http_request_duration_seconds_bucket{handler="/api/v1/query",le="+Inf",method="GET"} 100 1775409497421
+http_request_duration_seconds_count{handler="/api/v1/query",method="GET"} 100 1775409497421
+http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 1775409497421
+```
+
+!!! tip "Simulating latency degradation"
+    Set `mean_shift_per_sec` to a positive value to make the distribution drift higher over time.
+    This causes more observations to land in higher buckets, raising percentile estimates and
+    eventually triggering latency alerts. See the
+    [alert testing walkthrough](../guides/histogram-alerts.md#test-a-histogram_quantile-alert-with-sonda)
+    for a complete example.
+
+### summary
+
+Where a histogram stores raw bucket counts and lets Prometheus estimate percentiles server-side,
+a summary does the math upfront: it computes the actual percentile values on the client and
+reports them directly. The p50 *is* 98ms. The p99 *is* 148ms. No estimation, no bucket
+interpolation.
+
+The tradeoff is flexibility. With a histogram, you can compute *any* percentile after the fact
+from the stored buckets. With a summary, you only get the specific quantiles you configured. And
+critically, you **cannot aggregate summary quantiles across instances** -- averaging the p99 of
+ten pods does not give you the fleet-wide p99. If you need cross-instance percentiles (and in
+Kubernetes, you almost always do), use histograms.
+
+Each tick, the generator samples observations, sorts them, and computes quantile values using
+the nearest-rank method.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | string | yes | -- | Base metric name. Sonda appends `_count`, `_sum` for those series. |
+| `rate` | float | yes | -- | Ticks per second. |
+| `duration` | string | no | runs forever | Total run time. |
+| `distribution` | object | yes | -- | Observation distribution model. See [Distribution models](#distribution-models). |
+| `quantiles` | list of floats | no | `[0.5, 0.9, 0.95, 0.99]` | Quantile targets in `(0, 1)`. |
+| `observations_per_tick` | integer | no | `100` | Number of observations sampled per tick. |
+| `mean_shift_per_sec` | float | no | `0.0` | Linear drift applied to the distribution center per second. |
+| `seed` | integer | no | `0` | RNG seed for deterministic output. |
+| `labels` | map | no | none | Static labels attached to every series. |
+| `encoder` | object | no | `prometheus_text` | Output format. |
+| `sink` | object | no | `stdout` | Output destination. |
+
+```yaml title="examples/summary.yaml"
+name: rpc_duration_seconds
+rate: 1
+duration: 10s
+
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.02
+
+observations_per_tick: 100
+seed: 42
+
+labels:
+  service: auth
+  method: GetUser
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout
+```
+
+**Shape:** Q+2 time series per tick (Q quantile targets + `_count` + `_sum`). With default
+quantiles, that is 6 series per tick. Quantile values are fresh per-tick snapshots computed from
+that tick's observations. `_count` and `_sum` are cumulative.
+
+```bash
+sonda summary --scenario examples/summary.yaml
+```
+
+```text title="Output (first tick)"
+rpc_duration_seconds{method="GetUser",quantile="0.5",service="auth"} 0.098 1775409507904
+rpc_duration_seconds{method="GetUser",quantile="0.9",service="auth"} 0.128 1775409507904
+rpc_duration_seconds{method="GetUser",quantile="0.95",service="auth"} 0.136 1775409507904
+rpc_duration_seconds{method="GetUser",quantile="0.99",service="auth"} 0.148 1775409507904
+rpc_duration_seconds_count{method="GetUser",service="auth"} 100 1775409507904
+rpc_duration_seconds_sum{method="GetUser",service="auth"} 9.802 1775409507904
+```
+
+!!! warning "Summaries are not aggregatable"
+    You cannot meaningfully combine quantile values across multiple instances. If you need
+    percentiles across a fleet, use histograms instead -- `histogram_quantile()` works on
+    summed bucket counters.
+
+### Distribution models
+
+Both histogram and summary generators require a `distribution` block that controls how
+observations are sampled. The distribution you choose determines the *shape* of the data --
+whether observations cluster tightly around a center, skew toward fast values with a long tail,
+or spread evenly across a range.
+
+Pick the distribution that matches the real-world metric you are simulating. For HTTP request
+latency, exponential is almost always the right choice: most requests are fast, but some take
+much longer. For RPC durations in a healthy service with predictable behavior, normal gives you
+a symmetric bell curve. Uniform is mainly useful for stress-testing bucket boundaries, since
+real metrics rarely distribute evenly.
+
+| Distribution | YAML type | Parameters | Typical use |
+|-------------|-----------|------------|-------------|
+| Exponential | `exponential` | `rate` (lambda; mean = 1/rate) | Request latency with long tail |
+| Normal | `normal` | `mean`, `stddev` | Symmetric metrics (RPC duration) |
+| Uniform | `uniform` | `min`, `max` | Even spread for bucket boundary testing |
+
+=== "Exponential"
+
+    ```yaml
+    distribution:
+      type: exponential
+      rate: 10.0
+    ```
+
+    Models latency where most requests are fast but some have long tails. Mean = 1/rate = 0.1s.
+
+=== "Normal"
+
+    ```yaml
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    ```
+
+    Symmetric bell curve centered at `mean`. Good for metrics with consistent spread.
+
+=== "Uniform"
+
+    ```yaml
+    distribution:
+      type: uniform
+      min: 0.05
+      max: 0.15
+    ```
+
+    Every value in `[min, max]` is equally likely.
+
 ## Log generators
 
 Log generators produce structured log events instead of numeric values. They are used with the

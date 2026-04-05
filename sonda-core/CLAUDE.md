@@ -28,6 +28,8 @@ src/
 │   ├── spike.rs        ← baseline with periodic spikes (anomaly/alert testing)
 │   ├── jitter.rs       ← JitterWrapper: adds deterministic uniform noise to any ValueGenerator
 │   ├── csv_replay.rs   ← CSV file-based replay for metric values
+│   ├── histogram.rs    ← HistogramGenerator (cumulative bucket counts, Distribution, to_distribution)
+│   ├── summary.rs      ← SummaryGenerator (quantile values via sorted observations)
 │   ├── log_template.rs ← template-based log line generator
 │   └── log_replay.rs   ← file-replay log line generator
 ├── schedule/
@@ -41,9 +43,11 @@ src/
 │   ├── handle.rs       ← ScenarioHandle (lifecycle: stop, join, elapsed, stats_snapshot;
 │   │                      recovers from poisoned stats lock instead of panicking)
 │   ├── launch.rs       ← validate_entry + launch_scenario (unified launch API, supports phase_offset)
-│   ├── runner.rs       ← metric event loop: builds generator/encoder/labels, delegates to core_loop
-│   ├── log_runner.rs   ← log event loop: builds log generator/encoder/labels, delegates to core_loop
-│   └── multi_runner.rs ← concurrent multi-scenario runner (run_multi, respects phase_offset per entry)
+│   ├── runner.rs           ← metric event loop: builds generator/encoder/labels, delegates to core_loop
+│   ├── log_runner.rs       ← log event loop: builds log generator/encoder/labels, delegates to core_loop
+│   ├── histogram_runner.rs ← histogram event loop: pre-built Arc<Labels> per bucket, delegates to core_loop
+│   ├── summary_runner.rs   ← summary event loop: pre-built Arc<Labels> per quantile, delegates to core_loop
+│   └── multi_runner.rs     ← concurrent multi-scenario runner (run_multi, respects phase_offset per entry)
 ├── encoder/
 │   ├── mod.rs          ← Encoder trait + factory
 │   ├── prometheus.rs   ← Prometheus text exposition format
@@ -73,13 +77,16 @@ src/
     │                      phase_offset, clock_group, jitter, jitter_seed),
     │                      ScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
-    │                      ScenarioEntry (with base() accessor), MultiScenarioConfig,
-    │                      CardinalitySpikeConfig, SpikeStrategy,
+    │                      HistogramScenarioConfig, SummaryScenarioConfig, DistributionConfig,
+    │                      ScenarioEntry (Metrics|Logs|Histogram|Summary, with base() accessor),
+    │                      MultiScenarioConfig, CardinalitySpikeConfig, SpikeStrategy,
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_entry (entry-level wrapper for expand_scenario)
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
-                           validate_cardinality_spike_config, validate_dynamic_label_config
+                           validate_cardinality_spike_config, validate_dynamic_label_config,
+                           validate_histogram_config, validate_summary_config,
+                           validate_distribution_config (min < max for Uniform)
 ```
 
 ## Cargo Features
