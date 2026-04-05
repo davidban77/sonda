@@ -1,0 +1,44 @@
+# Scenario: sonda -> Loki via JSON Lines format
+#
+# Loki accepts log entries via POST to /loki/api/v1/push with a JSON payload.
+# The Loki sink batches log lines and delivers them with scenario-level labels
+# as Loki stream labels.
+#
+# Run this scenario after starting the e2e stack:
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   sonda logs --scenario tests/e2e/scenarios/loki-json-lines.yaml
+#
+# Verify data arrived:
+#   curl -s 'http://localhost:3100/loki/api/v1/query_range' \
+#     --data-urlencode 'query={job="sonda-e2e"}' \
+#     --data-urlencode 'start=1h' --data-urlencode 'limit=10'
+name: sonda_e2e_loki_json_lines
+rate: 50
+duration: 5s
+
+generator:
+  type: template
+  templates:
+    - message: "Request from {ip} to {endpoint} status={status}"
+      field_pools:
+        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+        status: ["200", "201", "404", "500"]
+  severity_weights:
+    info: 0.7
+    warn: 0.2
+    error: 0.1
+
+labels:
+  job: sonda-e2e
+  scenario: loki-json-lines
+  encoder: json_lines
+  sink: loki
+
+encoder:
+  type: json_lines
+
+sink:
+  type: loki
+  url: http://localhost:3100
+  batch_size: 50
