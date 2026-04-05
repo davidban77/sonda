@@ -40,7 +40,8 @@
           "type": "yaml",
           "path": "helm/sonda/Chart.yaml",
           "jsonpath": "$.appVersion"
-        }
+        },
+        "docs/site/docs/deployment/kubernetes.md"
       ],
       "changelog-sections": [
         { "type": "feat", "section": "Features" },
