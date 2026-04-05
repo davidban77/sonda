@@ -39,6 +39,18 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# Pod-level security context.
+podSecurityContext: {}
+  # fsGroup: 1000
+
+# Container-level security context.
+securityContext: {}
+  # runAsNonRoot: true
+  # readOnlyRootFilesystem: true
+  # capabilities:
+  #   drop:
+  #     - ALL
+
 # Scenario YAML files to mount as a ConfigMap.
 # Each key becomes a file under /scenarios in the container.
 # Example:
@@ -73,6 +85,40 @@ resources:
 #       sink:
 #         type: stdout
 scenarios: {}
+
+# Horizontal Pod Autoscaler configuration.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget configuration.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# Ingress configuration.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: sonda.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ServiceMonitor for Prometheus Operator.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /health
+  additionalLabels: {}
 
 # Node selector for pod scheduling.
 nodeSelector: {}

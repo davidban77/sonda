@@ -27,7 +27,7 @@ kubectl get pods -l app.kubernetes.io/name=sonda -w
 ```
 
 You should see `1/1 Running` within 15--20 seconds. The chart defaults to
-`ghcr.io/davidban77/sonda:0.4.0` (the chart's `appVersion`). Pin a different version with
+`ghcr.io/davidban77/sonda:<!--x-release-please-version-->0.6.0<!--x-release-please-end-->` (the chart's `appVersion`). Pin a different version with
 `--set image.tag=<version>`.
 
 !!! tip "Deploy to a dedicated namespace"
@@ -51,7 +51,7 @@ The chart ships with sensible defaults. Override any value with `--set` flags or
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `ghcr.io/davidban77/sonda` | Container image registry and name |
-| `image.tag` | `""` (uses `appVersion`: `0.4.0`) | Image tag to pull |
+| `image.tag` | `""` (uses `appVersion`: <!--x-release-please-version-->`0.6.0`<!--x-release-please-end-->) | Image tag to pull |
 | `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy |
 | `imagePullSecrets` | `[]` | Secrets for private registries |
 
@@ -91,14 +91,59 @@ helm install sonda ./helm/sonda \
   --set resources.limits.memory=512Mi
 ```
 
+### Security
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `podSecurityContext` | `{}` | Pod-level security context (e.g., `fsGroup`) |
+| `securityContext` | `{}` | Container-level security context (e.g., `runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities`) |
+
 ### Scheduling
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `replicaCount` | `1` | Number of Deployment replicas |
+| `replicaCount` | `1` | Number of Deployment replicas (ignored when HPA is enabled) |
 | `nodeSelector` | `{}` | Node selector constraints |
 | `tolerations` | `[]` | Pod tolerations |
 | `affinity` | `{}` | Pod affinity/anti-affinity rules |
+
+### Autoscaling (HPA)
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `autoscaling.enabled` | `false` | Enable HorizontalPodAutoscaler |
+| `autoscaling.minReplicas` | `1` | Minimum replica count |
+| `autoscaling.maxReplicas` | `5` | Maximum replica count |
+| `autoscaling.targetCPUUtilizationPercentage` | `80` | Target CPU utilization |
+| `autoscaling.targetMemoryUtilizationPercentage` | (unset) | Target memory utilization |
+
+### Pod Disruption Budget
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `podDisruptionBudget.enabled` | `false` | Enable PodDisruptionBudget |
+| `podDisruptionBudget.minAvailable` | `1` | Minimum available pods during disruption |
+| `podDisruptionBudget.maxUnavailable` | (unset) | Maximum unavailable pods during disruption |
+
+### Ingress
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `ingress.enabled` | `false` | Enable Ingress resource |
+| `ingress.className` | `""` | Ingress class name |
+| `ingress.annotations` | `{}` | Ingress annotations |
+| `ingress.hosts` | `[{host: sonda.local, paths: [{path: /, pathType: Prefix}]}]` | Ingress host rules |
+| `ingress.tls` | `[]` | TLS configuration |
+
+### ServiceMonitor
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `serviceMonitor.enabled` | `false` | Enable Prometheus Operator ServiceMonitor |
+| `serviceMonitor.interval` | `30s` | Scrape interval |
+| `serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout |
+| `serviceMonitor.path` | `/health` | Metrics endpoint path |
+| `serviceMonitor.additionalLabels` | `{}` | Extra labels on the ServiceMonitor resource |
 
 ### Scenarios (ConfigMap)
 
@@ -227,8 +272,17 @@ Replace `<SCENARIO_ID>` with the UUID returned by `POST /scenarios`.
 ### ServiceMonitor
 
 If you run the [Prometheus Operator](https://prometheus-operator.dev/) (typically via
-kube-prometheus-stack), create a ServiceMonitor to auto-discover Sonda. The chart does not
-include a ServiceMonitor template, so apply one manually:
+kube-prometheus-stack), the chart includes an optional ServiceMonitor template. Enable it
+with:
+
+```bash
+helm install sonda ./helm/sonda --set serviceMonitor.enabled=true
+```
+
+See the [ServiceMonitor](#servicemonitor-1) values reference for all options
+(`interval`, `scrapeTimeout`, `path`, `additionalLabels`).
+
+Alternatively, apply a custom ServiceMonitor manually for full control:
 
 ```yaml title="sonda-servicemonitor.yaml"
 apiVersion: monitoring.coreos.com/v1
@@ -267,7 +321,7 @@ Update your release after changing values or pulling a new chart version:
 helm upgrade sonda ./helm/sonda -f my-values.yaml
 
 # Upgrade to a new image version
-helm upgrade sonda ./helm/sonda --set image.tag=0.5.0
+helm upgrade sonda ./helm/sonda --set image.tag=<!--x-release-please-version-->0.6.0<!--x-release-please-end-->
 ```
 
 If your values file includes `scenarios`, the ConfigMap checksum annotation triggers an
