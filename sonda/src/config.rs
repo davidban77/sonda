@@ -4220,6 +4220,49 @@ mod tests {
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
+    #[test]
+    fn retry_on_non_network_sink_returns_error() {
+        use sonda_core::sink::retry::RetryConfig;
+
+        let retry = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: "100ms".to_string(),
+            max_backoff: "5s".to_string(),
+        };
+
+        // Stdout: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::Stdout;
+        let err = apply_retry_to_sink(&mut sink, retry.clone())
+            .expect_err("retry on stdout must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported") && msg.contains("stdout"),
+            "error should mention unsupported sink type, got: {msg}"
+        );
+
+        // File: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::File {
+            path: "/tmp/test.txt".to_string(),
+        };
+        let err = apply_retry_to_sink(&mut sink, retry.clone())
+            .expect_err("retry on file must fail");
+        assert!(
+            err.to_string().contains("not supported"),
+            "error should mention unsupported sink type"
+        );
+
+        // Udp: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::Udp {
+            address: "127.0.0.1:9999".to_string(),
+        };
+        let err = apply_retry_to_sink(&mut sink, retry)
+            .expect_err("retry on udp must fail");
+        assert!(
+            err.to_string().contains("not supported"),
+            "error should mention unsupported sink type"
+        );
+    }
+
     // =========================================================================
     // Retry flags: logs subcommand
     // =========================================================================

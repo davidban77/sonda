@@ -304,3 +304,85 @@ Compatible receivers:
 | Grafana Alloy | `4317` |
 | Datadog Agent (OTLP) | `4317` |
 | Elastic APM Server | `8200` |
+
+## Retry with backoff
+
+Network sinks can encounter transient failures -- connection resets, HTTP 5xx responses, broker
+unavailability. By default, Sonda does **not** retry, which is ideal for CI pipelines where you want
+fast failure feedback. For long-running soak tests or Kubernetes deployments where brief interruptions
+are expected, you can add a `retry:` block to any network sink.
+
+Retry applies to these sinks: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`.
+It does **not** apply to `stdout`, `file`, or `udp`.
+
+### Configuration
+
+Add the `retry:` block inside any network sink definition:
+
+```yaml title="Retry configuration"
+sink:
+  type: http_push
+  url: "http://victoriametrics:8428/api/v1/import/prometheus"
+  retry:
+    max_attempts: 3          # retries after initial failure (total = 4 attempts)
+    initial_backoff: 100ms   # first retry delay
+    max_backoff: 5s          # backoff cap
+```
+
+All three fields are required when `retry:` is present:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_attempts` | integer | Number of retry attempts after the initial failure. Must be at least 1. Total calls = `max_attempts + 1`. |
+| `initial_backoff` | duration string | Delay before the first retry (e.g. `100ms`, `1s`). |
+| `max_backoff` | duration string | Upper bound on any single backoff delay. Must be >= `initial_backoff`. |
+
+### How it works
+
+Sonda uses **exponential backoff with full jitter**:
+
+```text
+base  = min(max_backoff, initial_backoff * 2^attempt)
+sleep = random(0, base)
+```
+
+The jitter prevents synchronized retries when multiple sinks retry at the same time ("thundering
+herd"). Each retry attempt is logged to stderr:
+
+```text
+sonda: retry 1/3 after 127ms (error: connection refused)
+sonda: retry 2/3 after 312ms (error: connection refused)
+sonda: all 3 retries exhausted (last error: connection refused)
+```
+
+If all retries are exhausted, the batch is **discarded**. This prevents unbounded buffer growth --
+since Sonda generates synthetic data, losing a batch is acceptable.
+
+### Error classification
+
+Not all errors trigger retries. Each sink classifies errors as retryable (transient) or permanent:
+
+| Sink | Retryable | Not retried |
+|------|-----------|-------------|
+| `http_push`, `remote_write`, `loki` | HTTP 5xx, 429 (rate limit), transport errors | HTTP 4xx (except 429) |
+| `otlp_grpc` | UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED | INVALID_ARGUMENT, UNAUTHENTICATED |
+| `kafka` | All produce errors (typically transient broker/network issues) | -- |
+| `tcp` | Connection reset, broken pipe (reconnects automatically) | -- |
+
+!!! warning
+    Permanent errors (like a 401 Unauthorized or a malformed request returning 400) are never
+    retried. Sonda logs a warning and discards the batch immediately.
+
+### CLI flags
+
+You can also configure retry from the command line with three flags. All three must be provided
+together (all-or-nothing):
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 60s \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+  --retry-max-attempts 3 --retry-backoff 100ms --retry-max-backoff 5s
+```
+
+CLI retry flags override any `retry:` block in the YAML scenario file. See
+[CLI Reference](cli-reference.md#retry) for details.
