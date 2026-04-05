@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# tests/e2e/run.sh — end-to-end integration test runner for sonda's HTTP push sink.
+# tests/e2e/run.sh — end-to-end integration test runner for sonda sinks.
 #
 # This script:
-#   1. Starts docker-compose services (Prometheus, VictoriaMetrics, vmagent)
+#   1. Starts docker-compose services (Prometheus, VictoriaMetrics, vmagent, Kafka, Loki)
 #   2. Waits for all services to become healthy
 #   3. Builds sonda in release mode
 #   4. Runs each test scenario for a short duration
 #   5. Waits for ingestion to settle
-#   6. Queries VictoriaMetrics to verify data arrived
+#   6. Queries backends (VictoriaMetrics, Kafka, Loki) to verify data arrived
 #   7. Reports PASS/FAIL for each scenario
 #   8. Tears down docker-compose
 #   9. Exits 0 if all scenarios passed, 1 if any failed
@@ -47,6 +47,9 @@ VM_QUERY_URL="http://localhost:8428/api/v1/query"
 
 # Kafka container name (must match docker-compose.yml)
 KAFKA_CONTAINER="sonda-e2e-kafka"
+
+# Loki query endpoint
+LOKI_QUERY_URL="http://localhost:3100/loki/api/v1/query_range"
 
 # Track overall pass/fail state
 PASS_COUNT=0
@@ -155,6 +158,90 @@ query_kafka_count() {
         --timeout-ms 5000 2>/dev/null | wc -l)
     # wc -l may include leading whitespace on some platforms; strip it
     echo "${count}" | tr -d ' '
+}
+
+# Query Loki for log entries matching a label selector and return the total
+# number of log lines across all streams.
+# Usage: query_loki_count <label_selector>
+#   e.g. query_loki_count '{job="sonda-e2e"}'
+query_loki_count() {
+    local selector="$1"
+    local result
+    # Query the last hour of data to cover the test window
+    local now_ns
+    now_ns=$(python3 -c "import time; print(int(time.time()))")
+    local start_ns=$((now_ns - 3600))
+    result=$(curl -s --max-time 10 "${LOKI_QUERY_URL}" \
+        --data-urlencode "query=${selector}" \
+        --data-urlencode "start=${start_ns}" \
+        --data-urlencode "end=${now_ns}" \
+        --data-urlencode "limit=5000" \
+        2>/dev/null || echo '{}')
+    # Loki query_range response shape:
+    # {"status":"success","data":{"resultType":"streams","result":[{"stream":{...},"values":[...]}]}}
+    # Count total values across all streams
+    echo "${result}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+results = data.get('data', {}).get('result', [])
+total = sum(len(s.get('values', [])) for s in results)
+print(total)
+" 2>/dev/null || echo "0"
+}
+
+# Run a single Loki scenario: execute sonda logs, then verify log entries
+# arrived in Loki by querying its API with the given label selector.
+# Usage: run_loki_scenario <scenario_file> <label_selector> <description>
+run_loki_scenario() {
+    local scenario_file="$1"
+    local label_selector="$2"
+    local description="$3"
+
+    info "Running Loki scenario: ${description}"
+    info "  File:     ${scenario_file}"
+    info "  Selector: ${label_selector}"
+
+    local timeout_secs=$((SCENARIO_DURATION + 10))
+    "${SONDA_BIN}" logs \
+            --scenario "${scenario_file}" \
+            --duration "${SCENARIO_DURATION}s" \
+            >/dev/null 2>/tmp/sonda-e2e-stderr.log &
+    local sonda_pid=$!
+
+    local waited=0
+    while kill -0 "${sonda_pid}" 2>/dev/null && [ "${waited}" -lt "${timeout_secs}" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "${sonda_pid}" 2>/dev/null; then
+        kill "${sonda_pid}" 2>/dev/null
+        wait "${sonda_pid}" 2>/dev/null
+        fail "${description}: sonda timed out after ${timeout_secs}s"
+        return
+    fi
+
+    wait "${sonda_pid}" 2>/dev/null
+    local exit_code=$?
+
+    if [ "${exit_code}" -ne 0 ]; then
+        fail "${description}: sonda exited with code ${exit_code}"
+        return
+    fi
+
+    info "  sonda exited cleanly."
+    info "  Waiting ${INGEST_SETTLE_SECS}s for Loki ingestion to settle..."
+    sleep "${INGEST_SETTLE_SECS}"
+
+    local count
+    count=$(query_loki_count "${label_selector}")
+    info "  Loki log entry count: ${count}"
+
+    if [ "${count}" -gt 0 ] 2>/dev/null; then
+        pass "${description}"
+    else
+        fail "${description}: no log entries found in Loki for selector '${label_selector}' (count=${count})"
+    fi
 }
 
 # Run a single Kafka scenario: execute sonda, then verify messages arrived in
@@ -320,6 +407,7 @@ docker compose -f "${COMPOSE_FILE}" up -d
 wait_for_health "http://localhost:9090/-/ready"   "Prometheus"        "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8428/health"    "VictoriaMetrics"   "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8429/health"    "vmagent"           "${HEALTH_WAIT_SECS}"
+wait_for_health "http://localhost:3100/ready"    "Loki"              "${HEALTH_WAIT_SECS}"
 wait_for_kafka  "${HEALTH_WAIT_SECS}"
 
 # ---------------------------------------------------------------------------
@@ -348,6 +436,11 @@ run_kafka_scenario \
     "${SCENARIO_DIR}/kafka-json-lines.yaml" \
     "sonda-e2e-json" \
     "Kafka via JSON Lines"
+
+run_loki_scenario \
+    "${SCENARIO_DIR}/loki-json-lines.yaml" \
+    '{job="sonda-e2e"}' \
+    "Loki via JSON Lines"
 
 # NOTE: vmagent scenario is disabled. vmagent's /api/v1/import/prometheus
 # endpoint accepts data (204) but does not relay plain text — it only forwards
