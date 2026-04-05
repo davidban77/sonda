@@ -295,6 +295,22 @@ sonda metrics [OPTIONS]
 | `--brokers <STRING>` | string | none | Comma-separated Kafka broker addresses. Required for `--sink kafka`. |
 | `--topic <STRING>` | string | none | Kafka topic name. Required for `--sink kafka`. |
 
+### Retry
+
+Configure retry with exponential backoff for network sinks. All three flags must be provided
+together, or none at all. CLI retry flags override any `retry:` block in the YAML scenario file.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--retry-max-attempts <N>` | integer | Retry attempts after initial failure. Total calls = N + 1. |
+| `--retry-backoff <DURATION>` | string | Initial backoff duration (e.g. `100ms`, `1s`). |
+| `--retry-max-backoff <DURATION>` | string | Maximum backoff cap (e.g. `5s`). Must be >= `--retry-backoff`. |
+
+Applies to: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`.
+Using retry flags with `stdout`, `file`, or `udp` produces a validation error.
+
+For details on backoff behavior and error classification, see [Sinks - Retry with backoff](sinks.md#retry-with-backoff).
+
 ### Examples
 
 Simplest metric:
@@ -361,6 +377,14 @@ sonda metrics --name cpu --rate 10 --duration 30s \
   --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
 ```
 
+Retry on transient failures (up to 3 retries with exponential backoff):
+
+```bash
+sonda metrics --name cpu --rate 10 --duration 60s \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
+  --retry-max-attempts 3 --retry-backoff 100ms --retry-max-backoff 5s
+```
+
 ## sonda logs
 
 Generate synthetic log events and write them to the configured sink.
@@ -425,6 +449,11 @@ The same cardinality spike flags from `sonda metrics` are available for logs:
 The same jitter flags from `sonda metrics` are available for logs:
 `--jitter`, `--jitter-seed`.
 
+### Retry
+
+The same retry flags from `sonda metrics` are available for logs:
+`--retry-max-attempts`, `--retry-backoff`, `--retry-max-backoff`.
+
 ### Examples
 
 Simple template log:
@@ -467,6 +496,15 @@ Send logs to an OTLP collector:
 sonda logs --mode template --rate 10 --duration 30s \
   --encoder otlp \
   --sink otlp_grpc --endpoint http://localhost:4317
+```
+
+Send logs to Loki with retry:
+
+```bash
+sonda logs --mode template --rate 10 --duration 60s \
+  --sink loki --endpoint http://localhost:3100 \
+  --label app=myservice --label env=staging \
+  --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
 ```
 
 ## sonda run

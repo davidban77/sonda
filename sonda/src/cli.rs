@@ -325,6 +325,28 @@ pub struct MetricsArgs {
     /// Required for `--sink kafka`.
     #[arg(long)]
     pub topic: Option<String>,
+
+    /// Maximum retry attempts after initial failure.
+    ///
+    /// Together with `--retry-backoff` and `--retry-max-backoff`, configures
+    /// exponential backoff retry for network sinks. All three flags must be
+    /// provided together.
+    #[arg(long)]
+    pub retry_max_attempts: Option<u32>,
+
+    /// Initial backoff duration for retries (e.g. `"100ms"`, `"1s"`).
+    ///
+    /// Must be provided together with `--retry-max-attempts` and
+    /// `--retry-max-backoff`.
+    #[arg(long)]
+    pub retry_backoff: Option<String>,
+
+    /// Maximum backoff cap for retries (e.g. `"5s"`, `"30s"`).
+    ///
+    /// Must be >= `--retry-backoff`. Must be provided together with
+    /// `--retry-max-attempts` and `--retry-backoff`.
+    #[arg(long)]
+    pub retry_max_backoff: Option<String>,
 }
 
 /// Arguments for the `logs` subcommand.
@@ -532,6 +554,28 @@ pub struct LogsArgs {
     /// Used with `--mode template`. When absent a seed of `0` is used.
     #[arg(long)]
     pub seed: Option<u64>,
+
+    /// Maximum retry attempts after initial failure.
+    ///
+    /// Together with `--retry-backoff` and `--retry-max-backoff`, configures
+    /// exponential backoff retry for network sinks. All three flags must be
+    /// provided together.
+    #[arg(long)]
+    pub retry_max_attempts: Option<u32>,
+
+    /// Initial backoff duration for retries (e.g. `"100ms"`, `"1s"`).
+    ///
+    /// Must be provided together with `--retry-max-attempts` and
+    /// `--retry-max-backoff`.
+    #[arg(long)]
+    pub retry_backoff: Option<String>,
+
+    /// Maximum backoff cap for retries (e.g. `"5s"`, `"30s"`).
+    ///
+    /// Must be >= `--retry-backoff`. Must be provided together with
+    /// `--retry-max-attempts` and `--retry-backoff`.
+    #[arg(long)]
+    pub retry_max_backoff: Option<String>,
 }
 
 /// Arguments for the `run` subcommand (multi-scenario).

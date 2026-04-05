@@ -1,0 +1,39 @@
+# Push metrics to VictoriaMetrics with retry on transient failures.
+#
+# The retry block configures exponential backoff with full jitter.
+# On a transient error (HTTP 5xx, 429, or connection failure), Sonda
+# retries up to max_attempts times before discarding the batch.
+#
+# Usage:
+#   sonda metrics --scenario examples/http-push-retry.yaml
+#
+# You can override retry settings from the CLI:
+#   sonda metrics --scenario examples/http-push-retry.yaml \
+#     --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
+
+name: cpu_usage
+rate: 10
+duration: 60s
+
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+
+labels:
+  host: server-01
+  region: us-east
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+  batch_size: 32768
+  retry:
+    max_attempts: 3
+    initial_backoff: 100ms
+    max_backoff: 5s

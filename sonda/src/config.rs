@@ -18,6 +18,7 @@ use sonda_core::config::{
 };
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
+use sonda_core::sink::retry::RetryConfig;
 use sonda_core::sink::SinkConfig;
 
 use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
@@ -73,6 +74,19 @@ fn validate_cli_flags(args: &MetricsArgs) -> Result<()> {
         true, // metrics subcommand requires explicit --signal-type for otlp_grpc
     )?;
 
+    // Retry flags: all-or-nothing group validation.
+    build_retry_config_from_metrics(args)?;
+
+    // Retry flags require --sink with a network sink.
+    if args.retry_max_attempts.is_some() && args.sink.is_none() && args.output.is_none() {
+        // Only error if the default sink is stdout (non-network).
+        // If a YAML scenario has a network sink, the flags will be applied there.
+        // We skip this check when --scenario is provided since the sink comes from YAML.
+        if args.scenario.is_none() {
+            bail!("--retry-* flags require --sink with a network sink");
+        }
+    }
+
     Ok(())
 }
 
@@ -92,7 +106,20 @@ fn validate_log_cli_flags(args: &LogsArgs) -> Result<()> {
             batch_size: args.batch_size,
         },
         false, // logs subcommand defaults signal_type to "logs"
-    )
+    )?;
+
+    // Retry flags: all-or-nothing group validation.
+    build_retry_config_from_logs(args)?;
+
+    if args.retry_max_attempts.is_some()
+        && args.sink.is_none()
+        && args.output.is_none()
+        && args.scenario.is_none()
+    {
+        bail!("--retry-* flags require --sink with a network sink");
+    }
+
+    Ok(())
 }
 
 /// Collected sink-related CLI flag values for validation and construction.
@@ -225,6 +252,8 @@ fn build_sink_config(
                     // No --header CLI flag exists; users needing custom headers
                     // must use a YAML scenario file.
                     headers: None,
+                    // Retry is not set here; it will be applied via override.
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "http"))]
@@ -242,6 +271,7 @@ fn build_sink_config(
                         .expect("validated: --endpoint required for remote_write")
                         .to_string(),
                     batch_size,
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "remote-write"))]
@@ -261,6 +291,7 @@ fn build_sink_config(
                         .expect("validated: --endpoint required for loki")
                         .to_string(),
                     batch_size,
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "http"))]
@@ -287,6 +318,7 @@ fn build_sink_config(
                         .to_string(),
                     signal_type: parsed_signal,
                     batch_size,
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "otlp"))]
@@ -305,6 +337,7 @@ fn build_sink_config(
                     topic: topic
                         .expect("validated: --topic required for kafka")
                         .to_string(),
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "kafka"))]
@@ -400,6 +433,11 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
             args.brokers.as_deref(),
             args.topic.as_deref(),
         )?;
+    }
+
+    // --retry-* overrides the retry config on the current sink.
+    if let Some(retry_cfg) = build_retry_config_from_metrics(args)? {
+        apply_retry_to_sink(&mut config.sink, retry_cfg)?;
     }
 
     Ok(config)
@@ -566,6 +604,117 @@ fn build_burst_config(args: &MetricsArgs) -> Result<Option<BurstConfig>> {
         _ => bail!(
             "--burst-every, --burst-for, and --burst-multiplier must all be provided together"
         ),
+    }
+}
+
+/// Build an optional [`RetryConfig`] from `--retry-*` flags.
+///
+/// All three flags (`--retry-max-attempts`, `--retry-backoff`, `--retry-max-backoff`)
+/// must be provided together, or none. Providing a partial set is an error.
+fn build_retry_config_from_metrics(args: &MetricsArgs) -> Result<Option<RetryConfig>> {
+    match (
+        args.retry_max_attempts,
+        &args.retry_backoff,
+        &args.retry_max_backoff,
+    ) {
+        (Some(max_attempts), Some(backoff), Some(max_backoff)) => Ok(Some(RetryConfig {
+            max_attempts,
+            initial_backoff: backoff.clone(),
+            max_backoff: max_backoff.clone(),
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--retry-max-attempts, --retry-backoff, and --retry-max-backoff must all be provided together"
+        ),
+    }
+}
+
+/// Build an optional [`RetryConfig`] from `--retry-*` flags for the logs subcommand.
+fn build_retry_config_from_logs(args: &LogsArgs) -> Result<Option<RetryConfig>> {
+    match (
+        args.retry_max_attempts,
+        &args.retry_backoff,
+        &args.retry_max_backoff,
+    ) {
+        (Some(max_attempts), Some(backoff), Some(max_backoff)) => Ok(Some(RetryConfig {
+            max_attempts,
+            initial_backoff: backoff.clone(),
+            max_backoff: max_backoff.clone(),
+        })),
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--retry-max-attempts, --retry-backoff, and --retry-max-backoff must all be provided together"
+        ),
+    }
+}
+
+/// Apply a retry config to a [`SinkConfig`], returning an error if the sink
+/// type does not support retry (e.g. `stdout`, `file`, `udp`).
+fn apply_retry_to_sink(sink: &mut SinkConfig, retry: RetryConfig) -> Result<()> {
+    match sink {
+        SinkConfig::Stdout | SinkConfig::File { .. } | SinkConfig::Udp { .. } => {
+            bail!(
+                "--retry-* flags are not supported for sink type {:?}; \
+                 retry is only available for network sinks (http_push, remote_write, loki, otlp_grpc, kafka, tcp)",
+                sink_type_name(sink)
+            );
+        }
+        SinkConfig::Tcp {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+        #[cfg(feature = "http")]
+        SinkConfig::Loki {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc {
+            retry: ref mut r, ..
+        } => {
+            *r = Some(retry);
+        }
+    }
+    Ok(())
+}
+
+/// Return a human-readable name for a [`SinkConfig`] variant.
+fn sink_type_name(sink: &SinkConfig) -> &'static str {
+    match sink {
+        SinkConfig::Stdout => "stdout",
+        SinkConfig::File { .. } => "file",
+        SinkConfig::Tcp { .. } => "tcp",
+        SinkConfig::Udp { .. } => "udp",
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush { .. } => "http_push",
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { .. } => "remote_write",
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka { .. } => "kafka",
+        #[cfg(feature = "http")]
+        SinkConfig::Loki { .. } => "loki",
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
     }
 }
 
@@ -791,6 +940,11 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
             args.brokers.as_deref(),
             args.topic.as_deref(),
         )?;
+    }
+
+    // --retry-* overrides the retry config on the current sink.
+    if let Some(retry_cfg) = build_retry_config_from_logs(args)? {
+        apply_retry_to_sink(&mut config.sink, retry_cfg)?;
     }
 
     Ok(config)
@@ -1117,6 +1271,9 @@ mod tests {
             content_type: None,
             brokers: None,
             topic: None,
+            retry_max_attempts: None,
+            retry_backoff: None,
+            retry_max_backoff: None,
         }
     }
 
@@ -1811,6 +1968,9 @@ mod tests {
             message: None,
             severity_weights: None,
             seed: None,
+            retry_max_attempts: None,
+            retry_backoff: None,
+            retry_max_backoff: None,
         }
     }
 
@@ -3972,5 +4132,171 @@ mod tests {
             msg.contains("--topic"),
             "error must mention --topic, got: {msg}"
         );
+    }
+
+    // =========================================================================
+    // Retry flags: all-or-nothing group validation
+    // =========================================================================
+
+    #[test]
+    fn all_three_retry_flags_together_succeeds() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            retry_max_attempts: Some(3),
+            retry_backoff: Some("100ms".to_string()),
+            retry_max_backoff: Some("5s".to_string()),
+            ..default_args()
+        };
+        let result = load_config(&args);
+        assert!(
+            result.is_ok(),
+            "all three retry flags together should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn retry_max_attempts_alone_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            retry_max_attempts: Some(3),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("partial retry flags must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--retry-max-attempts") && msg.contains("together"),
+            "error must mention all retry flags, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn retry_backoff_alone_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            retry_backoff: Some("100ms".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("partial retry flags must fail");
+        assert!(err.to_string().contains("together"));
+    }
+
+    #[test]
+    fn retry_without_sink_or_scenario_returns_error() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            retry_max_attempts: Some(3),
+            retry_backoff: Some("100ms".to_string()),
+            retry_max_backoff: Some("5s".to_string()),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("retry without --sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--retry-") && msg.contains("--sink"),
+            "error should mention retry and sink, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn no_retry_flags_preserves_default_behavior() {
+        let args = MetricsArgs {
+            name: Some("up".to_string()),
+            rate: Some(1.0),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("should succeed without retry flags");
+        // Default sink is stdout, which has no retry field — just verify it compiled.
+        assert!(matches!(config.sink, SinkConfig::Stdout));
+    }
+
+    #[test]
+    fn retry_on_non_network_sink_returns_error() {
+        use sonda_core::sink::retry::RetryConfig;
+
+        let retry = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: "100ms".to_string(),
+            max_backoff: "5s".to_string(),
+        };
+
+        // Stdout: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::Stdout;
+        let err =
+            apply_retry_to_sink(&mut sink, retry.clone()).expect_err("retry on stdout must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported") && msg.contains("stdout"),
+            "error should mention unsupported sink type, got: {msg}"
+        );
+
+        // File: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::File {
+            path: "/tmp/test.txt".to_string(),
+        };
+        let err =
+            apply_retry_to_sink(&mut sink, retry.clone()).expect_err("retry on file must fail");
+        assert!(
+            err.to_string().contains("not supported"),
+            "error should mention unsupported sink type"
+        );
+
+        // Udp: non-network sink, retry must be rejected.
+        let mut sink = SinkConfig::Udp {
+            address: "127.0.0.1:9999".to_string(),
+        };
+        let err = apply_retry_to_sink(&mut sink, retry).expect_err("retry on udp must fail");
+        assert!(
+            err.to_string().contains("not supported"),
+            "error should mention unsupported sink type"
+        );
+    }
+
+    // =========================================================================
+    // Retry flags: logs subcommand
+    // =========================================================================
+
+    #[test]
+    fn logs_all_three_retry_flags_together_succeeds() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            retry_max_attempts: Some(3),
+            retry_backoff: Some("100ms".to_string()),
+            retry_max_backoff: Some("5s".to_string()),
+            ..default_logs_args()
+        };
+        let result = load_log_config(&args);
+        assert!(
+            result.is_ok(),
+            "all three retry flags together should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn logs_retry_partial_flags_returns_error() {
+        let args = crate::cli::LogsArgs {
+            mode: Some("template".to_string()),
+            rate: Some(1.0),
+            sink: Some("http_push".to_string()),
+            endpoint: Some("http://localhost:9090/push".to_string()),
+            retry_max_attempts: Some(3),
+            ..default_logs_args()
+        };
+        let err = load_log_config(&args).expect_err("partial retry flags must fail");
+        assert!(err.to_string().contains("together"));
     }
 }

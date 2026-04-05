@@ -15,6 +15,7 @@ pub mod memory;
 pub mod otlp_grpc;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
+pub mod retry;
 pub mod stdout;
 pub mod tcp;
 pub mod udp;
@@ -61,6 +62,10 @@ pub enum SinkConfig {
     Tcp {
         /// Remote address to connect to, e.g. `"127.0.0.1:9999"`.
         address: String,
+
+        /// Optional retry policy for transient failures.
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 
     /// Send each encoded event as a single UDP datagram.
@@ -101,6 +106,12 @@ pub enum SinkConfig {
         /// `X-Prometheus-Remote-Write-Version: 0.1.0`).
         #[cfg_attr(feature = "config", serde(default))]
         headers: Option<HashMap<String, String>>,
+
+        /// Optional retry policy for transient failures.
+        ///
+        /// When absent, the sink fails immediately on errors (no retry).
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 
     /// Batch TimeSeries and deliver them as Prometheus remote write requests.
@@ -123,6 +134,10 @@ pub enum SinkConfig {
         /// not specified.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Optional retry policy for transient failures.
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 
     /// Batch encoded events and deliver them to a Kafka topic.
@@ -144,6 +159,10 @@ pub enum SinkConfig {
 
         /// The Kafka topic name to produce records to.
         topic: String,
+
+        /// Optional retry policy for transient failures.
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
@@ -167,6 +186,10 @@ pub enum SinkConfig {
         /// Flush threshold in log entries. Defaults to `100` if not specified.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Optional retry policy for transient failures.
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 
     /// Batch OTLP protobuf data and deliver via gRPC to an OpenTelemetry Collector.
@@ -190,6 +213,10 @@ pub enum SinkConfig {
         /// Defaults to 100 if not specified.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Optional retry policy for transient failures.
+        #[cfg_attr(feature = "config", serde(default))]
+        retry: Option<retry::RetryConfig>,
     },
 }
 
@@ -209,7 +236,16 @@ pub fn create_sink(
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
         SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
-        SinkConfig::Tcp { address } => Ok(Box::new(tcp::TcpSink::new(address)?)),
+        SinkConfig::Tcp {
+            address,
+            retry: retry_cfg,
+        } => {
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
+            Ok(Box::new(tcp::TcpSink::new(address, rp)?))
+        }
         SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
         #[cfg(feature = "http")]
         SinkConfig::HttpPush {
@@ -217,34 +253,69 @@ pub fn create_sink(
             content_type,
             batch_size,
             headers,
+            retry: retry_cfg,
         } => {
             let ct = content_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
             let bs = batch_size.unwrap_or(http::DEFAULT_BATCH_SIZE);
             let h = headers.clone().unwrap_or_default();
-            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h)?))
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
+            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h, rp)?))
         }
         #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { url, batch_size } => {
+        SinkConfig::RemoteWrite {
+            url,
+            batch_size,
+            retry: retry_cfg,
+        } => {
             let bs = batch_size.unwrap_or(remote_write::DEFAULT_BATCH_SIZE);
-            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs)?))
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
+            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs, rp)?))
         }
         #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { brokers, topic } => {
-            Ok(Box::new(kafka::KafkaSink::new(brokers, topic)?))
+        SinkConfig::Kafka {
+            brokers,
+            topic,
+            retry: retry_cfg,
+        } => {
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
+            Ok(Box::new(kafka::KafkaSink::new(brokers, topic, rp)?))
         }
         #[cfg(feature = "http")]
-        SinkConfig::Loki { url, batch_size } => {
+        SinkConfig::Loki {
+            url,
+            batch_size,
+            retry: retry_cfg,
+        } => {
             let bs = batch_size.unwrap_or(100);
             let loki_labels = labels.cloned().unwrap_or_default();
-            Ok(Box::new(loki::LokiSink::new(url.clone(), loki_labels, bs)?))
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
+            Ok(Box::new(loki::LokiSink::new(
+                url.clone(),
+                loki_labels,
+                bs,
+                rp,
+            )?))
         }
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc {
             endpoint,
             signal_type,
             batch_size,
+            retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(otlp_grpc::DEFAULT_BATCH_SIZE);
             // Convert scenario labels to OTLP Resource attributes.
@@ -262,11 +333,16 @@ pub fn create_sink(
                         .collect()
                 })
                 .unwrap_or_default();
+            let rp = retry_cfg
+                .as_ref()
+                .map(retry::RetryPolicy::from_config)
+                .transpose()?;
             Ok(Box::new(otlp_grpc::OtlpGrpcSink::new(
                 endpoint,
                 *signal_type,
                 bs,
                 resource_attrs,
+                rp,
             )?))
         }
     }
@@ -332,7 +408,9 @@ mod tests {
     fn sink_config_tcp_deserializes_with_type_field() {
         let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(matches!(config, SinkConfig::Tcp { ref address } if address == "127.0.0.1:9999"));
+        assert!(
+            matches!(config, SinkConfig::Tcp { ref address, .. } if address == "127.0.0.1:9999")
+        );
     }
 
     #[cfg(feature = "config")]
@@ -441,9 +519,12 @@ mod tests {
     fn sink_config_tcp_is_cloneable_and_debuggable() {
         let config = SinkConfig::Tcp {
             address: "127.0.0.1:9999".to_string(),
+            retry: None,
         };
         let cloned = config.clone();
-        assert!(matches!(cloned, SinkConfig::Tcp { ref address } if address == "127.0.0.1:9999"));
+        assert!(
+            matches!(cloned, SinkConfig::Tcp { ref address, .. } if address == "127.0.0.1:9999")
+        );
         let s = format!("{config:?}");
         assert!(s.contains("Tcp"));
     }
@@ -487,7 +568,7 @@ sink:
             crate::encoder::EncoderConfig::PrometheusText { .. }
         ));
         assert!(
-            matches!(config.sink, SinkConfig::Tcp { ref address } if address == "127.0.0.1:4321")
+            matches!(config.sink, SinkConfig::Tcp { ref address, .. } if address == "127.0.0.1:4321")
         );
     }
 
@@ -556,7 +637,7 @@ sink:
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
-            matches!(config, SinkConfig::Kafka { ref brokers, ref topic }
+            matches!(config, SinkConfig::Kafka { ref brokers, ref topic, .. }
                 if brokers == "127.0.0.1:9092" && topic == "sonda-test")
         );
     }
@@ -589,10 +670,11 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            retry: None,
         };
         let cloned = config.clone();
         assert!(
-            matches!(cloned, SinkConfig::Kafka { ref brokers, ref topic }
+            matches!(cloned, SinkConfig::Kafka { ref brokers, ref topic, .. }
                 if brokers == "127.0.0.1:9092" && topic == "sonda-test")
         );
         let s = format!("{config:?}");
@@ -614,6 +696,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(
@@ -629,6 +712,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: String::new(),
             topic: "sonda-test".to_string(),
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(
@@ -733,6 +817,7 @@ headers: {}
             content_type: None,
             batch_size: None,
             headers: Some(hdr),
+            retry: None,
         };
         let cloned = config.clone();
         let debug_str = format!("{cloned:?}");
@@ -754,6 +839,7 @@ headers: {}
             content_type: None,
             batch_size: None,
             headers: None,
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(
@@ -770,6 +856,7 @@ headers: {}
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(
@@ -804,5 +891,82 @@ headers: {}
     fn non_http_sinks_available_without_http_feature() {
         // This test compiles and runs with or without the `http` feature.
         assert!(create_sink(&SinkConfig::Stdout, None).is_ok());
+    }
+
+    // ---------------------------------------------------------------------------
+    // SinkConfig: retry field deserialization
+    // ---------------------------------------------------------------------------
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_tcp_with_retry_deserializes() {
+        let yaml = r#"
+type: tcp
+address: "127.0.0.1:9999"
+retry:
+  max_attempts: 3
+  initial_backoff: 100ms
+  max_backoff: 5s
+"#;
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::Tcp { address, retry } => {
+                assert_eq!(address, "127.0.0.1:9999");
+                let r = retry.expect("retry should be Some");
+                assert_eq!(r.max_attempts, 3);
+                assert_eq!(r.initial_backoff, "100ms");
+                assert_eq!(r.max_backoff, "5s");
+            }
+            other => panic!("expected SinkConfig::Tcp, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_tcp_without_retry_has_none() {
+        let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::Tcp { retry, .. } => {
+                assert!(retry.is_none(), "retry should default to None");
+            }
+            other => panic!("expected SinkConfig::Tcp, got {other:?}"),
+        }
+    }
+
+    #[cfg(all(feature = "http", feature = "config"))]
+    #[test]
+    fn sink_config_http_push_with_retry_deserializes() {
+        let yaml = r#"
+type: http_push
+url: "http://localhost:9090/push"
+retry:
+  max_attempts: 5
+  initial_backoff: 200ms
+  max_backoff: 10s
+"#;
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { retry, .. } => {
+                let r = retry.expect("retry should be Some");
+                assert_eq!(r.max_attempts, 5);
+                assert_eq!(r.initial_backoff, "200ms");
+                assert_eq!(r.max_backoff, "10s");
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
+    }
+
+    #[cfg(all(feature = "http", feature = "config"))]
+    #[test]
+    fn sink_config_http_push_without_retry_is_backward_compatible() {
+        let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::HttpPush { retry, .. } => {
+                assert!(retry.is_none(), "retry should default to None");
+            }
+            other => panic!("expected HttpPush, got {other:?}"),
+        }
     }
 }

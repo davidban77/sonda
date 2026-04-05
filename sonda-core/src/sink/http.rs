@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
@@ -35,6 +36,8 @@ pub struct HttpPushSink {
     batch: Vec<u8>,
     /// Flush threshold in bytes. When `batch.len() >= batch_size`, auto-flush.
     batch_size: usize,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl HttpPushSink {
@@ -50,6 +53,8 @@ impl HttpPushSink {
     ///   These are applied after the `Content-Type` header. Use this for
     ///   protocol-specific headers such as `Content-Encoding: snappy` for
     ///   Prometheus remote write.
+    /// - `retry_policy` — optional retry policy for transient failures.
+    ///   When `None`, errors are returned immediately (no retry).
     ///
     /// # Errors
     ///
@@ -60,6 +65,7 @@ impl HttpPushSink {
         content_type: &str,
         batch_size: usize,
         headers: HashMap<String, String>,
+        retry_policy: Option<RetryPolicy>,
     ) -> Result<Self, SondaError> {
         // Validate the URL scheme before accepting the config.
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -81,86 +87,115 @@ impl HttpPushSink {
             headers,
             batch: Vec::with_capacity(batch_size),
             batch_size,
+            retry_policy,
         })
     }
 
     /// Send the current batch to the configured endpoint.
     ///
     /// - 2xx responses are treated as success.
-    /// - 4xx responses are logged as warnings and treated as success (no
-    ///   retry — client-side errors such as auth failures should not block
-    ///   metric generation).
-    /// - 5xx responses are retried once. If the retry also returns 5xx or
-    ///   fails, a [`SondaError::Sink`] is returned.
-    /// - Transport errors (connection refused, DNS failure, etc.) clear the
-    ///   batch to prevent unbounded buffer growth on repeated failures.
+    /// - 4xx (except 429) responses are logged as warnings and discarded (not
+    ///   retried — client-side errors should not block metric generation).
+    /// - 5xx, 429, and transport errors are retried according to the
+    ///   configured [`RetryPolicy`]. When no policy is configured, errors are
+    ///   returned immediately.
+    /// - The batch is always cleared (on success or failure) to prevent
+    ///   unbounded buffer growth.
     fn send_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
         }
 
-        // Split the borrow: extract the fields needed by `do_post` so we can
-        // pass `&self.batch` directly without cloning it.
-        let client = &self.client;
-        let url = &self.url;
-        let content_type = &self.content_type;
-        let headers = &self.headers;
-        let result = Self::do_post(client, url, content_type, headers, &self.batch);
-
-        match result {
-            Ok(status) if (200..300).contains(&status) => {
-                // Success — clear the batch.
-                self.batch.clear();
-                Ok(())
-            }
-            Ok(status) if (400..500).contains(&status) => {
-                // 4xx: client-side error. Warn and continue without retrying.
-                // The batch is cleared to prevent unbounded buffer growth.
-                eprintln!(
-                    "sonda: HTTP push sink received {} response from '{}'; discarding batch",
-                    status, self.url
-                );
-                self.batch.clear();
-                Ok(())
-            }
-            Ok(status) => {
-                // 5xx or unexpected: retry once.
+        let result = match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
                 let client = &self.client;
                 let url = &self.url;
                 let content_type = &self.content_type;
                 let headers = &self.headers;
-                let retry_result = Self::do_post(client, url, content_type, headers, &self.batch);
-                match retry_result {
-                    Ok(retry_status) if (200..300).contains(&retry_status) => {
-                        self.batch.clear();
-                        Ok(())
-                    }
-                    Ok(retry_status) => {
-                        self.batch.clear();
-                        Err(SondaError::Sink(std::io::Error::other(format!(
-                            "HTTP push to '{}' failed with status {} (retry status {})",
-                            self.url, status, retry_status
-                        ))))
-                    }
-                    Err(e) => {
-                        // Retry transport failure — clear batch to prevent unbounded growth.
-                        self.batch.clear();
-                        Err(e)
-                    }
-                }
+                let batch = &self.batch;
+                policy.execute(
+                    || Self::do_post_checked(client, url, content_type, headers, batch),
+                    Self::is_retryable,
+                )
             }
-            Err(e) => {
-                // Transport failure — clear batch to prevent unbounded growth.
-                self.batch.clear();
-                Err(e)
+            None => {
+                let client = &self.client;
+                let url = &self.url;
+                let content_type = &self.content_type;
+                let headers = &self.headers;
+                Self::do_post_checked(client, url, content_type, headers, &self.batch)
             }
+        };
+
+        self.batch.clear();
+
+        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
+        // The batch is already cleared; suppress the error so the sink continues.
+        match &result {
+            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
+                Ok(())
+            }
+            _ => result,
         }
     }
 
-    /// Perform a single HTTP POST of `body` to `url`.
+    /// Classify whether an error from `do_post_checked` is retryable.
+    ///
+    /// Transport errors and 5xx/429 HTTP errors are retryable. 4xx errors
+    /// (except 429) are not.
+    fn is_retryable(err: &SondaError) -> bool {
+        if let SondaError::Sink(io_err) = err {
+            let msg = io_err.to_string();
+            // 4xx (except 429) are not retryable.
+            if msg.contains("HTTP 4") && !msg.contains("HTTP 429") {
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Perform a single HTTP POST and classify the response.
+    ///
+    /// - 2xx: returns `Ok(())`.
+    /// - 4xx (except 429): logs a warning and returns `Err` with an
+    ///   `InvalidInput` kind (non-retryable by convention).
+    /// - 429, 5xx, transport errors: returns `Err` (retryable).
     ///
     /// This is a free-standing helper (not `&self`) so that `send_batch` can
     /// hold a reference to `self.batch` while calling it — avoiding a clone.
+    fn do_post_checked(
+        client: &ureq::Agent,
+        url: &str,
+        content_type: &str,
+        headers: &HashMap<String, String>,
+        body: &[u8],
+    ) -> Result<(), SondaError> {
+        let status = Self::do_post(client, url, content_type, headers, body)?;
+
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+
+        if (400..500).contains(&status) && status != 429 {
+            eprintln!(
+                "sonda: http_push sink: received HTTP {} from '{}'; discarding batch",
+                status, url
+            );
+            return Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("HTTP {} from '{}'", status, url),
+            )));
+        }
+
+        Err(SondaError::Sink(std::io::Error::other(format!(
+            "HTTP {} from '{}'",
+            status, url
+        ))))
+    }
+
+    /// Perform a single HTTP POST of `body` to `url`.
     ///
     /// Returns the HTTP status code on a successful transport-level exchange,
     /// or a [`SondaError::Sink`] on connection failure.
@@ -289,6 +324,7 @@ mod tests {
             "text/plain",
             1024,
             HashMap::new(),
+            None,
         );
         assert!(result.is_ok(), "http:// URL should be accepted");
     }
@@ -300,14 +336,20 @@ mod tests {
             "text/plain",
             1024,
             HashMap::new(),
+            None,
         );
         assert!(result.is_ok(), "https:// URL should be accepted");
     }
 
     #[test]
     fn new_with_invalid_scheme_returns_sink_error() {
-        let result =
-            HttpPushSink::new("ftp://example.com/push", "text/plain", 1024, HashMap::new());
+        let result = HttpPushSink::new(
+            "ftp://example.com/push",
+            "text/plain",
+            1024,
+            HashMap::new(),
+            None,
+        );
         assert!(result.is_err(), "non-http URL must be rejected");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -317,7 +359,8 @@ mod tests {
 
     #[test]
     fn new_with_bare_hostname_returns_sink_error() {
-        let result = HttpPushSink::new("example.com/push", "text/plain", 1024, HashMap::new());
+        let result =
+            HttpPushSink::new("example.com/push", "text/plain", 1024, HashMap::new(), None);
         assert!(result.is_err(), "URL without scheme must be rejected");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -327,14 +370,14 @@ mod tests {
 
     #[test]
     fn new_with_empty_url_returns_sink_error() {
-        let result = HttpPushSink::new("", "text/plain", 1024, HashMap::new());
+        let result = HttpPushSink::new("", "text/plain", 1024, HashMap::new(), None);
         assert!(result.is_err(), "empty URL must be rejected");
     }
 
     #[test]
     fn new_error_message_contains_invalid_url() {
         let bad_url = "not-a-url://bad";
-        let result = HttpPushSink::new(bad_url, "text/plain", 1024, HashMap::new());
+        let result = HttpPushSink::new(bad_url, "text/plain", 1024, HashMap::new(), None);
         let err = result.err().expect("should be Err");
         let msg = err.to_string();
         assert!(
@@ -353,8 +396,8 @@ mod tests {
         // We start a server that would panic if it received a connection.
         let (listener, url) = mock_server_listener();
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 1000, HashMap::new(), None)
+            .expect("construct sink");
 
         // Write 300 bytes total — below the 1000-byte threshold.
         for _ in 0..3 {
@@ -378,8 +421,8 @@ mod tests {
         // Accept exactly one request in a background thread.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 100, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 100, HashMap::new(), None)
+            .expect("construct sink");
         // Write exactly batch_size bytes → should auto-flush.
         sink.write(&[b'a'; 100]).expect("write should succeed");
 
@@ -394,8 +437,8 @@ mod tests {
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 50, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 50, HashMap::new(), None)
+            .expect("construct sink");
         // Write 80 bytes → exceeds 50-byte threshold → auto-flush.
         sink.write(&[b'z'; 80]).expect("write should succeed");
 
@@ -413,8 +456,8 @@ mod tests {
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         // Write 42 bytes — well below 10 000-byte threshold.
         sink.write(b"hello flush").expect("write");
         sink.flush().expect("flush should send remaining data");
@@ -431,6 +474,7 @@ mod tests {
             "text/plain",
             1024,
             HashMap::new(),
+            None,
         )
         .expect("construct sink");
         // Empty batch: flush should return Ok without making any network call.
@@ -444,8 +488,8 @@ mod tests {
         // First flush sends data; second flush is a no-op.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         sink.write(b"data").expect("write");
         sink.flush().expect("first flush");
 
@@ -465,7 +509,7 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new()).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
         // batch_size=1 → immediate flush on write.
         let result = sink.write(b"x");
         let _body = handle.join().expect("mock server thread panicked");
@@ -478,7 +522,7 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new()).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
         let result = sink.write(b"x");
         let _body = handle.join().expect("mock server thread panicked");
         // 4xx → warn + discard, but NOT an error from the sink's perspective.
@@ -489,22 +533,19 @@ mod tests {
     }
 
     #[test]
-    fn five_xx_response_retries_once_and_returns_sink_error() {
-        // Respond with 500 to both the initial attempt and the retry.
+    fn five_xx_without_retry_returns_error_after_one_attempt() {
+        // With no retry policy, 5xx returns an error after a single attempt.
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || {
-            // First request (original attempt).
-            accept_one_and_respond(&listener, 500);
-            // Second request (retry).
             accept_one_and_respond(&listener, 500);
         });
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new()).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
         let result = sink.write(b"x");
         handle.join().expect("mock server thread panicked");
-        assert!(result.is_err(), "persistent 5xx must return Err");
+        assert!(result.is_err(), "5xx without retry must return Err");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
             "expected SondaError::Sink"
@@ -512,8 +553,8 @@ mod tests {
     }
 
     #[test]
-    fn five_xx_then_two_xx_on_retry_returns_ok() {
-        // First request returns 500; retry returns 200.
+    fn five_xx_with_retry_policy_retries_and_succeeds() {
+        // With a retry policy, 5xx is retried and succeeds on the second attempt.
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || {
@@ -521,11 +562,44 @@ mod tests {
             accept_one_and_respond(&listener, 200);
         });
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new()).expect("construct sink");
+        use crate::sink::retry::RetryPolicy;
+        let policy = RetryPolicy::from_config(&crate::sink::retry::RetryConfig {
+            max_attempts: 2,
+            initial_backoff: "1ms".to_string(),
+            max_backoff: "10ms".to_string(),
+        })
+        .expect("valid retry config");
+
+        let mut sink = HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), Some(policy))
+            .expect("construct sink");
         let result = sink.write(b"x");
         handle.join().expect("mock server thread panicked");
         assert!(result.is_ok(), "5xx + successful retry must return Ok");
+    }
+
+    #[test]
+    fn five_xx_with_retry_policy_exhausted_returns_error() {
+        // All retries exhausted on persistent 5xx.
+        let (listener, url) = mock_server_listener();
+
+        let handle = thread::spawn(move || {
+            accept_one_and_respond(&listener, 500);
+            accept_one_and_respond(&listener, 500);
+        });
+
+        use crate::sink::retry::RetryPolicy;
+        let policy = RetryPolicy::from_config(&crate::sink::retry::RetryConfig {
+            max_attempts: 1,
+            initial_backoff: "1ms".to_string(),
+            max_backoff: "10ms".to_string(),
+        })
+        .expect("valid retry config");
+
+        let mut sink = HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), Some(policy))
+            .expect("construct sink");
+        let result = sink.write(b"x");
+        handle.join().expect("mock server thread panicked");
+        assert!(result.is_err(), "persistent 5xx must return Err");
     }
 
     // -------------------------------------------------------------------------
@@ -540,8 +614,8 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}/push");
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         sink.write(b"hello").expect("write buffered ok");
         let result = sink.flush();
         assert!(result.is_err(), "flush to refused port must fail");
@@ -561,8 +635,8 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let payload = b"metric_name{label=\"val\"} 42 1700000000000\n";
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         sink.write(payload).expect("write");
         sink.flush().expect("flush");
 
@@ -575,8 +649,8 @@ mod tests {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         sink.write(b"part1").expect("write 1");
         sink.write(b"part2").expect("write 2");
         sink.write(b"part3").expect("write 3");
@@ -678,6 +752,7 @@ batch_size: 8192
             content_type: Some("text/plain".to_string()),
             batch_size: Some(1024),
             headers: None,
+            retry: None,
         };
         let cloned = config.clone();
         let debug_str = format!("{cloned:?}");
@@ -696,6 +771,7 @@ batch_size: 8192
             content_type: None,
             batch_size: None,
             headers: None,
+            retry: None,
         };
         // Construction must succeed (no network call yet).
         let result = create_sink(&config, None);
@@ -713,6 +789,7 @@ batch_size: 8192
             content_type: None,
             batch_size: None,
             headers: None,
+            retry: None,
         };
         assert!(create_sink(&config, None).is_ok());
     }
@@ -724,6 +801,7 @@ batch_size: 8192
             content_type: None,
             batch_size: None,
             headers: None,
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(result.is_err(), "invalid URL must cause factory to fail");
@@ -739,6 +817,7 @@ batch_size: 8192
             content_type: Some("application/octet-stream".to_string()),
             batch_size: Some(10_000),
             headers: None,
+            retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
         sink.write(b"end-to-end").expect("write");
@@ -810,7 +889,7 @@ batch_size: 8192
             "0.1.0".to_string(),
         );
 
-        let mut sink = HttpPushSink::new(&url, "application/x-protobuf", 10_000, custom)
+        let mut sink = HttpPushSink::new(&url, "application/x-protobuf", 10_000, custom, None)
             .expect("construct sink");
         sink.write(b"test-payload").expect("write");
         sink.flush().expect("flush");
@@ -842,8 +921,8 @@ batch_size: 8192
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
 
-        let mut sink =
-            HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new()).expect("construct sink");
+        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
+            .expect("construct sink");
         sink.write(b"data").expect("write");
         sink.flush().expect("flush");
 
@@ -869,6 +948,7 @@ batch_size: 8192
             content_type: Some("application/x-protobuf".to_string()),
             batch_size: Some(10_000),
             headers: Some(hdr),
+            retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
         sink.write(b"factory-test").expect("write");

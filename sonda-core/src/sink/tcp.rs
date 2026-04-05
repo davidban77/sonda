@@ -1,62 +1,138 @@
 //! TCP sink — delivers encoded telemetry over a persistent TCP connection.
+//!
+//! When a retry policy is configured, the sink attempts to reconnect on
+//! write or flush failures before retrying the operation.
 
 use std::io::{BufWriter, Write};
 use std::net::TcpStream;
 
+use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
 /// Delivers encoded telemetry data over a TCP connection.
 ///
 /// The underlying [`TcpStream`] is wrapped in a [`BufWriter`] to batch
-/// writes and reduce syscall overhead.
+/// writes and reduce syscall overhead. When a [`RetryPolicy`] is configured,
+/// write and flush failures trigger a reconnection attempt before retrying.
 pub struct TcpSink {
     writer: BufWriter<TcpStream>,
-    /// Target address kept for error messages.
+    /// Target address stored for reconnection and error messages.
     addr: String,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl TcpSink {
     /// Connect to `addr` and create a new [`TcpSink`].
     ///
+    /// # Arguments
+    ///
+    /// - `addr` — remote address to connect to, e.g. `"127.0.0.1:9999"`.
+    /// - `retry_policy` — optional retry policy for transient failures.
+    ///   When `None`, errors are returned immediately (no retry).
+    ///
     /// # Errors
     ///
     /// Returns [`SondaError::Sink`] if the connection cannot be established
     /// (e.g., connection refused, invalid address).
-    pub fn new(addr: &str) -> Result<Self, SondaError> {
+    pub fn new(addr: &str, retry_policy: Option<RetryPolicy>) -> Result<Self, SondaError> {
         let stream = TcpStream::connect(addr)
             .map_err(|e| std::io::Error::new(e.kind(), format!("TCP connect to {addr}: {e}")))
             .map_err(SondaError::Sink)?;
         Ok(Self {
             writer: BufWriter::new(stream),
             addr: addr.to_owned(),
+            retry_policy,
         })
+    }
+
+    /// Attempt to reconnect to the stored address, replacing the writer.
+    fn reconnect(&mut self) -> Result<(), SondaError> {
+        let stream = TcpStream::connect(&self.addr)
+            .map_err(|e| {
+                std::io::Error::new(e.kind(), format!("TCP reconnect to {}: {e}", self.addr))
+            })
+            .map_err(SondaError::Sink)?;
+        self.writer = BufWriter::new(stream);
+        Ok(())
     }
 }
 
 impl Sink for TcpSink {
     /// Write `data` to the buffered TCP stream.
     ///
-    /// The buffer is flushed automatically by the OS or on an explicit
-    /// call to [`flush`](TcpSink::flush).
+    /// When a retry policy is configured, failures trigger reconnection
+    /// attempts before retrying the write.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
-        self.writer
+        let initial_result = self
+            .writer
             .write_all(data)
             .map_err(|e| std::io::Error::new(e.kind(), format!("TCP write to {}: {e}", self.addr)))
-            .map_err(SondaError::Sink)?;
-        Ok(())
+            .map_err(SondaError::Sink);
+
+        match initial_result {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                if let Some(policy) = self.retry_policy.clone() {
+                    // On failure, reconnect and retry.
+                    policy.execute(
+                        || {
+                            self.reconnect()?;
+                            self.writer
+                                .write_all(data)
+                                .map_err(|e| {
+                                    std::io::Error::new(
+                                        e.kind(),
+                                        format!("TCP write to {}: {e}", self.addr),
+                                    )
+                                })
+                                .map_err(SondaError::Sink)
+                        },
+                        |_| true, // all TCP errors are retryable
+                    )
+                } else {
+                    Err(first_err)
+                }
+            }
+        }
     }
 
     /// Flush buffered data to the TCP stream.
     ///
-    /// Should be called at shutdown or after each logical batch to ensure
-    /// in-flight data is delivered.
+    /// When a retry policy is configured, failures trigger reconnection
+    /// attempts before retrying the flush.
     fn flush(&mut self) -> Result<(), SondaError> {
-        self.writer
+        let initial_result = self
+            .writer
             .flush()
             .map_err(|e| std::io::Error::new(e.kind(), format!("TCP flush to {}: {e}", self.addr)))
-            .map_err(SondaError::Sink)?;
-        Ok(())
+            .map_err(SondaError::Sink);
+
+        match initial_result {
+            Ok(()) => Ok(()),
+            Err(first_err) => {
+                if let Some(policy) = self.retry_policy.clone() {
+                    policy.execute(
+                        || {
+                            self.reconnect()?;
+                            self.writer
+                                .flush()
+                                .map_err(|e| {
+                                    std::io::Error::new(
+                                        e.kind(),
+                                        format!("TCP flush to {}: {e}", self.addr),
+                                    )
+                                })
+                                .map_err(SondaError::Sink)
+                        },
+                        |_| true,
+                    )
+                } else {
+                    Err(first_err)
+                }
+            }
+        }
     }
 }
 
@@ -90,7 +166,7 @@ mod tests {
             buf
         });
 
-        let mut sink = TcpSink::new(&addr).expect("connect should succeed");
+        let mut sink = TcpSink::new(&addr, None).expect("connect should succeed");
         sink.write(b"hello tcp\n").expect("write should succeed");
         sink.flush().expect("flush should succeed");
         // Drop the sink to close the connection so the receiver can finish.
@@ -111,7 +187,7 @@ mod tests {
             buf
         });
 
-        let mut sink = TcpSink::new(&addr).expect("connect");
+        let mut sink = TcpSink::new(&addr, None).expect("connect");
         sink.write(b"line1\n").expect("write 1");
         sink.write(b"line2\n").expect("write 2");
         sink.write(b"line3\n").expect("write 3");
@@ -133,7 +209,7 @@ mod tests {
             buf
         });
 
-        let mut sink = TcpSink::new(&addr).expect("connect");
+        let mut sink = TcpSink::new(&addr, None).expect("connect");
         sink.write(b"").expect("empty write should succeed");
         sink.flush().expect("flush");
         drop(sink);
@@ -151,7 +227,7 @@ mod tests {
         let addr = listener.local_addr().expect("local addr").to_string();
         drop(listener); // Port is now free and not listening.
 
-        let result = TcpSink::new(&addr);
+        let result = TcpSink::new(&addr, None);
         assert!(result.is_err(), "connecting to closed port must fail");
         let err = result.err().unwrap();
         assert!(
@@ -166,7 +242,7 @@ mod tests {
         let addr = listener.local_addr().expect("local addr").to_string();
         drop(listener);
 
-        let result = TcpSink::new(&addr);
+        let result = TcpSink::new(&addr, None);
         let err = result.err().unwrap();
         let msg = err.to_string();
         assert!(
@@ -179,7 +255,7 @@ mod tests {
 
     #[test]
     fn tcp_invalid_address_string_returns_sink_error() {
-        let result = TcpSink::new("not-a-host");
+        let result = TcpSink::new("not-a-host", None);
         assert!(result.is_err(), "invalid address must fail");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -193,7 +269,7 @@ mod tests {
         let _receiver = thread::spawn(move || {
             let _ = listener.accept();
         });
-        let result = TcpSink::new(&addr);
+        let result = TcpSink::new(&addr, None);
         assert!(result.is_ok(), "valid address must connect");
     }
 
@@ -220,6 +296,7 @@ mod tests {
 
         let config = SinkConfig::Tcp {
             address: addr.clone(),
+            retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory should create TcpSink");
         sink.write(b"via factory\n").expect("write");
@@ -236,7 +313,7 @@ mod tests {
         let yaml = "type: tcp\naddress: \"127.0.0.1:9999\"";
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
         match config {
-            SinkConfig::Tcp { address } => {
+            SinkConfig::Tcp { address, .. } => {
                 assert_eq!(address, "127.0.0.1:9999");
             }
             other => panic!("expected SinkConfig::Tcp, got {other:?}"),
@@ -247,6 +324,7 @@ mod tests {
     fn sink_config_tcp_is_cloneable_and_debuggable() {
         let config = SinkConfig::Tcp {
             address: "127.0.0.1:9999".to_string(),
+            retry: None,
         };
         let cloned = config.clone();
         let debug_str = format!("{cloned:?}");
