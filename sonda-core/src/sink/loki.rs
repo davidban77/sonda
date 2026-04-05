@@ -140,53 +140,77 @@ impl LokiSink {
         };
 
         self.batch.clear();
-        result
+
+        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
+        // The batch is already cleared; suppress the error so the sink continues.
+        match &result {
+            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
+                Ok(())
+            }
+            _ => result,
+        }
     }
 
     /// Perform a single Loki push and classify the response.
+    ///
+    /// - 2xx: `Ok(())`.
+    /// - 4xx (except 429): warns and returns non-retryable `Err` with
+    ///   `ErrorKind::InvalidInput` (same convention as `http.rs` and
+    ///   `remote_write.rs`).
+    /// - 429, 5xx, transport errors: retryable `Err`.
     fn do_post_checked(client: &ureq::Agent, push_url: &str, body: &str) -> Result<(), SondaError> {
+        let status = Self::do_post(client, push_url, body)?;
+
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+
+        if (400..500).contains(&status) && status != 429 {
+            eprintln!(
+                "sonda: loki sink: received HTTP {} from '{}'; discarding batch",
+                status, push_url
+            );
+            return Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("HTTP {} from '{}'", status, push_url),
+            )));
+        }
+
+        Err(SondaError::Sink(std::io::Error::other(format!(
+            "HTTP {} from '{}'",
+            status, push_url
+        ))))
+    }
+
+    /// Perform a single HTTP POST of the Loki push body.
+    ///
+    /// Returns the HTTP status code on a successful transport-level exchange,
+    /// or a [`SondaError::Sink`] on connection failure.
+    fn do_post(client: &ureq::Agent, push_url: &str, body: &str) -> Result<u16, SondaError> {
         let response = client
             .post(push_url)
             .set("Content-Type", "application/json")
             .send_string(body);
 
         match response {
-            Ok(resp) => {
-                let status = resp.status();
-                if (200..300).contains(&status) {
-                    Ok(())
-                } else {
-                    Err(SondaError::Sink(std::io::Error::other(format!(
-                        "Loki push to '{}' returned unexpected status {}",
-                        push_url, status
-                    ))))
-                }
-            }
-            Err(ureq::Error::Status(code, _)) => {
-                if (400..500).contains(&code) && code != 429 {
-                    eprintln!(
-                        "sonda: loki sink: received HTTP {} from '{}'; discarding batch",
-                        code, push_url
-                    );
-                }
-                Err(SondaError::Sink(std::io::Error::other(format!(
-                    "Loki push to '{}' failed with HTTP status {}",
-                    push_url, code
-                ))))
-            }
-            Err(e) => Err(SondaError::Sink(std::io::Error::other(format!(
-                "Loki push to '{}' failed: {}",
-                push_url, e
-            )))),
+            Ok(resp) => Ok(resp.status()),
+            Err(ureq::Error::Status(code, _)) => Ok(code),
+            Err(e) => Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                format!("Loki push to '{}' failed: {}", push_url, e),
+            ))),
         }
     }
 
-    /// Classify whether an error is retryable.
+    /// Classify whether an error from `do_post_checked` is retryable.
+    ///
+    /// Transport errors and 5xx/429 HTTP errors are retryable. 4xx errors
+    /// (except 429) are not — they are tagged with `ErrorKind::InvalidInput`
+    /// by `do_post_checked`.
     fn is_retryable(err: &SondaError) -> bool {
         if let SondaError::Sink(io_err) = err {
-            let msg = io_err.to_string();
-            // 4xx (except 429) are not retryable.
-            if msg.contains("HTTP status 4") && !msg.contains("429") {
+            // 4xx (except 429) are tagged InvalidInput → not retryable.
+            if io_err.kind() == std::io::ErrorKind::InvalidInput {
                 return false;
             }
             return true;
@@ -632,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn four_xx_response_returns_sink_error() {
+    fn four_xx_response_warns_and_discards_batch_returning_ok() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
@@ -641,10 +665,10 @@ mod tests {
         let result = sink.flush();
         handle.join().expect("mock server thread panicked");
 
-        assert!(result.is_err(), "4xx response must return Err");
+        // 4xx → warn + discard, but NOT an error from the sink's perspective.
         assert!(
-            matches!(result.err().unwrap(), SondaError::Sink(_)),
-            "expected SondaError::Sink"
+            result.is_ok(),
+            "4xx response must return Ok (warn-and-continue)"
         );
     }
 

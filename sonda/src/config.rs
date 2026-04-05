@@ -271,6 +271,7 @@ fn build_sink_config(
                         .expect("validated: --endpoint required for remote_write")
                         .to_string(),
                     batch_size,
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "remote-write"))]
@@ -317,6 +318,7 @@ fn build_sink_config(
                         .to_string(),
                     signal_type: parsed_signal,
                     batch_size,
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "otlp"))]
@@ -335,6 +337,7 @@ fn build_sink_config(
                     topic: topic
                         .expect("validated: --topic required for kafka")
                         .to_string(),
+                    retry: None,
                 })
             }
             #[cfg(not(feature = "kafka"))]
