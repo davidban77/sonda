@@ -400,7 +400,7 @@ fn prometheus_x_tcp_data_arrives_at_listener() {
         buf
     });
 
-    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr).expect("TcpSink must connect");
+    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr, None).expect("TcpSink must connect");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
     drop(sink);
@@ -428,7 +428,7 @@ fn influx_x_tcp_data_arrives_at_listener() {
         buf
     });
 
-    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr).expect("TcpSink must connect");
+    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr, None).expect("TcpSink must connect");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
     drop(sink);
@@ -453,7 +453,7 @@ fn json_x_tcp_data_arrives_at_listener() {
         buf
     });
 
-    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr).expect("TcpSink must connect");
+    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr, None).expect("TcpSink must connect");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
     drop(sink);
@@ -561,6 +561,7 @@ fn prometheus_x_http_push_body_matches_encoded_bytes() {
         "text/plain; version=0.0.4",
         10_000,
         HashMap::new(),
+        None,
     )
     .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();
@@ -586,7 +587,7 @@ fn influx_x_http_push_body_matches_encoded_bytes() {
     let server = thread::spawn(move || accept_http_and_respond_ok(&listener));
 
     let mut sink =
-        sonda_core::sink::http::HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new())
+        sonda_core::sink::http::HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
             .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
@@ -612,6 +613,7 @@ fn json_x_http_push_body_matches_encoded_bytes() {
         "application/x-ndjson",
         10_000,
         HashMap::new(),
+        None,
     )
     .expect("HttpPushSink must construct");
     sink.write(&bytes).unwrap();

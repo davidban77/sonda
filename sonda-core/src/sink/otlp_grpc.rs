@@ -32,6 +32,7 @@ use crate::encoder::otlp::{
     ExportMetricsServiceResponse, InstrumentationScope, KeyValue, LogRecord, Metric, Resource,
     ResourceLogs, ResourceMetrics, ScopeLogs, ScopeMetrics,
 };
+use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
@@ -172,6 +173,8 @@ pub struct OtlpGrpcSink {
     resource_attrs: Vec<KeyValue>,
     /// The endpoint URL string (stored for error messages).
     endpoint: String,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl OtlpGrpcSink {
@@ -197,6 +200,7 @@ impl OtlpGrpcSink {
         signal_type: OtlpSignalType,
         batch_size: usize,
         resource_attrs: Vec<KeyValue>,
+        retry_policy: Option<RetryPolicy>,
     ) -> Result<Self, SondaError> {
         // Build a minimal single-threaded tokio runtime.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -245,6 +249,7 @@ impl OtlpGrpcSink {
             signal_type,
             resource_attrs,
             endpoint: endpoint.to_owned(),
+            retry_policy,
         })
     }
 
@@ -264,6 +269,8 @@ impl OtlpGrpcSink {
     }
 
     /// Flush the metric batch as an `ExportMetricsServiceRequest` via gRPC.
+    ///
+    /// Uses the configured [`RetryPolicy`] for transient gRPC failures.
     fn flush_metrics(&mut self) -> Result<(), SondaError> {
         if self.metric_batch.is_empty() {
             return Ok(());
@@ -272,23 +279,51 @@ impl OtlpGrpcSink {
         let metrics =
             std::mem::replace(&mut self.metric_batch, Vec::with_capacity(self.batch_size));
 
-        let request = ExportMetricsServiceRequest {
-            resource_metrics: vec![ResourceMetrics {
-                resource: Some(self.build_resource()),
-                scope_metrics: vec![ScopeMetrics {
-                    scope: Some(Self::build_scope()),
-                    metrics,
-                }],
-            }],
-        };
-
-        self.send_grpc_unary::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>(
-            request,
-            METRICS_EXPORT_PATH,
-        )
+        match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
+                // Clone metrics for potential retries since send_grpc_unary
+                // consumes the request.
+                policy.execute(
+                    || {
+                        let request = ExportMetricsServiceRequest {
+                            resource_metrics: vec![ResourceMetrics {
+                                resource: Some(self.build_resource()),
+                                scope_metrics: vec![ScopeMetrics {
+                                    scope: Some(Self::build_scope()),
+                                    metrics: metrics.clone(),
+                                }],
+                            }],
+                        };
+                        self.send_grpc_unary::<
+                            ExportMetricsServiceRequest,
+                            ExportMetricsServiceResponse,
+                        >(request, METRICS_EXPORT_PATH)
+                    },
+                    Self::is_retryable,
+                )
+            }
+            None => {
+                let request = ExportMetricsServiceRequest {
+                    resource_metrics: vec![ResourceMetrics {
+                        resource: Some(self.build_resource()),
+                        scope_metrics: vec![ScopeMetrics {
+                            scope: Some(Self::build_scope()),
+                            metrics,
+                        }],
+                    }],
+                };
+                self.send_grpc_unary::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>(
+                    request,
+                    METRICS_EXPORT_PATH,
+                )
+            }
+        }
     }
 
     /// Flush the log batch as an `ExportLogsServiceRequest` via gRPC.
+    ///
+    /// Uses the configured [`RetryPolicy`] for transient gRPC failures.
     fn flush_logs(&mut self) -> Result<(), SondaError> {
         if self.log_batch.is_empty() {
             return Ok(());
@@ -297,20 +332,70 @@ impl OtlpGrpcSink {
         let log_records =
             std::mem::replace(&mut self.log_batch, Vec::with_capacity(self.batch_size));
 
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: Some(self.build_resource()),
-                scope_logs: vec![ScopeLogs {
-                    scope: Some(Self::build_scope()),
-                    log_records,
-                }],
-            }],
-        };
+        match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
+                policy.execute(
+                    || {
+                        let request = ExportLogsServiceRequest {
+                            resource_logs: vec![ResourceLogs {
+                                resource: Some(self.build_resource()),
+                                scope_logs: vec![ScopeLogs {
+                                    scope: Some(Self::build_scope()),
+                                    log_records: log_records.clone(),
+                                }],
+                            }],
+                        };
+                        self.send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
+                            request,
+                            LOGS_EXPORT_PATH,
+                        )
+                    },
+                    Self::is_retryable,
+                )
+            }
+            None => {
+                let request = ExportLogsServiceRequest {
+                    resource_logs: vec![ResourceLogs {
+                        resource: Some(self.build_resource()),
+                        scope_logs: vec![ScopeLogs {
+                            scope: Some(Self::build_scope()),
+                            log_records,
+                        }],
+                    }],
+                };
+                self.send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
+                    request,
+                    LOGS_EXPORT_PATH,
+                )
+            }
+        }
+    }
 
-        self.send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
-            request,
-            LOGS_EXPORT_PATH,
-        )
+    /// Classify whether a gRPC error is retryable.
+    ///
+    /// Transport errors (connection refused, broken pipe) and gRPC status
+    /// codes UNAVAILABLE, DEADLINE_EXCEEDED, and RESOURCE_EXHAUSTED are
+    /// retryable.
+    fn is_retryable(err: &SondaError) -> bool {
+        if let SondaError::Sink(io_err) = err {
+            let msg = io_err.to_string();
+            // UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED in gRPC
+            // status codes are retryable. Also transport errors.
+            if msg.contains("UNAVAILABLE")
+                || msg.contains("DEADLINE_EXCEEDED")
+                || msg.contains("RESOURCE_EXHAUSTED")
+                || io_err.kind() == std::io::ErrorKind::ConnectionRefused
+                || io_err.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                return true;
+            }
+            // Generic transport errors are retryable.
+            if msg.contains("not ready") || msg.contains("connection") {
+                return true;
+            }
+        }
+        false
     }
 
     /// Send a gRPC unary call using the custom prost codec.
@@ -464,6 +549,7 @@ batch_size: 50
                 endpoint,
                 signal_type,
                 batch_size,
+                ..
             } => {
                 assert_eq!(endpoint, "http://localhost:4317");
                 assert_eq!(signal_type, OtlpSignalType::Metrics);
@@ -523,6 +609,7 @@ signal_type: logs
             endpoint: "http://localhost:4317".to_string(),
             signal_type: OtlpSignalType::Metrics,
             batch_size: Some(100),
+            retry: None,
         };
         let cloned = config.clone();
         let s = format!("{cloned:?}");
@@ -636,6 +723,7 @@ signal_type: logs
             OtlpSignalType::Metrics,
             DEFAULT_BATCH_SIZE,
             vec![],
+            None,
         );
         match result {
             Err(err) => {
@@ -657,6 +745,7 @@ signal_type: logs
             OtlpSignalType::Metrics,
             DEFAULT_BATCH_SIZE,
             vec![],
+            None,
         );
         assert!(result.is_err(), "invalid endpoint URL must be rejected");
     }
@@ -726,6 +815,7 @@ sink:
                 endpoint,
                 signal_type,
                 batch_size,
+                ..
             } => {
                 assert_eq!(endpoint, "http://localhost:4317");
                 assert_eq!(*signal_type, OtlpSignalType::Logs);

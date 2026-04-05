@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
@@ -40,6 +41,8 @@ pub struct LokiSink {
     batch_size: usize,
     /// Accumulated entries waiting to be sent: `(unix_nanoseconds, log_line)`.
     batch: Vec<(String, String)>,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl LokiSink {
@@ -60,6 +63,7 @@ impl LokiSink {
         url: String,
         labels: HashMap<String, String>,
         batch_size: usize,
+        retry_policy: Option<RetryPolicy>,
     ) -> Result<Self, SondaError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(SondaError::Sink(std::io::Error::new(
@@ -79,6 +83,7 @@ impl LokiSink {
             labels,
             batch_size,
             batch: Vec::with_capacity(batch_size),
+            retry_policy,
         })
     }
 
@@ -109,10 +114,11 @@ impl LokiSink {
         )
     }
 
-    /// POST the current batch to Loki and clear it on success.
+    /// POST the current batch to Loki and clear it.
     ///
-    /// Returns `Ok(())` on a successful 2xx response. HTTP errors and transport
-    /// failures are returned as [`SondaError::Sink`].
+    /// Uses the configured [`RetryPolicy`] for transient failures. When no
+    /// policy is configured, errors are returned immediately. The batch is
+    /// always cleared to prevent unbounded buffer growth.
     fn flush_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
@@ -121,16 +127,32 @@ impl LokiSink {
         let push_url = format!("{}/loki/api/v1/push", self.url);
         let body = self.build_envelope();
 
-        let response = self
-            .client
-            .post(&push_url)
+        let result = match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
+                let client = &self.client;
+                policy.execute(
+                    || Self::do_post_checked(client, &push_url, &body),
+                    Self::is_retryable,
+                )
+            }
+            None => Self::do_post_checked(&self.client, &push_url, &body),
+        };
+
+        self.batch.clear();
+        result
+    }
+
+    /// Perform a single Loki push and classify the response.
+    fn do_post_checked(client: &ureq::Agent, push_url: &str, body: &str) -> Result<(), SondaError> {
+        let response = client
+            .post(push_url)
             .set("Content-Type", "application/json")
-            .send_string(&body);
+            .send_string(body);
 
         match response {
             Ok(resp) => {
                 let status = resp.status();
-                self.batch.clear();
                 if (200..300).contains(&status) {
                     Ok(())
                 } else {
@@ -141,20 +163,35 @@ impl LokiSink {
                 }
             }
             Err(ureq::Error::Status(code, _)) => {
-                self.batch.clear();
+                if (400..500).contains(&code) && code != 429 {
+                    eprintln!(
+                        "sonda: loki sink: received HTTP {} from '{}'; discarding batch",
+                        code, push_url
+                    );
+                }
                 Err(SondaError::Sink(std::io::Error::other(format!(
                     "Loki push to '{}' failed with HTTP status {}",
                     push_url, code
                 ))))
             }
-            Err(e) => {
-                self.batch.clear();
-                Err(SondaError::Sink(std::io::Error::other(format!(
-                    "Loki push to '{}' failed: {}",
-                    push_url, e
-                ))))
-            }
+            Err(e) => Err(SondaError::Sink(std::io::Error::other(format!(
+                "Loki push to '{}' failed: {}",
+                push_url, e
+            )))),
         }
+    }
+
+    /// Classify whether an error is retryable.
+    fn is_retryable(err: &SondaError) -> bool {
+        if let SondaError::Sink(io_err) = err {
+            let msg = io_err.to_string();
+            // 4xx (except 429) are not retryable.
+            if msg.contains("HTTP status 4") && !msg.contains("429") {
+                return false;
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -263,19 +300,34 @@ mod tests {
 
     #[test]
     fn new_with_http_url_succeeds() {
-        let result = LokiSink::new("http://localhost:3100".to_string(), HashMap::new(), 100);
+        let result = LokiSink::new(
+            "http://localhost:3100".to_string(),
+            HashMap::new(),
+            100,
+            None,
+        );
         assert!(result.is_ok(), "http:// URL must be accepted");
     }
 
     #[test]
     fn new_with_https_url_succeeds() {
-        let result = LokiSink::new("https://loki.example.com".to_string(), HashMap::new(), 100);
+        let result = LokiSink::new(
+            "https://loki.example.com".to_string(),
+            HashMap::new(),
+            100,
+            None,
+        );
         assert!(result.is_ok(), "https:// URL must be accepted");
     }
 
     #[test]
     fn new_with_invalid_scheme_returns_sink_error() {
-        let result = LokiSink::new("ftp://loki.example.com".to_string(), HashMap::new(), 100);
+        let result = LokiSink::new(
+            "ftp://loki.example.com".to_string(),
+            HashMap::new(),
+            100,
+            None,
+        );
         assert!(result.is_err(), "non-http:// URL must be rejected");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -285,20 +337,20 @@ mod tests {
 
     #[test]
     fn new_with_bare_hostname_returns_sink_error() {
-        let result = LokiSink::new("loki.example.com".to_string(), HashMap::new(), 100);
+        let result = LokiSink::new("loki.example.com".to_string(), HashMap::new(), 100, None);
         assert!(result.is_err(), "URL without scheme must be rejected");
     }
 
     #[test]
     fn new_with_empty_url_returns_sink_error() {
-        let result = LokiSink::new(String::new(), HashMap::new(), 100);
+        let result = LokiSink::new(String::new(), HashMap::new(), 100, None);
         assert!(result.is_err(), "empty URL must be rejected");
     }
 
     #[test]
     fn new_error_message_contains_the_bad_url() {
         let bad_url = "not-a-url";
-        let result = LokiSink::new(bad_url.to_string(), HashMap::new(), 100);
+        let result = LokiSink::new(bad_url.to_string(), HashMap::new(), 100, None);
         let err = result.err().expect("should be Err");
         let msg = err.to_string();
         assert!(
@@ -321,7 +373,7 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("job".to_string(), "sonda".to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
         sink.write(b"hello loki\n").expect("write");
         sink.flush().expect("flush");
 
@@ -380,7 +432,7 @@ mod tests {
         labels.insert("job".to_string(), "sonda".to_string());
         labels.insert("env".to_string(), "dev".to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
         sink.write(b"test\n").expect("write");
         sink.flush().expect("flush");
 
@@ -406,7 +458,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"line\n").expect("write");
         sink.flush().expect("flush");
 
@@ -429,7 +481,7 @@ mod tests {
     fn write_below_batch_size_does_not_trigger_http_call() {
         let (listener, url) = mock_loki_listener();
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 50).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 50, None).expect("construct sink");
 
         // Write 49 lines — one short of the 50-entry threshold.
         for i in 0..49 {
@@ -451,7 +503,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 50).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 50, None).expect("construct sink");
 
         // Write exactly 50 lines → must trigger an auto-flush.
         for i in 0..50 {
@@ -479,7 +531,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
 
         // Write only 3 lines (far below batch_size of 100).
         sink.write(b"alpha\n").expect("write 1");
@@ -502,7 +554,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"once\n").expect("write");
         sink.flush().expect("first flush sends data");
         let _body = handle.join().expect("mock server thread panicked");
@@ -523,7 +575,7 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}");
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
 
         // Empty batch — must return Ok without any network I/O.
         assert!(
@@ -541,7 +593,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"my log line\n").expect("write with newline");
         sink.flush().expect("flush");
 
@@ -567,7 +619,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 500));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
         handle.join().expect("mock server thread panicked");
@@ -584,7 +636,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
         handle.join().expect("mock server thread panicked");
@@ -603,7 +655,7 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}");
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
 
@@ -623,7 +675,7 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
         // A log line containing a JSON double-quote character.
         sink.write(b"msg=\"hello world\"").expect("write");
         sink.flush().expect("flush");
@@ -647,7 +699,7 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("app".to_string(), r#"my "special" app"#.to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100).expect("construct sink");
+        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
         sink.write(b"line\n").expect("write");
         sink.flush().expect("flush");
 
@@ -676,7 +728,7 @@ mod tests {
             (first, second)
         });
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 2).expect("construct sink");
+        let mut sink = LokiSink::new(url, HashMap::new(), 2, None).expect("construct sink");
 
         // First batch: lines 0-1 → triggers auto-flush at batch_size=2.
         sink.write(b"line 0\n").expect("write 0");
@@ -720,6 +772,7 @@ mod tests {
             SinkConfig::Loki {
                 ref url,
                 batch_size,
+                ..
             } => {
                 assert_eq!(url, "http://localhost:3100");
                 assert!(batch_size.is_none(), "batch_size should default to None");
@@ -741,6 +794,7 @@ batch_size: 50
             SinkConfig::Loki {
                 ref url,
                 batch_size,
+                ..
             } => {
                 assert_eq!(url, "http://localhost:3100");
                 assert_eq!(batch_size, Some(50));
@@ -769,6 +823,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url: "http://localhost:3100".to_string(),
             batch_size: None,
+            retry: None,
         };
         assert!(
             create_sink(&config, None).is_ok(),
@@ -784,6 +839,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None,
+            retry: None,
         };
         let mut labels = HashMap::new();
         labels.insert("job".to_string(), "sonda".to_string());
@@ -810,6 +866,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None,
+            retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
 
@@ -839,6 +896,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None, // should default to 100
+            retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
 
@@ -855,6 +913,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url: "not-http://bad".to_string(),
             batch_size: None,
+            retry: None,
         };
         let result = create_sink(&config, None);
         assert!(result.is_err(), "invalid URL must cause factory to fail");
@@ -915,7 +974,9 @@ sink:
         assert_eq!(labels.get("job").map(String::as_str), Some("sonda"));
         assert_eq!(labels.get("env").map(String::as_str), Some("dev"));
         match &config.sink {
-            SinkConfig::Loki { url, batch_size } => {
+            SinkConfig::Loki {
+                url, batch_size, ..
+            } => {
                 assert_eq!(url, "http://localhost:3100");
                 assert_eq!(batch_size, &Some(50));
             }

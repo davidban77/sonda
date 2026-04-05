@@ -22,6 +22,7 @@ use rskafka::{
 };
 use tokio::runtime::Runtime;
 
+use crate::sink::retry::RetryPolicy;
 use crate::{sink::Sink, SondaError};
 
 /// Default buffer size in bytes before an automatic flush is triggered (64 KiB).
@@ -48,6 +49,8 @@ pub struct KafkaSink {
     buffer: Vec<u8>,
     /// Tokio runtime used to drive async rskafka calls synchronously.
     runtime: Runtime,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl KafkaSink {
@@ -72,7 +75,11 @@ impl KafkaSink {
     /// broker-side auto-topic-creation (`auto.create.topics.enable=true`)
     /// works out of the box. This may cause the constructor to briefly block
     /// while the broker creates the topic.
-    pub fn new(brokers: &str, topic: &str) -> Result<Self, SondaError> {
+    pub fn new(
+        brokers: &str,
+        topic: &str,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Result<Self, SondaError> {
         // Build a minimal single-threaded tokio runtime. This drives all
         // async rskafka calls without making the Sink trait async.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -144,10 +151,14 @@ impl KafkaSink {
             client,
             buffer: Vec::with_capacity(KAFKA_BUFFER_SIZE),
             runtime,
+            retry_policy,
         })
     }
 
     /// Publish the internal buffer as a single Kafka record and clear it.
+    ///
+    /// Uses the configured [`RetryPolicy`] for transient produce failures.
+    /// When no policy is configured, errors are returned immediately.
     ///
     /// Returns immediately without making a network call if the buffer is
     /// empty (idempotent).
@@ -160,9 +171,25 @@ impl KafkaSink {
         // avoids an intermediate zero-capacity state that take() would produce.
         let payload = std::mem::replace(&mut self.buffer, Vec::with_capacity(KAFKA_BUFFER_SIZE));
 
+        match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
+                // The payload must be cloneable for retries — Kafka's produce
+                // consumes the Record, so we re-create it on each attempt.
+                policy.execute(
+                    || self.do_produce(&payload),
+                    |_| true, // all Kafka produce errors are retryable
+                )
+            }
+            None => self.do_produce(&payload),
+        }
+    }
+
+    /// Produce a single Kafka record from the given payload bytes.
+    fn do_produce(&mut self, payload: &[u8]) -> Result<(), SondaError> {
         let record = Record {
             key: None,
-            value: Some(payload),
+            value: Some(payload.to_vec()),
             headers: BTreeMap::new(),
             timestamp: Utc::now(),
         };
@@ -247,7 +274,7 @@ mod tests {
         let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         match config {
-            SinkConfig::Kafka { brokers, topic } => {
+            SinkConfig::Kafka { brokers, topic, .. } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
                 assert_eq!(topic, "sonda-test");
             }
@@ -261,7 +288,7 @@ mod tests {
         let yaml = "type: kafka\nbrokers: \"broker1:9092,broker2:9092\"\ntopic: my-topic";
         let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
-            matches!(config, SinkConfig::Kafka { ref brokers, ref topic }
+            matches!(config, SinkConfig::Kafka { ref brokers, ref topic, .. }
                 if brokers == "broker1:9092,broker2:9092" && topic == "my-topic")
         );
     }
@@ -293,10 +320,11 @@ mod tests {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            retry: None,
         };
         let cloned = config.clone();
         assert!(
-            matches!(cloned, SinkConfig::Kafka { ref brokers, ref topic }
+            matches!(cloned, SinkConfig::Kafka { ref brokers, ref topic, .. }
                 if brokers == "127.0.0.1:9092" && topic == "sonda-test")
         );
     }
@@ -306,6 +334,7 @@ mod tests {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            retry: None,
         };
         let s = format!("{config:?}");
         assert!(s.contains("Kafka"));
@@ -394,7 +423,7 @@ sink:
         let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.name, "kafka_test");
         assert!(
-            matches!(config.sink, SinkConfig::Kafka { ref brokers, ref topic }
+            matches!(config.sink, SinkConfig::Kafka { ref brokers, ref topic, .. }
                 if brokers == "127.0.0.1:9092" && topic == "sonda-metrics")
         );
     }

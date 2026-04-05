@@ -19,6 +19,7 @@
 use prost::Message;
 
 use crate::encoder::remote_write::{parse_length_prefixed_timeseries, TimeSeries, WriteRequest};
+use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::{EncoderError, SondaError};
 
@@ -49,6 +50,8 @@ pub struct RemoteWriteSink {
     batch: Vec<TimeSeries>,
     /// Flush threshold in number of TimeSeries entries.
     batch_size: usize,
+    /// Optional retry policy for transient failures.
+    retry_policy: Option<RetryPolicy>,
 }
 
 impl RemoteWriteSink {
@@ -64,7 +67,11 @@ impl RemoteWriteSink {
     /// # Errors
     ///
     /// Returns [`SondaError::Sink`] if the URL is not a valid HTTP(S) URL.
-    pub fn new(url: &str, batch_size: usize) -> Result<Self, SondaError> {
+    pub fn new(
+        url: &str,
+        batch_size: usize,
+        retry_policy: Option<RetryPolicy>,
+    ) -> Result<Self, SondaError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -82,6 +89,7 @@ impl RemoteWriteSink {
             url: url.to_owned(),
             batch: Vec::with_capacity(batch_size),
             batch_size,
+            retry_policy,
         })
     }
 
@@ -115,32 +123,63 @@ impl RemoteWriteSink {
             )))
         })?;
 
-        // HTTP POST with the required remote write headers.
-        let result = self.do_post(&compressed);
+        // POST with retry if configured.
+        let result = match &self.retry_policy {
+            Some(policy) => {
+                let policy = policy.clone();
+                policy.execute(|| self.do_post_checked(&compressed), Self::is_retryable)
+            }
+            None => self.do_post_checked(&compressed),
+        };
 
-        match result {
-            Ok(status) if (200..300).contains(&status) => Ok(()),
-            Ok(status) if (400..500).contains(&status) => {
-                eprintln!(
-                    "sonda: remote write sink received {} response from '{}'; discarding batch",
-                    status, self.url
-                );
+        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
+        match &result {
+            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
                 Ok(())
             }
-            Ok(status) => {
-                // 5xx or unexpected: retry once.
-                let retry_result = self.do_post(&compressed);
-                match retry_result {
-                    Ok(retry_status) if (200..300).contains(&retry_status) => Ok(()),
-                    Ok(retry_status) => Err(SondaError::Sink(std::io::Error::other(format!(
-                        "remote write to '{}' failed with status {} (retry status {})",
-                        self.url, status, retry_status
-                    )))),
-                    Err(e) => Err(e),
-                }
-            }
-            Err(e) => Err(e),
+            _ => result,
         }
+    }
+
+    /// Perform a single HTTP POST and classify the response.
+    ///
+    /// - 2xx: `Ok(())`.
+    /// - 4xx (except 429): warns and returns non-retryable `Err`.
+    /// - 429, 5xx, transport: retryable `Err`.
+    fn do_post_checked(&self, body: &[u8]) -> Result<(), SondaError> {
+        let status = self.do_post(body)?;
+
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+
+        if (400..500).contains(&status) && status != 429 {
+            eprintln!(
+                "sonda: remote_write sink: received HTTP {} from '{}'; discarding batch",
+                status, self.url
+            );
+            return Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("HTTP {} from '{}'", status, self.url),
+            )));
+        }
+
+        Err(SondaError::Sink(std::io::Error::other(format!(
+            "HTTP {} from '{}'",
+            status, self.url
+        ))))
+    }
+
+    /// Classify whether an error is retryable.
+    fn is_retryable(err: &SondaError) -> bool {
+        if let SondaError::Sink(io_err) = err {
+            let msg = io_err.to_string();
+            if msg.contains("HTTP 4") && !msg.contains("HTTP 429") {
+                return false;
+            }
+            return true;
+        }
+        false
     }
 
     /// Perform a single HTTP POST of snappy-compressed protobuf to the endpoint.

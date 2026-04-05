@@ -444,7 +444,7 @@ fn sink_display(sink: &SinkConfig) -> String {
     match sink {
         SinkConfig::Stdout => "stdout".to_string(),
         SinkConfig::File { path } => format!("file: {path}"),
-        SinkConfig::Tcp { address } => format!("tcp: {address}"),
+        SinkConfig::Tcp { address, .. } => format!("tcp: {address}"),
         SinkConfig::Udp { address } => format!("udp: {address}"),
         #[cfg(feature = "http")]
         SinkConfig::HttpPush { url, .. } => format!("http: {url}"),
@@ -619,6 +619,7 @@ mod tests {
     fn sink_display_tcp() {
         let config = SinkConfig::Tcp {
             address: "127.0.0.1:9999".to_string(),
+            retry: None,
         };
         assert_eq!(sink_display(&config), "tcp: 127.0.0.1:9999");
     }
@@ -639,6 +640,7 @@ mod tests {
             content_type: None,
             batch_size: None,
             headers: None,
+            retry: None,
         };
         assert_eq!(sink_display(&config), "http: http://localhost:9090/write");
     }
@@ -649,6 +651,7 @@ mod tests {
         let config = SinkConfig::Loki {
             url: "http://localhost:3100/loki/api/v1/push".to_string(),
             batch_size: None,
+            retry: None,
         };
         assert_eq!(
             sink_display(&config),
