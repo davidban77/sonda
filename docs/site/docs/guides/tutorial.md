@@ -135,6 +135,9 @@ sink:
       type: stdout
     ```
 
+    For multi-column CSV files, use `columns` instead of `column` to emit multiple metrics
+    from a single scenario — see [Multi-column replay](../configuration/generators.md#csv_replay).
+
     For full generator configuration details, see [Generators](../configuration/generators.md).
 
 !!! tip "Add realism with jitter"

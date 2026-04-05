@@ -94,6 +94,7 @@ See [Docker deployment](../deployment/docker.md) for the full stack setup.
 | `sequence-alert-test.yaml` | sequence | prometheus_text | stdout | CPU spike pattern crossing a 90% threshold |
 | `spike-alert-test.yaml` | spike | prometheus_text | stdout | Periodic spike from baseline 50 to 250 for threshold alerts |
 | `csv-replay-metrics.yaml` | csv_replay | prometheus_text | stdout | Replay a real production incident from CSV |
+| `csv-replay-multi-column.yaml` | csv_replay | prometheus_text | stdout | Replay three columns from a single CSV simultaneously as independent metrics |
 | `cardinality-alert-test.yaml` | constant | prometheus_text | http_push | 500-value cardinality spike for cardinality alerts |
 
 See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough.

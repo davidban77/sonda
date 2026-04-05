@@ -44,6 +44,31 @@ pub trait ValueGenerator: Send + Sync {
     fn value(&self, tick: u64) -> f64;
 }
 
+/// Specification for a single CSV column in a multi-column `csv_replay`
+/// configuration.
+///
+/// When the `columns` field is set on a `CsvReplay` generator config, each
+/// `CsvColumnSpec` specifies a column index and the metric name to use when
+/// that column is expanded into its own independent scenario.
+///
+/// # Example YAML
+///
+/// ```yaml
+/// columns:
+///   - index: 1
+///     name: cpu_percent
+///   - index: 2
+///     name: mem_percent
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct CsvColumnSpec {
+    /// Zero-based column index in the CSV file.
+    pub index: usize,
+    /// Metric name for the expanded scenario.
+    pub name: String,
+}
+
 /// Configuration for a value generator, used for YAML deserialization.
 ///
 /// The `type` field selects which generator to instantiate. Additional fields
@@ -125,6 +150,9 @@ pub enum GeneratorConfig {
         /// Path to the CSV file containing numeric values.
         file: String,
         /// Zero-based column index to read. Defaults to 0 when absent.
+        ///
+        /// Mutually exclusive with `columns`. If both are set, validation
+        /// returns an error.
         column: Option<usize>,
         /// Whether to skip the first data row as a header. Defaults to true
         /// when absent.
@@ -132,6 +160,14 @@ pub enum GeneratorConfig {
         /// When true (default), the values cycle. When false, the last value
         /// is returned for all ticks beyond the file length.
         repeat: Option<bool>,
+        /// Optional multi-column specification. When set, the config layer
+        /// expands this single scenario into N independent single-column
+        /// scenarios before launch.
+        ///
+        /// Mutually exclusive with `column`. If both are set, validation
+        /// returns an error. An empty list is also an error.
+        #[cfg_attr(feature = "config", serde(default))]
+        columns: Option<Vec<CsvColumnSpec>>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -158,6 +194,10 @@ pub enum GeneratorConfig {
 ///
 /// Returns [`SondaError::Config`] if the generator configuration is invalid
 /// (e.g., an empty values list for the sequence generator).
+///
+/// **Note:** [`GeneratorConfig::CsvReplay`] configs with `columns` set must be expanded
+/// via [`crate::config::expand_scenario`] before calling this function. Passing an
+/// unexpanded multi-column config returns a [`ConfigError`].
 pub fn create_generator(
     config: &GeneratorConfig,
     rate: f64,
@@ -210,12 +250,20 @@ pub fn create_generator(
             column,
             has_header,
             repeat,
-        } => Ok(Box::new(CsvReplayGenerator::new(
-            file,
-            column.unwrap_or(0),
-            has_header.unwrap_or(true),
-            repeat.unwrap_or(true),
-        )?)),
+            columns,
+        } => {
+            if columns.is_some() {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "csv_replay: call expand_scenario before create_generator when 'columns' is set",
+                )));
+            }
+            Ok(Box::new(CsvReplayGenerator::new(
+                file,
+                column.unwrap_or(0),
+                has_header.unwrap_or(true),
+                repeat.unwrap_or(true),
+            )?))
+        }
         GeneratorConfig::Step {
             start,
             step_size,
@@ -692,6 +740,31 @@ mod tests {
         // With zero duration, all ticks should return baseline
         assert_eq!(gen.value(0), 50.0);
         assert_eq!(gen.value(30), 50.0);
+    }
+
+    #[test]
+    fn factory_csv_replay_with_columns_returns_error() {
+        let config = GeneratorConfig::CsvReplay {
+            file: "data.csv".to_string(),
+            column: None,
+            has_header: None,
+            repeat: None,
+            columns: Some(vec![CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            }]),
+        };
+        let result = create_generator(&config, 1.0);
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("expand_scenario"),
+                    "error must mention expand_scenario, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("csv_replay with columns set must return an error"),
+        }
     }
 
     // ---- Config deserialization tests ----------------------------------------

@@ -438,7 +438,8 @@ generator:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `file` | (required) | Path to the CSV file |
-| `column` | `0` | Zero-based column index containing numeric values |
+| `column` | `0` | Zero-based column index containing numeric values. Mutually exclusive with `columns`. |
+| `columns` | -- | Multi-column mode — list of `{index, name}` entries. Expands into one metric stream per entry. Mutually exclusive with `column`. See [Generators](../configuration/generators.md#csv_replay). |
 | `has_header` | `true` | Whether the first row is a header |
 | `repeat` | `true` | Cycle back to the first value after reaching the end |
 
