@@ -623,14 +623,15 @@ pub struct LogsArgs {
 ///
 /// Accepts a YAML file that defines multiple concurrent scenarios under a
 /// top-level `scenarios:` key. Each entry carries a `signal_type` field
-/// (`metrics` or `logs`) along with the full scenario configuration.
+/// (`metrics`, `logs`, `histogram`, or `summary`) along with the full
+/// scenario configuration.
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Path to a multi-scenario YAML file.
     ///
     /// The file must have a top-level `scenarios:` list. Each list entry must
-    /// include a `signal_type: metrics` or `signal_type: logs` field, followed
-    /// by the scenario-specific configuration fields.
+    /// include a `signal_type` field (`metrics`, `logs`, `histogram`, or
+    /// `summary`), followed by the scenario-specific configuration fields.
     #[arg(long)]
     pub scenario: PathBuf,
 }

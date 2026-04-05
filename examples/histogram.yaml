@@ -1,0 +1,20 @@
+name: http_request_duration_seconds
+rate: 1
+duration: 10s
+
+distribution:
+  type: exponential
+  rate: 10.0
+
+observations_per_tick: 100
+seed: 42
+
+labels:
+  method: GET
+  handler: /api/v1/query
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout

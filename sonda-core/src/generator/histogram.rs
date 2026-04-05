@@ -10,6 +10,7 @@
 //! The generator uses deterministic, seeded RNG (SplitMix64) so that the same
 //! seed always produces the same observations.
 
+use crate::config::DistributionConfig;
 use crate::util::splitmix64;
 
 /// Default Prometheus histogram bucket boundaries.
@@ -55,6 +56,25 @@ pub enum Distribution {
         /// Upper bound (inclusive).
         max: f64,
     },
+}
+
+/// Convert a [`DistributionConfig`] into a runtime [`Distribution`].
+///
+/// This is the single conversion point used by both the histogram and summary
+/// runners to translate the deserialized configuration enum into the runtime
+/// sampling model.
+pub(crate) fn to_distribution(config: &DistributionConfig) -> Distribution {
+    match config {
+        DistributionConfig::Exponential { rate } => Distribution::Exponential { rate: *rate },
+        DistributionConfig::Normal { mean, stddev } => Distribution::Normal {
+            mean: *mean,
+            stddev: *stddev,
+        },
+        DistributionConfig::Uniform { min, max } => Distribution::Uniform {
+            min: *min,
+            max: *max,
+        },
+    }
 }
 
 /// A single histogram sample produced by [`HistogramGenerator::observe`].

@@ -429,8 +429,8 @@ fn validate_encoder_precision(encoder: &crate::encoder::EncoderConfig) -> Result
 ///
 /// Checks:
 /// - Exponential: `rate` must be strictly positive.
-/// - Normal: `stddev` must be strictly positive.
-/// - Uniform: no constraints beyond NaN (both `min` and `max` are valid as-is).
+/// - Normal: `stddev` must be strictly positive; `mean` must not be NaN.
+/// - Uniform: `min` and `max` must not be NaN; `min` must be strictly less than `max`.
 ///
 /// Returns [`SondaError::Config`] with a descriptive message if validation fails.
 pub fn validate_distribution_config(dist: &DistributionConfig) -> Result<(), SondaError> {
@@ -461,6 +461,12 @@ pub fn validate_distribution_config(dist: &DistributionConfig) -> Result<(), Son
                 return Err(SondaError::Config(ConfigError::invalid(
                     "distribution.min and distribution.max must not be NaN",
                 )));
+            }
+            if *min >= *max {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "distribution.min ({}) must be strictly less than distribution.max ({})",
+                    min, max
+                ))));
             }
         }
     }
@@ -2485,6 +2491,30 @@ generator:
             max: 1.0,
         };
         assert!(validate_distribution_config(&dist).is_err());
+    }
+
+    #[test]
+    fn validate_distribution_uniform_min_greater_than_max() {
+        let dist = DistributionConfig::Uniform { min: 5.0, max: 1.0 };
+        let result = validate_distribution_config(&dist);
+        assert!(
+            result.is_err(),
+            "min > max must be rejected, got {result:?}"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("less than"),
+            "error should mention 'less than', got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_distribution_uniform_min_equal_to_max() {
+        let dist = DistributionConfig::Uniform { min: 3.0, max: 3.0 };
+        assert!(
+            validate_distribution_config(&dist).is_err(),
+            "min == max must be rejected"
+        );
     }
 
     // ---- validate_histogram_config ------------------------------------------

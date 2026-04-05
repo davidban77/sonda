@@ -18,9 +18,9 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
-use crate::config::{DistributionConfig, HistogramScenarioConfig};
+use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
-use crate::generator::histogram::{Distribution, HistogramGenerator, DEFAULT_HISTOGRAM_BUCKETS};
+use crate::generator::histogram::{to_distribution, HistogramGenerator, DEFAULT_HISTOGRAM_BUCKETS};
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::core_loop::{self, TickContext, TickResult};
 use crate::schedule::is_in_spike;
@@ -28,21 +28,6 @@ use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
-
-/// Convert a [`DistributionConfig`] into a runtime [`Distribution`].
-fn to_distribution(config: &DistributionConfig) -> Distribution {
-    match config {
-        DistributionConfig::Exponential { rate } => Distribution::Exponential { rate: *rate },
-        DistributionConfig::Normal { mean, stddev } => Distribution::Normal {
-            mean: *mean,
-            stddev: *stddev,
-        },
-        DistributionConfig::Uniform { min, max } => Distribution::Uniform {
-            min: *min,
-            max: *max,
-        },
-    }
-}
 
 /// Run a histogram scenario to completion, emitting encoded histogram events
 /// at the configured rate.
@@ -126,6 +111,26 @@ pub fn run_with_sink(
     // Pre-build `le` label strings for each bucket boundary.
     let le_strings: Vec<String> = buckets.iter().map(|b| format_le_value(*b)).collect();
 
+    // Pre-build Arc<Labels> for each bucket (base labels + le="{bound}"), +Inf,
+    // _count, and _sum before the hot loop. In steady state (no spikes or
+    // dynamic labels), these are reused via Arc::clone — zero heap allocations
+    // per tick.
+    let prebuilt_bucket_labels: Vec<Arc<Labels>> = le_strings
+        .iter()
+        .map(|le_val| {
+            let mut bl = (*labels).clone();
+            bl.insert("le".to_string(), le_val.clone());
+            Arc::new(bl)
+        })
+        .collect();
+    let prebuilt_inf_labels: Arc<Labels> = {
+        let mut bl = (*labels).clone();
+        bl.insert("le".to_string(), "+Inf".to_string());
+        Arc::new(bl)
+    };
+    // _count and _sum share the base labels (no `le`).
+    let prebuilt_count_sum_labels: Arc<Labels> = Arc::clone(&labels);
+
     // Pre-allocate encode buffer.
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
@@ -135,40 +140,36 @@ pub fn run_with_sink(
         // Advance the histogram generator.
         let sample = histogram_gen.observe(ctx.tick);
 
-        // Build the per-tick label set with spike/dynamic label injection.
+        // Determine whether dynamic labels or spikes are active this tick.
         let needs_dynamic = !ctx.dynamic_labels.is_empty();
-        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
-            Arc::clone(&labels)
-        } else {
-            let mut mutated: Option<Labels> = None;
-            if needs_dynamic {
-                let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                for dl in ctx.dynamic_labels {
-                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                }
-            }
-            for sw in ctx.spike_windows {
-                if is_in_spike(ctx.elapsed, sw) {
-                    let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                }
-            }
-            match mutated {
-                Some(tl) => Arc::new(tl),
-                None => Arc::clone(&labels),
-            }
-        };
+        let has_active_spike = ctx
+            .spike_windows
+            .iter()
+            .any(|sw| is_in_spike(ctx.elapsed, sw));
+        let needs_clone = needs_dynamic || has_active_spike;
 
         let mut total_bytes: u64 = 0;
 
         // Emit one event per bucket boundary.
         for (i, &bucket_count) in sample.bucket_counts.iter().enumerate() {
-            let mut bucket_labels = (*tick_labels).clone();
-            bucket_labels.insert("le".to_string(), le_strings[i].clone());
+            let bucket_labels = if needs_clone {
+                let mut bl = (*prebuilt_bucket_labels[i]).clone();
+                for dl in ctx.dynamic_labels {
+                    bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                }
+                for sw in ctx.spike_windows {
+                    if is_in_spike(ctx.elapsed, sw) {
+                        bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    }
+                }
+                Arc::new(bl)
+            } else {
+                Arc::clone(&prebuilt_bucket_labels[i])
+            };
             let event = MetricEvent::from_parts(
                 bucket_name.clone(),
                 bucket_count as f64,
-                Arc::new(bucket_labels),
+                bucket_labels,
                 wall_now,
             );
             buf.clear();
@@ -179,12 +180,24 @@ pub fn run_with_sink(
 
         // Emit +Inf bucket (value = total count).
         {
-            let mut inf_labels = (*tick_labels).clone();
-            inf_labels.insert("le".to_string(), "+Inf".to_string());
+            let inf_labels = if needs_clone {
+                let mut bl = (*prebuilt_inf_labels).clone();
+                for dl in ctx.dynamic_labels {
+                    bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                }
+                for sw in ctx.spike_windows {
+                    if is_in_spike(ctx.elapsed, sw) {
+                        bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    }
+                }
+                Arc::new(bl)
+            } else {
+                Arc::clone(&prebuilt_inf_labels)
+            };
             let event = MetricEvent::from_parts(
                 bucket_name.clone(),
                 sample.count as f64,
-                Arc::new(inf_labels),
+                inf_labels,
                 wall_now,
             );
             buf.clear();
@@ -193,11 +206,27 @@ pub fn run_with_sink(
             sink.write(&buf)?;
         }
 
+        // Build labels for _count and _sum (no `le` label).
+        let count_sum_labels = if needs_clone {
+            let mut bl = (*prebuilt_count_sum_labels).clone();
+            for dl in ctx.dynamic_labels {
+                bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+            }
+            for sw in ctx.spike_windows {
+                if is_in_spike(ctx.elapsed, sw) {
+                    bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                }
+            }
+            Arc::new(bl)
+        } else {
+            Arc::clone(&prebuilt_count_sum_labels)
+        };
+
         // Emit _count event.
         let count_event = MetricEvent::from_parts(
             count_name.clone(),
             sample.count as f64,
-            Arc::clone(&tick_labels),
+            Arc::clone(&count_sum_labels),
             wall_now,
         );
         buf.clear();
@@ -206,12 +235,8 @@ pub fn run_with_sink(
         sink.write(&buf)?;
 
         // Emit _sum event.
-        let sum_event = MetricEvent::from_parts(
-            sum_name.clone(),
-            sample.sum,
-            Arc::clone(&tick_labels),
-            wall_now,
-        );
+        let sum_event =
+            MetricEvent::from_parts(sum_name.clone(), sample.sum, count_sum_labels, wall_now);
         buf.clear();
         encoder.encode_metric(&sum_event, &mut buf)?;
         total_bytes += buf.len() as u64;
