@@ -16,6 +16,7 @@ use std::time::Instant;
 use clap::Parser;
 
 use cli::{Cli, Commands, Verbosity};
+use sonda_core::ScenarioEntry;
 
 fn main() {
     if let Err(err) = run() {
@@ -94,45 +95,9 @@ fn run() -> anyhow::Result<()> {
                 join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
             } else {
                 // Multi-column expansion — launch all scenarios concurrently.
-                let run_start = Instant::now();
-                let mut handles = Vec::with_capacity(entries.len());
-                for (i, entry) in entries.into_iter().enumerate() {
-                    status::print_start(&entry, verbosity);
-                    let id = format!("cli-metrics-{i}");
-                    let handle = sonda_core::launch_scenario(id, entry, Arc::clone(&running), None)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                    handles.push(handle);
-                }
-
-                let mut errors: Vec<String> = Vec::new();
-                let mut total_events: u64 = 0;
-                let mut total_bytes: u64 = 0;
-                let mut total_errors: u64 = 0;
-                let scenario_count = handles.len();
-
-                for mut handle in handles {
-                    if let Err(e) = handle.join(None) {
-                        errors.push(e.to_string());
-                    }
-                    let stats = handle.stats_snapshot();
-                    status::print_stop(&handle.name, handle.elapsed(), &stats, verbosity);
-                    total_events += stats.total_events;
-                    total_bytes += stats.bytes_emitted;
-                    total_errors += stats.errors;
-                }
-
-                let total_elapsed = run_start.elapsed();
-                let agg = status::AggregateStats {
-                    scenario_count,
-                    total_events,
-                    total_bytes,
-                    total_errors,
-                };
-                status::print_summary(&agg, total_elapsed, verbosity);
-
-                if !errors.is_empty() {
-                    return Err(anyhow::anyhow!("{}", errors.join("; ")));
-                }
+                launch_and_join_scenarios("cli-metrics", entries, &running, verbosity, |_, _| {
+                    Ok(None)
+                })?;
             }
         }
         Commands::Logs(ref args) => {
@@ -201,57 +166,76 @@ fn run() -> anyhow::Result<()> {
                 }
             }
 
-            let run_start = Instant::now();
-
-            // Launch all scenarios and collect handles, respecting phase_offset.
-            let mut handles = Vec::with_capacity(config.scenarios.len());
-            for (i, entry) in config.scenarios.into_iter().enumerate() {
-                // Parse the optional phase_offset into a Duration.
-                let start_delay = match entry.phase_offset() {
+            launch_and_join_scenarios(
+                "cli-run",
+                config.scenarios,
+                &running,
+                verbosity,
+                |i, entry| match entry.phase_offset() {
                     Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
-                        .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e))?,
-                    None => None,
-                };
-
-                status::print_start(&entry, verbosity);
-                let id = format!("cli-run-{i}");
-                let handle =
-                    sonda_core::launch_scenario(id, entry, Arc::clone(&running), start_delay)
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                handles.push(handle);
-            }
-
-            // Wait for all scenarios to finish, collecting errors and stats.
-            let mut errors: Vec<String> = Vec::new();
-            let mut total_events: u64 = 0;
-            let mut total_bytes: u64 = 0;
-            let mut total_errors: u64 = 0;
-            let scenario_count = handles.len();
-
-            for mut handle in handles {
-                if let Err(e) = handle.join(None) {
-                    errors.push(e.to_string());
-                }
-                let stats = handle.stats_snapshot();
-                status::print_stop(&handle.name, handle.elapsed(), &stats, verbosity);
-                total_events += stats.total_events;
-                total_bytes += stats.bytes_emitted;
-                total_errors += stats.errors;
-            }
-
-            let total_elapsed = run_start.elapsed();
-            let agg = status::AggregateStats {
-                scenario_count,
-                total_events,
-                total_bytes,
-                total_errors,
-            };
-            status::print_summary(&agg, total_elapsed, verbosity);
-
-            if !errors.is_empty() {
-                return Err(anyhow::anyhow!("{}", errors.join("; ")));
-            }
+                        .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e)),
+                    None => Ok(None),
+                },
+            )?;
         }
+    }
+
+    Ok(())
+}
+
+/// Launch multiple scenarios concurrently, join them, print per-scenario stop
+/// banners, print an aggregate summary, and return an error if any failed.
+///
+/// Each entry is launched via `sonda_core::launch_scenario`. The optional
+/// `start_delay_fn` computes a per-entry start delay (used by the `run`
+/// subcommand for `phase_offset`); return `Ok(None)` for no delay.
+fn launch_and_join_scenarios(
+    id_prefix: &str,
+    entries: Vec<ScenarioEntry>,
+    running: &Arc<AtomicBool>,
+    verbosity: Verbosity,
+    start_delay_fn: impl Fn(usize, &ScenarioEntry) -> anyhow::Result<Option<std::time::Duration>>,
+) -> anyhow::Result<()> {
+    let run_start = Instant::now();
+    let mut handles = Vec::with_capacity(entries.len());
+
+    for (i, entry) in entries.into_iter().enumerate() {
+        let start_delay = start_delay_fn(i, &entry)?;
+        status::print_start(&entry, verbosity);
+        let id = format!("{id_prefix}-{i}");
+        let handle = sonda_core::launch_scenario(id, entry, Arc::clone(running), start_delay)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        handles.push(handle);
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut total_events: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_errors: u64 = 0;
+    let scenario_count = handles.len();
+
+    for mut handle in handles {
+        if let Err(e) = handle.join(None) {
+            errors.push(e.to_string());
+        }
+        let stats = handle.stats_snapshot();
+        status::print_stop(&handle.name, handle.elapsed(), &stats, verbosity);
+        total_events += stats.total_events;
+        total_bytes += stats.bytes_emitted;
+        total_errors += stats.errors;
+    }
+
+    let total_elapsed = run_start.elapsed();
+    let agg = status::AggregateStats {
+        scenario_count,
+        total_events,
+        total_bytes,
+        total_errors,
+    };
+    status::print_summary(&agg, total_elapsed, verbosity);
+
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
 
     Ok(())

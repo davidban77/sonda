@@ -432,6 +432,28 @@ fn validate_csv_columns(
                 "csv_replay: 'columns' must not be empty; provide at least one column spec or omit the field",
             )));
         }
+
+        // Reject duplicate column indices.
+        let mut seen_indices = std::collections::HashSet::with_capacity(cols.len());
+        for spec in cols {
+            if !seen_indices.insert(spec.index) {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: duplicate column index {}; each column index must be unique",
+                    spec.index
+                ))));
+            }
+        }
+
+        // Reject duplicate metric names.
+        let mut seen_names = std::collections::HashSet::with_capacity(cols.len());
+        for spec in cols {
+            if !seen_names.insert(&spec.name) {
+                return Err(SondaError::Config(ConfigError::invalid(format!(
+                    "csv_replay: duplicate column name '{}'; each column name must be unique",
+                    spec.name
+                ))));
+            }
+        }
     }
     Ok(())
 }
@@ -2183,6 +2205,110 @@ mod expand_tests {
         assert!(
             msg.contains("must not be empty"),
             "error must mention empty list, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: error — duplicate column indices
+    // -----------------------------------------------------------------------
+
+    /// Two columns with the same index returns an error.
+    #[test]
+    fn duplicate_column_index_returns_error() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 2,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "mem".to_string(),
+            },
+        ];
+        let config = csv_replay_config("dupe_idx", None, Some(cols));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate column index 2"),
+            "error must mention duplicate index, got: {msg}"
+        );
+    }
+
+    /// Three columns where only the last two share an index.
+    #[test]
+    fn duplicate_column_index_not_first_returns_error() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 3,
+                name: "mem".to_string(),
+            },
+            CsvColumnSpec {
+                index: 3,
+                name: "disk".to_string(),
+            },
+        ];
+        let config = csv_replay_config("dupe_idx_late", None, Some(cols));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate column index 3"),
+            "error must mention duplicate index, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_scenario: error — duplicate column names
+    // -----------------------------------------------------------------------
+
+    /// Two columns with the same name returns an error.
+    #[test]
+    fn duplicate_column_name_returns_error() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "cpu".to_string(),
+            },
+        ];
+        let config = csv_replay_config("dupe_name", None, Some(cols));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate column name 'cpu'"),
+            "error must mention duplicate name, got: {msg}"
+        );
+    }
+
+    /// Three columns where only the last two share a name.
+    #[test]
+    fn duplicate_column_name_not_first_returns_error() {
+        let cols = vec![
+            CsvColumnSpec {
+                index: 1,
+                name: "cpu".to_string(),
+            },
+            CsvColumnSpec {
+                index: 2,
+                name: "mem".to_string(),
+            },
+            CsvColumnSpec {
+                index: 3,
+                name: "mem".to_string(),
+            },
+        ];
+        let config = csv_replay_config("dupe_name_late", None, Some(cols));
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate column name 'mem'"),
+            "error must mention duplicate name, got: {msg}"
         );
     }
 
