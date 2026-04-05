@@ -19,14 +19,11 @@ Each crate has its own `CLAUDE.md` with module layout, patterns, and conventions
 
 ## Agent Workflow
 
-See `.claude/rules/agent-workflow.md` for the full agent pipeline, feature branch workflow, and
-worktree cleanup rules.
+Agent definitions and workflow rules live in the user's personal `~/.claude/` directory
+(agents, rules, skills). The orchestration rule defines the full pipeline.
 
-**Quick reference:** all code changes follow: implementer → reviewer + UAT, on a feature
-branch. The implementer writes both code and tests. Never merge worktree branches into `main`.
-
-For parallel sessions, the human creates session worktrees under `.claude/sessions/` and launches
-Claude Code from each one. See the rules file for details.
+**Quick reference:** all code changes follow: `rust-implementer` → `doc` + `reviewer` + `UAT`,
+on a feature branch. The implementer writes code, tests, and doc updates.
 
 ## Coding Conventions
 
@@ -76,5 +73,4 @@ add-encoder, add-sink). Each crate's `CLAUDE.md` also has step-by-step guidance.
 
 ## Phase Plans
 
-Development phases are documented in `docs/phase-{0..7}-*.md`. Read the relevant plan when working
-on a slice.
+Completed development phases are documented in `docs/phase-{0..9}-*.md` for historical reference.
