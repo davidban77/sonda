@@ -2560,6 +2560,7 @@ mod expand_tests {
 
     /// Histogram config deserializes from YAML with all fields.
     #[test]
+    #[cfg(feature = "config")]
     fn histogram_config_deserializes_from_yaml() {
         let yaml = r#"
 name: http_request_duration_seconds
@@ -2586,6 +2587,7 @@ labels:
 
     /// Histogram config with omitted optional fields uses defaults.
     #[test]
+    #[cfg(feature = "config")]
     fn histogram_config_defaults_when_omitted() {
         let yaml = r#"
 name: latency
@@ -2603,6 +2605,7 @@ distribution:
 
     /// Histogram config with normal distribution.
     #[test]
+    #[cfg(feature = "config")]
     fn histogram_config_normal_distribution() {
         let yaml = r#"
 name: latency
@@ -2624,6 +2627,7 @@ distribution:
 
     /// Histogram config with uniform distribution.
     #[test]
+    #[cfg(feature = "config")]
     fn histogram_config_uniform_distribution() {
         let yaml = r#"
 name: latency
@@ -2649,6 +2653,7 @@ distribution:
 
     /// Summary config deserializes from YAML with all fields.
     #[test]
+    #[cfg(feature = "config")]
     fn summary_config_deserializes_from_yaml() {
         let yaml = r#"
 name: rpc_duration_seconds
@@ -2672,6 +2677,7 @@ seed: 42
 
     /// Summary config with omitted optional fields uses defaults.
     #[test]
+    #[cfg(feature = "config")]
     fn summary_config_defaults_when_omitted() {
         let yaml = r#"
 name: rpc_latency
@@ -2692,6 +2698,7 @@ distribution:
 
     /// Multi-scenario YAML with histogram entry deserializes correctly.
     #[test]
+    #[cfg(feature = "config")]
     fn multi_scenario_histogram_entry_deserializes() {
         let yaml = r#"
 scenarios:
@@ -2710,6 +2717,7 @@ scenarios:
 
     /// Multi-scenario YAML with summary entry deserializes correctly.
     #[test]
+    #[cfg(feature = "config")]
     fn multi_scenario_summary_entry_deserializes() {
         let yaml = r#"
 scenarios:
@@ -2729,6 +2737,7 @@ scenarios:
 
     /// Multi-scenario YAML with mixed metrics, logs, histogram, and summary.
     #[test]
+    #[cfg(feature = "config")]
     fn multi_scenario_mixed_types_deserialize() {
         let yaml = r#"
 scenarios:
@@ -2764,6 +2773,7 @@ scenarios:
 
     /// ScenarioEntry::base() works for histogram entries.
     #[test]
+    #[cfg(feature = "config")]
     fn scenario_entry_base_works_for_histogram() {
         let yaml = r#"
 signal_type: histogram
@@ -2780,6 +2790,7 @@ distribution:
 
     /// ScenarioEntry::base() works for summary entries.
     #[test]
+    #[cfg(feature = "config")]
     fn scenario_entry_base_works_for_summary() {
         let yaml = r#"
 signal_type: summary
