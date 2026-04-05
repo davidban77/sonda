@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0](https://github.com/davidban77/sonda/compare/v0.5.0...v0.6.0) (2026-04-05)
+
+
+### Features
+
+* add CLI flags for complex encoder/sink combos (OTLP, remote_write) ([#144](https://github.com/davidban77/sonda/issues/144)) ([d71a829](https://github.com/davidban77/sonda/commit/d71a82935e00fa8ea2c77c76f2a4c60f047e469a))
+* add multi-column csv_replay support ([#147](https://github.com/davidban77/sonda/issues/147)) ([ea8c5f5](https://github.com/davidban77/sonda/commit/ea8c5f55637c0c5bde4ec65c68e6e7e328108631))
+* label cardinality simulation (rotating hostnames, pod names) ([#146](https://github.com/davidban77/sonda/issues/146)) ([672b64e](https://github.com/davidban77/sonda/commit/672b64e90d79d51a26f7dd1279b443ede6f4bbf6))
+
 ## [0.5.0](https://github.com/davidban77/sonda/compare/v0.4.0...v0.5.0) (2026-04-04)
 
 
