@@ -168,13 +168,13 @@ query_loki_count() {
     local selector="$1"
     local result
     # Query the last hour of data to cover the test window
-    local now_ns
-    now_ns=$(python3 -c "import time; print(int(time.time()))")
-    local start_ns=$((now_ns - 3600))
+    local now_s
+    now_s=$(python3 -c "import time; print(int(time.time()))")
+    local start_s=$((now_s - 3600))
     result=$(curl -s --max-time 10 "${LOKI_QUERY_URL}" \
         --data-urlencode "query=${selector}" \
-        --data-urlencode "start=${start_ns}" \
-        --data-urlencode "end=${now_ns}" \
+        --data-urlencode "start=${start_s}" \
+        --data-urlencode "end=${now_s}" \
         --data-urlencode "limit=5000" \
         2>/dev/null || echo '{}')
     # Loki query_range response shape:
@@ -407,7 +407,7 @@ docker compose -f "${COMPOSE_FILE}" up -d
 wait_for_health "http://localhost:9090/-/ready"   "Prometheus"        "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8428/health"    "VictoriaMetrics"   "${HEALTH_WAIT_SECS}"
 wait_for_health "http://localhost:8429/health"    "vmagent"           "${HEALTH_WAIT_SECS}"
-wait_for_health "http://localhost:3100/ready"    "Loki"              "${HEALTH_WAIT_SECS}"
+wait_for_health "http://localhost:3100/ready"     "Loki"              "${HEALTH_WAIT_SECS}"
 wait_for_kafka  "${HEALTH_WAIT_SECS}"
 
 # ---------------------------------------------------------------------------
