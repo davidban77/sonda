@@ -600,8 +600,11 @@ fn csv_replay_grafana_auto_yaml_deserializes_without_error() {
     let config: ScenarioConfig = serde_yaml_ng::from_str(&contents)
         .unwrap_or_else(|e| panic!("csv-replay-grafana-auto.yaml failed to deserialize: {e}"));
     match &config.generator {
-        GeneratorConfig::CsvReplay { auto_columns, .. } => {
-            assert_eq!(*auto_columns, Some(true));
+        GeneratorConfig::CsvReplay { columns, .. } => {
+            assert!(
+                columns.is_none(),
+                "columns should be None for auto-discovery"
+            );
         }
         other => panic!("expected CsvReplay variant, got {other:?}"),
     }

@@ -430,17 +430,15 @@ sonda metrics --scenario examples/csv-replay-metrics.yaml
 generator:
   type: csv_replay
   file: examples/sample-cpu-values.csv
-  column: 1
-  has_header: true
-  repeat: true
+  columns:
+    - index: 1
+      name: cpu_replay
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `file` | (required) | Path to the CSV file |
-| `column` | `0` | Zero-based column index containing numeric values. Mutually exclusive with `columns`. |
-| `columns` | -- | Multi-column mode — list of `{index, name}` entries. Expands into one metric stream per entry. Mutually exclusive with `column`. See [Generators](../configuration/generators.md#csv_replay). |
-| `has_header` | `true` | Whether the first row is a header |
+| `columns` | -- | Explicit column specs. When absent, columns are auto-discovered from the header. See [Generators](../configuration/generators.md#csv_replay). |
 | `repeat` | `true` | Cycle back to the first value after reaching the end |
 
 !!! tip "When to use csv_replay vs sequence"

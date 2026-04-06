@@ -1,8 +1,8 @@
 # Multi-column CSV Replay Example
 #
 # Replays multiple metrics from a single CSV file. Each column becomes an
-# independent metric scenario — same rate, duration, labels, encoder, and
-# sink — with its own metric name and column index.
+# independent metric scenario -- same rate, duration, labels, encoder, and
+# sink -- with its own metric name and column index.
 #
 # This is equivalent to writing three separate csv_replay scenarios, but
 # avoids duplicating the shared configuration.
@@ -17,8 +17,6 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/sample-multi-column.csv
-  has_header: true
-  repeat: true
   columns:
     - index: 1
       name: cpu_percent

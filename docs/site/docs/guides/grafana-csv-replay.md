@@ -19,7 +19,7 @@ Open the panel you want to replay, then extract the data as CSV.
 !!! warning "Use 'Series joined by time'"
     The default per-series view exports one CSV file per series. The "Series joined by time" option
     produces a single file with one time column and one data column per series -- this is the format
-    Sonda's `auto_columns` expects.
+    Sonda's auto-discovery expects.
 
 The exported CSV looks like this:
 
@@ -37,10 +37,11 @@ these automatically.
 
 ---
 
-## Replay With auto_columns
+## Replay With Auto-Discovery
 
-Point Sonda at the exported CSV and set `auto_columns: true`. Sonda reads the header row,
-extracts metric names and labels from each column, and creates independent metric streams.
+Point Sonda at the exported CSV. When `columns` is omitted, Sonda reads the header row,
+auto-detects it as a header (non-numeric fields), extracts metric names and labels from each
+column, and creates independent metric streams.
 
 ```yaml title="examples/csv-replay-grafana-auto.yaml"
 name: grafana_replay
@@ -50,9 +51,6 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/grafana-export.csv
-  has_header: true
-  auto_columns: true
-  repeat: true
 
 labels:
   env: production
@@ -97,8 +95,7 @@ example, the output includes `env="production"` (from the scenario) alongside `i
 ## Explicit Per-Column Labels
 
 When you need more control -- custom metric names, extra labels per column, or you are working
-with a hand-authored CSV that has plain headers -- use `columns:` with the `labels` sub-field
-instead of `auto_columns`.
+with a hand-authored CSV that has plain headers -- use `columns:` with the `labels` sub-field.
 
 ```yaml title="examples/csv-replay-explicit-labels.yaml"
 name: system_metrics
@@ -108,8 +105,6 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/sample-multi-column.csv
-  has_header: true
-  repeat: true
   columns:
     - index: 1
       name: cpu_percent
@@ -156,7 +151,7 @@ support hand-authored CSV files.
 |--------|---------------|-------------|--------|
 | 1. `__name__` inside braces | `{__name__="up", instance="host", job="prom"}` | `up` | `instance`, `job` |
 | 2. Name before braces | `up{instance="host", job="prom"}` | `up` | `instance`, `job` |
-| 3. Labels only (no name) | `{instance="host", job="prom"}` | none (error with `auto_columns`) | `instance`, `job` |
+| 3. Labels only (no name) | `{instance="host", job="prom"}` | none (error with auto-discovery) | `instance`, `job` |
 | 4. Plain metric name | `cpu_percent` | `cpu_percent` | none |
 | 5. Simple word | `prometheus` | `prometheus` | none |
 
@@ -165,7 +160,7 @@ appears when a Grafana panel has a custom `legendFormat` that puts the metric na
 braces.
 
 !!! info "Format 3 requires explicit columns"
-    Headers with labels but no `__name__` cannot be used with `auto_columns` because there is no
+    Headers with labels but no `__name__` cannot be used with auto-discovery because there is no
     metric name to extract. Use `columns:` with an explicit `name:` for each column instead.
 
 ??? tip "Grafana legendFormat and header format"
@@ -180,10 +175,9 @@ braces.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `auto_columns` | boolean | `false` | Auto-discover columns and labels from the CSV header. |
+| `columns` | list | -- | Explicit column specs. When absent, columns are auto-discovered from the header. |
 | `columns[].labels` | map | none | Per-column labels merged with scenario-level labels. Column labels override on conflict. |
-
-`auto_columns`, `columns`, and `column` are mutually exclusive. Use one at a time.
+| `repeat` | boolean | `true` | Cycle back to start or hold last value. |
 
 For the full CSV replay parameter reference, see
 [Generators: csv_replay](../configuration/generators.md#csv_replay).

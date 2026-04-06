@@ -161,34 +161,24 @@ pub enum GeneratorConfig {
     CsvReplay {
         /// Path to the CSV file containing numeric values.
         file: String,
-        /// Zero-based column index to read. Defaults to 0 when absent.
+        /// Internal: zero-based column index, set by `expand_scenario`.
         ///
-        /// Mutually exclusive with `columns` and `auto_columns`. If both are
-        /// set, validation returns an error.
+        /// Not user-facing in YAML — set during config expansion. When
+        /// `None`, defaults to `0` at generator creation time.
+        #[cfg_attr(feature = "config", serde(skip))]
         column: Option<usize>,
-        /// Whether to skip the first data row as a header. Defaults to true
-        /// when absent.
-        has_header: Option<bool>,
-        /// When true (default), the values cycle. When false, the last value
-        /// is returned for all ticks beyond the file length.
-        repeat: Option<bool>,
-        /// Optional multi-column specification. When set, the config layer
+        /// Explicit column specifications. When present, the config layer
         /// expands this single scenario into N independent single-column
         /// scenarios before launch.
         ///
-        /// Mutually exclusive with `column` and `auto_columns`. If both are
-        /// set, validation returns an error. An empty list is also an error.
+        /// When absent, columns are auto-discovered from the CSV header row.
+        /// An empty list is an error.
         #[cfg_attr(feature = "config", serde(default))]
         columns: Option<Vec<CsvColumnSpec>>,
-        /// When `true`, automatically discovers columns and per-column labels
-        /// from the CSV file header row (Grafana export format).
-        ///
-        /// Mutually exclusive with `column` and `columns`. The config layer
-        /// reads the header, parses label-aware column names, and expands
-        /// the scenario into N independent single-column scenarios before
-        /// launch.
+        /// Whether to loop back to the first value after exhausting the CSV.
+        /// Defaults to `true`.
         #[cfg_attr(feature = "config", serde(default))]
-        auto_columns: Option<bool>,
+        repeat: Option<bool>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -269,25 +259,17 @@ pub fn create_generator(
         GeneratorConfig::CsvReplay {
             file,
             column,
-            has_header,
             repeat,
             columns,
-            auto_columns,
         } => {
             if columns.is_some() {
                 return Err(SondaError::Config(ConfigError::invalid(
                     "csv_replay: call expand_scenario before create_generator when 'columns' is set",
                 )));
             }
-            if *auto_columns == Some(true) {
-                return Err(SondaError::Config(ConfigError::invalid(
-                    "csv_replay: call expand_scenario before create_generator when 'auto_columns' is true",
-                )));
-            }
             Ok(Box::new(CsvReplayGenerator::new(
                 file,
                 column.unwrap_or(0),
-                has_header.unwrap_or(true),
                 repeat.unwrap_or(true),
             )?))
         }
@@ -774,14 +756,12 @@ mod tests {
         let config = GeneratorConfig::CsvReplay {
             file: "data.csv".to_string(),
             column: None,
-            has_header: None,
             repeat: None,
             columns: Some(vec![CsvColumnSpec {
                 index: 1,
                 name: "cpu".to_string(),
                 labels: None,
             }]),
-            auto_columns: None,
         };
         let result = create_generator(&config, 1.0);
         match result {
@@ -793,29 +773,6 @@ mod tests {
                 );
             }
             Ok(_) => panic!("csv_replay with columns set must return an error"),
-        }
-    }
-
-    #[test]
-    fn factory_csv_replay_with_auto_columns_returns_error() {
-        let config = GeneratorConfig::CsvReplay {
-            file: "data.csv".to_string(),
-            column: None,
-            has_header: None,
-            repeat: None,
-            columns: None,
-            auto_columns: Some(true),
-        };
-        let result = create_generator(&config, 1.0);
-        match result {
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("expand_scenario"),
-                    "error must mention expand_scenario, got: {msg}"
-                );
-            }
-            Ok(_) => panic!("csv_replay with auto_columns=true must return an error"),
         }
     }
 

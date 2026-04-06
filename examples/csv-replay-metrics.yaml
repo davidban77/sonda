@@ -14,9 +14,9 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/sample-cpu-values.csv
-  column: 1
-  has_header: true
-  repeat: true
+  columns:
+    - index: 1
+      name: cpu_replay
 
 labels:
   instance: prod-server-42

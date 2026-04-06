@@ -464,32 +464,24 @@ fn generator_display(gen: &GeneratorConfig) -> String {
         GeneratorConfig::CsvReplay {
             file,
             column,
-            has_header,
             repeat,
             columns,
-            auto_columns,
         } => {
-            let col = column.unwrap_or(0);
-            let hdr = if has_header.unwrap_or(true) {
-                "header"
-            } else {
-                "no header"
-            };
             let rpt = if repeat.unwrap_or(true) {
                 "repeat"
             } else {
                 "clamp"
             };
-            if *auto_columns == Some(true) {
-                format!("csv_replay (file: {file}, auto_columns, {hdr}, {rpt})")
-            } else if let Some(ref cols) = columns {
+            if let Some(ref cols) = columns {
                 let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
                 format!(
-                    "csv_replay (file: {file}, columns: [{}], {hdr}, {rpt})",
+                    "csv_replay (file: {file}, columns: [{}], {rpt})",
                     names.join(", ")
                 )
+            } else if let Some(col) = column {
+                format!("csv_replay (file: {file}, column: {col}, {rpt})")
             } else {
-                format!("csv_replay (file: {file}, column: {col}, {hdr}, {rpt})")
+                format!("csv_replay (file: {file}, auto, {rpt})")
             }
         }
         GeneratorConfig::Step {
@@ -975,34 +967,30 @@ mod tests {
     }
 
     #[test]
-    fn generator_display_csv_replay() {
+    fn generator_display_csv_replay_with_column() {
         let config = GeneratorConfig::CsvReplay {
             file: "/data/metrics.csv".to_string(),
             column: Some(2),
-            has_header: Some(true),
             repeat: Some(false),
             columns: None,
-            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
-            "csv_replay (file: /data/metrics.csv, column: 2, header, clamp)"
+            "csv_replay (file: /data/metrics.csv, column: 2, clamp)"
         );
     }
 
     #[test]
-    fn generator_display_csv_replay_defaults() {
+    fn generator_display_csv_replay_auto() {
         let config = GeneratorConfig::CsvReplay {
             file: "data.csv".to_string(),
             column: None,
-            has_header: None,
             repeat: None,
             columns: None,
-            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
-            "csv_replay (file: data.csv, column: 0, header, repeat)"
+            "csv_replay (file: data.csv, auto, repeat)"
         );
     }
 
@@ -1011,7 +999,6 @@ mod tests {
         let config = GeneratorConfig::CsvReplay {
             file: "/data/metrics.csv".to_string(),
             column: None,
-            has_header: Some(true),
             repeat: Some(false),
             columns: Some(vec![
                 CsvColumnSpec {
@@ -1025,27 +1012,10 @@ mod tests {
                     labels: None,
                 },
             ]),
-            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
-            "csv_replay (file: /data/metrics.csv, columns: [cpu_percent, mem_percent], header, clamp)"
-        );
-    }
-
-    #[test]
-    fn generator_display_csv_replay_with_auto_columns() {
-        let config = GeneratorConfig::CsvReplay {
-            file: "/data/metrics.csv".to_string(),
-            column: None,
-            has_header: Some(true),
-            repeat: Some(true),
-            columns: None,
-            auto_columns: Some(true),
-        };
-        assert_eq!(
-            generator_display(&config),
-            "csv_replay (file: /data/metrics.csv, auto_columns, header, repeat)"
+            "csv_replay (file: /data/metrics.csv, columns: [cpu_percent, mem_percent], clamp)"
         );
     }
 

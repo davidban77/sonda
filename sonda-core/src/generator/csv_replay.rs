@@ -3,6 +3,9 @@
 //! Values are loaded once at construction time. Each call to `value()` returns
 //! the value at `tick % values.len()` when repeating, or the last value when
 //! the tick exceeds the file length (clamped mode).
+//!
+//! Header detection is automatic: if any non-time field on the first data line
+//! fails to parse as `f64`, the line is treated as a header and skipped.
 
 use std::path::Path;
 
@@ -16,6 +19,10 @@ use crate::{ConfigError, GeneratorError, SondaError};
 /// `values[tick % len]`. When `repeat` is false, returns the last value for
 /// ticks beyond the file length.
 ///
+/// Header rows are auto-detected: the first non-comment, non-empty line is
+/// inspected and if any non-time column (index > 0) cannot be parsed as
+/// `f64`, the line is treated as a header and excluded from data.
+///
 /// This enables recording real production metric values (via Prometheus/VM
 /// export or custom tooling) and replaying them through Sonda to reproduce
 /// exact production conditions.
@@ -26,7 +33,8 @@ use crate::{ConfigError, GeneratorError, SondaError};
 /// - Lines starting with `#` are treated as comments and skipped.
 /// - Empty lines are skipped.
 /// - Lines where the target column cannot be parsed as `f64` are skipped.
-/// - An optional header row can be skipped with `has_header: true`.
+/// - The first data line is auto-detected as a header when any non-time
+///   field is non-numeric.
 ///
 /// # Examples
 ///
@@ -34,7 +42,7 @@ use crate::{ConfigError, GeneratorError, SondaError};
 /// use sonda_core::generator::csv_replay::CsvReplayGenerator;
 /// use sonda_core::generator::ValueGenerator;
 ///
-/// let gen = CsvReplayGenerator::new("data.csv", 0, false, true).unwrap();
+/// let gen = CsvReplayGenerator::new("data.csv", 0, true).unwrap();
 /// let v = gen.value(0); // first value from the file
 /// ```
 pub struct CsvReplayGenerator {
@@ -49,12 +57,14 @@ impl CsvReplayGenerator {
     /// column is parsed as `f64`. Rows where the target column is missing or
     /// cannot be parsed are silently skipped (like comment and empty lines).
     ///
+    /// The first non-comment, non-empty line is auto-detected as a header
+    /// when any non-time field (column index > 0) cannot be parsed as `f64`.
+    /// If all fields parse as numbers, the line is treated as data.
+    ///
     /// # Arguments
     ///
     /// * `path` - Path to the CSV file.
     /// * `column` - Zero-based column index to read.
-    /// * `has_header` - Whether to skip the first non-comment, non-empty row
-    ///   as a header.
     /// * `repeat` - Whether to cycle values when ticks exceed the value count.
     ///
     /// # Errors
@@ -64,12 +74,7 @@ impl CsvReplayGenerator {
     ///
     /// Returns [`SondaError::Config`] if no valid numeric values are found in
     /// the specified column.
-    pub fn new(
-        path: &str,
-        column: usize,
-        has_header: bool,
-        repeat: bool,
-    ) -> Result<Self, SondaError> {
+    pub fn new(path: &str, column: usize, repeat: bool) -> Result<Self, SondaError> {
         let file_path = Path::new(path);
         let content = std::fs::read_to_string(file_path).map_err(|e| {
             SondaError::Generator(GeneratorError::FileRead {
@@ -78,7 +83,7 @@ impl CsvReplayGenerator {
             })
         })?;
 
-        let values = Self::parse_values(&content, column, has_header)?;
+        let values = Self::parse_values(&content, column)?;
 
         if values.is_empty() {
             return Err(SondaError::Config(ConfigError::invalid(format!(
@@ -98,13 +103,8 @@ impl CsvReplayGenerator {
     /// # Errors
     ///
     /// Returns [`SondaError::Config`] if no valid numeric values are found.
-    pub fn from_str(
-        content: &str,
-        column: usize,
-        has_header: bool,
-        repeat: bool,
-    ) -> Result<Self, SondaError> {
-        let values = Self::parse_values(content, column, has_header)?;
+    pub fn from_str(content: &str, column: usize, repeat: bool) -> Result<Self, SondaError> {
+        let values = Self::parse_values(content, column)?;
 
         if values.is_empty() {
             return Err(SondaError::Config(ConfigError::invalid(format!(
@@ -116,17 +116,36 @@ impl CsvReplayGenerator {
         Ok(Self { values, repeat })
     }
 
+    /// Detect whether the first data line is a header row.
+    ///
+    /// A line is considered a header when any field after the first column
+    /// (index > 0) cannot be parsed as `f64`. For single-column CSVs, the
+    /// line is a header if the sole field cannot be parsed as `f64`.
+    fn is_header_line(line: &str) -> bool {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() <= 1 {
+            // Single-column: header if the field is non-numeric.
+            return fields
+                .first()
+                .map(|f| f.trim().parse::<f64>().is_err())
+                .unwrap_or(false);
+        }
+        // Multi-column: header if any non-time field (index > 0) is non-numeric.
+        fields
+            .iter()
+            .skip(1)
+            .any(|f| f.trim().parse::<f64>().is_err())
+    }
+
     /// Parse numeric values from CSV content.
     ///
     /// Skips comment lines (starting with `#`), empty lines, and lines where
-    /// the target column cannot be parsed as `f64`.
-    fn parse_values(
-        content: &str,
-        column: usize,
-        has_header: bool,
-    ) -> Result<Vec<f64>, SondaError> {
+    /// the target column cannot be parsed as `f64`. The first data line is
+    /// auto-detected as a header and skipped when it contains non-numeric
+    /// fields.
+    fn parse_values(content: &str, column: usize) -> Result<Vec<f64>, SondaError> {
         let mut values = Vec::new();
-        let mut header_skipped = false;
+        let mut first_data_line = true;
 
         for line in content.lines() {
             let trimmed = line.trim();
@@ -141,10 +160,12 @@ impl CsvReplayGenerator {
                 continue;
             }
 
-            // Skip the first data line when has_header is true.
-            if has_header && !header_skipped {
-                header_skipped = true;
-                continue;
+            // Auto-detect header: skip the first data line if it looks like a header.
+            if first_data_line {
+                first_data_line = false;
+                if Self::is_header_line(trimmed) {
+                    continue;
+                }
             }
 
             // Split by comma and extract the target column.
@@ -200,9 +221,10 @@ mod tests {
 
     #[test]
     fn one_column_file_loads_all_values() {
+        // All-numeric single column: no header auto-detected.
         let content = "1.0\n2.0\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
-            .expect("one-column file should load");
+        let gen =
+            CsvReplayGenerator::from_str(content, 0, true).expect("one-column file should load");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
         assert_eq!(gen.value(2), 3.0);
@@ -211,8 +233,8 @@ mod tests {
     #[test]
     fn one_column_file_from_disk() {
         let (_tmp, path) = temp_csv("10.5\n20.5\n30.5\n");
-        let gen = CsvReplayGenerator::new(&path, 0, false, true)
-            .expect("one-column disk file should load");
+        let gen =
+            CsvReplayGenerator::new(&path, 0, true).expect("one-column disk file should load");
         assert_eq!(gen.value(0), 10.5);
         assert_eq!(gen.value(1), 20.5);
         assert_eq!(gen.value(2), 30.5);
@@ -222,8 +244,9 @@ mod tests {
 
     #[test]
     fn multi_column_csv_reads_correct_column() {
+        // "ts,cpu,mem" is non-numeric in columns 1+ → auto-detected as header.
         let content = "ts,cpu,mem\n1000,42.5,60.0\n2000,55.3,70.1\n3000,18.9,45.2\n";
-        let gen = CsvReplayGenerator::from_str(content, 1, true, true)
+        let gen = CsvReplayGenerator::from_str(content, 1, true)
             .expect("multi-column should load column 1");
         assert_eq!(gen.value(0), 42.5);
         assert_eq!(gen.value(1), 55.3);
@@ -232,60 +255,67 @@ mod tests {
 
     #[test]
     fn multi_column_csv_reads_first_column() {
+        // "ts,cpu" header auto-detected, first data row is 1000.
         let content = "ts,cpu\n1000,42.5\n2000,55.3\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, true, true).expect("should read column 0");
+        let gen = CsvReplayGenerator::from_str(content, 0, true).expect("should read column 0");
         assert_eq!(gen.value(0), 1000.0);
         assert_eq!(gen.value(1), 2000.0);
     }
 
     #[test]
     fn multi_column_csv_reads_last_column() {
+        // "a,b,c" header auto-detected.
         let content = "a,b,c\n1.0,2.0,3.0\n4.0,5.0,6.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 2, true, true).expect("should read last column");
+        let gen = CsvReplayGenerator::from_str(content, 2, true).expect("should read last column");
         assert_eq!(gen.value(0), 3.0);
         assert_eq!(gen.value(1), 6.0);
     }
 
-    // ---- Header skipping (has_header: true) -----------------------------------
+    // ---- Auto-detection: header skipping -------------------------------------
 
     #[test]
-    fn has_header_true_skips_first_data_row() {
-        // Use a numeric header to confirm it is skipped (not just failed to parse).
-        let content = "999.0\n100.0\n200.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, true, true)
-            .expect("should skip numeric header");
-        assert_eq!(
-            gen.value(0),
-            100.0,
-            "first value should be 100.0, not 999.0 (header)"
-        );
-        assert_eq!(gen.value(1), 200.0);
+    fn auto_detect_skips_non_numeric_header() {
+        // "timestamp,cpu_percent" has non-numeric "cpu_percent" → header.
+        let content = "timestamp,cpu_percent\n1000,42.5\n2000,55.3\n";
+        let gen =
+            CsvReplayGenerator::from_str(content, 1, true).expect("should auto-detect header");
+        assert_eq!(gen.value(0), 42.5);
+        assert_eq!(gen.value(1), 55.3);
     }
 
     #[test]
-    fn has_header_false_does_not_skip_first_row() {
+    fn auto_detect_includes_all_numeric_first_row() {
+        // All fields are numeric → no header detected, first row is data.
         let content = "999.0\n100.0\n200.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, false, true).expect("should not skip header");
+        let gen = CsvReplayGenerator::from_str(content, 0, true)
+            .expect("all-numeric first row should be included as data");
         assert_eq!(
             gen.value(0),
             999.0,
-            "first value should be 999.0 when header is not skipped"
+            "first value should be 999.0 (not skipped)"
         );
         assert_eq!(gen.value(1), 100.0);
         assert_eq!(gen.value(2), 200.0);
     }
 
     #[test]
-    fn has_header_skips_first_non_comment_non_empty_row() {
+    fn auto_detect_header_after_comments_and_empty_lines() {
         // Comments and empty lines come before the header; header is the first "data" line.
         let content = "# comment\n\nheader\n10.0\n20.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, true, true)
+        let gen = CsvReplayGenerator::from_str(content, 0, true)
             .expect("header after comments/empty should be skipped");
         assert_eq!(gen.value(0), 10.0);
         assert_eq!(gen.value(1), 20.0);
+    }
+
+    #[test]
+    fn auto_detect_multi_column_all_numeric_no_skip() {
+        // Multi-column, all fields numeric → not a header.
+        let content = "1000,42.5,60.0\n2000,55.3,70.1\n";
+        let gen = CsvReplayGenerator::from_str(content, 1, true)
+            .expect("all-numeric multi-column first row should be data");
+        assert_eq!(gen.value(0), 42.5);
+        assert_eq!(gen.value(1), 55.3);
     }
 
     // ---- Comment lines (#) are skipped ----------------------------------------
@@ -293,8 +323,8 @@ mod tests {
     #[test]
     fn comment_lines_are_skipped() {
         let content = "# this is a comment\n1.0\n# another comment\n2.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
-            .expect("comments should be skipped");
+        let gen =
+            CsvReplayGenerator::from_str(content, 0, true).expect("comments should be skipped");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
     }
@@ -302,7 +332,7 @@ mod tests {
     #[test]
     fn comment_with_leading_whitespace_is_skipped() {
         let content = "  # indented comment\n5.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
+        let gen = CsvReplayGenerator::from_str(content, 0, true)
             .expect("indented comment should be skipped");
         assert_eq!(gen.value(0), 5.0);
     }
@@ -312,8 +342,8 @@ mod tests {
     #[test]
     fn empty_lines_are_skipped() {
         let content = "\n1.0\n\n\n2.0\n\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
-            .expect("empty lines should be skipped");
+        let gen =
+            CsvReplayGenerator::from_str(content, 0, true).expect("empty lines should be skipped");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
         assert_eq!(gen.value(2), 3.0);
@@ -322,7 +352,7 @@ mod tests {
     #[test]
     fn whitespace_only_lines_are_skipped() {
         let content = "   \n1.0\n  \t  \n2.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
+        let gen = CsvReplayGenerator::from_str(content, 0, true)
             .expect("whitespace-only lines should be skipped");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
@@ -333,8 +363,7 @@ mod tests {
     #[test]
     fn repeat_true_cycles_at_boundary() {
         let content = "10.0\n20.0\n30.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, false, true).expect("should load 3 values");
+        let gen = CsvReplayGenerator::from_str(content, 0, true).expect("should load 3 values");
         assert_eq!(gen.value(0), 10.0);
         assert_eq!(gen.value(1), 20.0);
         assert_eq!(gen.value(2), 30.0);
@@ -346,7 +375,7 @@ mod tests {
     #[test]
     fn repeat_true_multiple_full_cycles() {
         let content = "1.0\n2.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         for cycle in 0..5 {
             assert_eq!(gen.value(cycle * 2), 1.0, "cycle {cycle}: index 0");
             assert_eq!(gen.value(cycle * 2 + 1), 2.0, "cycle {cycle}: index 1");
@@ -358,8 +387,7 @@ mod tests {
     #[test]
     fn repeat_false_clamps_to_last_value() {
         let content = "10.0\n20.0\n30.0\n";
-        let gen =
-            CsvReplayGenerator::from_str(content, 0, false, false).expect("should load 3 values");
+        let gen = CsvReplayGenerator::from_str(content, 0, false).expect("should load 3 values");
         assert_eq!(gen.value(0), 10.0);
         assert_eq!(gen.value(1), 20.0);
         assert_eq!(gen.value(2), 30.0);
@@ -370,7 +398,7 @@ mod tests {
     #[test]
     fn repeat_false_at_exact_boundary_returns_last() {
         let content = "5.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, false).unwrap();
         assert_eq!(gen.value(0), 5.0);
         assert_eq!(
             gen.value(1),
@@ -384,7 +412,7 @@ mod tests {
     #[test]
     fn empty_file_returns_error() {
         let (_tmp, path) = temp_csv("");
-        let result = CsvReplayGenerator::new(&path, 0, false, true);
+        let result = CsvReplayGenerator::new(&path, 0, true);
         assert!(result.is_err(), "empty file must return an error");
         let err = result.err().expect("already confirmed is_err");
         let msg = format!("{err}");
@@ -396,7 +424,7 @@ mod tests {
 
     #[test]
     fn empty_content_from_str_returns_error() {
-        let result = CsvReplayGenerator::from_str("", 0, false, true);
+        let result = CsvReplayGenerator::from_str("", 0, true);
         assert!(result.is_err(), "empty content must return an error");
     }
 
@@ -405,28 +433,31 @@ mod tests {
     #[test]
     fn file_with_only_comments_returns_error() {
         let content = "# comment 1\n# comment 2\n";
-        let result = CsvReplayGenerator::from_str(content, 0, false, true);
+        let result = CsvReplayGenerator::from_str(content, 0, true);
         assert!(result.is_err(), "file with only comments must error");
     }
 
     #[test]
     fn file_with_only_header_returns_error() {
+        // "timestamp,cpu" is auto-detected as header; no data rows follow.
         let content = "timestamp,cpu\n";
-        let result = CsvReplayGenerator::from_str(content, 0, true, true);
+        let result = CsvReplayGenerator::from_str(content, 0, true);
         assert!(result.is_err(), "file with only a header row must error");
     }
 
     #[test]
     fn file_with_no_parseable_numbers_returns_error() {
+        // "not_a_number" is auto-detected as header; remaining lines also non-numeric.
         let content = "not_a_number\nhello\nworld\n";
-        let result = CsvReplayGenerator::from_str(content, 0, false, true);
+        let result = CsvReplayGenerator::from_str(content, 0, true);
         assert!(result.is_err(), "file with no parseable numbers must error");
     }
 
     #[test]
     fn file_with_header_and_unparseable_body_returns_error() {
+        // "header" is auto-detected as header; "abc" and "def" are not parseable.
         let content = "header\nabc\ndef\n";
-        let result = CsvReplayGenerator::from_str(content, 0, true, true);
+        let result = CsvReplayGenerator::from_str(content, 0, true);
         assert!(
             result.is_err(),
             "file with header and no parseable body must error"
@@ -437,8 +468,7 @@ mod tests {
 
     #[test]
     fn file_not_found_returns_generator_file_read_error() {
-        let result =
-            CsvReplayGenerator::new("/nonexistent/path/that/does/not/exist.csv", 0, false, true);
+        let result = CsvReplayGenerator::new("/nonexistent/path/that/does/not/exist.csv", 0, true);
         assert!(result.is_err(), "missing file must return an error");
         let err = result.err().expect("already confirmed is_err");
         match err {
@@ -466,7 +496,7 @@ mod tests {
     fn column_index_out_of_bounds_returns_error() {
         let content = "1.0,2.0\n3.0,4.0\n";
         // Column 5 does not exist in a 2-column CSV.
-        let result = CsvReplayGenerator::from_str(content, 5, false, true);
+        let result = CsvReplayGenerator::from_str(content, 5, true);
         assert!(
             result.is_err(),
             "column index out of bounds must return an error"
@@ -476,7 +506,7 @@ mod tests {
     #[test]
     fn column_index_out_of_bounds_on_disk() {
         let (_tmp, path) = temp_csv("1.0,2.0\n3.0,4.0\n");
-        let result = CsvReplayGenerator::new(&path, 10, false, true);
+        let result = CsvReplayGenerator::new(&path, 10, true);
         assert!(
             result.is_err(),
             "column index out of bounds on disk file must error"
@@ -488,7 +518,7 @@ mod tests {
     #[test]
     fn repeat_large_tick_does_not_panic() {
         let content = "1.0\n2.0\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         let large_tick: u64 = 1_000_000_000;
         let val = gen.value(large_tick);
         let expected_index = (large_tick % 3) as usize;
@@ -499,7 +529,7 @@ mod tests {
     #[test]
     fn no_repeat_large_tick_does_not_panic() {
         let content = "1.0\n2.0\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, false).unwrap();
         let large_tick: u64 = 1_000_000_000;
         assert_eq!(gen.value(large_tick), 3.0, "should clamp to last value");
     }
@@ -509,7 +539,7 @@ mod tests {
     #[test]
     fn repeat_tick_above_u32_max_uses_u64_modulo() {
         let content = "10.0\n20.0\n30.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         // tick = 4_294_967_296: u64 modulo 4_294_967_296 % 3 = 1
         let tick: u64 = u64::from(u32::MAX) + 1;
         assert_eq!(
@@ -523,7 +553,7 @@ mod tests {
     #[test]
     fn repeat_tick_at_u64_max_does_not_panic() {
         let content = "1.0\n2.0\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         let val = gen.value(u64::MAX);
         // u64::MAX % 3 = 0
         assert_eq!(val, 1.0, "u64::MAX % 3 = 0, should return values[0]");
@@ -532,7 +562,7 @@ mod tests {
     #[test]
     fn no_repeat_tick_above_u32_max_clamps_correctly() {
         let content = "1.0\n2.0\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, false).unwrap();
         let tick: u64 = u64::from(u32::MAX) + 1;
         assert_eq!(
             gen.value(tick),
@@ -545,7 +575,7 @@ mod tests {
     #[test]
     fn no_repeat_tick_at_u64_max_clamps_correctly() {
         let content = "1.0\n2.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, false).unwrap();
         assert_eq!(
             gen.value(u64::MAX),
             2.0,
@@ -567,7 +597,7 @@ mod tests {
     #[test]
     fn determinism_same_tick_returns_same_value() {
         let content = "10.0\n20.0\n30.0\n40.0\n50.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         for tick in 0..50 {
             let first_call = gen.value(tick);
             let second_call = gen.value(tick);
@@ -581,8 +611,8 @@ mod tests {
     #[test]
     fn determinism_separate_instances_same_content() {
         let content = "5.0\n10.0\n15.0\n";
-        let gen1 = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
-        let gen2 = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen1 = CsvReplayGenerator::from_str(content, 0, true).unwrap();
+        let gen2 = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         for tick in 0..30 {
             assert_eq!(
                 gen1.value(tick),
@@ -600,10 +630,8 @@ mod tests {
         let config = super::super::GeneratorConfig::CsvReplay {
             file: path,
             column: Some(0),
-            has_header: Some(false),
             repeat: Some(true),
             columns: None,
-            auto_columns: None,
         };
         let gen =
             super::super::create_generator(&config, 1.0).expect("csv_replay factory must succeed");
@@ -615,19 +643,17 @@ mod tests {
 
     #[test]
     fn factory_csv_replay_defaults() {
-        // column defaults to 0, has_header defaults to true, repeat defaults to true
+        // column defaults to 0, repeat defaults to true; "header" auto-detected as header.
         let (_tmp, path) = temp_csv("header\n42.0\n");
         let config = super::super::GeneratorConfig::CsvReplay {
             file: path,
             column: None,
-            has_header: None,
             repeat: None,
             columns: None,
-            auto_columns: None,
         };
         let gen = super::super::create_generator(&config, 1.0)
             .expect("csv_replay factory with defaults must succeed");
-        // has_header defaults to true, so "header" is skipped, leaving 42.0
+        // "header" is auto-detected as header, so it is skipped, leaving 42.0
         assert_eq!(gen.value(0), 42.0);
     }
 
@@ -636,10 +662,8 @@ mod tests {
         let config = super::super::GeneratorConfig::CsvReplay {
             file: "/nonexistent/file.csv".to_string(),
             column: None,
-            has_header: None,
             repeat: None,
             columns: None,
-            auto_columns: None,
         };
         let result = super::super::create_generator(&config, 1.0);
         assert!(
@@ -656,8 +680,6 @@ mod tests {
         let yaml = "\
 type: csv_replay
 file: /some/path.csv
-column: 1
-has_header: true
 repeat: false
 ";
         let config: super::super::GeneratorConfig =
@@ -666,19 +688,12 @@ repeat: false
             super::super::GeneratorConfig::CsvReplay {
                 file,
                 column,
-                has_header,
                 repeat,
                 columns,
-                auto_columns,
             } => {
                 assert_eq!(file, "/some/path.csv");
-                assert_eq!(column, Some(1));
-                assert_eq!(has_header, Some(true));
+                assert_eq!(column, None, "column is serde(skip), should be None");
                 assert_eq!(columns, None, "columns should be None when omitted");
-                assert_eq!(
-                    auto_columns, None,
-                    "auto_columns should be None when omitted"
-                );
                 assert_eq!(repeat, Some(false));
             }
             _ => panic!("expected CsvReplay variant"),
@@ -695,19 +710,12 @@ repeat: false
             super::super::GeneratorConfig::CsvReplay {
                 file,
                 column,
-                has_header,
                 repeat,
                 columns,
-                auto_columns,
             } => {
                 assert_eq!(file, "data.csv");
-                assert_eq!(column, None, "column should be None when omitted");
-                assert_eq!(has_header, None, "has_header should be None when omitted");
+                assert_eq!(column, None, "column should be None (serde skip)");
                 assert_eq!(columns, None, "columns should be None when omitted");
-                assert_eq!(
-                    auto_columns, None,
-                    "auto_columns should be None when omitted"
-                );
                 assert_eq!(repeat, None, "repeat should be None when omitted");
             }
             _ => panic!("expected CsvReplay variant"),
@@ -730,9 +738,9 @@ duration: 60s
 generator:
   type: csv_replay
   file: {}
-  column: 1
-  has_header: true
-  repeat: true
+  columns:
+    - index: 1
+      name: cpu_replay
 
 labels:
   instance: prod-server-42
@@ -753,27 +761,25 @@ sink:
             super::super::GeneratorConfig::CsvReplay {
                 file,
                 column,
-                has_header,
                 repeat,
                 columns,
-                auto_columns,
             } => {
                 assert_eq!(file, &csv_path);
-                assert_eq!(*column, Some(1));
-                assert_eq!(*has_header, Some(true));
-                assert_eq!(*columns, None, "columns should be None when omitted");
-                assert_eq!(
-                    *auto_columns, None,
-                    "auto_columns should be None when omitted"
-                );
-                assert_eq!(*repeat, Some(true));
+                assert_eq!(*column, None, "column is serde(skip)");
+                let cols = columns.as_ref().expect("columns should be Some");
+                assert_eq!(cols.len(), 1);
+                assert_eq!(cols[0].index, 1);
+                assert_eq!(cols[0].name, "cpu_replay");
+                assert_eq!(*repeat, None, "repeat not specified");
             }
             _ => panic!("expected CsvReplay generator variant"),
         }
 
-        // Also verify the factory can create a working generator from this config.
-        let gen = super::super::create_generator(&config.generator, config.rate)
-            .expect("factory must succeed for example config");
+        // After expansion, verify the factory can create a working generator.
+        let expanded = crate::config::expand_scenario(config).expect("expand must succeed");
+        assert_eq!(expanded.len(), 1);
+        let gen = super::super::create_generator(&expanded[0].generator, expanded[0].rate)
+            .expect("factory must succeed for expanded config");
         assert_eq!(gen.value(0), 12.3);
         assert_eq!(gen.value(1), 14.1);
     }
@@ -782,9 +788,10 @@ sink:
 
     #[test]
     fn unparseable_rows_are_skipped() {
+        // "1.0" is all-numeric → not a header → data. "not_a_number" is skipped (not parseable).
         let content = "1.0\nnot_a_number\n2.0\n???\n3.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true)
-            .expect("should skip unparseable rows");
+        let gen =
+            CsvReplayGenerator::from_str(content, 0, true).expect("should skip unparseable rows");
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
         assert_eq!(gen.value(2), 3.0);
@@ -806,8 +813,8 @@ timestamp,cpu_percent
 1700000020,95.5
 
 ";
-        let gen = CsvReplayGenerator::from_str(content, 1, true, true)
-            .expect("mixed content should load");
+        let gen =
+            CsvReplayGenerator::from_str(content, 1, true).expect("mixed content should load");
         // After skipping comments, empty lines, header, and unparseable "bad_data":
         // Values are: 12.3, 95.5
         assert_eq!(gen.value(0), 12.3);
@@ -820,10 +827,26 @@ timestamp,cpu_percent
     #[test]
     fn fields_with_whitespace_are_trimmed() {
         let content = "  1.0  ,  2.0  \n  3.0  ,  4.0  \n";
-        let gen = CsvReplayGenerator::from_str(content, 1, false, true)
+        let gen = CsvReplayGenerator::from_str(content, 1, true)
             .expect("whitespace around fields should be trimmed");
         assert_eq!(gen.value(0), 2.0);
         assert_eq!(gen.value(1), 4.0);
+    }
+
+    // ---- repeat defaults to true ----------------------------------------------
+
+    #[test]
+    fn repeat_defaults_to_true_via_factory() {
+        let (_tmp, path) = temp_csv("1.0\n2.0\n");
+        let config = super::super::GeneratorConfig::CsvReplay {
+            file: path,
+            column: Some(0),
+            repeat: None,
+            columns: None,
+        };
+        let gen = super::super::create_generator(&config, 1.0).expect("factory must succeed");
+        // With repeat defaulting to true, tick=2 on a 2-element seq should wrap.
+        assert_eq!(gen.value(2), 1.0, "repeat=None should default to true");
     }
 
     // ---- Single value file ----------------------------------------------------
@@ -831,7 +854,7 @@ timestamp,cpu_percent
     #[test]
     fn single_value_repeat_true() {
         let content = "42.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         assert_eq!(gen.value(0), 42.0);
         assert_eq!(gen.value(1), 42.0);
         assert_eq!(gen.value(100), 42.0);
@@ -840,7 +863,7 @@ timestamp,cpu_percent
     #[test]
     fn single_value_repeat_false() {
         let content = "42.0\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, false).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, false).unwrap();
         assert_eq!(gen.value(0), 42.0);
         assert_eq!(gen.value(1), 42.0);
         assert_eq!(gen.value(100), 42.0);
@@ -851,7 +874,7 @@ timestamp,cpu_percent
     #[test]
     fn handles_negative_values() {
         let content = "-1.5\n-2.5\n0.0\n3.14\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         assert_eq!(gen.value(0), -1.5);
         assert_eq!(gen.value(1), -2.5);
         assert_eq!(gen.value(2), 0.0);
@@ -861,7 +884,7 @@ timestamp,cpu_percent
     #[test]
     fn handles_integer_values() {
         let content = "1\n2\n3\n";
-        let gen = CsvReplayGenerator::from_str(content, 0, false, true).unwrap();
+        let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();
         assert_eq!(gen.value(0), 1.0);
         assert_eq!(gen.value(1), 2.0);
         assert_eq!(gen.value(2), 3.0);
@@ -871,9 +894,9 @@ timestamp,cpu_percent
 
     #[test]
     fn correct_number_of_values_loaded() {
-        // The sample CSV has 50 data rows + 1 header + 3 comment lines.
-        // column 1 = cpu_percent. has_header = true skips the header row.
-        // Comments are skipped. All 50 data rows should parse.
+        // The sample CSV has 5 data rows + 1 header + 3 comment lines.
+        // column 1 = val. Header auto-detected (non-numeric "val").
+        // Comments are skipped. All 5 data rows should parse.
         let content = "\
 # comment 1
 # comment 2
@@ -885,8 +908,7 @@ ts,val
 4,40.0
 5,50.0
 ";
-        let gen =
-            CsvReplayGenerator::from_str(content, 1, true, true).expect("should load 5 values");
+        let gen = CsvReplayGenerator::from_str(content, 1, true).expect("should load 5 values");
         // Verify wrapping at length 5
         assert_eq!(gen.value(5), gen.value(0), "should wrap at 5 values");
         assert_eq!(gen.value(6), gen.value(1));
@@ -902,7 +924,7 @@ ts,val
             env!("CARGO_MANIFEST_DIR"),
             "/../examples/sample-cpu-values.csv"
         );
-        let result = CsvReplayGenerator::new(path, 1, true, true);
+        let result = CsvReplayGenerator::new(path, 1, true);
         match result {
             Ok(gen) => {
                 // First data row: 1700000000,12.3

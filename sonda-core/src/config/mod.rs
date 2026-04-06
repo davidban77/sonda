@@ -583,14 +583,12 @@ pub struct MultiScenarioConfig {
     pub scenarios: Vec<ScenarioEntry>,
 }
 
-/// Validate the `column` / `columns` / `auto_columns` / `has_header` fields
-/// of a `CsvReplay` generator config.
+/// Validate the `columns` field of a `CsvReplay` generator config.
 ///
 /// Returns an error when:
-/// - Both `column` and `columns` are set (mutually exclusive).
-/// - `auto_columns` is `Some(true)` alongside `column` or `columns`.
-/// - `auto_columns` is `Some(true)` with `has_header` explicitly `Some(false)`.
 /// - `columns` is `Some` but the list is empty.
+/// - `columns` contains duplicate indices.
+/// - `columns` contains duplicate metric names.
 ///
 /// This validation is called before expansion so that invalid configs are
 /// rejected early with a clear error message.
@@ -598,36 +596,8 @@ pub struct MultiScenarioConfig {
 /// # Errors
 ///
 /// Returns [`SondaError::Config`] with a descriptive message.
-fn validate_csv_columns(
-    column: &Option<usize>,
-    columns: &Option<Vec<CsvColumnSpec>>,
-    auto_columns: &Option<bool>,
-    has_header: &Option<bool>,
-) -> Result<(), SondaError> {
-    if *auto_columns == Some(true) {
-        if column.is_some() {
-            return Err(SondaError::Config(ConfigError::invalid(
-                "csv_replay: 'auto_columns' and 'column' are mutually exclusive",
-            )));
-        }
-        if columns.is_some() {
-            return Err(SondaError::Config(ConfigError::invalid(
-                "csv_replay: 'auto_columns' and 'columns' are mutually exclusive",
-            )));
-        }
-        if *has_header == Some(false) {
-            return Err(SondaError::Config(ConfigError::invalid(
-                "csv_replay: 'auto_columns' requires 'has_header: true'",
-            )));
-        }
-    }
-
+fn validate_csv_columns(columns: &Option<Vec<CsvColumnSpec>>) -> Result<(), SondaError> {
     if let Some(ref cols) = columns {
-        if column.is_some() {
-            return Err(SondaError::Config(ConfigError::invalid(
-                "csv_replay: 'column' and 'columns' are mutually exclusive; use one or the other",
-            )));
-        }
         if cols.is_empty() {
             return Err(SondaError::Config(ConfigError::invalid(
                 "csv_replay: 'columns' must not be empty; provide at least one column spec or omit the field",
@@ -695,54 +665,78 @@ fn read_csv_header(path: &str) -> Result<String, SondaError> {
     }
 
     Err(SondaError::Config(ConfigError::invalid(format!(
-        "csv_replay auto_columns: file {:?} has no header row",
+        "csv_replay: file {:?} has no non-comment, non-empty lines",
         path
     ))))
+}
+
+/// Detect whether a CSV line is a header row.
+///
+/// A line is considered a header when any field after the first column
+/// (index > 0) cannot be parsed as `f64`. For single-column CSVs, the
+/// line is a header if the sole field cannot be parsed as `f64`.
+fn is_csv_header_line(line: &str) -> bool {
+    let fields: Vec<&str> = line.split(',').collect();
+    if fields.len() <= 1 {
+        return fields
+            .first()
+            .map(|f| f.trim().parse::<f64>().is_err())
+            .unwrap_or(false);
+    }
+    fields
+        .iter()
+        .skip(1)
+        .any(|f| f.trim().parse::<f64>().is_err())
 }
 
 /// Expand a [`ScenarioConfig`] that uses multi-column `csv_replay` into N
 /// independent single-column scenarios.
 ///
 /// When the `generator` is `CsvReplay` with `columns: Some(specs)`, this
-/// function returns one `ScenarioConfig` per column spec. When
-/// `auto_columns: Some(true)`, it reads the CSV file header, parses
-/// label-aware column names using [`crate::generator::csv_header`], and
-/// builds column specs automatically.
+/// function returns one `ScenarioConfig` per column spec.
+///
+/// When `columns` is `None`, the function auto-discovers columns from the
+/// CSV file header. If the first data line is detected as a header (any
+/// non-time field is non-numeric), column specs are built from the parsed
+/// header using [`crate::generator::csv_header`]. If the first line is all
+/// numeric (no header), an error is returned asking the user to provide
+/// explicit `columns`.
 ///
 /// Each expanded config has:
 /// - `name` set to the column spec's `name`.
 /// - `generator.column` set to `Some(spec.index)`.
-/// - `generator.columns` set to `None`, `auto_columns` set to `None`.
+/// - `generator.columns` set to `None`.
 /// - Per-column labels merged into `base.labels` (column labels override
 ///   scenario-level labels on key conflict).
 /// - All other fields (rate, duration, sink, encoder, gaps, bursts,
 ///   jitter, etc.) cloned from the parent.
 ///
-/// When neither `columns` nor `auto_columns` is set, returns `vec![config]`
-/// unchanged.
-///
 /// # Errors
 ///
 /// Returns [`SondaError::Config`] if:
-/// - Both `column` and `columns` are set.
 /// - `columns` is an empty list.
-/// - `auto_columns` is set alongside `column` or `columns`.
+/// - `columns` has duplicate indices or names.
 /// - Auto-discovery finds a column with no metric name and no fallback.
+/// - Auto-discovery finds no header row (all-numeric first line).
 pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
-    // Only the CsvReplay variant can have `columns` or `auto_columns`.
+    // Only the CsvReplay variant can have `columns`.
     let specs = match &config.generator {
-        GeneratorConfig::CsvReplay {
-            columns,
-            column,
-            auto_columns,
-            has_header,
-            file,
-            ..
-        } => {
-            validate_csv_columns(column, columns, auto_columns, has_header)?;
+        GeneratorConfig::CsvReplay { columns, file, .. } => {
+            validate_csv_columns(columns)?;
 
-            if *auto_columns == Some(true) {
+            if let Some(ref cols) = columns {
+                cols.clone()
+            } else {
+                // Auto-discover columns from the CSV header.
                 let header_line = read_csv_header(file)?;
+
+                if !is_csv_header_line(&header_line) {
+                    return Err(SondaError::Config(ConfigError::invalid(
+                        "csv_replay: CSV file has no header row (first data line is all numeric); \
+                         provide explicit 'columns' in the config",
+                    )));
+                }
+
                 let parsed = crate::generator::csv_header::parse_header_row(&header_line)?;
 
                 // Skip column 0 (timestamp).
@@ -750,7 +744,7 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
                 for (i, ph) in parsed.into_iter().enumerate().skip(1) {
                     let name = ph.metric_name.ok_or_else(|| {
                         SondaError::Config(ConfigError::invalid(format!(
-                            "csv_replay auto_columns: column {} has no metric name \
+                            "csv_replay: column {} has no metric name \
                              (header has labels only with no __name__)",
                             i
                         )))
@@ -769,15 +763,11 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
 
                 if auto_specs.is_empty() {
                     return Err(SondaError::Config(ConfigError::invalid(
-                        "csv_replay auto_columns: no data columns found after skipping column 0",
+                        "csv_replay: no data columns found after skipping column 0",
                     )));
                 }
 
                 auto_specs
-            } else if let Some(ref cols) = columns {
-                cols.clone()
-            } else {
-                return Ok(vec![config]);
             }
         }
         _ => return Ok(vec![config]),
@@ -797,17 +787,15 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
                 }
             }
 
-            // Replace the generator's column/columns/auto_columns fields.
+            // Replace the generator's column/columns fields.
             if let GeneratorConfig::CsvReplay {
                 ref mut column,
                 ref mut columns,
-                ref mut auto_columns,
                 ..
             } = child.generator
             {
                 *column = Some(spec.index);
                 *columns = None;
-                *auto_columns = None;
             }
             child
         })
@@ -2172,7 +2160,6 @@ rate: 1
 generator:
   type: csv_replay
   file: data.csv
-  has_header: true
   columns:
     - index: 1
       name: cpu_percent
@@ -2184,10 +2171,7 @@ generator:
             GeneratorConfig::CsvReplay {
                 columns, column, ..
             } => {
-                assert!(
-                    column.is_none(),
-                    "column should be None when columns is set"
-                );
+                assert!(column.is_none(), "column is serde(skip), should be None");
                 let cols = columns.as_ref().expect("columns should be Some");
                 assert_eq!(cols.len(), 2);
                 assert_eq!(cols[0].index, 1);
@@ -2208,14 +2192,13 @@ rate: 1
 generator:
   type: csv_replay
   file: data.csv
-  column: 1
 "#;
         let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
         match &config.generator {
             GeneratorConfig::CsvReplay {
                 columns, column, ..
             } => {
-                assert_eq!(*column, Some(1));
+                assert_eq!(*column, None, "column is serde(skip)");
                 assert!(
                     columns.is_none(),
                     "columns should be None when not specified"
@@ -2234,11 +2217,7 @@ mod expand_tests {
     use crate::sink::SinkConfig;
 
     /// Build a base `ScenarioConfig` with a csv_replay generator for testing.
-    fn csv_replay_config(
-        name: &str,
-        column: Option<usize>,
-        columns: Option<Vec<CsvColumnSpec>>,
-    ) -> ScenarioConfig {
+    fn csv_replay_config(name: &str, columns: Option<Vec<CsvColumnSpec>>) -> ScenarioConfig {
         ScenarioConfig {
             base: BaseScheduleConfig {
                 name: name.to_string(),
@@ -2257,11 +2236,9 @@ mod expand_tests {
             },
             generator: GeneratorConfig::CsvReplay {
                 file: "data.csv".to_string(),
-                column,
-                has_header: Some(true),
+                column: None,
                 repeat: Some(true),
                 columns,
-                auto_columns: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         }
@@ -2271,13 +2248,49 @@ mod expand_tests {
     // expand_scenario: pass-through (no columns)
     // -----------------------------------------------------------------------
 
-    /// When columns is None, expand_scenario returns the config unchanged.
+    /// When columns is None and the CSV has a header, expand_scenario
+    /// auto-discovers columns from the header.
     #[test]
-    fn pass_through_when_no_columns() {
-        let config = csv_replay_config("single_metric", Some(1), None);
-        let result = expand_scenario(config.clone()).expect("must succeed");
-        assert_eq!(result.len(), 1, "should return exactly one config");
-        assert_eq!(result[0].name, "single_metric");
+    fn auto_discover_from_header_when_no_columns() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(tmp, "Time,cpu_usage\n1000,42.5\n").expect("write csv");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let mut config = csv_replay_config("single_metric", None);
+        if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
+            *file = path;
+        }
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1, "should auto-discover 1 data column");
+        assert_eq!(result[0].name, "cpu_usage");
+
+        drop(tmp);
+    }
+
+    /// When columns is None and the CSV has no header (all numeric),
+    /// expand_scenario returns an error asking for explicit columns.
+    #[test]
+    fn no_columns_no_header_returns_error() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(tmp, "1000,42.5\n2000,55.3\n").expect("write csv");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let mut config = csv_replay_config("all_numeric", None);
+        if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
+            *file = path;
+        }
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no header row"),
+            "error must mention no header row, got: {msg}"
+        );
+
+        drop(tmp);
     }
 
     /// A non-csv_replay generator passes through unchanged.
@@ -2326,7 +2339,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 2, "should produce two expanded configs");
@@ -2338,14 +2351,11 @@ mod expand_tests {
                 column,
                 columns,
                 file,
-                has_header,
                 repeat,
-                ..
             } => {
                 assert_eq!(*column, Some(1));
                 assert!(columns.is_none(), "columns must be None after expansion");
                 assert_eq!(file, "data.csv", "file must be inherited");
-                assert_eq!(*has_header, Some(true), "has_header must be inherited");
                 assert_eq!(*repeat, Some(true), "repeat must be inherited");
             }
             other => panic!("expected CsvReplay, got {other:?}"),
@@ -2388,7 +2398,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 3);
@@ -2419,7 +2429,7 @@ mod expand_tests {
             name: "metric_a".to_string(),
             labels: None,
         }];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
@@ -2457,7 +2467,7 @@ mod expand_tests {
             name: "metric_a".to_string(),
             labels: None,
         }];
-        let mut config = csv_replay_config("parent", None, Some(cols));
+        let mut config = csv_replay_config("parent", Some(cols));
         config.base.gaps = Some(GapConfig {
             every: "2m".to_string(),
             r#for: "20s".to_string(),
@@ -2482,34 +2492,13 @@ mod expand_tests {
     }
 
     // -----------------------------------------------------------------------
-    // expand_scenario: error — column and columns both set
-    // -----------------------------------------------------------------------
-
-    /// Setting both column and columns returns an error.
-    #[test]
-    fn column_and_columns_both_set_returns_error() {
-        let cols = vec![CsvColumnSpec {
-            index: 1,
-            name: "cpu".to_string(),
-            labels: None,
-        }];
-        let config = csv_replay_config("conflict", Some(1), Some(cols));
-        let err = expand_scenario(config).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("mutually exclusive"),
-            "error must mention mutual exclusivity, got: {msg}"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // expand_scenario: error — empty columns list
     // -----------------------------------------------------------------------
 
     /// An empty columns list returns an error.
     #[test]
     fn empty_columns_list_returns_error() {
-        let config = csv_replay_config("empty", None, Some(vec![]));
+        let config = csv_replay_config("empty", Some(vec![]));
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2537,7 +2526,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("dupe_idx", None, Some(cols));
+        let config = csv_replay_config("dupe_idx", Some(cols));
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2566,7 +2555,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("dupe_idx_late", None, Some(cols));
+        let config = csv_replay_config("dupe_idx_late", Some(cols));
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2594,7 +2583,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("dupe_name", None, Some(cols));
+        let config = csv_replay_config("dupe_name", Some(cols));
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2623,7 +2612,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("dupe_name_late", None, Some(cols));
+        let config = csv_replay_config("dupe_name_late", Some(cols));
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2651,7 +2640,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let entry = ScenarioEntry::Metrics(config);
         let result = expand_entry(entry).expect("must succeed");
 
@@ -2724,7 +2713,7 @@ mod expand_tests {
                 ),
             },
         ];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 2);
@@ -2752,7 +2741,7 @@ mod expand_tests {
                     .collect(),
             ),
         }];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
@@ -2772,7 +2761,7 @@ mod expand_tests {
             name: "cpu".to_string(),
             labels: None,
         }];
-        let config = csv_replay_config("parent", None, Some(cols));
+        let config = csv_replay_config("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
@@ -2785,18 +2774,13 @@ mod expand_tests {
     }
 
     // -----------------------------------------------------------------------
-    // expand_scenario: auto_columns
+    // expand_scenario: auto-discovery (columns: None)
     // -----------------------------------------------------------------------
 
-    /// Auto-columns reads header from temp file and expands.
+    /// Auto-discovery reads header from temp file and expands.
     #[test]
-    fn auto_columns_expands_from_csv_header() {
+    fn auto_discovery_expands_from_csv_header() {
         use std::io::Write;
-
-        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "\"Time\",\"{{}}\",\"{{}}\"\n1704067200000,1,1\n",).expect("write csv");
-        // That wouldn't work — we need actual Grafana-style headers. Let me use unquoted.
-        drop(tmp);
 
         // Use a simpler header format — format 4 plain names.
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
@@ -2827,10 +2811,8 @@ mod expand_tests {
             generator: GeneratorConfig::CsvReplay {
                 file: path,
                 column: None,
-                has_header: Some(true),
                 repeat: Some(true),
                 columns: None,
-                auto_columns: Some(true),
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -2849,14 +2831,10 @@ mod expand_tests {
         // Verify expanded generators have correct column indices.
         match &result[0].generator {
             GeneratorConfig::CsvReplay {
-                column,
-                columns,
-                auto_columns,
-                ..
+                column, columns, ..
             } => {
                 assert_eq!(*column, Some(1));
                 assert!(columns.is_none());
-                assert!(auto_columns.is_none());
             }
             other => panic!("expected CsvReplay, got {other:?}"),
         }
@@ -2871,9 +2849,9 @@ mod expand_tests {
         drop(tmp);
     }
 
-    /// Auto-columns with Grafana-style headers extracts labels.
+    /// Auto-discovery with Grafana-style headers extracts labels.
     #[test]
-    fn auto_columns_grafana_style_extracts_labels() {
+    fn auto_discovery_grafana_style_extracts_labels() {
         use std::io::Write;
 
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
@@ -2906,10 +2884,8 @@ mod expand_tests {
             generator: GeneratorConfig::CsvReplay {
                 file: path,
                 column: None,
-                has_header: Some(true),
                 repeat: Some(true),
                 columns: None,
-                auto_columns: Some(true),
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -2937,197 +2913,12 @@ mod expand_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Validation: auto_columns mutual exclusivity
+    // Auto-discovery: edge cases
     // -----------------------------------------------------------------------
 
-    /// auto_columns and column are mutually exclusive.
+    /// Auto-discovery on a file with no data columns (only timestamp) errors.
     #[test]
-    fn auto_columns_with_column_returns_error() {
-        use std::io::Write;
-
-        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time,val\n1000,42\n").expect("write csv");
-        tmp.flush().expect("flush");
-        let path = tmp.path().to_string_lossy().into_owned();
-
-        let config = ScenarioConfig {
-            base: BaseScheduleConfig {
-                name: "conflict".to_string(),
-                rate: 1.0,
-                duration: None,
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                sink: SinkConfig::Stdout,
-                phase_offset: None,
-                clock_group: None,
-                jitter: None,
-                jitter_seed: None,
-                dynamic_labels: None,
-            },
-            generator: GeneratorConfig::CsvReplay {
-                file: path,
-                column: Some(1),
-                has_header: Some(true),
-                repeat: Some(true),
-                columns: None,
-                auto_columns: Some(true),
-            },
-            encoder: EncoderConfig::PrometheusText { precision: None },
-        };
-        let err = expand_scenario(config).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("mutually exclusive"),
-            "error must mention mutual exclusivity, got: {msg}"
-        );
-
-        drop(tmp);
-    }
-
-    /// auto_columns and columns are mutually exclusive.
-    #[test]
-    fn auto_columns_with_columns_returns_error() {
-        use std::io::Write;
-
-        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time,val\n1000,42\n").expect("write csv");
-        tmp.flush().expect("flush");
-        let path = tmp.path().to_string_lossy().into_owned();
-
-        let config = ScenarioConfig {
-            base: BaseScheduleConfig {
-                name: "conflict2".to_string(),
-                rate: 1.0,
-                duration: None,
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                sink: SinkConfig::Stdout,
-                phase_offset: None,
-                clock_group: None,
-                jitter: None,
-                jitter_seed: None,
-                dynamic_labels: None,
-            },
-            generator: GeneratorConfig::CsvReplay {
-                file: path,
-                column: None,
-                has_header: Some(true),
-                repeat: Some(true),
-                columns: Some(vec![CsvColumnSpec {
-                    index: 1,
-                    name: "val".to_string(),
-                    labels: None,
-                }]),
-                auto_columns: Some(true),
-            },
-            encoder: EncoderConfig::PrometheusText { precision: None },
-        };
-        let err = expand_scenario(config).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("mutually exclusive"),
-            "error must mention mutual exclusivity, got: {msg}"
-        );
-
-        drop(tmp);
-    }
-
-    /// auto_columns with has_header: false is rejected.
-    #[test]
-    fn auto_columns_with_has_header_false_returns_error() {
-        use std::io::Write;
-
-        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "1704067200000,1,1\n").expect("write csv");
-        tmp.flush().expect("flush");
-        let path = tmp.path().to_string_lossy().into_owned();
-
-        let config = ScenarioConfig {
-            base: BaseScheduleConfig {
-                name: "no_header".to_string(),
-                rate: 1.0,
-                duration: None,
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                sink: SinkConfig::Stdout,
-                phase_offset: None,
-                clock_group: None,
-                jitter: None,
-                jitter_seed: None,
-                dynamic_labels: None,
-            },
-            generator: GeneratorConfig::CsvReplay {
-                file: path,
-                column: None,
-                has_header: Some(false),
-                repeat: Some(true),
-                columns: None,
-                auto_columns: Some(true),
-            },
-            encoder: EncoderConfig::PrometheusText { precision: None },
-        };
-        let err = expand_scenario(config).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("requires 'has_header: true'"),
-            "error must mention has_header requirement, got: {msg}"
-        );
-
-        drop(tmp);
-    }
-
-    /// auto_columns: false acts as if absent (pass-through).
-    #[test]
-    fn auto_columns_false_passes_through() {
-        use std::io::Write;
-
-        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time,val\n1000,42\n").expect("write csv");
-        tmp.flush().expect("flush");
-        let path = tmp.path().to_string_lossy().into_owned();
-
-        let config = ScenarioConfig {
-            base: BaseScheduleConfig {
-                name: "pass_through".to_string(),
-                rate: 1.0,
-                duration: None,
-                gaps: None,
-                bursts: None,
-                cardinality_spikes: None,
-                labels: None,
-                sink: SinkConfig::Stdout,
-                phase_offset: None,
-                clock_group: None,
-                jitter: None,
-                jitter_seed: None,
-                dynamic_labels: None,
-            },
-            generator: GeneratorConfig::CsvReplay {
-                file: path,
-                column: Some(1),
-                has_header: Some(true),
-                repeat: Some(true),
-                columns: None,
-                auto_columns: Some(false),
-            },
-            encoder: EncoderConfig::PrometheusText { precision: None },
-        };
-        let result = expand_scenario(config).expect("must succeed");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].name, "pass_through");
-
-        drop(tmp);
-    }
-
-    /// auto_columns on a file with no data columns (only timestamp) errors.
-    #[test]
-    fn auto_columns_single_column_file_returns_error() {
+    fn auto_discovery_single_column_file_returns_error() {
         use std::io::Write;
 
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
@@ -3154,10 +2945,8 @@ mod expand_tests {
             generator: GeneratorConfig::CsvReplay {
                 file: path,
                 column: None,
-                has_header: Some(true),
                 repeat: Some(true),
                 columns: None,
-                auto_columns: Some(true),
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -3171,9 +2960,9 @@ mod expand_tests {
         drop(tmp);
     }
 
-    /// auto_columns on a missing file returns a generator error.
+    /// Auto-discovery on a missing file returns a generator error.
     #[test]
-    fn auto_columns_missing_file_returns_generator_error() {
+    fn auto_discovery_missing_file_returns_generator_error() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "missing_file".to_string(),
@@ -3193,10 +2982,8 @@ mod expand_tests {
             generator: GeneratorConfig::CsvReplay {
                 file: "/nonexistent/path.csv".to_string(),
                 column: None,
-                has_header: Some(true),
                 repeat: Some(true),
                 columns: None,
-                auto_columns: Some(true),
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -3207,37 +2994,53 @@ mod expand_tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Deserialization: auto_columns and per-column labels
-    // -----------------------------------------------------------------------
-
-    #[cfg(feature = "config")]
+    /// Auto-discovery on a file with all-numeric first row returns an error.
     #[test]
-    fn deserialize_auto_columns_from_yaml() {
-        let yaml = r#"
-name: auto_test
-rate: 1
-generator:
-  type: csv_replay
-  file: data.csv
-  has_header: true
-  auto_columns: true
-"#;
-        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        match &config.generator {
-            GeneratorConfig::CsvReplay {
-                auto_columns,
-                columns,
-                column,
-                ..
-            } => {
-                assert_eq!(*auto_columns, Some(true));
-                assert!(columns.is_none());
-                assert!(column.is_none());
-            }
-            other => panic!("expected CsvReplay variant, got {other:?}"),
-        }
+    fn auto_discovery_all_numeric_returns_error() {
+        use std::io::Write;
+
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(tmp, "1000,42.5,60.0\n2000,55.3,70.1\n").expect("write csv");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "no_header".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+                dynamic_labels: None,
+            },
+            generator: GeneratorConfig::CsvReplay {
+                file: path,
+                column: None,
+                repeat: Some(true),
+                columns: None,
+            },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        };
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no header row"),
+            "error must mention no header row, got: {msg}"
+        );
+
+        drop(tmp);
     }
+
+    // -----------------------------------------------------------------------
+    // Deserialization: per-column labels
+    // -----------------------------------------------------------------------
 
     #[cfg(feature = "config")]
     #[test]
@@ -3248,7 +3051,6 @@ rate: 1
 generator:
   type: csv_replay
   file: data.csv
-  has_header: true
   columns:
     - index: 1
       name: cpu_percent
@@ -3271,26 +3073,6 @@ generator:
 
                 // Second column has no labels.
                 assert!(cols[1].labels.is_none());
-            }
-            other => panic!("expected CsvReplay variant, got {other:?}"),
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn deserialize_auto_columns_false_from_yaml() {
-        let yaml = r#"
-name: no_auto
-rate: 1
-generator:
-  type: csv_replay
-  file: data.csv
-  auto_columns: false
-"#;
-        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        match &config.generator {
-            GeneratorConfig::CsvReplay { auto_columns, .. } => {
-                assert_eq!(*auto_columns, Some(false));
             }
             other => panic!("expected CsvReplay variant, got {other:?}"),
         }

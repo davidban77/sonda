@@ -293,8 +293,10 @@ Sonda to reproduce exact production conditions.
        /// # Arguments
        /// * `path` - Path to the CSV file.
        /// * `column` - Zero-based column index to read (default 0).
-       /// * `has_header` - Whether to skip the first row as a header (default true).
        /// * `repeat` - Whether to cycle values (default true).
+       ///
+       /// Header rows are auto-detected: if any non-time field on the first
+       /// data line is non-numeric, the line is treated as a header and skipped.
        ///
        /// # Errors
        /// Returns `SondaError::Config` if:
@@ -304,7 +306,6 @@ Sonda to reproduce exact production conditions.
        pub fn new(
            path: &str,
            column: usize,
-           has_header: bool,
            repeat: bool,
        ) -> Result<Self, SondaError> { ... }
    }
@@ -320,7 +321,7 @@ Sonda to reproduce exact production conditions.
 
 2. `sonda-core/src/generator/mod.rs`:
    - Add `pub mod csv_replay;`
-   - Add `GeneratorConfig::CsvReplay { file: String, column: Option<usize>, has_header: Option<bool>, repeat: Option<bool> }` variant.
+   - Add `GeneratorConfig::CsvReplay { file: String, column: Option<usize>, columns: Option<Vec<CsvColumnSpec>>, repeat: Option<bool> }` variant.
    - Add match arm in `create_generator()`.
    - Re-export `CsvReplayGenerator`.
 
@@ -348,9 +349,9 @@ Sonda to reproduce exact production conditions.
    generator:
      type: csv_replay
      file: examples/sample-cpu-values.csv
-     column: 1
-     has_header: true
-     repeat: true
+     columns:
+       - index: 1
+         name: cpu_replay
 
    labels:
      instance: prod-server-42
@@ -381,7 +382,7 @@ Sonda to reproduce exact production conditions.
 - `CsvReplayGenerator::new` with a CSV containing no parseable numbers returns a config error.
 - With `repeat: true`, `value(tick)` wraps around at the end of the file.
 - With `repeat: false`, `value(tick)` clamps to the last value.
-- Header rows are correctly skipped when `has_header: true`.
+- Header rows are auto-detected and correctly skipped.
 - `GeneratorConfig::CsvReplay` deserializes correctly from YAML.
 - The example YAML file loads and runs successfully.
 - All existing tests continue to pass.

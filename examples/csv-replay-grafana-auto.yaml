@@ -20,9 +20,6 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/grafana-export.csv
-  has_header: true
-  auto_columns: true
-  repeat: true
 
 labels:
   env: production

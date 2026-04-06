@@ -904,8 +904,9 @@ duration: 120s
 generator:
   type: csv_replay
   file: incident-values.csv
-  column: 1
-  has_header: true
+  columns:
+    - index: 1
+      name: cpu_usage
   repeat: false
 
 labels:
@@ -925,8 +926,7 @@ The key parameters:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `file` | (required) | Path to the CSV file. Relative paths are resolved from the working directory. |
-| `column` | `0` | Zero-based index of the column containing numeric values. |
-| `has_header` | `true` | Whether the first row is a header (skipped during parsing). |
+| `columns` | -- | Explicit column specs. When absent, columns are auto-discovered from the header. |
 | `repeat` | `true` | When true, cycles back to the first value after reaching the end. When false, clamps to the last value. |
 
 With `repeat: false`, the data plays once and then holds the last value -- matching how a real

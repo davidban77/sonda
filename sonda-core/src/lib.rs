@@ -237,7 +237,6 @@ mod tests {
         let result = generator::csv_replay::CsvReplayGenerator::new(
             "/nonexistent/path/for/data.csv",
             0,
-            false,
             true,
         );
         match result {
