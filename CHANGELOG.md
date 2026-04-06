@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0](https://github.com/davidban77/sonda/compare/v0.7.0...v0.8.0) (2026-04-06)
+
+
+### Features
+
+* add histogram and summary generators ([#149](https://github.com/davidban77/sonda/issues/149)) ([#160](https://github.com/davidban77/sonda/issues/160)) ([52c5e36](https://github.com/davidban77/sonda/commit/52c5e361adce564811ce202cefd614fbf1ae1e78))
+* label-aware CSV replay for Grafana exports ([#162](https://github.com/davidban77/sonda/issues/162)) ([09218d1](https://github.com/davidban77/sonda/commit/09218d13909d8d1a3a22b853fc1a98db4cddb94e))
+
 ## [0.7.0](https://github.com/davidban77/sonda/compare/v0.6.0...v0.7.0) (2026-04-05)
 
 
