@@ -467,6 +467,7 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             has_header,
             repeat,
             columns,
+            auto_columns,
         } => {
             let col = column.unwrap_or(0);
             let hdr = if has_header.unwrap_or(true) {
@@ -479,7 +480,9 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             } else {
                 "clamp"
             };
-            if let Some(ref cols) = columns {
+            if *auto_columns == Some(true) {
+                format!("csv_replay (file: {file}, auto_columns, {hdr}, {rpt})")
+            } else if let Some(ref cols) = columns {
                 let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
                 format!(
                     "csv_replay (file: {file}, columns: [{}], {hdr}, {rpt})",
@@ -979,6 +982,7 @@ mod tests {
             has_header: Some(true),
             repeat: Some(false),
             columns: None,
+            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
@@ -994,6 +998,7 @@ mod tests {
             has_header: None,
             repeat: None,
             columns: None,
+            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
@@ -1012,16 +1017,35 @@ mod tests {
                 CsvColumnSpec {
                     index: 1,
                     name: "cpu_percent".to_string(),
+                    labels: None,
                 },
                 CsvColumnSpec {
                     index: 2,
                     name: "mem_percent".to_string(),
+                    labels: None,
                 },
             ]),
+            auto_columns: None,
         };
         assert_eq!(
             generator_display(&config),
             "csv_replay (file: /data/metrics.csv, columns: [cpu_percent, mem_percent], header, clamp)"
+        );
+    }
+
+    #[test]
+    fn generator_display_csv_replay_with_auto_columns() {
+        let config = GeneratorConfig::CsvReplay {
+            file: "/data/metrics.csv".to_string(),
+            column: None,
+            has_header: Some(true),
+            repeat: Some(true),
+            columns: None,
+            auto_columns: Some(true),
+        };
+        assert_eq!(
+            generator_display(&config),
+            "csv_replay (file: /data/metrics.csv, auto_columns, header, repeat)"
         );
     }
 

@@ -1,0 +1,44 @@
+# Multi-Column CSV Replay with Explicit Per-Column Labels
+#
+# Like the multi-column example, but each column carries its own labels.
+# Per-column labels are merged with scenario-level labels; column labels
+# override scenario-level labels on key conflict.
+#
+# In this example:
+#   - Scenario-level labels: instance=prod-server-42, job=node
+#   - Column 1 (cpu_percent): adds core=0
+#   - Column 2 (mem_percent): adds type=physical
+#   - Column 3 (disk_io_mbps): no extra labels
+#
+# Run with:
+#   sonda metrics --scenario examples/csv-replay-explicit-labels.yaml
+
+name: system_metrics
+rate: 1
+duration: 60s
+
+generator:
+  type: csv_replay
+  file: examples/sample-multi-column.csv
+  has_header: true
+  repeat: true
+  columns:
+    - index: 1
+      name: cpu_percent
+      labels:
+        core: "0"
+    - index: 2
+      name: mem_percent
+      labels:
+        type: physical
+    - index: 3
+      name: disk_io_mbps
+
+labels:
+  instance: prod-server-42
+  job: node
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

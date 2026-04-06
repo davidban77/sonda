@@ -27,6 +27,7 @@ src/
 │   ├── step.rs         ← monotonic step counter with optional wrap-around (rate/increase testing)
 │   ├── spike.rs        ← baseline with periodic spikes (anomaly/alert testing)
 │   ├── jitter.rs       ← JitterWrapper: adds deterministic uniform noise to any ValueGenerator
+│   ├── csv_header.rs   ← CSV header parsing for Grafana-style label-aware column headers
 │   ├── csv_replay.rs   ← CSV file-based replay for metric values
 │   ├── histogram.rs    ← HistogramGenerator (cumulative bucket counts, Distribution, to_distribution)
 │   ├── summary.rs      ← SummaryGenerator (quantile values via sorted observations)

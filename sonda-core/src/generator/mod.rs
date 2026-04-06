@@ -12,6 +12,7 @@
 //! [`histogram::HistogramGenerator`] and [`summary::SummaryGenerator`].
 
 pub mod constant;
+pub mod csv_header;
 pub mod csv_replay;
 pub mod histogram;
 pub mod jitter;
@@ -74,6 +75,10 @@ pub struct CsvColumnSpec {
     pub index: usize,
     /// Metric name for the expanded scenario.
     pub name: String,
+    /// Optional per-column labels merged with scenario-level labels during
+    /// expansion. Column labels override scenario-level labels on key conflict.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub labels: Option<HashMap<String, String>>,
 }
 
 /// Configuration for a value generator, used for YAML deserialization.
@@ -158,8 +163,8 @@ pub enum GeneratorConfig {
         file: String,
         /// Zero-based column index to read. Defaults to 0 when absent.
         ///
-        /// Mutually exclusive with `columns`. If both are set, validation
-        /// returns an error.
+        /// Mutually exclusive with `columns` and `auto_columns`. If both are
+        /// set, validation returns an error.
         column: Option<usize>,
         /// Whether to skip the first data row as a header. Defaults to true
         /// when absent.
@@ -171,10 +176,19 @@ pub enum GeneratorConfig {
         /// expands this single scenario into N independent single-column
         /// scenarios before launch.
         ///
-        /// Mutually exclusive with `column`. If both are set, validation
-        /// returns an error. An empty list is also an error.
+        /// Mutually exclusive with `column` and `auto_columns`. If both are
+        /// set, validation returns an error. An empty list is also an error.
         #[cfg_attr(feature = "config", serde(default))]
         columns: Option<Vec<CsvColumnSpec>>,
+        /// When `true`, automatically discovers columns and per-column labels
+        /// from the CSV file header row (Grafana export format).
+        ///
+        /// Mutually exclusive with `column` and `columns`. The config layer
+        /// reads the header, parses label-aware column names, and expands
+        /// the scenario into N independent single-column scenarios before
+        /// launch.
+        #[cfg_attr(feature = "config", serde(default))]
+        auto_columns: Option<bool>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -258,10 +272,16 @@ pub fn create_generator(
             has_header,
             repeat,
             columns,
+            auto_columns,
         } => {
             if columns.is_some() {
                 return Err(SondaError::Config(ConfigError::invalid(
                     "csv_replay: call expand_scenario before create_generator when 'columns' is set",
+                )));
+            }
+            if *auto_columns == Some(true) {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "csv_replay: call expand_scenario before create_generator when 'auto_columns' is true",
                 )));
             }
             Ok(Box::new(CsvReplayGenerator::new(
@@ -759,7 +779,9 @@ mod tests {
             columns: Some(vec![CsvColumnSpec {
                 index: 1,
                 name: "cpu".to_string(),
+                labels: None,
             }]),
+            auto_columns: None,
         };
         let result = create_generator(&config, 1.0);
         match result {
@@ -771,6 +793,29 @@ mod tests {
                 );
             }
             Ok(_) => panic!("csv_replay with columns set must return an error"),
+        }
+    }
+
+    #[test]
+    fn factory_csv_replay_with_auto_columns_returns_error() {
+        let config = GeneratorConfig::CsvReplay {
+            file: "data.csv".to_string(),
+            column: None,
+            has_header: None,
+            repeat: None,
+            columns: None,
+            auto_columns: Some(true),
+        };
+        let result = create_generator(&config, 1.0);
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("expand_scenario"),
+                    "error must mention expand_scenario, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("csv_replay with auto_columns=true must return an error"),
         }
     }
 

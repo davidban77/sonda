@@ -1,0 +1,33 @@
+# Grafana CSV Auto-Column Replay Example
+#
+# Replays a Grafana "Series joined by time" CSV export with automatic column
+# and label discovery. Sonda reads the CSV header, extracts per-column metric
+# names and label sets, and expands into independent scenarios.
+#
+# The header format is:
+#   "Time","{__name__=""up"", instance=""localhost:9090"", job=""prometheus""}","{...}"
+#
+# Each data column becomes its own metric scenario with the extracted labels.
+# Scenario-level labels (e.g., env: production) are merged as defaults.
+#
+# Run with:
+#   sonda metrics --scenario examples/csv-replay-grafana-auto.yaml
+
+name: grafana_replay
+rate: 1
+duration: 60s
+
+generator:
+  type: csv_replay
+  file: examples/grafana-export.csv
+  has_header: true
+  auto_columns: true
+  repeat: true
+
+labels:
+  env: production
+
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

@@ -603,6 +603,7 @@ mod tests {
             has_header: Some(false),
             repeat: Some(true),
             columns: None,
+            auto_columns: None,
         };
         let gen =
             super::super::create_generator(&config, 1.0).expect("csv_replay factory must succeed");
@@ -622,6 +623,7 @@ mod tests {
             has_header: None,
             repeat: None,
             columns: None,
+            auto_columns: None,
         };
         let gen = super::super::create_generator(&config, 1.0)
             .expect("csv_replay factory with defaults must succeed");
@@ -637,6 +639,7 @@ mod tests {
             has_header: None,
             repeat: None,
             columns: None,
+            auto_columns: None,
         };
         let result = super::super::create_generator(&config, 1.0);
         assert!(
@@ -666,11 +669,16 @@ repeat: false
                 has_header,
                 repeat,
                 columns,
+                auto_columns,
             } => {
                 assert_eq!(file, "/some/path.csv");
                 assert_eq!(column, Some(1));
                 assert_eq!(has_header, Some(true));
                 assert_eq!(columns, None, "columns should be None when omitted");
+                assert_eq!(
+                    auto_columns, None,
+                    "auto_columns should be None when omitted"
+                );
                 assert_eq!(repeat, Some(false));
             }
             _ => panic!("expected CsvReplay variant"),
@@ -690,11 +698,16 @@ repeat: false
                 has_header,
                 repeat,
                 columns,
+                auto_columns,
             } => {
                 assert_eq!(file, "data.csv");
                 assert_eq!(column, None, "column should be None when omitted");
                 assert_eq!(has_header, None, "has_header should be None when omitted");
                 assert_eq!(columns, None, "columns should be None when omitted");
+                assert_eq!(
+                    auto_columns, None,
+                    "auto_columns should be None when omitted"
+                );
                 assert_eq!(repeat, None, "repeat should be None when omitted");
             }
             _ => panic!("expected CsvReplay variant"),
@@ -743,11 +756,16 @@ sink:
                 has_header,
                 repeat,
                 columns,
+                auto_columns,
             } => {
                 assert_eq!(file, &csv_path);
                 assert_eq!(*column, Some(1));
                 assert_eq!(*has_header, Some(true));
                 assert_eq!(*columns, None, "columns should be None when omitted");
+                assert_eq!(
+                    *auto_columns, None,
+                    "auto_columns should be None when omitted"
+                );
                 assert_eq!(*repeat, Some(true));
             }
             _ => panic!("expected CsvReplay generator variant"),
