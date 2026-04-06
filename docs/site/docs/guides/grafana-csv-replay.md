@@ -173,11 +173,14 @@ braces.
 
 ## Quick Reference
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `columns` | list | -- | Explicit column specs. When absent, columns are auto-discovered from the header. |
-| `columns[].labels` | map | none | Per-column labels merged with scenario-level labels. Column labels override on conflict. |
-| `repeat` | boolean | `true` | Cycle back to start or hold last value. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file` | string | yes | -- | Path to the CSV file. |
+| `columns` | list | no | -- | Explicit column specs. When absent, columns are auto-discovered from the header. |
+| `columns[].index` | integer | yes | -- | Zero-based column index in the CSV file. |
+| `columns[].name` | string | yes | -- | Metric name for the expanded scenario. |
+| `columns[].labels` | map | no | none | Per-column labels merged with scenario-level labels. Column labels override on conflict. |
+| `repeat` | boolean | no | `true` | Cycle back to start or hold last value. |
 
 For the full CSV replay parameter reference, see
 [Generators: csv_replay](../configuration/generators.md#csv_replay).

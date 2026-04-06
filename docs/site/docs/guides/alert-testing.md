@@ -420,7 +420,7 @@ holds the last value after the sequence ends.
 
 ### CSV replay generator
 
-For replaying real production data, the [csv_replay generator](../configuration/generators.md#csv_replay) reads values from a CSV file:
+For replaying real production data, the [csv_replay generator](../configuration/generators.md#csv_replay) reads values from a CSV file. If you have a Grafana dashboard showing the incident, see the [Grafana CSV Replay](grafana-csv-replay.md) guide for the full export-and-replay workflow.
 
 ```bash
 sonda metrics --scenario examples/csv-replay-metrics.yaml

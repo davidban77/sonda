@@ -248,7 +248,9 @@ cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
 ### csv_replay
 
 Replays numeric values from a CSV file. Use it to reproduce real production metric patterns
-captured from monitoring systems -- including Grafana CSV exports with embedded labels.
+captured from monitoring systems -- including Grafana CSV exports with embedded labels. For a
+step-by-step walkthrough of the Grafana export workflow, see the
+[Grafana CSV Replay](../guides/grafana-csv-replay.md) guide.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
