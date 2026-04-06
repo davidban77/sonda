@@ -248,19 +248,25 @@ cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
 ### csv_replay
 
 Replays numeric values from a CSV file. Use it to reproduce real production metric patterns
-captured from monitoring systems.
+captured from monitoring systems -- including Grafana CSV exports with embedded labels.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file` | string | yes | -- | Path to the CSV file. |
-| `column` | integer | no | `0` | Zero-based column index to read. Mutually exclusive with `columns`. |
-| `columns` | list | no | -- | Multi-column mode. Each entry: `{index: <int>, name: <string>}`. Mutually exclusive with `column`. |
+| `column` | integer | no | `0` | Zero-based column index to read. |
+| `columns` | list | no | -- | Multi-column mode. Each entry: `{index, name}` with optional `labels`. |
+| `auto_columns` | boolean | no | `false` | Auto-discover columns and labels from the CSV header. |
 | `has_header` | boolean | no | `true` | Whether to skip the first row as a header. |
 | `repeat` | boolean | no | `true` | When true, cycles back to the start. When false, holds the last value. |
 
-!!! warning "column vs columns"
-    `column` and `columns` are mutually exclusive. Use `column` to replay a single metric, or
-    `columns` to replay multiple metrics from the same file simultaneously. Setting both is an error.
+!!! warning "Mutually exclusive modes"
+    `column`, `columns`, and `auto_columns` are mutually exclusive -- use exactly one.
+
+    - `column` -- replay a single column by index.
+    - `columns` -- replay multiple columns with explicit names and optional per-column labels.
+    - `auto_columns` -- let Sonda discover columns, metric names, and labels from the header.
+
+    Setting more than one is an error. `auto_columns` requires `has_header: true` (the default).
 
 === "Single column"
 
@@ -299,8 +305,65 @@ captured from monitoring systems.
       type: stdout
     ```
 
-    This expands into three independent metric streams — `cpu_percent`, `mem_percent`, and
-    `disk_io_mbps` — all sharing the same `labels`, `rate`, `sink`, and other scenario fields.
+    This expands into three independent metric streams -- `cpu_percent`, `mem_percent`, and
+    `disk_io_mbps` -- all sharing the same `labels`, `rate`, `sink`, and other scenario fields.
+
+=== "Multi-column with per-column labels"
+
+    Each column entry can carry its own `labels` map. Per-column labels are merged with
+    scenario-level labels, and column labels override on key conflict.
+
+    ```yaml title="Per-column labels"
+    generator:
+      type: csv_replay
+      file: examples/sample-multi-column.csv
+      has_header: true
+      repeat: true
+      columns:
+        - index: 1
+          name: cpu_percent
+          labels:
+            core: "0"
+        - index: 2
+          name: mem_percent
+          labels:
+            type: physical
+        - index: 3
+          name: disk_io_mbps
+    labels:
+      instance: prod-server-42
+      job: node
+    ```
+
+    `cpu_percent` gets `{core="0", instance="prod-server-42", job="node"}`.
+    `disk_io_mbps` gets only the scenario-level labels.
+
+=== "Auto-columns (Grafana export)"
+
+    For CSV files with label-aware headers (e.g., Grafana's "Series joined by time" export),
+    `auto_columns: true` reads the header row and extracts metric names and labels automatically.
+
+    ```yaml title="Grafana auto-column replay"
+    name: grafana_replay
+    rate: 1
+    generator:
+      type: csv_replay
+      file: examples/grafana-export.csv
+      has_header: true
+      auto_columns: true
+      repeat: true
+    labels:
+      env: production
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    Sonda parses headers like `{__name__="up", instance="host", job="prom"}` and creates one
+    scenario per data column with the extracted name and labels. Scenario-level labels are merged
+    as defaults. See the [Grafana CSV Replay](../guides/grafana-csv-replay.md) guide for a
+    step-by-step walkthrough.
 
 **Shape:** Follows the exact pattern recorded in the CSV file -- the values are replayed verbatim,
 one per tick.
@@ -308,6 +371,20 @@ one per tick.
 !!! note
     The CSV file path is relative to the working directory where you run `sonda`, not
     relative to the scenario file.
+
+??? tip "Supported header formats for auto_columns"
+    Sonda recognizes five column header formats:
+
+    | Format | Example | Metric name | Labels |
+    |--------|---------|-------------|--------|
+    | `__name__` inside braces | `{__name__="up", job="prom"}` | `up` | `job` |
+    | Name before braces | `up{job="prom"}` | `up` | `job` |
+    | Labels only | `{job="prom"}` | none | `job` |
+    | Plain name | `cpu_percent` | `cpu_percent` | none |
+    | Simple word | `prometheus` | `prometheus` | none |
+
+    Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is not
+    compatible with `auto_columns` and requires explicit `columns:` instead.
 
 ## Histogram and summary generators
 
