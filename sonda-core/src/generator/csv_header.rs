@@ -117,8 +117,9 @@ fn parse_label_block(block: &str) -> Result<HashMap<String, String>, SondaError>
         )));
     }
 
-    // rfind is safe here: any '}' inside quoted label values is consumed
-    // by parse_label_pairs, so the last '}' is always the block delimiter.
+    // rfind is safe here: any '}' inside a label value is enclosed in
+    // quotes within the `{...}` block, so it structurally precedes the
+    // real closing '}' which is always the last one in the string.
     let close = block.rfind('}').ok_or_else(|| {
         SondaError::Config(ConfigError::invalid(
             "csv_header: unmatched '{' — missing closing '}'",
@@ -231,6 +232,35 @@ fn parse_unquoted_value(input: &str) -> Result<(String, &str), SondaError> {
             Ok((value, ""))
         }
     }
+}
+
+/// Detect whether a CSV line is a header row by checking if any
+/// non-first field fails to parse as `f64`.
+///
+/// A line is considered a header when any field after the first column
+/// (index > 0) cannot be parsed as `f64`. For single-column CSVs, the
+/// line is a header if the sole field cannot be parsed as `f64`.
+///
+/// This function uses naive `split(',')` rather than RFC 4180-aware
+/// parsing. For Grafana exports with quoted fields, the split produces
+/// more fragments than actual columns, but every fragment of a
+/// non-numeric header is itself non-numeric, so the heuristic still
+/// correctly identifies headers. A false positive would require a quoted
+/// numeric value like `"1000"` — extremely unlikely in practice.
+pub(crate) fn is_header_line(line: &str) -> bool {
+    let fields: Vec<&str> = line.split(',').collect();
+    if fields.len() <= 1 {
+        // Single-column: header if the field is non-numeric.
+        return fields
+            .first()
+            .map(|f| f.trim().parse::<f64>().is_err())
+            .unwrap_or(false);
+    }
+    // Multi-column: header if any non-time field (index > 0) is non-numeric.
+    fields
+        .iter()
+        .skip(1)
+        .any(|f| f.trim().parse::<f64>().is_err())
 }
 
 /// Split a CSV header line into fields respecting RFC 4180 quoting.
@@ -648,5 +678,40 @@ mod tests {
         let a = parse_column_header(header).expect("first parse");
         let b = parse_column_header(header).expect("second parse");
         assert_eq!(a, b);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_header_line
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_header_line_detects_text_header() {
+        assert!(is_header_line("timestamp,cpu,mem"));
+    }
+
+    #[test]
+    fn is_header_line_rejects_all_numeric() {
+        assert!(!is_header_line("1000,42.5,99.1"));
+    }
+
+    #[test]
+    fn is_header_line_single_column_text() {
+        assert!(is_header_line("metric_name"));
+    }
+
+    #[test]
+    fn is_header_line_single_column_numeric() {
+        assert!(!is_header_line("42.5"));
+    }
+
+    #[test]
+    fn is_header_line_first_col_numeric_second_text() {
+        assert!(is_header_line("1000,cpu_percent"));
+    }
+
+    #[test]
+    fn is_header_line_empty_string_is_non_numeric() {
+        // An empty string cannot be parsed as f64, so it is classified as a header.
+        assert!(is_header_line(""));
     }
 }

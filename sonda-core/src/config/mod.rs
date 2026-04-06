@@ -670,23 +670,9 @@ fn read_csv_header(path: &str) -> Result<String, SondaError> {
     ))))
 }
 
-/// Detect whether a CSV line is a header row.
-///
-/// A line is considered a header when any field after the first column
-/// (index > 0) cannot be parsed as `f64`. For single-column CSVs, the
-/// line is a header if the sole field cannot be parsed as `f64`.
+/// Re-export of the shared header detection logic from [`crate::generator::csv_header`].
 fn is_csv_header_line(line: &str) -> bool {
-    let fields: Vec<&str> = line.split(',').collect();
-    if fields.len() <= 1 {
-        return fields
-            .first()
-            .map(|f| f.trim().parse::<f64>().is_err())
-            .unwrap_or(false);
-    }
-    fields
-        .iter()
-        .skip(1)
-        .any(|f| f.trim().parse::<f64>().is_err())
+    crate::generator::csv_header::is_header_line(line)
 }
 
 /// Expand a [`ScenarioConfig`] that uses multi-column `csv_replay` into N
@@ -696,11 +682,13 @@ fn is_csv_header_line(line: &str) -> bool {
 /// function returns one `ScenarioConfig` per column spec.
 ///
 /// When `columns` is `None`, the function auto-discovers columns from the
-/// CSV file header. If the first data line is detected as a header (any
-/// non-time field is non-numeric), column specs are built from the parsed
-/// header using [`crate::generator::csv_header`]. If the first line is all
-/// numeric (no header), an error is returned asking the user to provide
-/// explicit `columns`.
+/// CSV file header. **Note:** this performs file I/O — it reads the first
+/// line of the CSV file at `generator.file` to detect the header row.
+/// If the first data line is detected as a header (any non-time field is
+/// non-numeric), column specs are built from the parsed header using
+/// [`crate::generator::csv_header`]. If the first line is all numeric
+/// (no header), an error is returned asking the user to provide explicit
+/// `columns`.
 ///
 /// Each expanded config has:
 /// - `name` set to the column spec's `name`.
@@ -2929,6 +2917,52 @@ mod expand_tests {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "no_data_cols".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+                dynamic_labels: None,
+            },
+            generator: GeneratorConfig::CsvReplay {
+                file: path,
+                column: None,
+                repeat: Some(true),
+                columns: None,
+            },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        };
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no data columns"),
+            "error must mention no data columns, got: {msg}"
+        );
+
+        drop(tmp);
+    }
+
+    /// A CSV with a single data column (header + values, no time column)
+    /// auto-discovers one column, but column 0 is skipped as time, yielding
+    /// no data columns and producing an error.
+    #[test]
+    fn auto_discovery_single_data_column_no_time_yields_no_data_columns() {
+        use std::io::Write;
+
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(tmp, "metric_name\n42.5\n").expect("write csv");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let config = ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "single_data_col".to_string(),
                 rate: 1.0,
                 duration: None,
                 gaps: None,

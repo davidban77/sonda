@@ -118,23 +118,9 @@ impl CsvReplayGenerator {
 
     /// Detect whether the first data line is a header row.
     ///
-    /// A line is considered a header when any field after the first column
-    /// (index > 0) cannot be parsed as `f64`. For single-column CSVs, the
-    /// line is a header if the sole field cannot be parsed as `f64`.
+    /// Delegates to the shared [`super::csv_header::is_header_line`] function.
     fn is_header_line(line: &str) -> bool {
-        let fields: Vec<&str> = line.split(',').collect();
-        if fields.len() <= 1 {
-            // Single-column: header if the field is non-numeric.
-            return fields
-                .first()
-                .map(|f| f.trim().parse::<f64>().is_err())
-                .unwrap_or(false);
-        }
-        // Multi-column: header if any non-time field (index > 0) is non-numeric.
-        fields
-            .iter()
-            .skip(1)
-            .any(|f| f.trim().parse::<f64>().is_err())
+        super::csv_header::is_header_line(line)
     }
 
     /// Parse numeric values from CSV content.
