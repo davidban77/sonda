@@ -55,7 +55,7 @@ pub struct ParsedColumnHeader {
 ///
 /// Returns [`SondaError::Config`] for malformed header syntax (unmatched
 /// braces, missing `=`, unterminated quoted values, etc.).
-pub fn parse_column_header(header: &str) -> Result<ParsedColumnHeader, SondaError> {
+pub(crate) fn parse_column_header(header: &str) -> Result<ParsedColumnHeader, SondaError> {
     let header = header.trim();
 
     if header.is_empty() {
@@ -117,6 +117,8 @@ fn parse_label_block(block: &str) -> Result<HashMap<String, String>, SondaError>
         )));
     }
 
+    // rfind is safe here: any '}' inside quoted label values is consumed
+    // by parse_label_pairs, so the last '}' is always the block delimiter.
     let close = block.rfind('}').ok_or_else(|| {
         SondaError::Config(ConfigError::invalid(
             "csv_header: unmatched '{' — missing closing '}'",
@@ -236,16 +238,7 @@ fn parse_unquoted_value(input: &str) -> Result<(String, &str), SondaError> {
 /// Strips outer quotes from each field and replaces `""` (RFC 4180 escaped
 /// quotes) with `"`. This function is used only for header parsing at load
 /// time and is not on the hot path.
-///
-/// # Examples
-///
-/// ```
-/// use sonda_core::generator::csv_header::split_csv_header_fields;
-///
-/// let fields = split_csv_header_fields(r#""Time","up{job=""prometheus""}""#);
-/// assert_eq!(fields, vec!["Time", r#"up{job="prometheus"}"#]);
-/// ```
-pub fn split_csv_header_fields(line: &str) -> Vec<String> {
+pub(crate) fn split_csv_header_fields(line: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
