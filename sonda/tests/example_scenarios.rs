@@ -587,3 +587,140 @@ fn all_example_yamls_pass_full_round_trip() {
             .unwrap_or_else(|e| panic!("{filename}: sink factory failed: {e}"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// examples/csv-replay-grafana-auto.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn csv_replay_grafana_auto_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/csv-replay-grafana-auto.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let config: ScenarioConfig = serde_yaml_ng::from_str(&contents)
+        .unwrap_or_else(|e| panic!("csv-replay-grafana-auto.yaml failed to deserialize: {e}"));
+    match &config.generator {
+        GeneratorConfig::CsvReplay { columns, .. } => {
+            assert!(
+                columns.is_none(),
+                "columns should be None for auto-discovery"
+            );
+        }
+        other => panic!("expected CsvReplay variant, got {other:?}"),
+    }
+}
+
+#[test]
+fn csv_replay_grafana_auto_yaml_expands_to_two_scenarios() {
+    use sonda_core::expand_scenario;
+
+    let path = workspace_file("examples/csv-replay-grafana-auto.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let mut config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize csv-replay-grafana-auto.yaml");
+    // Patch the relative CSV file path to an absolute path so the test works
+    // regardless of the working directory.
+    if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
+        *file = workspace_file("examples/grafana-export.csv")
+            .to_string_lossy()
+            .into_owned();
+    }
+    let expanded = expand_scenario(config).expect("expand must succeed");
+
+    assert_eq!(expanded.len(), 2, "Grafana export has 2 data columns");
+
+    // Both columns should have metric name "up".
+    assert_eq!(expanded[0].name, "up");
+    assert_eq!(expanded[1].name, "up");
+
+    // First column should have instance=localhost:9090, job=prometheus.
+    let labels0 = expanded[0].labels.as_ref().expect("labels must exist");
+    assert_eq!(
+        labels0.get("instance").map(|s| s.as_str()),
+        Some("localhost:9090")
+    );
+    assert_eq!(labels0.get("job").map(|s| s.as_str()), Some("prometheus"));
+    // Plus scenario-level env=production.
+    assert_eq!(labels0.get("env").map(|s| s.as_str()), Some("production"));
+
+    // Second column should have instance=localhost:9100, job=node.
+    let labels1 = expanded[1].labels.as_ref().expect("labels must exist");
+    assert_eq!(
+        labels1.get("instance").map(|s| s.as_str()),
+        Some("localhost:9100")
+    );
+    assert_eq!(labels1.get("job").map(|s| s.as_str()), Some("node"));
+    assert_eq!(labels1.get("env").map(|s| s.as_str()), Some("production"));
+
+    // Expanded configs should produce working generators.
+    for (i, child) in expanded.iter().enumerate() {
+        let gen = create_generator(&child.generator, child.rate)
+            .unwrap_or_else(|e| panic!("generator factory failed for expanded[{i}]: {e}"));
+        let v = gen.value(0);
+        assert!(v.is_finite(), "expanded[{i}].value(0) must be finite");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// examples/csv-replay-explicit-labels.yaml
+// ---------------------------------------------------------------------------
+
+#[test]
+fn csv_replay_explicit_labels_yaml_deserializes_without_error() {
+    let path = workspace_file("examples/csv-replay-explicit-labels.yaml");
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
+        .unwrap_or_else(|e| panic!("csv-replay-explicit-labels.yaml failed to deserialize: {e}"));
+}
+
+#[test]
+fn csv_replay_explicit_labels_yaml_expands_with_per_column_labels() {
+    use sonda_core::expand_scenario;
+
+    let path = workspace_file("examples/csv-replay-explicit-labels.yaml");
+    let contents = std::fs::read_to_string(&path).expect("read file");
+    let mut config: ScenarioConfig =
+        serde_yaml_ng::from_str(&contents).expect("deserialize csv-replay-explicit-labels.yaml");
+    // Patch the relative CSV file path to an absolute path.
+    if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
+        *file = workspace_file("examples/sample-multi-column.csv")
+            .to_string_lossy()
+            .into_owned();
+    }
+    let expanded = expand_scenario(config).expect("expand must succeed");
+
+    assert_eq!(expanded.len(), 3, "should expand to 3 columns");
+    assert_eq!(expanded[0].name, "cpu_percent");
+    assert_eq!(expanded[1].name, "mem_percent");
+    assert_eq!(expanded[2].name, "disk_io_mbps");
+
+    // Column 0 (cpu_percent) should have core=0 plus instance and job.
+    let labels0 = expanded[0].labels.as_ref().expect("labels must exist");
+    assert_eq!(labels0.get("core").map(|s| s.as_str()), Some("0"));
+    assert_eq!(
+        labels0.get("instance").map(|s| s.as_str()),
+        Some("prod-server-42")
+    );
+
+    // Column 1 (mem_percent) should have type=physical plus instance and job.
+    let labels1 = expanded[1].labels.as_ref().expect("labels must exist");
+    assert_eq!(labels1.get("type").map(|s| s.as_str()), Some("physical"));
+
+    // Column 2 (disk_io_mbps) should have only scenario-level labels.
+    let labels2 = expanded[2].labels.as_ref().expect("labels must exist");
+    assert!(labels2.get("core").is_none());
+    assert!(labels2.get("type").is_none());
+    assert_eq!(
+        labels2.get("instance").map(|s| s.as_str()),
+        Some("prod-server-42")
+    );
+
+    // Expanded configs should produce working generators.
+    for (i, child) in expanded.iter().enumerate() {
+        let gen = create_generator(&child.generator, child.rate)
+            .unwrap_or_else(|e| panic!("generator factory failed for expanded[{i}]: {e}"));
+        let v = gen.value(0);
+        assert!(v.is_finite(), "expanded[{i}].value(0) must be finite");
+    }
+}

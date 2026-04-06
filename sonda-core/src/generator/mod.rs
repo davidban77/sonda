@@ -12,6 +12,7 @@
 //! [`histogram::HistogramGenerator`] and [`summary::SummaryGenerator`].
 
 pub mod constant;
+pub mod csv_header;
 pub mod csv_replay;
 pub mod histogram;
 pub mod jitter;
@@ -74,6 +75,10 @@ pub struct CsvColumnSpec {
     pub index: usize,
     /// Metric name for the expanded scenario.
     pub name: String,
+    /// Optional per-column labels merged with scenario-level labels during
+    /// expansion. Column labels override scenario-level labels on key conflict.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub labels: Option<HashMap<String, String>>,
 }
 
 /// Configuration for a value generator, used for YAML deserialization.
@@ -156,25 +161,24 @@ pub enum GeneratorConfig {
     CsvReplay {
         /// Path to the CSV file containing numeric values.
         file: String,
-        /// Zero-based column index to read. Defaults to 0 when absent.
+        /// Internal: zero-based column index, set by `expand_scenario`.
         ///
-        /// Mutually exclusive with `columns`. If both are set, validation
-        /// returns an error.
+        /// Not user-facing in YAML — set during config expansion. When
+        /// `None`, defaults to `0` at generator creation time.
+        #[cfg_attr(feature = "config", serde(skip))]
         column: Option<usize>,
-        /// Whether to skip the first data row as a header. Defaults to true
-        /// when absent.
-        has_header: Option<bool>,
-        /// When true (default), the values cycle. When false, the last value
-        /// is returned for all ticks beyond the file length.
-        repeat: Option<bool>,
-        /// Optional multi-column specification. When set, the config layer
+        /// Explicit column specifications. When present, the config layer
         /// expands this single scenario into N independent single-column
         /// scenarios before launch.
         ///
-        /// Mutually exclusive with `column`. If both are set, validation
-        /// returns an error. An empty list is also an error.
+        /// When absent, columns are auto-discovered from the CSV header row.
+        /// An empty list is an error.
         #[cfg_attr(feature = "config", serde(default))]
         columns: Option<Vec<CsvColumnSpec>>,
+        /// Whether to loop back to the first value after exhausting the CSV.
+        /// Defaults to `true`.
+        #[cfg_attr(feature = "config", serde(default))]
+        repeat: Option<bool>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -255,7 +259,6 @@ pub fn create_generator(
         GeneratorConfig::CsvReplay {
             file,
             column,
-            has_header,
             repeat,
             columns,
         } => {
@@ -267,7 +270,6 @@ pub fn create_generator(
             Ok(Box::new(CsvReplayGenerator::new(
                 file,
                 column.unwrap_or(0),
-                has_header.unwrap_or(true),
                 repeat.unwrap_or(true),
             )?))
         }
@@ -754,11 +756,11 @@ mod tests {
         let config = GeneratorConfig::CsvReplay {
             file: "data.csv".to_string(),
             column: None,
-            has_header: None,
             repeat: None,
             columns: Some(vec![CsvColumnSpec {
                 index: 1,
                 name: "cpu".to_string(),
+                labels: None,
             }]),
         };
         let result = create_generator(&config, 1.0);

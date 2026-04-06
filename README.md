@@ -181,7 +181,6 @@ duration: 60s
 generator:
   type: csv_replay
   file: examples/sample-multi-column.csv
-  has_header: true
   columns:
     - index: 1
       name: cpu_percent

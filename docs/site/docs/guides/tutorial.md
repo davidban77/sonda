@@ -123,9 +123,9 @@ sink:
     generator:
       type: csv_replay
       file: examples/sample-cpu-values.csv
-      column: 1
-      has_header: true
-      repeat: true
+      columns:
+        - index: 1
+          name: cpu_replay
     labels:
       instance: prod-server-42
       job: node
@@ -135,8 +135,8 @@ sink:
       type: stdout
     ```
 
-    For multi-column CSV files, use `columns` instead of `column` to emit multiple metrics
-    from a single scenario — see [Multi-column replay](../configuration/generators.md#csv_replay).
+    For multi-column CSV files, add more entries to `columns` to emit multiple metrics
+    from a single scenario -- see [Multi-column replay](../configuration/generators.md#csv_replay).
 
     For full generator configuration details, see [Generators](../configuration/generators.md).
 
