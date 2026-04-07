@@ -595,7 +595,7 @@ generator:
         assert_eq!(gen.value(0), 42.0);
 
         let enc_config = EncoderConfig::PrometheusText { precision: None };
-        let _enc = create_encoder(&enc_config);
+        let _enc = create_encoder(&enc_config).expect("encoder factory must succeed");
 
         let sink_config = SinkConfig::Stdout;
         let _sink = create_sink(&sink_config, None).expect("sink factory must succeed");

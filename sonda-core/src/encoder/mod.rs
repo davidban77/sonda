@@ -41,7 +41,14 @@ pub trait Encoder: Send + Sync {
 /// Configuration selecting which encoder to use for a scenario.
 ///
 /// This enum is serde-deserializable from YAML scenario files.
-/// The `type` field selects the variant: `prometheus_text`, `influx_lp`, `json_lines`, or `syslog`.
+/// The `type` field selects the variant: `prometheus_text`, `influx_lp`,
+/// `json_lines`, `syslog`, `remote_write`, or `otlp`.
+///
+/// Feature-gated encoders (`remote_write`, `otlp`) have companion
+/// `*Disabled` variants that are compiled in when their feature is absent.
+/// These accept the YAML tag so that deserialization succeeds with a
+/// descriptive error from [`create_encoder`] instead of a generic
+/// "unknown variant" error from serde.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
@@ -98,6 +105,15 @@ pub enum EncoderConfig {
     #[cfg(feature = "remote-write")]
     #[cfg_attr(feature = "config", serde(rename = "remote_write"))]
     RemoteWrite,
+
+    /// Placeholder variant when the `remote-write` feature is not compiled in.
+    ///
+    /// Deserializes the `remote_write` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "remote-write"))]
+    #[cfg_attr(feature = "config", serde(rename = "remote_write"))]
+    RemoteWriteDisabled {},
     /// OTLP protobuf format.
     ///
     /// Encodes metric events as length-prefixed protobuf `Metric` messages and
@@ -107,29 +123,55 @@ pub enum EncoderConfig {
     #[cfg(feature = "otlp")]
     #[cfg_attr(feature = "config", serde(rename = "otlp"))]
     Otlp,
+
+    /// Placeholder variant when the `otlp` feature is not compiled in.
+    ///
+    /// Deserializes the `otlp` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "otlp"))]
+    #[cfg_attr(feature = "config", serde(rename = "otlp"))]
+    OtlpDisabled {},
 }
 
 /// Create a boxed [`Encoder`] from the given [`EncoderConfig`].
-pub fn create_encoder(config: &EncoderConfig) -> Box<dyn Encoder> {
+///
+/// Returns `Err` if the config refers to a feature-gated encoder whose Cargo
+/// feature was not enabled at compile time.
+pub fn create_encoder(config: &EncoderConfig) -> Result<Box<dyn Encoder>, crate::SondaError> {
     match config {
         EncoderConfig::PrometheusText { precision } => {
-            Box::new(prometheus::PrometheusText::new(*precision))
+            Ok(Box::new(prometheus::PrometheusText::new(*precision)))
         }
         EncoderConfig::InfluxLineProtocol {
             field_key,
             precision,
-        } => Box::new(influx::InfluxLineProtocol::new(
+        } => Ok(Box::new(influx::InfluxLineProtocol::new(
             field_key.clone(),
             *precision,
-        )),
-        EncoderConfig::JsonLines { precision } => Box::new(json::JsonLines::new(*precision)),
-        EncoderConfig::Syslog { hostname, app_name } => {
-            Box::new(syslog::Syslog::new(hostname.clone(), app_name.clone()))
-        }
+        ))),
+        EncoderConfig::JsonLines { precision } => Ok(Box::new(json::JsonLines::new(*precision))),
+        EncoderConfig::Syslog { hostname, app_name } => Ok(Box::new(syslog::Syslog::new(
+            hostname.clone(),
+            app_name.clone(),
+        ))),
         #[cfg(feature = "remote-write")]
-        EncoderConfig::RemoteWrite => Box::new(remote_write::RemoteWriteEncoder::new()),
+        EncoderConfig::RemoteWrite => Ok(Box::new(remote_write::RemoteWriteEncoder::new())),
         #[cfg(feature = "otlp")]
-        EncoderConfig::Otlp => Box::new(otlp::OtlpEncoder::new()),
+        EncoderConfig::Otlp => Ok(Box::new(otlp::OtlpEncoder::new())),
+        #[cfg(not(feature = "remote-write"))]
+        EncoderConfig::RemoteWriteDisabled { .. } => {
+            Err(crate::SondaError::Config(crate::ConfigError::invalid(
+                "encoder type 'remote_write' requires the 'remote-write' feature: \
+                 cargo build -F remote-write",
+            )))
+        }
+        #[cfg(not(feature = "otlp"))]
+        EncoderConfig::OtlpDisabled { .. } => {
+            Err(crate::SondaError::Config(crate::ConfigError::invalid(
+                "encoder type 'otlp' requires the 'otlp' feature: cargo build -F otlp",
+            )))
+        }
     }
 }
 
@@ -317,14 +359,13 @@ mod tests {
     #[test]
     fn create_encoder_prometheus_text_succeeds() {
         let config = EncoderConfig::PrometheusText { precision: None };
-        // If factory panics the test fails; just ensure it returns without error.
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     #[test]
     fn create_encoder_json_lines_succeeds() {
         let config = EncoderConfig::JsonLines { precision: None };
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     #[test]
@@ -333,7 +374,7 @@ mod tests {
             field_key: None,
             precision: None,
         };
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     #[test]
@@ -342,7 +383,7 @@ mod tests {
             field_key: Some("bytes".to_string()),
             precision: None,
         };
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     // ---------------------------------------------------------------------------
@@ -408,7 +449,7 @@ mod tests {
 
     #[test]
     fn prometheus_encoder_encode_log_returns_not_supported_error() {
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -429,7 +470,8 @@ mod tests {
         let encoder = create_encoder(&EncoderConfig::InfluxLineProtocol {
             field_key: None,
             precision: None,
-        });
+        })
+        .unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -448,7 +490,7 @@ mod tests {
     #[test]
     fn json_lines_encoder_encode_log_succeeds() {
         // Slice 2.3: JsonLines now implements encode_log — it must succeed, not return an error.
-        let encoder = create_encoder(&EncoderConfig::JsonLines { precision: None });
+        let encoder = create_encoder(&EncoderConfig::JsonLines { precision: None }).unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -462,7 +504,7 @@ mod tests {
     #[test]
     fn encode_log_default_does_not_write_to_buffer() {
         // The default implementation must not produce partial output in the buffer.
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let _ = encoder.encode_log(&event, &mut buf);
@@ -475,7 +517,7 @@ mod tests {
     #[test]
     fn encode_log_error_is_encoder_variant() {
         // The error must come back as SondaError::Encoder, not some other variant.
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = encoder.encode_log(&event, &mut buf);
@@ -505,7 +547,7 @@ mod tests {
     #[test]
     fn create_encoder_remote_write_succeeds() {
         let config = EncoderConfig::RemoteWrite;
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     #[cfg(feature = "remote-write")]
@@ -528,7 +570,7 @@ mod tests {
         use std::time::{Duration, UNIX_EPOCH};
 
         let config = EncoderConfig::RemoteWrite;
-        let enc = create_encoder(&config);
+        let enc = create_encoder(&config).unwrap();
 
         let labels = Labels::from_pairs(&[("job", "sonda")]).unwrap();
         let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
@@ -587,7 +629,7 @@ sink:
     #[test]
     fn create_encoder_otlp_succeeds() {
         let config = EncoderConfig::Otlp;
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).expect("factory must succeed");
     }
 
     #[cfg(feature = "otlp")]
@@ -610,7 +652,7 @@ sink:
         use std::time::{Duration, UNIX_EPOCH};
 
         let config = EncoderConfig::Otlp;
-        let enc = create_encoder(&config);
+        let enc = create_encoder(&config).unwrap();
 
         let labels = Labels::from_pairs(&[("job", "sonda")]).unwrap();
         let ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
@@ -630,7 +672,7 @@ sink:
     #[test]
     fn otlp_encoder_encode_log_succeeds_through_factory() {
         let config = EncoderConfig::Otlp;
-        let enc = create_encoder(&config);
+        let enc = create_encoder(&config).unwrap();
         let event = make_log_event();
         let mut buf = Vec::new();
         let result = enc.encode_log(&event, &mut buf);
@@ -994,6 +1036,66 @@ sink:
         assert_eq!(
             std::str::from_utf8(&arr).unwrap(),
             "2024-06-15T14:30:45.123Z"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Disabled feature variants: YAML deserialization succeeds and create_encoder
+    // returns a helpful error instead of a generic "unknown variant" error.
+    // These tests only compile when the corresponding feature is disabled.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(all(not(feature = "remote-write"), feature = "config"))]
+    #[test]
+    fn remote_write_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: remote_write";
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: remote_write must deserialize even without the remote-write feature");
+        assert!(matches!(config, EncoderConfig::RemoteWriteDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "remote-write"))]
+    #[test]
+    fn create_encoder_remote_write_disabled_returns_feature_hint_error() {
+        let config = EncoderConfig::RemoteWriteDisabled {};
+        let err = create_encoder(&config)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("remote_write"),
+            "error must mention the encoder type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F remote-write"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[cfg(all(not(feature = "otlp"), feature = "config"))]
+    #[test]
+    fn otlp_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: otlp";
+        let config: EncoderConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: otlp must deserialize even without the otlp feature");
+        assert!(matches!(config, EncoderConfig::OtlpDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "otlp"))]
+    #[test]
+    fn create_encoder_otlp_disabled_returns_feature_hint_error() {
+        let config = EncoderConfig::OtlpDisabled {};
+        let err = create_encoder(&config)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("otlp"),
+            "error must mention the encoder type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F otlp"),
+            "error must tell the user how to enable the feature, got: {msg}"
         );
     }
 }

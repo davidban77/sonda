@@ -696,6 +696,34 @@ fn apply_retry_to_sink(sink: &mut SinkConfig, retry: RetryConfig) -> Result<()> 
         } => {
             *r = Some(retry);
         }
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } | SinkConfig::LokiDisabled { .. } => {
+            bail!(
+                "--retry-* flags cannot be applied: this sink type requires a feature \
+                 that was not compiled in"
+            );
+        }
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => {
+            bail!(
+                "--retry-* flags cannot be applied: this sink type requires a feature \
+                 that was not compiled in"
+            );
+        }
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => {
+            bail!(
+                "--retry-* flags cannot be applied: this sink type requires a feature \
+                 that was not compiled in"
+            );
+        }
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => {
+            bail!(
+                "--retry-* flags cannot be applied: this sink type requires a feature \
+                 that was not compiled in"
+            );
+        }
     }
     Ok(())
 }
@@ -717,6 +745,16 @@ fn sink_type_name(sink: &SinkConfig) -> &'static str {
         SinkConfig::Loki { .. } => "loki",
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } => "http_push",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled { .. } => "loki",
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => "remote_write",
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => "kafka",
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc",
     }
 }
 
@@ -1914,7 +1952,7 @@ mod tests {
         let config = load_config(&args).expect("round-trip config should load");
         validate_config(&config).expect("round-trip config should validate");
         let _gen = create_generator(&config.generator, config.rate).expect("generator factory");
-        let _enc = create_encoder(&config.encoder);
+        let _enc = create_encoder(&config.encoder).expect("encoder factory");
         let _sink = create_sink(&config.sink, None).expect("sink factory should succeed");
     }
 

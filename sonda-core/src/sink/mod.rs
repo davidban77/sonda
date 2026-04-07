@@ -82,7 +82,14 @@ impl std::fmt::Debug for KafkaSaslConfig {
 /// Configuration selecting which sink to use for a scenario.
 ///
 /// This enum is serde-deserializable from YAML scenario files.
-/// The `type` field selects the variant: `stdout`, `file`, `tcp`, or `udp`.
+/// The `type` field selects the variant: `stdout`, `file`, `tcp`, `udp`,
+/// `http_push`, `remote_write`, `kafka`, `loki`, or `otlp_grpc`.
+///
+/// Feature-gated sinks (`http_push`, `loki`, `remote_write`, `kafka`,
+/// `otlp_grpc`) have companion `*Disabled` variants that are compiled in
+/// when their feature is absent. These accept the YAML tag so that
+/// deserialization succeeds with a descriptive error from [`create_sink`]
+/// instead of a generic "unknown variant" error from serde.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
@@ -159,6 +166,15 @@ pub enum SinkConfig {
         retry: Option<retry::RetryConfig>,
     },
 
+    /// Placeholder variant when the `http` feature is not compiled in.
+    ///
+    /// Deserializes the `http_push` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "http"))]
+    #[cfg_attr(feature = "config", serde(rename = "http_push"))]
+    HttpPushDisabled {},
+
     /// Batch TimeSeries and deliver them as Prometheus remote write requests.
     ///
     /// This sink is designed to be paired with the `remote_write` encoder, which
@@ -184,6 +200,15 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
     },
+
+    /// Placeholder variant when the `remote-write` feature is not compiled in.
+    ///
+    /// Deserializes the `remote_write` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "remote-write"))]
+    #[cfg_attr(feature = "config", serde(rename = "remote_write"))]
+    RemoteWriteDisabled {},
 
     /// Batch encoded events and deliver them to a Kafka topic.
     ///
@@ -218,6 +243,15 @@ pub enum SinkConfig {
         sasl: Option<KafkaSaslConfig>,
     },
 
+    /// Placeholder variant when the `kafka` feature is not compiled in.
+    ///
+    /// Deserializes the `kafka` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "kafka"))]
+    #[cfg_attr(feature = "config", serde(rename = "kafka"))]
+    KafkaDisabled {},
+
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
     ///
     /// Each call to `write()` appends one log line to the batch. When the batch
@@ -245,6 +279,15 @@ pub enum SinkConfig {
         retry: Option<retry::RetryConfig>,
     },
 
+    /// Placeholder variant when the `http` feature is not compiled in (Loki).
+    ///
+    /// Deserializes the `loki` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "http"))]
+    #[cfg_attr(feature = "config", serde(rename = "loki"))]
+    LokiDisabled {},
+
     /// Batch OTLP protobuf data and deliver via gRPC to an OpenTelemetry Collector.
     ///
     /// This sink is designed to be paired with the `otlp` encoder, which produces
@@ -271,6 +314,15 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
     },
+
+    /// Placeholder variant when the `otlp` feature is not compiled in.
+    ///
+    /// Deserializes the `otlp_grpc` YAML tag so that the error message can
+    /// point the user at the missing feature flag instead of producing a
+    /// generic "unknown variant" error from serde.
+    #[cfg(not(feature = "otlp"))]
+    #[cfg_attr(feature = "config", serde(rename = "otlp_grpc"))]
+    OtlpGrpcDisabled {},
 }
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
@@ -405,6 +457,33 @@ pub fn create_sink(
                 resource_attrs,
                 rp,
             )?))
+        }
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'http_push' requires the 'http' feature: cargo build -F http",
+            )))
+        }
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'remote_write' requires the 'remote-write' feature: \
+                 cargo build -F remote-write",
+            )))
+        }
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => Err(SondaError::Config(crate::ConfigError::invalid(
+            "sink type 'kafka' requires the 'kafka' feature: cargo build -F kafka",
+        ))),
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled { .. } => Err(SondaError::Config(crate::ConfigError::invalid(
+            "sink type 'loki' requires the 'http' feature: cargo build -F http",
+        ))),
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => {
+            Err(SondaError::Config(crate::ConfigError::invalid(
+                "sink type 'otlp_grpc' requires the 'otlp' feature: cargo build -F otlp",
+            )))
         }
     }
 }
@@ -1060,5 +1139,146 @@ retry:
             }
             other => panic!("expected HttpPush, got {other:?}"),
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Disabled feature variants: YAML deserialization succeeds and create_sink
+    // returns a helpful error instead of a generic "unknown variant" error.
+    // These tests only compile when the corresponding feature is disabled.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(all(not(feature = "kafka"), feature = "config"))]
+    #[test]
+    fn kafka_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: kafka must deserialize even without the kafka feature");
+        assert!(matches!(config, SinkConfig::KafkaDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
+    fn create_sink_kafka_disabled_returns_feature_hint_error() {
+        let config = SinkConfig::KafkaDisabled {};
+        let err = create_sink(&config, None)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("kafka"),
+            "error must mention the sink type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F kafka"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[cfg(all(not(feature = "http"), feature = "config"))]
+    #[test]
+    fn http_push_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: http_push\nurl: \"http://localhost:9090/push\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: http_push must deserialize even without the http feature");
+        assert!(matches!(config, SinkConfig::HttpPushDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn create_sink_http_push_disabled_returns_feature_hint_error() {
+        let config = SinkConfig::HttpPushDisabled {};
+        let err = create_sink(&config, None)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("http_push"),
+            "error must mention the sink type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F http"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[cfg(all(not(feature = "http"), feature = "config"))]
+    #[test]
+    fn loki_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: loki\nurl: \"http://localhost:3100\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: loki must deserialize even without the http feature");
+        assert!(matches!(config, SinkConfig::LokiDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn create_sink_loki_disabled_returns_feature_hint_error() {
+        let config = SinkConfig::LokiDisabled {};
+        let err = create_sink(&config, None)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("loki"),
+            "error must mention the sink type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F http"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[cfg(all(not(feature = "remote-write"), feature = "config"))]
+    #[test]
+    fn remote_write_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: remote_write\nurl: \"http://localhost:8428/api/v1/write\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: remote_write must deserialize even without the remote-write feature");
+        assert!(matches!(config, SinkConfig::RemoteWriteDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "remote-write"))]
+    #[test]
+    fn create_sink_remote_write_disabled_returns_feature_hint_error() {
+        let config = SinkConfig::RemoteWriteDisabled {};
+        let err = create_sink(&config, None)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("remote_write"),
+            "error must mention the sink type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F remote-write"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[cfg(all(not(feature = "otlp"), feature = "config"))]
+    #[test]
+    fn otlp_grpc_yaml_deserializes_into_disabled_variant_when_feature_is_off() {
+        let yaml = "type: otlp_grpc\nendpoint: \"http://localhost:4317\"\nsignal_type: metrics";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml)
+            .expect("type: otlp_grpc must deserialize even without the otlp feature");
+        assert!(matches!(config, SinkConfig::OtlpGrpcDisabled { .. }));
+    }
+
+    #[cfg(not(feature = "otlp"))]
+    #[test]
+    fn create_sink_otlp_grpc_disabled_returns_feature_hint_error() {
+        let config = SinkConfig::OtlpGrpcDisabled {};
+        let err = create_sink(&config, None)
+            .err()
+            .expect("must return Err for disabled variant");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("otlp_grpc"),
+            "error must mention the sink type, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo build -F otlp"),
+            "error must tell the user how to enable the feature, got: {msg}"
+        );
     }
 }

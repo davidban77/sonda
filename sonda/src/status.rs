@@ -538,6 +538,16 @@ fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::Loki { url, .. } => format!("loki: {url}"),
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc: {endpoint}"),
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } => "http_push (feature disabled)".to_string(),
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled { .. } => "loki (feature disabled)".to_string(),
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => "remote_write (feature disabled)".to_string(),
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => "kafka (feature disabled)".to_string(),
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc (feature disabled)".to_string(),
     }
 }
 
@@ -554,6 +564,10 @@ fn encoder_display(encoder: &EncoderConfig) -> String {
         EncoderConfig::RemoteWrite => ("remote_write", None),
         #[cfg(feature = "otlp")]
         EncoderConfig::Otlp => ("otlp", None),
+        #[cfg(not(feature = "remote-write"))]
+        EncoderConfig::RemoteWriteDisabled { .. } => ("remote_write (feature disabled)", None),
+        #[cfg(not(feature = "otlp"))]
+        EncoderConfig::OtlpDisabled { .. } => ("otlp (feature disabled)", None),
     };
     match precision {
         Some(p) => format!("{name} (precision: {p})"),

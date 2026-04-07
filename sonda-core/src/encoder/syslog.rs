@@ -808,7 +808,7 @@ mod tests {
             "syslog config without optional fields should have None for hostname and app_name"
         );
         // Also verify it can create an encoder
-        let _enc = create_encoder(&config);
+        let _enc = create_encoder(&config).unwrap();
     }
 
     #[cfg(feature = "config")]
@@ -848,7 +848,7 @@ mod tests {
             hostname: Some("testhost".to_string()),
             app_name: Some("testapp".to_string()),
         };
-        let encoder = create_encoder(&config);
+        let encoder = create_encoder(&config).unwrap();
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(Severity::Info, "factory test", &[], ts);
         let mut buf = Vec::new();
