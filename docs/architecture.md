@@ -169,7 +169,7 @@ Sink implementations follow a natural progression of complexity:
 | **Tcp / Udp** | Raw socket delivery. Targets syslog receivers, statsd, and similar line-protocol endpoints. |
 | **HttpPush** | HTTP POST to a configurable endpoint (feature-gated behind `http`). Supports custom headers for protocol-specific requirements. Uses `ureq`. |
 | **RemoteWrite** | Prometheus remote write sink (feature-gated). Receives length-prefixed `TimeSeries` from the `RemoteWrite` encoder, batches them into a single `WriteRequest`, prost-encodes, snappy-compresses, and HTTP POSTs with the correct protocol headers. Requires the `remote-write` Cargo feature. |
-| **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Requires the `kafka` Cargo feature. |
+| **Kafka** | Kafka producer via `rskafka` (pure Rust, no C deps). Topic configurable per scenario. Supports TLS and SASL PLAIN authentication for managed brokers. Requires the `kafka` Cargo feature. |
 | **Loki** | HTTP POST to Loki's push API (`/loki/api/v1/push`) (feature-gated behind `http`). Batches log events into Loki's JSON envelope format. Labels configurable per scenario. Uses `ureq`. |
 | **OtlpGrpc** | OTLP/gRPC sink (feature-gated). Receives length-prefixed `Metric` or `LogRecord` messages from the `Otlp` encoder, batches them into `ExportMetricsServiceRequest` or `ExportLogsServiceRequest`, and sends via gRPC unary call to an OpenTelemetry Collector (default port 4317). Requires the `otlp` Cargo feature. |
 | **Channel** | In-memory channel sink (`mpsc::Sender<Vec<u8>>`). For testing and inter-thread communication. |
@@ -183,7 +183,7 @@ Sink implementations follow a natural progression of complexity:
 |---------|---------|-------------------|-------------|
 | `config` | yes | `serde_yaml_ng` | Enables `serde::Deserialize` on all config types. Disable for library consumers who construct configs in code. |
 | `http` | no | `ureq` (+ rustls, ring, webpki) | Enables `HttpPush` and `Loki` sinks. |
-| `kafka` | no | `rskafka`, `tokio` | Enables the Kafka sink. |
+| `kafka` | no | `rskafka`, `tokio`, `rustls`, `rustls-pemfile`, `webpki-roots` | Enables the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | `prost`, `snap`, `ureq` | Enables Prometheus remote write encoder and sink. |
 | `otlp` | no | `tonic`, `prost`, `tokio` | Enables OTLP protobuf encoder and gRPC sink. |
 
@@ -289,7 +289,7 @@ Each scenario runs on a dedicated OS thread. A shared sink (or per-scenario sink
 
 If the HTTP server (`sonda-server`) or a high-throughput HTTP sink requires async I/O, tokio will be introduced in `sonda-server` as a dependency. `sonda-core` will remain async-agnostic — it exposes synchronous interfaces that can be called from async contexts via `spawn_blocking`. This keeps the core library portable and avoids tokio becoming a transitive dependency of every consumer.
 
-> **Exception — Kafka sink:** The `kafka` Cargo feature in `sonda-core` pulls in `tokio` and `rskafka` as optional dependencies. The Kafka sink spins up a private single-threaded `tokio::runtime::Runtime` inside the struct to drive async `rskafka` calls, while keeping the public `Sink` interface fully synchronous. Because these dependencies are gated behind `#[cfg(feature = "kafka")]`, `sonda-core` remains async-agnostic by default. Consumers that do not need Kafka do not pay for tokio. The CLI and sonda-server opt in explicitly by enabling the feature in their `Cargo.toml`.
+> **Exception — Kafka sink:** The `kafka` Cargo feature in `sonda-core` pulls in `tokio`, `rskafka`, `rustls`, `rustls-pemfile`, and `webpki-roots` as optional dependencies. The Kafka sink spins up a private single-threaded `tokio::runtime::Runtime` inside the struct to drive async `rskafka` calls, while keeping the public `Sink` interface fully synchronous. TLS and SASL PLAIN authentication are supported for managed Kafka services (Confluent Cloud, AWS MSK, Aiven). Because these dependencies are gated behind `#[cfg(feature = "kafka")]`, `sonda-core` remains async-agnostic by default. Consumers that do not need Kafka do not pay for tokio or the TLS stack. The CLI and sonda-server opt in explicitly by enabling the feature in their `Cargo.toml`.
 
 ---
 

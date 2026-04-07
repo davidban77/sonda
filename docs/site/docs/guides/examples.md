@@ -25,6 +25,7 @@ sonda metrics --scenario examples/basic-metrics.yaml
 | `file-sink.yaml` | sawtooth | influx_lp | file | Write to `/tmp/sonda-output.txt` |
 | `http-push-sink.yaml` | sine | prometheus_text | http_push | POST batches to an HTTP endpoint |
 | `kafka-sink.yaml` | constant | prometheus_text | kafka | Publish to a local Kafka broker |
+| `kafka-tls.yaml` | constant | prometheus_text | kafka | Publish to a TLS-secured Kafka broker with SASL PLAIN auth |
 
 See [Sinks](../configuration/sinks.md) for configuration details on each sink type.
 
