@@ -300,3 +300,114 @@ fn dry_run_with_logs_subcommand() {
         "dry-run logs stderr must contain validation OK, got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --verbose --dry-run: version info must appear
+// ---------------------------------------------------------------------------
+
+/// `--verbose --dry-run` should show the version line on stderr before config
+/// and validation output.
+///
+/// Previously, the dry-run branch returned early before the verbose
+/// version-print block. The fix ensures `print_version()` is called when
+/// verbose is set, before the dry-run check.
+#[test]
+fn verbose_dry_run_shows_version_info() {
+    let output = Command::new(sonda_bin())
+        .args([
+            "--verbose",
+            "--dry-run",
+            "metrics",
+            "--name",
+            "test_ver_dry",
+            "--rate",
+            "10",
+            "--duration",
+            "100ms",
+        ])
+        .output()
+        .expect("failed to execute sonda binary");
+
+    assert!(
+        output.status.success(),
+        "sonda --verbose --dry-run should exit with status 0, got: {}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        stderr.contains(&format!("sonda {expected_version}")),
+        "verbose dry-run stderr must contain version line 'sonda {expected_version}', got: {stderr}"
+    );
+    assert!(
+        stderr.contains("[config]"),
+        "verbose dry-run stderr must still contain [config], got: {stderr}"
+    );
+    assert!(
+        stderr.contains("OK"),
+        "verbose dry-run stderr must contain validation OK, got: {stderr}"
+    );
+}
+
+/// `--verbose --dry-run` should not produce any stdout output (no events
+/// emitted in dry-run mode).
+#[test]
+fn verbose_dry_run_produces_no_stdout() {
+    let output = Command::new(sonda_bin())
+        .args([
+            "--verbose",
+            "--dry-run",
+            "metrics",
+            "--name",
+            "test_ver_dry_stdout",
+            "--rate",
+            "10",
+            "--duration",
+            "100ms",
+        ])
+        .output()
+        .expect("failed to execute sonda binary");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.is_empty(),
+        "stdout must be empty in verbose dry-run mode, got: {stdout}"
+    );
+}
+
+/// `--verbose --dry-run` with logs subcommand also shows version info.
+#[test]
+fn verbose_dry_run_logs_shows_version_info() {
+    let output = Command::new(sonda_bin())
+        .args([
+            "--verbose",
+            "--dry-run",
+            "logs",
+            "--mode",
+            "template",
+            "--message",
+            "test log line",
+            "--rate",
+            "10",
+            "--duration",
+            "100ms",
+        ])
+        .output()
+        .expect("failed to execute sonda binary");
+
+    assert!(
+        output.status.success(),
+        "sonda --verbose --dry-run logs should exit with status 0, got: {}",
+        output.status
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let expected_version = env!("CARGO_PKG_VERSION");
+    assert!(
+        stderr.contains(&format!("sonda {expected_version}")),
+        "verbose dry-run logs stderr must contain version line, got: {stderr}"
+    );
+}

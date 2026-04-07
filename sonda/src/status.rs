@@ -534,12 +534,11 @@ pub fn print_dry_run_ok(scenario_count: usize) {
     eprintln!("Validation: {ok_label} ({scenario_count} {noun})");
 }
 
-/// Print a version line to stderr.
+/// Build the version string displayed by [`print_version`].
 ///
-/// Displays the crate version and any enabled optional features (e.g.
-/// `"sonda 0.10.0 (http, kafka)"`). Called when verbosity is
-/// [`Verbosity::Verbose`], before printing the config.
-pub fn print_version() {
+/// Returns a line like `"sonda 0.10.0"` or `"sonda 0.10.0 (http, kafka)"`
+/// depending on which optional features are compiled in. Exposed for testing.
+pub fn version_string() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut features: Vec<&str> = Vec::new();
 
@@ -557,10 +556,19 @@ pub fn print_version() {
     }
 
     if features.is_empty() {
-        eprintln!("sonda {version}");
+        format!("sonda {version}")
     } else {
-        eprintln!("sonda {version} ({})", features.join(", "));
+        format!("sonda {version} ({})", features.join(", "))
     }
+}
+
+/// Print a version line to stderr.
+///
+/// Displays the crate version and any enabled optional features (e.g.
+/// `"sonda 0.10.0 (http, kafka)"`). Called when verbosity is
+/// [`Verbosity::Verbose`], before printing the config.
+pub fn print_version() {
+    eprintln!("{}", version_string());
 }
 
 /// Print a styled header line for the `scenarios show` subcommand to stderr.
@@ -1618,12 +1626,31 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // print_version: does not panic
+    // version_string / print_version: content and no-panic
     // -----------------------------------------------------------------------
 
     #[test]
     fn print_version_does_not_panic() {
         print_version();
+    }
+
+    #[test]
+    fn version_string_contains_cargo_pkg_version() {
+        let vs = version_string();
+        let expected_version = env!("CARGO_PKG_VERSION");
+        assert!(
+            vs.contains(expected_version),
+            "version_string() must contain CARGO_PKG_VERSION ({expected_version}), got: {vs}"
+        );
+    }
+
+    #[test]
+    fn version_string_starts_with_sonda_prefix() {
+        let vs = version_string();
+        assert!(
+            vs.starts_with("sonda "),
+            "version_string() must start with 'sonda ', got: {vs}"
+        );
     }
 
     // -----------------------------------------------------------------------

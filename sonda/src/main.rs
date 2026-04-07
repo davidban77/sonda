@@ -59,6 +59,10 @@ fn run() -> anyhow::Result<()> {
             let prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+            if verbosity == Verbosity::Verbose {
+                status::print_version();
+            }
+
             if cli.dry_run {
                 for p in &prepared {
                     status::print_config(&p.entry);
@@ -68,7 +72,6 @@ fn run() -> anyhow::Result<()> {
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_version();
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
@@ -106,6 +109,10 @@ fn run() -> anyhow::Result<()> {
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
             let p = prepared.remove(0);
 
+            if verbosity == Verbosity::Verbose {
+                status::print_version();
+            }
+
             if cli.dry_run {
                 status::print_config(&p.entry);
                 status::print_dry_run_ok(1);
@@ -113,7 +120,6 @@ fn run() -> anyhow::Result<()> {
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -142,6 +148,10 @@ fn run() -> anyhow::Result<()> {
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
             let p = prepared.remove(0);
 
+            if verbosity == Verbosity::Verbose {
+                status::print_version();
+            }
+
             if cli.dry_run {
                 status::print_config(&p.entry);
                 status::print_dry_run_ok(1);
@@ -149,7 +159,6 @@ fn run() -> anyhow::Result<()> {
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -178,6 +187,10 @@ fn run() -> anyhow::Result<()> {
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
             let p = prepared.remove(0);
 
+            if verbosity == Verbosity::Verbose {
+                status::print_version();
+            }
+
             if cli.dry_run {
                 status::print_config(&p.entry);
                 status::print_dry_run_ok(1);
@@ -185,7 +198,6 @@ fn run() -> anyhow::Result<()> {
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -212,6 +224,10 @@ fn run() -> anyhow::Result<()> {
             let prepared = sonda_core::prepare_entries(config.scenarios)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
+            if verbosity == Verbosity::Verbose {
+                status::print_version();
+            }
+
             if cli.dry_run {
                 for p in &prepared {
                     status::print_config(&p.entry);
@@ -221,7 +237,6 @@ fn run() -> anyhow::Result<()> {
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_version();
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
@@ -348,6 +363,10 @@ fn run_builtin_scenario(
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    if verbosity == Verbosity::Verbose {
+        status::print_version();
+    }
+
     if cli_opts.dry_run {
         for p in &prepared {
             status::print_config(&p.entry);
@@ -357,7 +376,6 @@ fn run_builtin_scenario(
     }
 
     if verbosity == Verbosity::Verbose {
-        status::print_version();
         for p in &prepared {
             status::print_config(&p.entry);
         }
