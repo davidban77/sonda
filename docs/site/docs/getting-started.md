@@ -204,3 +204,4 @@ When you need specific details:
 - [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario fields
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
 - [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
+- [**Troubleshooting**](guides/troubleshooting.md) -- common issues and how to fix them

@@ -967,3 +967,7 @@ curl "http://localhost:9090/api/v1/query?query=sonda_http_request_duration_ms"
 **Running Sonda in production?** See [Docker Deployment](../deployment/docker.md) or [Server API](../deployment/sonda-server.md).
 
 **Browsing ready-to-use scenarios?** See [Example Scenarios](examples.md).
+
+**Something not working?** See [Troubleshooting](troubleshooting.md).
+
+**Planning for production load?** See [Capacity Planning](capacity-planning.md) for performance baselines and sizing guidance.
