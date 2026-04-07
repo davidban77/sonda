@@ -1923,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "0.8.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1973,6 +1973,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sonda-core",
+ "subtle",
  "tokio",
  "tower",
  "tower-http",

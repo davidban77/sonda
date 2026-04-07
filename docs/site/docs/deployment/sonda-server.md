@@ -79,6 +79,119 @@ Error responses:
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state |
 | GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format |
 
+## Authentication
+
+You can protect scenario endpoints with API key authentication. When enabled, all
+`/scenarios/*` requests must include a bearer token. The `/health` endpoint is always
+public, so health probes and load balancer checks work without credentials.
+
+### Enabling authentication
+
+Pass an API key via the `--api-key` flag or the `SONDA_API_KEY` environment variable:
+
+=== "CLI flag"
+
+    ```bash
+    sonda-server --port 8080 --api-key my-secret-key
+    ```
+
+=== "Environment variable"
+
+    ```bash
+    SONDA_API_KEY=my-secret-key sonda-server --port 8080
+    ```
+
+When the server starts with a key configured, you will see:
+
+```text
+INFO sonda_server: API key authentication enabled for /scenarios/* endpoints
+```
+
+!!! info "No key = no auth"
+    When neither `--api-key` nor `SONDA_API_KEY` is set, the server runs without
+    authentication and all endpoints are publicly accessible. This preserves full
+    backwards compatibility with existing deployments.
+
+### Making authenticated requests
+
+Include the key in the `Authorization: Bearer <key>` header:
+
+```bash
+# Start a scenario (requires auth)
+curl -X POST \
+  -H "Authorization: Bearer my-secret-key" \
+  -H "Content-Type: text/yaml" \
+  --data-binary @examples/basic-metrics.yaml \
+  http://localhost:8080/scenarios
+
+# List scenarios (requires auth)
+curl -H "Authorization: Bearer my-secret-key" \
+  http://localhost:8080/scenarios
+
+# Health check (always public, no header needed)
+curl http://localhost:8080/health
+```
+
+### Error responses
+
+Requests to protected endpoints without a valid key return **401 Unauthorized** with a
+JSON error body:
+
+| Condition | Response body |
+|-----------|---------------|
+| Missing or malformed header | `{"error": "unauthorized", "detail": "missing or malformed Authorization header"}` |
+| Wrong key | `{"error": "unauthorized", "detail": "invalid API key"}` |
+
+### Protected vs. public endpoints
+
+| Endpoint | Auth required |
+|----------|---------------|
+| `GET /health` | No -- always public |
+| `POST /scenarios` | Yes |
+| `GET /scenarios` | Yes |
+| `GET /scenarios/{id}` | Yes |
+| `DELETE /scenarios/{id}` | Yes |
+| `GET /scenarios/{id}/stats` | Yes |
+| `GET /scenarios/{id}/metrics` | Yes |
+
+!!! warning "Prometheus scraping with auth"
+    If you enable authentication, your Prometheus scrape config must include the bearer
+    token for `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file`
+    field to your `scrape_configs` entry. See [Scrape Integration](#scrape-integration)
+    below.
+
+??? tip "Kubernetes Secrets"
+    In Kubernetes deployments, store the API key in a Secret and reference it as an
+    environment variable in your Deployment spec:
+
+    ```yaml title="sonda-secret.yaml"
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: sonda-api-key
+    type: Opaque
+    stringData:
+      api-key: my-secret-key
+    ```
+
+    ```yaml title="deployment patch"
+    env:
+      - name: SONDA_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: sonda-api-key
+            key: api-key
+    ```
+
+    Apply the secret before deploying:
+
+    ```bash
+    kubectl apply -f sonda-secret.yaml
+    ```
+
+    See [API key authentication](kubernetes.md#api-key-authentication) in the Kubernetes
+    deployment guide for the full Helm chart setup.
+
 ## Stopping a Scenario
 
 `DELETE /scenarios/{id}` stops the scenario thread, collects final stats, and removes the

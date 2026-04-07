@@ -36,6 +36,14 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if and .Values.server.auth.enabled .Values.server.auth.existingSecret }}
+          env:
+            - name: SONDA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.server.auth.existingSecret }}
+                  key: {{ .Values.server.auth.secretKey }}
+          {{- end }}
           args:
             - "--port"
             - {{ .Values.server.port | quote }}

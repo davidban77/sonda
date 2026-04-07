@@ -32,3 +32,10 @@ Sonda has been deployed successfully.
 
 Scenario files from values.scenarios are mounted at /scenarios inside the container.
 {{- end }}
+{{- if and .Values.server.auth.enabled .Values.server.auth.existingSecret }}
+
+API key authentication is enabled. Include a Bearer token in requests to /scenarios/* endpoints:
+
+  curl -H "Authorization: Bearer <your-api-key>" \
+    http://localhost:{{ .Values.server.port }}/scenarios
+{{- end }}
