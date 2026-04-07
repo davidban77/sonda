@@ -171,40 +171,30 @@ fn print_metrics_config(c: &ScenarioConfig) {
     let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
     eprintln!("{header} {bold_name}");
     eprintln!();
+    let label = format!("{:<14}", "name:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.name);
+    let label = format!("{:<14}", "signal:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} metrics");
+    let label = format!("{:<14}", "rate:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}/s", format_rate(c.rate));
+    let label = format!("{:<14}", "duration:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}       {}",
-        "name:".if_supports_color(Stderr, |t| t.bold()),
-        c.name
-    );
-    eprintln!(
-        "  {}     metrics",
-        "signal:".if_supports_color(Stderr, |t| t.bold())
-    );
-    eprintln!(
-        "  {}       {}/s",
-        "rate:".if_supports_color(Stderr, |t| t.bold()),
-        format_rate(c.rate)
-    );
-    eprintln!(
-        "  {}   {}",
-        "duration:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         c.duration.as_deref().unwrap_or("indefinite")
     );
-    eprintln!(
-        "  {}  {}",
-        "generator:".if_supports_color(Stderr, |t| t.bold()),
-        generator_display(&c.generator)
-    );
-    eprintln!(
-        "  {}    {}",
-        "encoder:".if_supports_color(Stderr, |t| t.bold()),
-        encoder_display(&c.encoder)
-    );
-    eprintln!(
-        "  {}       {}",
-        "sink:".if_supports_color(Stderr, |t| t.bold()),
-        sink_display(&c.sink)
-    );
+    let label = format!("{:<14}", "generator:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", generator_display(&c.generator));
+    let label = format!("{:<14}", "encoder:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", encoder_display(&c.encoder));
+    let label = format!("{:<14}", "sink:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -222,40 +212,30 @@ fn print_logs_config(c: &LogScenarioConfig) {
     let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
     eprintln!("{header} {bold_name}");
     eprintln!();
+    let label = format!("{:<14}", "name:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.name);
+    let label = format!("{:<14}", "signal:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} logs");
+    let label = format!("{:<14}", "rate:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}/s", format_rate(c.rate));
+    let label = format!("{:<14}", "duration:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}       {}",
-        "name:".if_supports_color(Stderr, |t| t.bold()),
-        c.name
-    );
-    eprintln!(
-        "  {}     logs",
-        "signal:".if_supports_color(Stderr, |t| t.bold())
-    );
-    eprintln!(
-        "  {}       {}/s",
-        "rate:".if_supports_color(Stderr, |t| t.bold()),
-        format_rate(c.rate)
-    );
-    eprintln!(
-        "  {}   {}",
-        "duration:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         c.duration.as_deref().unwrap_or("indefinite")
     );
-    eprintln!(
-        "  {}  {}",
-        "generator:".if_supports_color(Stderr, |t| t.bold()),
-        log_generator_display(&c.generator)
-    );
-    eprintln!(
-        "  {}    {}",
-        "encoder:".if_supports_color(Stderr, |t| t.bold()),
-        encoder_display(&c.encoder)
-    );
-    eprintln!(
-        "  {}       {}",
-        "sink:".if_supports_color(Stderr, |t| t.bold()),
-        sink_display(&c.sink)
-    );
+    let label = format!("{:<14}", "generator:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", log_generator_display(&c.generator));
+    let label = format!("{:<14}", "encoder:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", encoder_display(&c.encoder));
+    let label = format!("{:<14}", "sink:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -273,53 +253,42 @@ fn print_histogram_config(c: &HistogramScenarioConfig) {
     let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
     eprintln!("{header} {bold_name}");
     eprintln!();
+    let label = format!("{:<14}", "name:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.name);
+    let label = format!("{:<14}", "signal:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} histogram");
+    let label = format!("{:<14}", "rate:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}/s", format_rate(c.rate));
+    let label = format!("{:<14}", "duration:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}       {}",
-        "name:".if_supports_color(Stderr, |t| t.bold()),
-        c.name
-    );
-    eprintln!(
-        "  {}     histogram",
-        "signal:".if_supports_color(Stderr, |t| t.bold())
-    );
-    eprintln!(
-        "  {}       {}/s",
-        "rate:".if_supports_color(Stderr, |t| t.bold()),
-        format_rate(c.rate)
-    );
-    eprintln!(
-        "  {}   {}",
-        "duration:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         c.duration.as_deref().unwrap_or("indefinite")
     );
+    let label = format!("{:<14}", "buckets:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}    {}",
-        "buckets:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         match &c.buckets {
             Some(b) => format!("{:?}", b),
             None => "default (Prometheus)".to_string(),
         }
     );
-    eprintln!(
-        "  {} {:?}",
-        "distribution:".if_supports_color(Stderr, |t| t.bold()),
-        c.distribution
-    );
-    eprintln!(
-        "  {}   {}",
-        "obs/tick:".if_supports_color(Stderr, |t| t.bold()),
-        c.observations_per_tick.unwrap_or(100)
-    );
-    eprintln!(
-        "  {}    {}",
-        "encoder:".if_supports_color(Stderr, |t| t.bold()),
-        encoder_display(&c.encoder)
-    );
-    eprintln!(
-        "  {}       {}",
-        "sink:".if_supports_color(Stderr, |t| t.bold()),
-        sink_display(&c.sink)
-    );
+    let label = format!("{:<14}", "distribution:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {:?}", c.distribution);
+    let label = format!("{:<14}", "obs/tick:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.observations_per_tick.unwrap_or(100));
+    let label = format!("{:<14}", "encoder:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", encoder_display(&c.encoder));
+    let label = format!("{:<14}", "sink:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -337,53 +306,42 @@ fn print_summary_config(c: &SummaryScenarioConfig) {
     let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
     eprintln!("{header} {bold_name}");
     eprintln!();
+    let label = format!("{:<14}", "name:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.name);
+    let label = format!("{:<14}", "signal:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} summary");
+    let label = format!("{:<14}", "rate:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}/s", format_rate(c.rate));
+    let label = format!("{:<14}", "duration:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}       {}",
-        "name:".if_supports_color(Stderr, |t| t.bold()),
-        c.name
-    );
-    eprintln!(
-        "  {}     summary",
-        "signal:".if_supports_color(Stderr, |t| t.bold())
-    );
-    eprintln!(
-        "  {}       {}/s",
-        "rate:".if_supports_color(Stderr, |t| t.bold()),
-        format_rate(c.rate)
-    );
-    eprintln!(
-        "  {}   {}",
-        "duration:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         c.duration.as_deref().unwrap_or("indefinite")
     );
+    let label = format!("{:<14}", "quantiles:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
     eprintln!(
-        "  {}  {}",
-        "quantiles:".if_supports_color(Stderr, |t| t.bold()),
+        "  {label} {}",
         match &c.quantiles {
             Some(q) => format!("{:?}", q),
             None => "default [0.5, 0.9, 0.95, 0.99]".to_string(),
         }
     );
-    eprintln!(
-        "  {} {:?}",
-        "distribution:".if_supports_color(Stderr, |t| t.bold()),
-        c.distribution
-    );
-    eprintln!(
-        "  {}   {}",
-        "obs/tick:".if_supports_color(Stderr, |t| t.bold()),
-        c.observations_per_tick.unwrap_or(100)
-    );
-    eprintln!(
-        "  {}    {}",
-        "encoder:".if_supports_color(Stderr, |t| t.bold()),
-        encoder_display(&c.encoder)
-    );
-    eprintln!(
-        "  {}       {}",
-        "sink:".if_supports_color(Stderr, |t| t.bold()),
-        sink_display(&c.sink)
-    );
+    let label = format!("{:<14}", "distribution:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {:?}", c.distribution);
+    let label = format!("{:<14}", "obs/tick:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", c.observations_per_tick.unwrap_or(100));
+    let label = format!("{:<14}", "encoder:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", encoder_display(&c.encoder));
+    let label = format!("{:<14}", "sink:");
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    eprintln!("  {label} {}", sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -402,11 +360,9 @@ fn print_labels_line(labels: &Option<std::collections::HashMap<String, String>>)
             let mut pairs: Vec<_> = map.iter().collect();
             pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
             let formatted: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            eprintln!(
-                "  {}     {}",
-                "labels:".if_supports_color(Stderr, |t| t.bold()),
-                formatted.join(", ")
-            );
+            let label = format!("{:<14}", "labels:");
+            let label = label.if_supports_color(Stderr, |t| t.bold());
+            eprintln!("  {label} {}", formatted.join(", "));
         }
     }
 }
@@ -414,24 +370,20 @@ fn print_labels_line(labels: &Option<std::collections::HashMap<String, String>>)
 /// Print the gaps line if gap config is present.
 fn print_gaps_line(gaps: &Option<GapConfig>) {
     if let Some(ref g) = gaps {
-        eprintln!(
-            "  {}       every {}, for {}",
-            "gaps:".if_supports_color(Stderr, |t| t.bold()),
-            g.every,
-            g.r#for
-        );
+        let label = format!("{:<14}", "gaps:");
+        let label = label.if_supports_color(Stderr, |t| t.bold());
+        eprintln!("  {label} every {}, for {}", g.every, g.r#for);
     }
 }
 
 /// Print the bursts line if burst config is present.
 fn print_bursts_line(bursts: &Option<BurstConfig>) {
     if let Some(ref b) = bursts {
+        let label = format!("{:<14}", "bursts:");
+        let label = label.if_supports_color(Stderr, |t| t.bold());
         eprintln!(
-            "  {}     every {}, for {}, multiplier {}x",
-            "bursts:".if_supports_color(Stderr, |t| t.bold()),
-            b.every,
-            b.r#for,
-            b.multiplier
+            "  {label} every {}, for {}, multiplier {}x",
+            b.every, b.r#for, b.multiplier
         );
     }
 }
@@ -440,13 +392,11 @@ fn print_bursts_line(bursts: &Option<BurstConfig>) {
 fn print_spikes_lines(spikes: &Option<Vec<CardinalitySpikeConfig>>) {
     if let Some(ref list) = spikes {
         for s in list {
+            let label = format!("{:<14}", "spikes:");
+            let label = label.if_supports_color(Stderr, |t| t.bold());
             eprintln!(
-                "  {}     label={}, every {}, for {}, cardinality={}",
-                "spikes:".if_supports_color(Stderr, |t| t.bold()),
-                s.label,
-                s.every,
-                s.r#for,
-                s.cardinality
+                "  {label} label={}, every {}, for {}, cardinality={}",
+                s.label, s.every, s.r#for, s.cardinality
             );
         }
     }
@@ -455,8 +405,9 @@ fn print_spikes_lines(spikes: &Option<Vec<CardinalitySpikeConfig>>) {
 /// Print dynamic label lines if dynamic labels are configured.
 fn print_dynamic_labels_lines(dynamic_labels: &Option<Vec<DynamicLabelConfig>>) {
     if let Some(ref list) = dynamic_labels {
-        let label = "dynamic:".if_supports_color(Stderr, |t| t.bold());
         for dl in list {
+            let label = format!("{:<14}", "dynamic:");
+            let label = label.if_supports_color(Stderr, |t| t.bold());
             match &dl.strategy {
                 DynamicLabelStrategy::Counter {
                     prefix,
@@ -464,16 +415,16 @@ fn print_dynamic_labels_lines(dynamic_labels: &Option<Vec<DynamicLabelConfig>>) 
                 } => {
                     let pfx = prefix.as_deref().unwrap_or("");
                     eprintln!(
-                        "  {label}    key={}, counter (prefix={:?}, cardinality={})",
+                        "  {label} key={}, counter (prefix={:?}, cardinality={})",
                         dl.key, pfx, cardinality
                     );
                 }
                 DynamicLabelStrategy::ValuesList { values } => {
                     if values.len() <= 5 {
-                        eprintln!("  {label}    key={}, values {:?}", dl.key, values);
+                        eprintln!("  {label} key={}, values {:?}", dl.key, values);
                     } else {
                         eprintln!(
-                            "  {label}    key={}, values [{}, {}, ... {} total]",
+                            "  {label} key={}, values [{}, {}, ... {} total]",
                             dl.key,
                             values[0],
                             values[1],
@@ -492,30 +443,27 @@ fn print_jitter_line(jitter: &Option<f64>, jitter_seed: &Option<u64>) {
         let seed_str = jitter_seed
             .map(|s| format!(", seed: {s}"))
             .unwrap_or_default();
-        eprintln!(
-            "  {}     +/-{j}{seed_str}",
-            "jitter:".if_supports_color(Stderr, |t| t.bold())
-        );
+        let label = format!("{:<14}", "jitter:");
+        let label = label.if_supports_color(Stderr, |t| t.bold());
+        eprintln!("  {label} +/-{j}{seed_str}");
     }
 }
 
 /// Print the phase_offset line if set.
 fn print_phase_offset_line(phase_offset: &Option<String>) {
     if let Some(ref offset) = phase_offset {
-        eprintln!(
-            "  {} {offset}",
-            "phase_offset:".if_supports_color(Stderr, |t| t.bold())
-        );
+        let label = format!("{:<14}", "phase_offset:");
+        let label = label.if_supports_color(Stderr, |t| t.bold());
+        eprintln!("  {label} {offset}");
     }
 }
 
 /// Print the clock_group line if set.
 fn print_clock_group_line(clock_group: &Option<String>) {
     if let Some(ref group) = clock_group {
-        eprintln!(
-            "  {} {group}",
-            "clock_group:".if_supports_color(Stderr, |t| t.bold())
-        );
+        let label = format!("{:<14}", "clock_group:");
+        let label = label.if_supports_color(Stderr, |t| t.bold());
+        eprintln!("  {label} {group}");
     }
 }
 

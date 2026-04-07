@@ -75,6 +75,12 @@ fn scenarios_list_json_elements_have_required_keys() {
                 "element {i} key {key:?} must be a string, got: {val}"
             );
         }
+        assert_eq!(
+            obj.len(),
+            4,
+            "expected exactly 4 fields per scenario, got {}",
+            obj.len()
+        );
     }
 }
 

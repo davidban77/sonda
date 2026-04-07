@@ -59,22 +59,8 @@ fn run() -> anyhow::Result<()> {
             let prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            if verbosity == Verbosity::Verbose {
-                status::print_version();
-            }
-
-            if cli.dry_run {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
-                status::print_dry_run_ok(prepared.len());
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
-            }
-
-            if verbosity == Verbosity::Verbose {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
             }
 
             if prepared.len() == 1 {
@@ -107,22 +93,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if verbosity == Verbosity::Verbose {
-                status::print_version();
-            }
-
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok(1);
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-logs".to_string(),
@@ -146,22 +122,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if verbosity == Verbosity::Verbose {
-                status::print_version();
-            }
-
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok(1);
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-histogram".to_string(),
@@ -185,22 +151,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if verbosity == Verbosity::Verbose {
-                status::print_version();
-            }
-
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok(1);
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-summary".to_string(),
@@ -224,22 +180,8 @@ fn run() -> anyhow::Result<()> {
             let prepared = sonda_core::prepare_entries(config.scenarios)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            if verbosity == Verbosity::Verbose {
-                status::print_version();
-            }
-
-            if cli.dry_run {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
-                status::print_dry_run_ok(prepared.len());
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
-            }
-
-            if verbosity == Verbosity::Verbose {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
             }
 
             launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
@@ -363,22 +305,8 @@ fn run_builtin_scenario(
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if verbosity == Verbosity::Verbose {
-        status::print_version();
-    }
-
-    if cli_opts.dry_run {
-        for p in &prepared {
-            status::print_config(&p.entry);
-        }
-        status::print_dry_run_ok(prepared.len());
+    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
         return Ok(());
-    }
-
-    if verbosity == Verbosity::Verbose {
-        for p in &prepared {
-            status::print_config(&p.entry);
-        }
     }
 
     if prepared.len() == 1 {
@@ -409,6 +337,31 @@ fn run_builtin_scenario(
     }
 
     Ok(())
+}
+
+/// Handle verbose version display, dry-run config printing, and verbose config display.
+///
+/// Returns `true` if dry-run mode was active (caller should return early).
+fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: bool) -> bool {
+    if verbosity == Verbosity::Verbose {
+        status::print_version();
+    }
+
+    if dry_run {
+        for p in prepared {
+            status::print_config(&p.entry);
+        }
+        status::print_dry_run_ok(prepared.len());
+        return true;
+    }
+
+    if verbosity == Verbosity::Verbose {
+        for p in prepared {
+            status::print_config(&p.entry);
+        }
+    }
+
+    false
 }
 
 /// Launch multiple prepared scenarios concurrently, join them, print
