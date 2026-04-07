@@ -500,64 +500,77 @@ Run through this checklist for each environment you're sizing:
 
 ## Performance baselines
 
-These tables provide baseline estimates for planning Sonda deployments. They represent
-Sonda-side resource usage -- generation rates, memory, and network overhead -- not backend
-capacity.
+These tables show measured performance from actual benchmarks. They represent Sonda-side
+resource usage -- generation rates, memory, and encoder overhead -- not backend capacity.
 
-!!! info "Estimates, not guarantees"
-    Actual numbers depend on your hardware, network conditions, backend performance, and label
-    complexity. Use these as starting points for capacity planning, then validate with the
-    [throughput](#test-throughput-limits) and [cardinality](#find-cardinality-limits) tests above.
+!!! info "Measured on Apple Silicon"
+    Benchmarks ran on macOS with Apple Silicon, Sonda v0.8.0 release build, file sink, single
+    thread per scenario. Your numbers will vary by hardware and sink type, but the key takeaway
+    holds: Sonda generates millions of events per second on a single core with a flat ~7.5 MB
+    memory footprint. Use the [throughput](#test-throughput-limits) and
+    [cardinality](#find-cardinality-limits) tests above to measure your own environment.
 
-### Events per second by generator type
+### Generator throughput
 
-Generation rates on a single CPU core with the `prometheus_text` encoder and `stdout` sink:
+Single CPU core, `prometheus_text` encoder, file sink:
 
-| Generator | Approx. events/sec | Notes |
-|-----------|-------------------|-------|
-| `constant` | 50,000+ | Minimal computation per event |
-| `sine` | 50,000+ | Trigonometric calculation adds negligible overhead |
-| `step` | 50,000+ | Simple threshold comparison |
-| `csv_replay` | 10,000--20,000 | Bounded by file I/O and CSV parsing |
-| `histogram` | 5,000--15,000 | Generates multiple lines per tick (buckets + count + sum) |
-| `summary` | 5,000--15,000 | Generates multiple lines per tick (quantiles + count + sum) |
+| Generator | Events/sec | Notes |
+|-----------|-----------|-------|
+| `constant` | ~7,200,000 | Minimal computation per event |
+| `csv_replay` | ~6,200,000 | Values pre-loaded into memory, cycles through them |
+| `sawtooth` | ~5,800,000 | Simple linear ramp calculation |
+| `uniform` | ~5,700,000 | RNG evaluation per event |
+| `sine` | ~5,400,000 | Trigonometric calculation per event |
+| `histogram` | ~257,000 ticks/sec | Each tick emits 14 lines (12 buckets + count + sum) |
+| `summary` | ~349,000 ticks/sec | Each tick emits 6 lines (4 quantiles + count + sum) |
 
-### Memory footprint by cardinality
+!!! tip "Histogram and summary throughput"
+    These generators are measured in ticks/sec because each tick produces multiple output lines.
+    In terms of raw line throughput, histogram produces ~3.6M lines/sec and summary ~2.1M
+    lines/sec.
 
-Sonda-side memory usage. Backend memory is separate and typically much larger.
+### Encoder bytes per event
 
-| Unique series | Approx. memory | Typical use case |
-|---------------|---------------|-----------------|
-| Baseline (no metrics) | ~5 MB | Sonda process overhead |
-| 100 series | ~5 MB | Single-service simulation |
-| 1,000 series | ~8 MB | Small fleet or multi-service test |
-| 10,000 series | ~30 MB | Cardinality stress test or large fleet simulation |
-
-### Network throughput by encoder
-
-Approximate bytes per metric event, before network-level overhead:
+Measured with 3 labels (`job`, `instance`, `env`), a typical metric name, and a float value:
 
 | Encoder | Bytes/event | Notes |
 |---------|------------|-------|
-| `prometheus_text` | 100--200 | Human-readable, uncompressed |
-| `json_lines` | 150--250 | JSON overhead from keys and quoting |
-| `remote_write` | 50--80 | Protobuf + Snappy compression |
-| `otlp` | 60--100 | Protobuf + gRPC framing |
+| `prometheus_text` | ~76 | Human-readable, uncompressed |
+| `influx_lp` | ~81 | InfluxDB line protocol |
+| `otlp` | ~95 | Protobuf, written to file (no gRPC framing) |
+| `remote_write` | ~97 | Snappy-compressed protobuf |
+| `json_lines` | ~136 | JSON overhead from keys and quoting |
 
-Actual size varies with metric name length, number of labels, and value precision.
+!!! note
+    `remote_write` and `otlp` bytes measured via file sink. Over-the-wire size with network
+    sinks may differ due to batching and compression. Actual size also varies with metric name
+    length, number of labels, and value precision.
+
+### Memory footprint
+
+Sonda does not store per-series state -- it generates events on the fly. Memory is essentially
+flat regardless of cardinality:
+
+| Scenario | RSS |
+|----------|-----|
+| Single metric, any cardinality (100 to 50,000 series) | ~7.5 MB |
+| 5 concurrent scenarios, 25,000 total events/sec | ~7.5 MB |
+
+Memory is driven by the number of concurrent scenarios and sink buffering, not by series
+cardinality.
 
 ### Kubernetes resource recommendations
 
-Suggested resource requests for Sonda pods:
+Sonda's low resource footprint means you can run it almost anywhere. Suggested resource
+requests for Sonda pods:
 
 | Profile | Event rate | CPU request | Memory request | Use case |
 |---------|-----------|-------------|----------------|----------|
-| Small | up to 100/sec | 100m | 64 Mi | Development, CI pipeline checks |
-| Medium | 100--1,000/sec | 250m | 128 Mi | Integration testing, alert validation |
-| Large | 1,000--10,000/sec | 500m | 256 Mi | Load testing, capacity planning |
+| Small | up to 1,000/sec | 50m | 32 Mi | Development, CI pipeline checks |
+| Medium | 1,000--100,000/sec | 100m | 64 Mi | Integration testing, alert validation |
+| Large | 100,000--1,000,000+/sec | 250m | 128 Mi | Load testing, capacity planning |
 
-Set resource limits 2x above requests to accommodate bursts. For sustained high-cardinality
-tests (10K+ series), monitor actual usage and adjust.
+Set resource limits 2x above requests to accommodate bursts.
 
 ---
 
