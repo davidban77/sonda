@@ -98,6 +98,18 @@ helm install sonda ./helm/sonda \
 | `podSecurityContext` | `{}` | Pod-level security context (e.g., `fsGroup`) |
 | `securityContext` | `{}` | Container-level security context (e.g., `runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities`) |
 
+### Authentication
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `server.auth.enabled` | `false` | Enable API key authentication on `/scenarios/*` endpoints |
+| `server.auth.existingSecret` | `""` | Name of an existing Secret containing the API key |
+| `server.auth.secretKey` | `api-key` | Key within the Secret that holds the API key value |
+
+When `server.auth.enabled` is `true`, the chart injects `SONDA_API_KEY` into the container
+from the referenced Secret. See [API key authentication](#api-key-authentication) for setup
+instructions.
+
 ### Scheduling
 
 | Value | Default | Description |
@@ -311,6 +323,141 @@ The `port: http` field matches the named port on the Sonda Service.
     Each ServiceMonitor endpoint scrapes a single `path`. If you run multiple scenarios, add
     one `endpoints` entry per scenario ID. For dynamic discovery, consider a script that
     queries `GET /scenarios` and regenerates the ServiceMonitor.
+
+## API key authentication
+
+Sonda-server supports optional bearer token authentication on all `/scenarios/*` endpoints.
+When enabled, clients must include an `Authorization: Bearer <key>` header. The `/health`
+endpoint stays public so liveness and readiness probes work without credentials.
+
+For the full authentication behavior (error responses, protected vs. public endpoints), see the
+[Server API Authentication](sonda-server.md#authentication) section.
+
+### Create a Secret
+
+Store your API key in a Kubernetes Secret:
+
+```yaml title="sonda-api-key.yaml"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sonda-api-key
+type: Opaque
+stringData:
+  api-key: "your-secret-key-here"
+```
+
+```bash
+kubectl apply -f sonda-api-key.yaml
+```
+
+!!! tip "Generate a random key"
+    ```bash
+    kubectl create secret generic sonda-api-key \
+      --from-literal=api-key="$(openssl rand -base64 32)"
+    ```
+
+### Enable auth in the Helm chart
+
+Point the chart at your Secret:
+
+```bash
+helm install sonda ./helm/sonda \
+  --set server.auth.enabled=true \
+  --set server.auth.existingSecret=sonda-api-key
+```
+
+Or in a values file:
+
+```yaml title="my-values.yaml"
+server:
+  auth:
+    enabled: true
+    existingSecret: sonda-api-key
+    secretKey: api-key          # default; change if your Secret uses a different key
+```
+
+The chart sets `SONDA_API_KEY` in the container environment from the Secret. On startup you
+will see:
+
+```text
+INFO sonda_server: API key authentication enabled for /scenarios/* endpoints
+```
+
+### Authenticated API calls
+
+Once auth is enabled, include the bearer token in all `/scenarios/*` requests:
+
+```bash
+# Port-forward to reach the server
+kubectl port-forward svc/sonda 8080:8080
+
+# Start a scenario (requires auth)
+curl -X POST \
+  -H "Authorization: Bearer your-secret-key-here" \
+  -H "Content-Type: text/yaml" \
+  --data-binary @examples/basic-metrics.yaml \
+  http://localhost:8080/scenarios
+
+# Health check (always public)
+curl http://localhost:8080/health
+```
+
+### Prometheus scraping with auth
+
+When authentication is enabled, the `/scenarios/{id}/metrics` endpoint also requires a
+bearer token. Add the token to your Prometheus scrape config:
+
+=== "Static scrape config"
+
+    ```yaml title="prometheus-scrape.yaml"
+    scrape_configs:
+      - job_name: sonda
+        scrape_interval: 15s
+        metrics_path: /scenarios/<SCENARIO_ID>/metrics
+        bearer_token: "your-secret-key-here"
+        static_configs:
+          - targets: ["sonda.default.svc:8080"]
+    ```
+
+=== "Bearer token from file"
+
+    ```yaml title="prometheus-scrape.yaml"
+    scrape_configs:
+      - job_name: sonda
+        scrape_interval: 15s
+        metrics_path: /scenarios/<SCENARIO_ID>/metrics
+        bearer_token_file: /etc/prometheus/sonda-token
+        static_configs:
+          - targets: ["sonda.default.svc:8080"]
+    ```
+
+For a ServiceMonitor, add `bearerTokenSecret` to the endpoint:
+
+```yaml title="sonda-servicemonitor.yaml"
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sonda
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sonda
+  endpoints:
+    - port: http
+      interval: 15s
+      path: /scenarios/<SCENARIO_ID>/metrics
+      bearerTokenSecret:
+        name: sonda-api-key
+        key: api-key
+```
+
+!!! warning "Same Secret, same namespace"
+    The `bearerTokenSecret` must reference a Secret in the **same namespace** as the
+    Prometheus instance, not the Sonda namespace. If they differ, copy the Secret or use
+    `bearer_token_file` with a mounted volume instead.
 
 ## Upgrading
 

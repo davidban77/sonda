@@ -189,7 +189,8 @@ JSON error body:
     kubectl apply -f sonda-secret.yaml
     ```
 
-    See the [Kubernetes](kubernetes.md) deployment guide for the full Helm chart reference.
+    See [API key authentication](kubernetes.md#api-key-authentication) in the Kubernetes
+    deployment guide for the full Helm chart setup.
 
 ## Stopping a Scenario
 
