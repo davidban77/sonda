@@ -18,8 +18,11 @@ sonda-core via `validate_entry` and `launch_scenario`. The server crate is pure 
 src/
 ├── main.rs             ← entrypoint: CLI arg parsing, axum router setup, tokio runtime,
 │                         graceful shutdown (Ctrl+C stops all scenarios + joins threads with 5s timeout)
+├── auth.rs             ← require_api_key middleware (Bearer token), unauthorized() helper,
+│                         extract_bearer_token(), constant-time key comparison via subtle
 ├── routes/
-│   ├── mod.rs          ← router() function wires all routes; re-exports submodules
+│   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*)
+│                         sub-routers; applies auth middleware via route_layer on protected routes
 │   ├── health.rs       ← GET /health → {"status": "ok"}
 │   └── scenarios.rs    ← POST /scenarios (create), GET /scenarios (list),
 │                         GET /scenarios/{id} (inspect with stats),
@@ -30,9 +33,10 @@ src/
 │                         post_scenario(), list_scenarios(), get_scenario(),
 │                         get_scenario_stats(), get_scenario_metrics(),
 │                         delete_scenario()
-└── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>>
+└── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
 
 tests/
+├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
 ├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped
 └── scenarios.rs        ← POST /scenarios unit-level tests (valid/invalid YAML, JSON, validation errors)
@@ -64,6 +68,22 @@ Each scenario runs on a dedicated thread (spawned by `sonda_core::schedule::laun
 The axum handler stores and queries `ScenarioHandle` instances from sonda-core. This keeps sonda-core
 synchronous while the server handles HTTP I/O asynchronously via tokio.
 
+## Authentication
+
+API key authentication is opt-in. When configured, all `/scenarios/*` endpoints require a
+`Authorization: Bearer <key>` header. The `/health` endpoint is always public.
+
+```
+# Via CLI flag:
+cargo run -p sonda-server -- --port 8080 --api-key my-secret-key
+
+# Via environment variable:
+SONDA_API_KEY=my-secret-key cargo run -p sonda-server -- --port 8080
+```
+
+When no API key is provided (or an empty string is given), the server runs without authentication
+and all endpoints are publicly accessible (backwards compatible behaviour).
+
 ## Startup
 
 ```
@@ -84,4 +104,5 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 | `clap`             | CLI argument parsing                                      |
 | `tower-http`       | CORS and trace middleware                                 |
 | `tracing` + `tracing-subscriber` | Structured logging                      |
+| `subtle`           | Constant-time byte comparison for API key auth            |
 | `uuid`             | Generating scenario IDs                                   |

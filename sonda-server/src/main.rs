@@ -3,6 +3,7 @@
 //! Exposes a REST API that allows scenarios to be started, inspected, and
 //! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
+mod auth;
 mod routes;
 mod state;
 
@@ -26,6 +27,16 @@ struct Args {
     /// Address to bind to.
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
+
+    /// API key for bearer-token authentication on `/scenarios/*` endpoints.
+    ///
+    /// When set, all requests to `/scenarios/*` must include an
+    /// `Authorization: Bearer <key>` header. The `/health` endpoint remains
+    /// public regardless of this setting.
+    ///
+    /// Can also be set via the `SONDA_API_KEY` environment variable.
+    #[arg(long, env = "SONDA_API_KEY")]
+    api_key: Option<String>,
 }
 
 #[tokio::main]
@@ -44,7 +55,23 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .with_context(|| format!("invalid bind address: {}:{}", args.bind, args.port))?;
 
-    let state = AppState::new();
+    // Normalise the API key: treat empty strings as None (disabled).
+    let api_key = args.api_key.filter(|k| {
+        if k.is_empty() {
+            warn!("--api-key / SONDA_API_KEY is empty — authentication disabled");
+            false
+        } else {
+            true
+        }
+    });
+
+    if api_key.is_some() {
+        info!("API key authentication enabled for /scenarios/* endpoints");
+    } else {
+        info!("API key authentication disabled — all endpoints are public");
+    }
+
+    let state = AppState::with_api_key(api_key);
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
