@@ -1,7 +1,7 @@
 # CLI Reference
 
-Sonda provides three subcommands: `metrics` for metric generation, `logs` for log generation, and
-`run` for concurrent multi-scenario execution.
+Sonda provides subcommands for generating metrics, logs, histograms, and summaries, running
+multi-scenario files, and browsing a library of built-in scenario patterns.
 
 ## Global options
 
@@ -223,7 +223,7 @@ sonda metrics [OPTIONS]
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE>` | path | YAML scenario file. CLI flags override file values. |
+| `--scenario <FILE \| @name>` | path or `@name` | YAML scenario file, or a `@name` shorthand to load a [built-in scenario](../guides/scenarios.md) (e.g. `@cpu-spike`). CLI flags override file values. |
 | `--name <NAME>` | string | Metric name. Required if no `--scenario`. |
 | `--rate <RATE>` | float | Events per second. Required if no `--scenario`. |
 | `--duration <DURATION>` | string | Run duration (e.g. `30s`, `5m`, `1.5s`). Fractional values supported. Omit for indefinite. |
@@ -397,7 +397,7 @@ sonda logs [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--scenario <FILE>` | path | -- | YAML log scenario file. |
+| `--scenario <FILE \| @name>` | path or `@name` | -- | YAML log scenario file, or a `@name` [built-in scenario](../guides/scenarios.md) (e.g. `@log-storm`). |
 | `--mode <MODE>` | string | -- | Generator mode: `template` or `replay`. Required if no `--scenario`. |
 | `--rate <RATE>` | float | `10.0` | Events per second. |
 | `--duration <DURATION>` | string | indefinite | Run duration (e.g. `10s`, `1.5s`). Fractional values supported. |
@@ -514,12 +514,12 @@ to the configured sink. Requires a scenario file -- histogram configuration is t
 inline CLI flags.
 
 ```bash
-sonda histogram --scenario <FILE>
+sonda histogram --scenario <FILE | @name>
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE>` | path | YAML histogram scenario file. Required. |
+| `--scenario <FILE \| @name>` | path or `@name` | YAML histogram scenario file, or a `@name` [built-in scenario](../guides/scenarios.md) (e.g. `@histogram-latency`). Required. |
 
 The scenario file must contain a `distribution` block and may include `buckets`,
 `observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
@@ -562,12 +562,12 @@ Generate synthetic summary metrics (pre-computed quantile values, `_count`, `_su
 them to the configured sink. Requires a scenario file.
 
 ```bash
-sonda summary --scenario <FILE>
+sonda summary --scenario <FILE | @name>
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE>` | path | YAML summary scenario file. Required. |
+| `--scenario <FILE \| @name>` | path or `@name` | YAML summary scenario file, or a `@name` [built-in scenario](../guides/scenarios.md). Required. |
 
 The scenario file must contain a `distribution` block and may include `quantiles`,
 `observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
@@ -609,15 +609,15 @@ Validation: OK
 Run multiple scenarios concurrently from a multi-scenario YAML file.
 
 ```bash
-sonda run --scenario <FILE>
+sonda run --scenario <FILE | @name>
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE>` | path | Multi-scenario YAML file. Required. |
+| `--scenario <FILE \| @name>` | path or `@name` | Multi-scenario YAML file, or a `@name` [built-in scenario](../guides/scenarios.md) (e.g. `@interface-flap`). Required. |
 
-The file must have a top-level `scenarios:` list. Each entry includes a `signal_type` field:
-`metrics`, `logs`, `histogram`, or `summary`. See
+The file (or built-in) must have a top-level `scenarios:` list. Each entry includes a `signal_type`
+field: `metrics`, `logs`, `histogram`, or `summary`. See
 [Scenario Files - Multi-scenario files](scenario-file.md#multi-scenario-files).
 
 ```bash
@@ -640,6 +640,78 @@ the aggregate line appears.
 !!! tip
     Pipe the summary to a monitoring script to gate CI pipelines -- a non-zero `errors` count
     means at least one scenario encountered a write failure.
+
+## sonda scenarios
+
+Browse, inspect, and run [built-in scenario patterns](../guides/scenarios.md) embedded in the
+binary. No YAML files or network access needed.
+
+```bash
+sonda scenarios <COMMAND>
+```
+
+### scenarios list
+
+List all available built-in scenarios in a formatted table.
+
+```bash
+sonda scenarios list [--category <CATEGORY>]
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--category <CATEGORY>` | string | Filter by category: `infrastructure`, `network`, `application`, `observability`. |
+
+```bash
+sonda scenarios list
+sonda scenarios list --category application
+```
+
+### scenarios show
+
+Print the raw YAML for a built-in scenario to stdout. Pipe to a file to create a customizable copy.
+
+```bash
+sonda scenarios show <NAME>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<NAME>` | string | Kebab-case scenario name (e.g. `cpu-spike`). |
+
+```bash
+sonda scenarios show cpu-spike
+sonda scenarios show memory-leak > my-memory-leak.yaml
+```
+
+### scenarios run
+
+Execute a built-in scenario with optional overrides. Equivalent to running the embedded YAML
+directly, but with a focused set of override flags.
+
+```bash
+sonda scenarios run <NAME> [OPTIONS]
+```
+
+| Argument / Flag | Type | Description |
+|-----------------|------|-------------|
+| `<NAME>` | string | Kebab-case scenario name (e.g. `cpu-spike`). |
+| `--duration <DURATION>` | string | Override the run duration (e.g. `10s`, `2m`). |
+| `--rate <RATE>` | float | Override events per second. |
+| `--encoder <ENCODER>` | string | Override the encoder format (e.g. `prometheus_text`, `json_lines`). |
+| `--sink <TYPE>` | string | Override the sink type (e.g. `stdout`, `http_push`). |
+| `--endpoint <URL>` | string | Override the sink endpoint (required for network sinks). |
+
+```bash
+sonda scenarios run cpu-spike --duration 10s --rate 5
+sonda scenarios run log-storm --sink loki --endpoint http://localhost:3100
+sonda --dry-run scenarios run cpu-spike
+```
+
+!!! tip
+    For the full set of subcommand-specific flags (e.g. `--label`, `--precision`, `--value`),
+    use the `@name` shorthand with `metrics`, `logs`, or `histogram` instead:
+    `sonda metrics --scenario @cpu-spike --label env=staging`
 
 ## Precedence rules
 

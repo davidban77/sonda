@@ -1,0 +1,64 @@
+# Log storm: burst of error-level log events.
+#
+# Models an application experiencing a log storm with high error rates.
+# Uses template-based log generation with severity weights skewed toward
+# errors. The burst window produces 10x log volume every 20 seconds for
+# 5 seconds. Useful for testing log pipeline backpressure and alerting.
+
+name: app_error_storm
+rate: 10
+duration: 60s
+
+generator:
+  type: template
+  templates:
+    - message: "Connection to {service} failed: {error}"
+      field_pools:
+        service:
+          - "database"
+          - "cache"
+          - "auth-service"
+          - "payment-gateway"
+        error:
+          - "connection refused"
+          - "timeout after 30s"
+          - "TLS handshake failed"
+          - "DNS resolution failed"
+          - "connection reset by peer"
+    - message: "Request {request_id} to {endpoint} failed with status {status}"
+      field_pools:
+        request_id:
+          - "req-001"
+          - "req-002"
+          - "req-003"
+          - "req-004"
+        endpoint:
+          - "/api/v1/users"
+          - "/api/v1/orders"
+          - "/api/v1/payments"
+        status:
+          - "500"
+          - "502"
+          - "503"
+          - "504"
+  severity_weights:
+    error: 0.6
+    warn: 0.3
+    info: 0.1
+  seed: 42
+
+bursts:
+  every: 20s
+  for: 5s
+  multiplier: 10.0
+
+labels:
+  app: order-service
+  env: production
+  instance: app-01
+
+encoder:
+  type: json_lines
+
+sink:
+  type: stdout

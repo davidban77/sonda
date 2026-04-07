@@ -1,0 +1,30 @@
+# Histogram latency: request latency distribution.
+#
+# Models HTTP request latency as a Prometheus histogram with a normal
+# distribution centered at 100ms. Produces cumulative bucket counts,
+# count, and sum series. Useful for testing histogram-based alerting
+# (e.g., p99 latency SLOs) and Grafana heatmap panels.
+
+name: http_request_duration_seconds
+rate: 1
+duration: 30s
+
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.03
+
+observations_per_tick: 50
+seed: 42
+
+labels:
+  instance: api-server-01
+  job: app
+  method: GET
+  handler: "/api/v1/query"
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout

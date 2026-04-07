@@ -17,6 +17,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics (gauge, histogram, summary), logs (template and replay modes) |
+| **Built-in scenarios** | 11 curated patterns (cpu-spike, memory-leak, interface-flap, log-storm, and more) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## Quick install
@@ -74,6 +75,20 @@ sonda metrics --name cpu --rate 10 --duration 30s \
 Define complex scenarios in YAML for repeatable runs with `sonda metrics --scenario config.yaml`.
 The [Tutorial](https://davidban77.github.io/sonda/guides/tutorial/) walks through every generator,
 encoder, sink, and scheduling option step by step.
+
+## Built-in scenarios
+
+Sonda ships with 11 pre-built patterns you can run instantly -- no YAML needed:
+
+```bash
+sonda scenarios list                       # browse the catalog
+sonda scenarios run cpu-spike              # run a pattern directly
+sonda scenarios show memory-leak           # view the YAML to customize it
+sonda metrics --scenario @cpu-spike        # @name shorthand in any subcommand
+```
+
+See the [Built-in Scenarios](https://davidban77.github.io/sonda/guides/scenarios/) guide for the
+full catalog and customization workflow.
 
 ## Documentation
 

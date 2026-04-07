@@ -199,6 +199,9 @@ The [Tutorial](guides/tutorial.md#sinks) covers all sink types in detail.
 You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every generator,
 encoder, sink, and advanced feature step by step.
 
+Don't want to write YAML yet? Try the **[Built-in Scenarios](guides/scenarios.md)** -- 11
+curated patterns you can run instantly with `sonda scenarios run cpu-spike`.
+
 When you need specific details:
 
 - [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario fields

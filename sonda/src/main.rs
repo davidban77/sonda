@@ -242,6 +242,143 @@ fn run() -> anyhow::Result<()> {
                 },
             )?;
         }
+        Commands::Scenarios(ref args) => {
+            run_scenarios_command(args, &cli, verbosity, &running)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `scenarios` subcommand (list, show, run).
+fn run_scenarios_command(
+    args: &cli::ScenariosArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    use cli::ScenariosAction;
+    use sonda_core::scenarios;
+
+    match args.action {
+        ScenariosAction::List(ref list_args) => {
+            let items: Vec<&sonda_core::BuiltinScenario> = match list_args.category {
+                Some(ref cat) => scenarios::list_by_category(cat),
+                None => scenarios::list().iter().collect(),
+            };
+
+            if items.is_empty() {
+                if let Some(ref cat) = list_args.category {
+                    eprintln!("no scenarios found in category {:?}", cat);
+                } else {
+                    eprintln!("no built-in scenarios available");
+                }
+                return Ok(());
+            }
+
+            // Print a formatted table to stdout.
+            let header_name = "NAME";
+            let header_cat = "CATEGORY";
+            let header_sig = "SIGNAL";
+            let header_desc = "DESCRIPTION";
+            println!(
+                "{:<28} {:<18} {:<12} {}",
+                header_name, header_cat, header_sig, header_desc
+            );
+            for s in &items {
+                println!(
+                    "{:<28} {:<18} {:<12} {}",
+                    s.name, s.category, s.signal_type, s.description
+                );
+            }
+        }
+        ScenariosAction::Show(ref show_args) => {
+            let yaml = scenarios::get_yaml(&show_args.name).ok_or_else(|| {
+                let names = scenarios::available_names();
+                anyhow::anyhow!(
+                    "unknown scenario {:?}; available scenarios: {}",
+                    show_args.name,
+                    names.join(", ")
+                )
+            })?;
+            print!("{yaml}");
+        }
+        ScenariosAction::Run(ref run_args) => {
+            run_builtin_scenario(run_args, cli_opts, verbosity, running)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute a built-in scenario, applying optional overrides.
+fn run_builtin_scenario(
+    args: &cli::ScenariosRunArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    use sonda_core::scenarios;
+
+    let scenario = scenarios::get(&args.name).ok_or_else(|| {
+        let names = scenarios::available_names();
+        anyhow::anyhow!(
+            "unknown scenario {:?}; available scenarios: {}",
+            args.name,
+            names.join(", ")
+        )
+    })?;
+
+    let entries = config::parse_builtin_scenario(scenario, args)?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        sonda_core::validate_entry(entry).map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
+    }
+
+    if cli_opts.dry_run {
+        for entry in &entries {
+            status::print_config(entry);
+        }
+        status::print_dry_run_ok();
+        return Ok(());
+    }
+
+    if verbosity == Verbosity::Verbose {
+        for entry in &entries {
+            status::print_config(entry);
+        }
+    }
+
+    if entries.len() == 1 {
+        let entry = entries.into_iter().next().expect("len checked above");
+        status::print_start(&entry, verbosity);
+        let mut handle = sonda_core::launch_scenario(
+            format!("builtin-{}", args.name),
+            entry,
+            Arc::clone(running),
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let join_result = handle.join(None);
+        status::print_stop(
+            &handle.name,
+            handle.elapsed(),
+            &handle.stats_snapshot(),
+            verbosity,
+        );
+        join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+    } else {
+        launch_and_join_scenarios(
+            &format!("builtin-{}", args.name),
+            entries,
+            running,
+            verbosity,
+            |i, entry| match entry.phase_offset() {
+                Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
+                    .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e)),
+                None => Ok(None),
+            },
+        )?;
     }
 
     Ok(())

@@ -10,6 +10,10 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
+├── scenarios/
+│   └── mod.rs          ← pre-built scenario catalog: BuiltinScenario struct, static CATALOG array,
+│                          list(), get(), get_yaml(), list_by_category(), available_names().
+│                          YAML files live in sonda-core/scenarios/*.yaml (embedded via include_str!).
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),
