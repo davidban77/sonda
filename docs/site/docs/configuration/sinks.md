@@ -170,19 +170,21 @@ Compatible endpoints:
 
 ## kafka
 
-Batches events and publishes them to a Kafka topic. Uses a pure-Rust Kafka client for static
-binary compatibility.
+Batches events and publishes them to a Kafka topic. Uses a pure-Rust Kafka client (`rskafka`) for
+static binary compatibility -- no C dependencies or OpenSSL required.
 
 !!! note
     This sink requires the `kafka` Cargo feature flag. Pre-built release binaries include this
     feature. If building from source: `cargo build --features kafka -p sonda`.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `brokers` | string | yes | Comma-separated broker addresses (e.g. `"broker1:9092,broker2:9092"`). |
-| `topic` | string | yes | Kafka topic name. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `brokers` | string | yes | -- | Comma-separated broker addresses (e.g. `"broker1:9092,broker2:9092"`). |
+| `topic` | string | yes | -- | Kafka topic name. |
+| `tls` | object | no | none | TLS encryption settings. See [TLS](#kafka-tls). |
+| `sasl` | object | no | none | SASL authentication settings. See [SASL](#kafka-sasl). |
 
-```yaml title="Kafka sink"
+```yaml title="Kafka sink (plaintext)"
 sink:
   type: kafka
   brokers: "127.0.0.1:9092"
@@ -200,6 +202,148 @@ Events are buffered until 64 KiB is accumulated, then published as a single Kafk
 partition 0 of the configured topic. Broker-side auto-topic-creation is supported: the sink
 retries metadata lookups, giving the broker time to create the topic if
 `auto.create.topics.enable=true`.
+
+### TLS { #kafka-tls }
+
+Most managed Kafka services (Confluent Cloud, AWS MSK, Aiven) require TLS-encrypted connections.
+Add a `tls` block to enable encryption.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `tls.enabled` | boolean | yes | `false` | Set to `true` to connect over TLS. |
+| `tls.ca_cert` | string | no | Mozilla bundled roots | Path to a PEM-encoded CA certificate file. Use this for self-signed or internal CAs. |
+
+```yaml title="Kafka with TLS"
+sink:
+  type: kafka
+  brokers: "broker.example.com:9093"
+  topic: sonda-metrics
+  tls:
+    enabled: true
+```
+
+When `ca_cert` is omitted, Sonda trusts Mozilla's bundled root certificates (via `webpki-roots`).
+This works out of the box for any broker whose certificate is signed by a public CA.
+
+For brokers with self-signed or internal CA certificates, point `ca_cert` to the PEM file:
+
+```yaml title="Kafka with custom CA"
+sink:
+  type: kafka
+  brokers: "kafka-internal.corp:9093"
+  topic: sonda-metrics
+  tls:
+    enabled: true
+    ca_cert: /etc/ssl/certs/internal-ca.pem
+```
+
+!!! tip
+    TLS uses `rustls` (pure Rust) -- there is no dependency on OpenSSL. This keeps the static
+    musl binary fully self-contained.
+
+### SASL { #kafka-sasl }
+
+SASL authenticates your client to the Kafka broker. Sonda supports three mechanisms:
+
+| Mechanism | When to use |
+|-----------|-------------|
+| `PLAIN` | Confluent Cloud, Aiven, most SaaS Kafka services. |
+| `SCRAM-SHA-256` | AWS MSK (serverless and provisioned with SCRAM enabled). |
+| `SCRAM-SHA-512` | Self-managed Kafka clusters preferring stronger hashing. |
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sasl.mechanism` | string | yes | `"PLAIN"`, `"SCRAM-SHA-256"`, or `"SCRAM-SHA-512"`. |
+| `sasl.username` | string | yes | SASL username (API key for Confluent Cloud). |
+| `sasl.password` | string | yes | SASL password (API secret for Confluent Cloud). |
+
+```yaml title="Kafka with SASL PLAIN"
+sink:
+  type: kafka
+  brokers: "broker.example.com:9093"
+  topic: sonda-metrics
+  tls:
+    enabled: true
+  sasl:
+    mechanism: PLAIN
+    username: sonda
+    password: changeme
+```
+
+!!! warning
+    SASL can be used without TLS, but Sonda prints a warning because credentials are sent in
+    plaintext over the network. Always enable TLS alongside SASL in production.
+
+### Common configurations { #kafka-examples }
+
+=== "Confluent Cloud"
+
+    Confluent Cloud uses TLS + SASL PLAIN. Your API key is the username, API secret is the password.
+
+    ```yaml title="confluent-cloud.yaml"
+    sink:
+      type: kafka
+      brokers: "pkc-xxxxx.us-east-1.aws.confluent.cloud:9092"
+      topic: sonda-metrics
+      tls:
+        enabled: true
+      sasl:
+        mechanism: PLAIN
+        username: YOUR_API_KEY
+        password: YOUR_API_SECRET
+    ```
+
+=== "AWS MSK (SCRAM)"
+
+    AWS MSK with SASL/SCRAM authentication uses port 9096.
+
+    ```yaml title="aws-msk-scram.yaml"
+    sink:
+      type: kafka
+      brokers: "b-1.mycluster.xxxxx.kafka.us-east-1.amazonaws.com:9096"
+      topic: sonda-metrics
+      tls:
+        enabled: true
+      sasl:
+        mechanism: SCRAM-SHA-256
+        username: msk-user
+        password: msk-password
+    ```
+
+=== "Internal CA"
+
+    Self-managed Kafka cluster with an internal CA certificate and SCRAM auth.
+
+    ```yaml title="internal-kafka.yaml"
+    sink:
+      type: kafka
+      brokers: "kafka-01.internal:9093,kafka-02.internal:9093"
+      topic: sonda-metrics
+      tls:
+        enabled: true
+        ca_cert: /etc/ssl/certs/kafka-ca.pem
+      sasl:
+        mechanism: SCRAM-SHA-512
+        username: sonda
+        password: s3cret
+    ```
+
+=== "TLS only (no auth)"
+
+    Some clusters use TLS for encryption but rely on network-level access control instead of SASL.
+
+    ```yaml title="tls-only.yaml"
+    sink:
+      type: kafka
+      brokers: "kafka.private:9093"
+      topic: sonda-metrics
+      tls:
+        enabled: true
+    ```
+
+!!! info
+    TLS and SASL are configured via scenario YAML only. There are no CLI flags for these options --
+    use a scenario file with `--scenario`.
 
 ## loki
 
