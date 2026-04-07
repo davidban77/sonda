@@ -75,7 +75,7 @@ pub fn run_logs_with_sink(
 
     // Build log generator and encoder from config.
     let generator = create_log_generator(&config.generator)?;
-    let encoder = create_encoder(&config.encoder);
+    let encoder = create_encoder(&config.encoder)?;
 
     // Build labels from config.
     let labels: Labels = if let Some(ref label_map) = config.labels {

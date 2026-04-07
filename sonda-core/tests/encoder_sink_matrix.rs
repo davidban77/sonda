@@ -46,7 +46,7 @@ fn test_event_no_labels() -> MetricEvent {
 
 /// Encode a single event with the given config, returning the encoded bytes.
 fn encode_event(config: &EncoderConfig, event: &MetricEvent) -> Vec<u8> {
-    let encoder = create_encoder(config);
+    let encoder = create_encoder(config).expect("encoder factory must succeed");
     let mut buf = Vec::new();
     encoder
         .encode_metric(event, &mut buf)
@@ -687,8 +687,11 @@ mod kafka_matrix {
 
     fn unreachable_kafka_config() -> sonda_core::sink::SinkConfig {
         sonda_core::sink::SinkConfig::Kafka {
-            brokers: String::new(), // empty → immediate parse error, no timeout
+            brokers: String::new(), // empty -> immediate parse error, no timeout
             topic: "sonda-matrix-test".to_string(),
+            retry: None,
+            tls: None,
+            sasl: None,
         }
     }
 
@@ -888,7 +891,7 @@ mod otlp_matrix {
 #[test]
 fn prometheus_multi_event_pipeline_accumulates_correct_lines() {
     let config = EncoderConfig::PrometheusText { precision: None };
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut sink = MemorySink::new();
 
     for i in 0..5u64 {
@@ -919,7 +922,7 @@ fn influx_multi_event_pipeline_accumulates_correct_lines() {
         field_key: None,
         precision: None,
     };
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut sink = MemorySink::new();
 
     for i in 0..5u64 {
@@ -947,7 +950,7 @@ fn influx_multi_event_pipeline_accumulates_correct_lines() {
 #[test]
 fn json_multi_event_pipeline_accumulates_correct_lines() {
     let config = EncoderConfig::JsonLines { precision: None };
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut sink = MemorySink::new();
 
     for i in 0..5u64 {
@@ -1192,7 +1195,7 @@ fn yaml_json_x_kafka_deserializes() {
 /// End-to-end helper: encode an event with the given config and write to a
 /// MemorySink, verifying the output is non-empty and newline-terminated.
 fn assert_encoder_produces_output(config: &EncoderConfig) {
-    let encoder = create_encoder(config);
+    let encoder = create_encoder(config).expect("encoder factory must succeed");
     let event = test_event();
     let mut buf = Vec::new();
     encoder.encode_metric(&event, &mut buf).unwrap();
@@ -1247,7 +1250,7 @@ fn regression_prometheus_x_memory_exact_bytes() {
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
 
     let mut sink = MemorySink::new();
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut buf = Vec::new();
     encoder.encode_metric(&event, &mut buf).unwrap();
     sink.write(&buf).unwrap();
@@ -1269,7 +1272,7 @@ fn regression_influx_x_memory_exact_bytes() {
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
 
     let mut sink = MemorySink::new();
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut buf = Vec::new();
     encoder.encode_metric(&event, &mut buf).unwrap();
     sink.write(&buf).unwrap();
@@ -1288,7 +1291,7 @@ fn regression_json_x_memory_exact_bytes() {
     let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
 
     let mut sink = MemorySink::new();
-    let encoder = create_encoder(&config);
+    let encoder = create_encoder(&config).unwrap();
     let mut buf = Vec::new();
     encoder.encode_metric(&event, &mut buf).unwrap();
     sink.write(&buf).unwrap();

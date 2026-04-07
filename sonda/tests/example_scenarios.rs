@@ -180,7 +180,7 @@ fn basic_metrics_yaml_factories_all_succeed() {
     );
 
     // Encoder factory must succeed.
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
 
     // Sink factory must succeed.
     let _sink = create_sink(&config.sink, None)
@@ -312,7 +312,7 @@ fn simple_constant_yaml_factories_all_succeed() {
     );
 
     // Encoder factory must succeed.
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
 
     // Sink factory must succeed.
     let _sink = create_sink(&config.sink, None)
@@ -383,7 +383,7 @@ fn cardinality_spike_yaml_factories_all_succeed() {
         "generator.value(0) must be finite, got {value}"
     );
 
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
     let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for cardinality-spike.yaml: {e}"));
 }
@@ -422,7 +422,7 @@ fn dynamic_labels_fleet_yaml_factories_all_succeed() {
     let v = gen.value(0);
     assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
 
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
     let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-fleet.yaml: {e}"));
 }
@@ -475,7 +475,7 @@ fn dynamic_labels_regions_yaml_factories_all_succeed() {
     let v = gen.value(0);
     assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
 
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
     let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-regions.yaml: {e}"));
 }
@@ -535,7 +535,7 @@ fn dynamic_labels_multi_yaml_factories_all_succeed() {
     let v = gen.value(0);
     assert!(v.is_finite(), "generator.value(0) must be finite, got {v}");
 
-    let _enc = create_encoder(&config.encoder);
+    let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
     let _sink = create_sink(&config.sink, None)
         .unwrap_or_else(|e| panic!("sink factory failed for dynamic-labels-multi.yaml: {e}"));
 }
@@ -582,7 +582,7 @@ fn all_example_yamls_pass_full_round_trip() {
             v.is_finite(),
             "{filename}: generator.value(0) must be finite, got {v}"
         );
-        let _enc = create_encoder(&config.encoder);
+        let _enc = create_encoder(&config.encoder).expect("encoder factory must succeed");
         let _sink = create_sink(&config.sink, None)
             .unwrap_or_else(|e| panic!("{filename}: sink factory failed: {e}"));
     }

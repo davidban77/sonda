@@ -79,7 +79,7 @@ pub fn run_with_sink(
     let generator = create_generator(&config.generator, config.rate)?;
     let generator =
         crate::generator::wrap_with_jitter(generator, config.base.jitter, config.base.jitter_seed);
-    let encoder = create_encoder(&config.encoder);
+    let encoder = create_encoder(&config.encoder)?;
 
     // Build the label set from the config's optional HashMap, wrapped in Arc
     // so the hot loop can share it across ticks without deep-cloning the BTreeMap.

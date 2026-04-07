@@ -87,7 +87,7 @@ pub fn run_with_sink(
         config.rate,
     );
 
-    let encoder = create_encoder(&config.encoder);
+    let encoder = create_encoder(&config.encoder)?;
 
     // Build the base label set from config.
     let labels: Arc<Labels> = {

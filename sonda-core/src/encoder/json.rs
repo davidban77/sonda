@@ -525,7 +525,7 @@ mod tests {
         use crate::encoder::{create_encoder, EncoderConfig};
 
         let config = EncoderConfig::JsonLines { precision: None };
-        let encoder = create_encoder(&config);
+        let encoder = create_encoder(&config).unwrap();
 
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("up", 1.0, &[], ts);
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn prometheus_encoder_encode_log_still_returns_not_supported_after_slice_2_3() {
         use crate::encoder::{create_encoder, EncoderConfig};
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None });
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
         let ts = UNIX_EPOCH + Duration::from_millis(1_774_008_000_000);
         let event = make_log_event(crate::model::log::Severity::Info, "should fail", &[], ts);
         let mut buf = Vec::new();

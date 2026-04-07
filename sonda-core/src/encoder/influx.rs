@@ -496,7 +496,7 @@ mod tests {
             field_key: None,
             precision: None,
         };
-        let enc = create_encoder(&config);
+        let enc = create_encoder(&config).unwrap();
         let labels = Labels::from_pairs(&[]).unwrap();
         let ts = UNIX_EPOCH + Duration::from_nanos(1_000_000_000);
         let event = MetricEvent::with_timestamp("up".to_string(), 1.0, labels, ts).unwrap();
@@ -512,7 +512,7 @@ mod tests {
             field_key: Some("count".to_string()),
             precision: None,
         };
-        let enc = create_encoder(&config);
+        let enc = create_encoder(&config).unwrap();
         let labels = Labels::from_pairs(&[]).unwrap();
         let ts = UNIX_EPOCH + Duration::from_nanos(1_000_000_000);
         let event = MetricEvent::with_timestamp("up".to_string(), 5.0, labels, ts).unwrap();
