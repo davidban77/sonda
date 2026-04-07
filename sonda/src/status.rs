@@ -760,6 +760,9 @@ mod tests {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-events".to_string(),
+            retry: None,
+            tls: None,
+            sasl: None,
         };
         assert_eq!(sink_display(&config), "kafka: sonda-events");
     }

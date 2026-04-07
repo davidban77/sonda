@@ -1,0 +1,40 @@
+# kafka-tls.yaml
+#
+# Publishes a constant metric to a TLS-secured Kafka broker with SASL PLAIN
+# authentication at 10 events/sec for 30 seconds.
+#
+# This demonstrates the TLS and SASL configuration options for the Kafka sink,
+# as required by managed Kafka services such as Confluent Cloud, AWS MSK, and
+# Aiven.
+#
+# Prerequisites:
+#   A Kafka broker must be reachable at broker.example.com:9093 with TLS
+#   enabled and SASL PLAIN authentication configured.
+#
+# Usage:
+#   sonda metrics --scenario examples/kafka-tls.yaml
+
+name: kafka_tls_example
+rate: 10.0
+duration: 30s
+
+generator:
+  type: constant
+  value: 42.0
+
+labels:
+  env: staging
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: kafka
+  brokers: "broker.example.com:9093"
+  topic: sonda-metrics
+  tls:
+    enabled: true
+  sasl:
+    mechanism: PLAIN
+    username: sonda
+    password: changeme

@@ -687,8 +687,11 @@ mod kafka_matrix {
 
     fn unreachable_kafka_config() -> sonda_core::sink::SinkConfig {
         sonda_core::sink::SinkConfig::Kafka {
-            brokers: String::new(), // empty → immediate parse error, no timeout
+            brokers: String::new(), // empty -> immediate parse error, no timeout
             topic: "sonda-matrix-test".to_string(),
+            retry: None,
+            tls: None,
+            sasl: None,
         }
     }
 

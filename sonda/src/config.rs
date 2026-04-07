@@ -338,6 +338,8 @@ fn build_sink_config(
                         .expect("validated: --topic required for kafka")
                         .to_string(),
                     retry: None,
+                    tls: None,
+                    sasl: None,
                 })
             }
             #[cfg(not(feature = "kafka"))]
@@ -3732,7 +3734,7 @@ mod tests {
         };
         let config = load_config(&args).expect("kafka sink should produce valid config");
         match &config.sink {
-            SinkConfig::Kafka { brokers, topic } => {
+            SinkConfig::Kafka { brokers, topic, .. } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
                 assert_eq!(topic, "telemetry");
             }
@@ -4118,7 +4120,7 @@ mod tests {
         };
         let config = load_log_config(&args).expect("logs kafka sink should work");
         match &config.sink {
-            SinkConfig::Kafka { brokers, topic } => {
+            SinkConfig::Kafka { brokers, topic, .. } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
                 assert_eq!(topic, "test");
             }

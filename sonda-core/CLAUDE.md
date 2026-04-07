@@ -96,7 +96,7 @@ src/
 |---------|---------|-------------|
 | `config` | yes | Enables `serde::Deserialize` impls on all config types and pulls in `serde_yaml_ng` for YAML parsing. Disable for library consumers who construct configs in code and do not need YAML/JSON deserialization. |
 | `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
-| `kafka` | no | Enables `rskafka` + `tokio` for the Kafka sink. |
+| `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |
 | `otlp` | no | Enables `tonic` + `prost` + `tokio` + `bytes` + `http` for the OTLP encoder and gRPC sink. |
 

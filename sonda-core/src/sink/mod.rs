@@ -34,6 +34,40 @@ pub trait Sink: Send + Sync {
     fn flush(&mut self) -> Result<(), SondaError>;
 }
 
+/// TLS configuration for Kafka broker connections.
+///
+/// When `enabled` is `true`, the Kafka sink connects to brokers over TLS.
+/// An optional `ca_cert` path can be provided to trust a custom or self-signed
+/// CA certificate. When `ca_cert` is omitted, Mozilla's bundled root
+/// certificates are used via [`webpki_roots`].
+#[cfg(feature = "kafka")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct KafkaTlsConfig {
+    /// Enable TLS for broker connections. Default: `false`.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub enabled: bool,
+    /// Optional path to a PEM-encoded CA certificate file for custom or
+    /// self-signed CAs. When omitted, system root certificates are used.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub ca_cert: Option<String>,
+}
+
+/// SASL authentication configuration for Kafka broker connections.
+///
+/// Supported mechanisms are `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
+#[cfg(feature = "kafka")]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+pub struct KafkaSaslConfig {
+    /// SASL mechanism: `"PLAIN"`, `"SCRAM-SHA-256"`, or `"SCRAM-SHA-512"`.
+    pub mechanism: String,
+    /// SASL username.
+    pub username: String,
+    /// SASL password.
+    pub password: String,
+}
+
 /// Configuration selecting which sink to use for a scenario.
 ///
 /// This enum is serde-deserializable from YAML scenario files.
@@ -163,6 +197,14 @@ pub enum SinkConfig {
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
+
+        /// Optional TLS configuration for encrypted broker connections.
+        #[cfg_attr(feature = "config", serde(default))]
+        tls: Option<KafkaTlsConfig>,
+
+        /// Optional SASL authentication configuration.
+        #[cfg_attr(feature = "config", serde(default))]
+        sasl: Option<KafkaSaslConfig>,
     },
 
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
@@ -284,12 +326,20 @@ pub fn create_sink(
             brokers,
             topic,
             retry: retry_cfg,
+            tls,
+            sasl,
         } => {
             let rp = retry_cfg
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(kafka::KafkaSink::new(brokers, topic, rp)?))
+            Ok(Box::new(kafka::KafkaSink::new(
+                brokers,
+                topic,
+                rp,
+                tls.as_ref(),
+                sasl.as_ref(),
+            )?))
         }
         #[cfg(feature = "http")]
         SinkConfig::Loki {
@@ -671,6 +721,8 @@ sink:
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
             retry: None,
+            tls: None,
+            sasl: None,
         };
         let cloned = config.clone();
         assert!(
@@ -697,6 +749,8 @@ sink:
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
             retry: None,
+            tls: None,
+            sasl: None,
         };
         let result = create_sink(&config, None);
         assert!(
@@ -713,6 +767,8 @@ sink:
             brokers: String::new(),
             topic: "sonda-test".to_string(),
             retry: None,
+            tls: None,
+            sasl: None,
         };
         let result = create_sink(&config, None);
         assert!(
