@@ -14,13 +14,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser;
+use owo_colors::OwoColorize;
+use owo_colors::Stream::Stderr;
 
 use cli::{Cli, Commands, Verbosity};
 use sonda_core::PreparedEntry;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("error: {err:#}");
+        let style = owo_colors::Style::new().bold().red();
+        eprintln!(
+            "{} {err:#}",
+            "error:".if_supports_color(Stderr, |t| t.style(style))
+        );
         process::exit(1);
     }
 }
@@ -57,11 +63,12 @@ fn run() -> anyhow::Result<()> {
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
-                status::print_dry_run_ok();
+                status::print_dry_run_ok(prepared.len());
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
+                status::print_version();
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
@@ -101,11 +108,12 @@ fn run() -> anyhow::Result<()> {
 
             if cli.dry_run {
                 status::print_config(&p.entry);
-                status::print_dry_run_ok();
+                status::print_dry_run_ok(1);
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
+                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -136,11 +144,12 @@ fn run() -> anyhow::Result<()> {
 
             if cli.dry_run {
                 status::print_config(&p.entry);
-                status::print_dry_run_ok();
+                status::print_dry_run_ok(1);
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
+                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -171,11 +180,12 @@ fn run() -> anyhow::Result<()> {
 
             if cli.dry_run {
                 status::print_config(&p.entry);
-                status::print_dry_run_ok();
+                status::print_dry_run_ok(1);
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
+                status::print_version();
                 status::print_config(&p.entry);
             }
 
@@ -206,11 +216,12 @@ fn run() -> anyhow::Result<()> {
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
-                status::print_dry_run_ok();
+                status::print_dry_run_ok(prepared.len());
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
+                status::print_version();
                 for p in &prepared {
                     status::print_config(&p.entry);
                 }
@@ -252,24 +263,46 @@ fn run_scenarios_command(
                 return Ok(());
             }
 
-            // Print a formatted table to stdout.
-            let header_name = "NAME";
-            let header_cat = "CATEGORY";
-            let header_sig = "SIGNAL";
-            let header_desc = "DESCRIPTION";
-            println!(
-                "{:<28} {:<18} {:<12} {}",
-                header_name, header_cat, header_sig, header_desc
-            );
-            for s in &items {
+            if list_args.json {
+                // JSON array output to stdout.
+                let entries: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "category": s.category,
+                            "signal_type": s.signal_type,
+                            "description": s.description,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries)
+                        .expect("JSON serialization of builtin scenarios cannot fail")
+                );
+            } else {
+                // Print a formatted table to stdout with a bold header row.
+                use owo_colors::Stream::Stdout;
+
+                let header_name = "NAME".if_supports_color(Stdout, |t| t.bold());
+                let header_cat = "CATEGORY".if_supports_color(Stdout, |t| t.bold());
+                let header_sig = "SIGNAL".if_supports_color(Stdout, |t| t.bold());
+                let header_desc = "DESCRIPTION".if_supports_color(Stdout, |t| t.bold());
                 println!(
                     "{:<28} {:<18} {:<12} {}",
-                    s.name, s.category, s.signal_type, s.description
+                    header_name, header_cat, header_sig, header_desc
                 );
+                for s in &items {
+                    println!(
+                        "{:<28} {:<18} {:<12} {}",
+                        s.name, s.category, s.signal_type, s.description
+                    );
+                }
             }
         }
         ScenariosAction::Show(ref show_args) => {
-            let yaml = scenarios::get_yaml(&show_args.name).ok_or_else(|| {
+            let scenario = scenarios::get(&show_args.name).ok_or_else(|| {
                 let names = scenarios::available_names();
                 anyhow::anyhow!(
                     "unknown scenario {:?}; available scenarios: {}",
@@ -277,6 +310,9 @@ fn run_scenarios_command(
                     names.join(", ")
                 )
             })?;
+            status::print_show_header(scenario.name, scenario.category, scenario.signal_type);
+            let yaml = scenarios::get_yaml(&show_args.name)
+                .expect("scenario must exist after get() succeeded");
             print!("{yaml}");
         }
         ScenariosAction::Run(ref run_args) => {
@@ -313,11 +349,12 @@ fn run_builtin_scenario(
         for p in &prepared {
             status::print_config(&p.entry);
         }
-        status::print_dry_run_ok();
+        status::print_dry_run_ok(prepared.len());
         return Ok(());
     }
 
     if verbosity == Verbosity::Verbose {
+        status::print_version();
         for p in &prepared {
             status::print_config(&p.entry);
         }

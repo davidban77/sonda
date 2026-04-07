@@ -12,7 +12,7 @@ use clap::{Args, Parser, Subcommand};
 /// Generate realistic observability signals (metrics, logs, traces) for
 /// testing pipelines, validating ingest paths, and simulating failure scenarios.
 #[derive(Debug, Parser)]
-#[command(name = "sonda", version, about = "Synthetic telemetry generator")]
+#[command(name = "sonda", version, about = "Synthetic telemetry generator", styles = clap_styles())]
 pub struct Cli {
     /// Suppress all status output (errors are still printed).
     #[arg(short, long, global = true, conflicts_with = "verbose")]
@@ -680,6 +680,13 @@ pub struct ScenariosListArgs {
     /// `application`, `observability`).
     #[arg(long)]
     pub category: Option<String>,
+
+    /// Output the scenario list as a JSON array instead of a table.
+    ///
+    /// Each element contains `name`, `category`, `signal_type`, and
+    /// `description` fields.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `sonda scenarios show`.
@@ -714,6 +721,23 @@ pub struct ScenariosRunArgs {
     /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
     #[arg(long)]
     pub encoder: Option<String>,
+}
+
+/// Build clap help styling for the CLI.
+///
+/// Returns a [`clap::builder::styling::Styles`] with colored headers, usage
+/// patterns, flag names, and placeholders that match the conventions of modern
+/// Rust CLIs like `cargo`.
+pub fn clap_styles() -> clap::builder::styling::Styles {
+    use clap::builder::styling::{AnsiColor, Style, Styles};
+
+    Styles::styled()
+        .header(Style::new().bold().underline())
+        .usage(Style::new().bold())
+        .literal(Style::new().fg_color(Some(AnsiColor::Cyan.into())).bold())
+        .placeholder(Style::new().fg_color(Some(AnsiColor::Green.into())))
+        .valid(Style::new().fg_color(Some(AnsiColor::Green.into())))
+        .invalid(Style::new().fg_color(Some(AnsiColor::Red.into())))
 }
 
 /// Parse a `key=value` label string into a `(String, String)` pair.
@@ -1041,5 +1065,69 @@ mod tests {
     fn cli_scenarios_requires_action() {
         let result = Cli::try_parse_from(["sonda", "scenarios"]);
         assert!(result.is_err(), "scenarios without action must fail");
+    }
+
+    // ---- clap_styles: returns valid styles ------------------------------------
+
+    #[test]
+    fn clap_styles_returns_valid_styles() {
+        // The function must return without panicking and produce a Styles
+        // instance that can be used with clap.
+        let _styles = clap_styles();
+    }
+
+    // ---- --json flag on scenarios list ----------------------------------------
+
+    #[test]
+    fn cli_scenarios_list_json_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "scenarios", "list", "--json"])
+            .expect("--json flag should parse");
+        match cli.command {
+            Commands::Scenarios(ref args) => match args.action {
+                ScenariosAction::List(ref list_args) => {
+                    assert!(list_args.json, "--json must be true");
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_list_json_flag_defaults_to_false() {
+        let cli = Cli::try_parse_from(["sonda", "scenarios", "list"])
+            .expect("list without --json should parse");
+        match cli.command {
+            Commands::Scenarios(ref args) => match args.action {
+                ScenariosAction::List(ref list_args) => {
+                    assert!(!list_args.json, "--json must default to false");
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_list_json_and_category_combined() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "scenarios",
+            "list",
+            "--json",
+            "--category",
+            "infrastructure",
+        ])
+        .expect("--json + --category should parse together");
+        match cli.command {
+            Commands::Scenarios(ref args) => match args.action {
+                ScenariosAction::List(ref list_args) => {
+                    assert!(list_args.json);
+                    assert_eq!(list_args.category.as_deref(), Some("infrastructure"));
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
     }
 }

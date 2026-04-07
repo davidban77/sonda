@@ -1930,6 +1930,7 @@ dependencies = [
  "ctrlc",
  "owo-colors",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "sonda-core",
  "tempfile",
