@@ -42,6 +42,65 @@ docker run --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
 docker run -p 8080:8080 -v ./examples:/scenarios ghcr.io/davidban77/sonda:latest
 ```
 
+## Authentication
+
+You can protect the server's `/scenarios/*` endpoints with API key authentication.
+Pass the key through the `SONDA_API_KEY` environment variable -- this works the same
+way as the `--api-key` CLI flag.
+
+=== "`docker run`"
+
+    ```bash
+    docker run -p 8080:8080 \
+      -e SONDA_API_KEY=my-secret-key \
+      ghcr.io/davidban77/sonda:latest
+    ```
+
+=== "Docker Compose"
+
+    ```yaml title="docker-compose.yml"
+    services:
+      sonda-server:
+        image: ghcr.io/davidban77/sonda:latest
+        ports:
+          - "8080:8080"
+        environment:
+          - SONDA_API_KEY=my-secret-key
+    ```
+
+Once enabled, all `/scenarios/*` requests require a `Bearer` token. The `/health`
+endpoint stays public so health probes keep working.
+
+```bash
+# Authenticated request
+curl -H "Authorization: Bearer my-secret-key" \
+  http://localhost:8080/scenarios
+
+# Health check (no auth needed)
+curl http://localhost:8080/health
+```
+
+!!! warning "Don't embed secrets in plain text"
+    The inline examples above are fine for local development. For production, use
+    Docker secrets or a `.env` file instead of hardcoding the key in your compose file.
+
+    ```bash title=".env"
+    SONDA_API_KEY=your-production-key
+    ```
+
+    ```yaml title="docker-compose.yml"
+    services:
+      sonda-server:
+        image: ghcr.io/davidban77/sonda:latest
+        ports:
+          - "8080:8080"
+        env_file:
+          - .env
+    ```
+
+See [Server API -- Authentication](sonda-server.md#authentication) for the full reference,
+including error responses, protected vs. public endpoints, and Prometheus scrape configuration.
+
 ## Docker Compose Stack
 
 A `docker-compose.yml` ships with a full observability stack for demos and testing.
