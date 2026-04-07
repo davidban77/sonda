@@ -24,6 +24,16 @@ server:
   port: 8080
   # Bind address for the sonda-server.
   bind: "0.0.0.0"
+  # API key authentication for /scenarios/* endpoints.
+  auth:
+    # Enable API key authentication (Bearer token via SONDA_API_KEY).
+    enabled: false
+    # Name of an existing Kubernetes Secret containing the API key.
+    # The chart does NOT create a Secret — provide one via kubectl, external-secrets,
+    # sealed-secrets, or any other Secret management tool.
+    existingSecret: ""
+    # Key within the Secret that holds the API key value.
+    secretKey: "api-key"
 
 service:
   # Kubernetes Service type.
