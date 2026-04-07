@@ -10,7 +10,7 @@ command line. If a scenario cannot be expressed in YAML, it cannot be run via th
 two surfaces in sync and prevents behavior drift.
 
 No business logic lives in this crate. All scenario validation and launch logic is delegated to
-sonda-core via `validate_entry` and `launch_scenario`. The server crate is pure HTTP plumbing.
+sonda-core via `prepare_entries` and `launch_scenario`. The server crate is pure HTTP plumbing.
 
 ## Module Layout
 

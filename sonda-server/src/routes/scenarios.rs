@@ -252,10 +252,10 @@ fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, String> {
 ///
 /// This is an internal helper used by [`parse_yaml_body`] as a fallback when
 /// the body does not contain a multi-scenario `scenarios:` array.
-fn parse_yaml_single_entry(body: &[u8]) -> Result<ScenarioEntry, String> {
-    let text =
-        std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
-
+///
+/// Accepts a `&str` because the caller ([`parse_yaml_body`]) already performs
+/// UTF-8 validation — no need to repeat it here.
+fn parse_yaml_single_entry(text: &str) -> Result<ScenarioEntry, String> {
     // Strategy 1: tagged ScenarioEntry (has `signal_type: metrics|logs`).
     if let Ok(entry) = serde_yaml_ng::from_str::<ScenarioEntry>(text) {
         return Ok(entry);
@@ -324,7 +324,7 @@ fn parse_yaml_body(body: &[u8]) -> Result<ParsedBody, String> {
     }
 
     // Strategy 2: single scenario (all existing fallback strategies).
-    parse_yaml_single_entry(body).map(|e| ParsedBody::Single(Box::new(e)))
+    parse_yaml_single_entry(text).map(|e| ParsedBody::Single(Box::new(e)))
 }
 
 /// Parse body bytes as JSON, returning either a multi-scenario batch or a
@@ -1766,7 +1766,7 @@ sink:
     /// parse_yaml_single_entry handles valid bare metrics config (no signal_type tag).
     #[test]
     fn parse_yaml_single_entry_accepts_bare_metrics_config() {
-        let result = parse_yaml_single_entry(VALID_METRICS_YAML.as_bytes());
+        let result = parse_yaml_single_entry(VALID_METRICS_YAML);
         assert!(
             result.is_ok(),
             "parse_yaml_single_entry must accept bare metrics YAML: {result:?}"
@@ -1780,7 +1780,7 @@ sink:
     /// parse_yaml_single_entry handles valid bare logs config (no signal_type tag).
     #[test]
     fn parse_yaml_single_entry_accepts_bare_logs_config() {
-        let result = parse_yaml_single_entry(VALID_LOGS_YAML.as_bytes());
+        let result = parse_yaml_single_entry(VALID_LOGS_YAML);
         assert!(
             result.is_ok(),
             "parse_yaml_single_entry must accept bare logs YAML: {result:?}"
@@ -1794,7 +1794,7 @@ sink:
     /// parse_yaml_single_entry handles tagged ScenarioEntry format.
     #[test]
     fn parse_yaml_single_entry_accepts_tagged_entry() {
-        let result = parse_yaml_single_entry(VALID_TAGGED_METRICS_YAML.as_bytes());
+        let result = parse_yaml_single_entry(VALID_TAGGED_METRICS_YAML);
         assert!(
             result.is_ok(),
             "parse_yaml_single_entry must accept tagged ScenarioEntry YAML: {result:?}"
@@ -1808,7 +1808,7 @@ sink:
     /// parse_yaml_single_entry returns Err for garbage input.
     #[test]
     fn parse_yaml_single_entry_rejects_garbage() {
-        let result = parse_yaml_single_entry(b"not valid: [}{");
+        let result = parse_yaml_single_entry("not valid: [}{");
         assert!(
             result.is_err(),
             "parse_yaml_single_entry must reject garbage input"

@@ -65,7 +65,7 @@ multiple scenarios concurrently from a single YAML file whose `scenarios:` list 
 `signal_type: metrics`, `logs`, `histogram`, or `summary` entries. `scenarios` provides access
 to the built-in scenario library: `list` to browse, `show` to dump YAML, `run` to execute.
 
-All subcommands go through the unified `sonda_core::validate_entry` +
+All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
 
 The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total
