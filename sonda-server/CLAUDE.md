@@ -24,15 +24,18 @@ src/
 │   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*)
 │                         sub-routers; applies auth middleware via route_layer on protected routes
 │   ├── health.rs       ← GET /health → {"status": "ok"}
-│   └── scenarios.rs    ← POST /scenarios (create), GET /scenarios (list),
+│   └── scenarios.rs    ← POST /scenarios (create single or multi-scenario batch),
+│                         GET /scenarios (list),
 │                         GET /scenarios/{id} (inspect with stats),
 │                         GET /scenarios/{id}/stats (detailed live stats),
 │                         GET /scenarios/{id}/metrics (Prometheus text scrape),
 │                         DELETE /scenarios/{id} (stop, return final stats, remove from map)
-│                         parse_body(), parse_yaml_body(), parse_json_body(),
-│                         post_scenario(), list_scenarios(), get_scenario(),
-│                         get_scenario_stats(), get_scenario_metrics(),
-│                         delete_scenario()
+│                         parse_body() → ParsedBody (Single|Multi),
+│                         parse_yaml_body_v2(), parse_json_body_v2(),
+│                         post_scenario() → dispatches to post_single_scenario()
+│                         or post_multi_scenario(), list_scenarios(),
+│                         get_scenario(), get_scenario_stats(),
+│                         get_scenario_metrics(), delete_scenario()
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
 
 tests/
@@ -51,7 +54,7 @@ tests/
 | Method | Path                    | Description                                             |
 |--------|-------------------------|---------------------------------------------------------|
 | GET    | /health                 | Health check — always returns 200 OK                    |
-| POST   | /scenarios              | Start a new scenario from YAML or JSON body, returns ID |
+| POST   | /scenarios              | Start scenario(s) from YAML or JSON body. Accepts both single-scenario and multi-scenario (`scenarios:` array) bodies. Single returns `{id, name, status}`, multi returns `{scenarios: [{id, name, status}, ...]}`. |
 | GET    | /scenarios              | List all scenarios with id, name, status, elapsed       |
 | GET    | /scenarios/{id}         | Inspect a scenario: detail + live stats                 |
 | GET    | /scenarios/{id}/stats   | Detailed live stats: rate, target_rate, events, gap/burst state, uptime |

@@ -33,7 +33,7 @@ pub use model::metric::MetricEvent;
 pub use model::metric::ValidatedMetricName;
 pub use scenarios::BuiltinScenario;
 pub use schedule::handle::ScenarioHandle;
-pub use schedule::launch::{launch_scenario, validate_entry};
+pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::ScenarioStats;
 
 /// Top-level error type for sonda-core.

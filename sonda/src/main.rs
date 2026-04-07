@@ -16,7 +16,7 @@ use std::time::Instant;
 use clap::Parser;
 
 use cli::{Cli, Commands, Verbosity};
-use sonda_core::ScenarioEntry;
+use sonda_core::PreparedEntry;
 
 fn main() {
     if let Err(err) = run() {
@@ -55,34 +55,32 @@ fn run() -> anyhow::Result<()> {
                 .map(sonda_core::ScenarioEntry::Metrics)
                 .collect();
 
-            for (i, entry) in entries.iter().enumerate() {
-                sonda_core::validate_entry(entry)
-                    .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
-            }
+            let prepared =
+                sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
             if cli.dry_run {
-                for entry in &entries {
-                    status::print_config(entry);
+                for p in &prepared {
+                    status::print_config(&p.entry);
                 }
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                for entry in &entries {
-                    status::print_config(entry);
+                for p in &prepared {
+                    status::print_config(&p.entry);
                 }
             }
 
-            if entries.len() == 1 {
+            if prepared.len() == 1 {
                 // Single scenario — original code path.
-                let entry = entries.into_iter().next().expect("len checked above");
-                status::print_start(&entry, verbosity);
+                let p = prepared.into_iter().next().expect("len checked above");
+                status::print_start(&p.entry, verbosity);
                 let mut handle = sonda_core::launch_scenario(
                     "cli-metrics".to_string(),
-                    entry,
+                    p.entry,
                     Arc::clone(&running),
-                    None,
+                    p.start_delay,
                 )
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let join_result = handle.join(None);
@@ -95,32 +93,33 @@ fn run() -> anyhow::Result<()> {
                 join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
             } else {
                 // Multi-column expansion — launch all scenarios concurrently.
-                launch_and_join_scenarios("cli-metrics", entries, &running, verbosity, |_, _| {
-                    Ok(None)
-                })?;
+                launch_and_join_prepared("cli-metrics", prepared, &running, verbosity)?;
             }
         }
         Commands::Logs(ref args) => {
             let config = config::load_log_config(args)?;
             let entry = sonda_core::ScenarioEntry::Logs(config);
-            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            let mut prepared =
+                sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let p = prepared.remove(0);
 
             if cli.dry_run {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
             }
 
-            status::print_start(&entry, verbosity);
+            status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-logs".to_string(),
-                entry,
+                p.entry,
                 Arc::clone(&running),
-                None,
+                p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let join_result = handle.join(None);
@@ -135,24 +134,27 @@ fn run() -> anyhow::Result<()> {
         Commands::Histogram(ref args) => {
             let config = config::load_histogram_config(args)?;
             let entry = sonda_core::ScenarioEntry::Histogram(config);
-            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            let mut prepared =
+                sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let p = prepared.remove(0);
 
             if cli.dry_run {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
             }
 
-            status::print_start(&entry, verbosity);
+            status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-histogram".to_string(),
-                entry,
+                p.entry,
                 Arc::clone(&running),
-                None,
+                p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let join_result = handle.join(None);
@@ -167,24 +169,27 @@ fn run() -> anyhow::Result<()> {
         Commands::Summary(ref args) => {
             let config = config::load_summary_config(args)?;
             let entry = sonda_core::ScenarioEntry::Summary(config);
-            sonda_core::validate_entry(&entry).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            let mut prepared =
+                sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let p = prepared.remove(0);
 
             if cli.dry_run {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                status::print_config(&entry);
+                status::print_config(&p.entry);
             }
 
-            status::print_start(&entry, verbosity);
+            status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-summary".to_string(),
-                entry,
+                p.entry,
                 Arc::clone(&running),
-                None,
+                p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
             let join_result = handle.join(None);
@@ -199,48 +204,24 @@ fn run() -> anyhow::Result<()> {
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
 
-            // Expand multi-column csv_replay entries into N independent scenarios.
-            let mut expanded_scenarios: Vec<sonda_core::ScenarioEntry> = Vec::new();
-            for entry in config.scenarios {
-                let entries =
-                    sonda_core::expand_entry(entry).map_err(|e| anyhow::anyhow!("{}", e))?;
-                expanded_scenarios.extend(entries);
-            }
-            let config = sonda_core::MultiScenarioConfig {
-                scenarios: expanded_scenarios,
-            };
-
-            // Validate each scenario entry before launching any of them.
-            for (i, entry) in config.scenarios.iter().enumerate() {
-                sonda_core::validate_entry(entry)
-                    .map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
-            }
+            let prepared = sonda_core::prepare_entries(config.scenarios)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
 
             if cli.dry_run {
-                for entry in &config.scenarios {
-                    status::print_config(entry);
+                for p in &prepared {
+                    status::print_config(&p.entry);
                 }
                 status::print_dry_run_ok();
                 return Ok(());
             }
 
             if verbosity == Verbosity::Verbose {
-                for entry in &config.scenarios {
-                    status::print_config(entry);
+                for p in &prepared {
+                    status::print_config(&p.entry);
                 }
             }
 
-            launch_and_join_scenarios(
-                "cli-run",
-                config.scenarios,
-                &running,
-                verbosity,
-                |i, entry| match entry.phase_offset() {
-                    Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
-                        .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e)),
-                    None => Ok(None),
-                },
-            )?;
+            launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
         }
         Commands::Scenarios(ref args) => {
             run_scenarios_command(args, &cli, verbosity, &running)?;
@@ -331,32 +312,30 @@ fn run_builtin_scenario(
 
     let entries = config::parse_builtin_scenario(scenario, args)?;
 
-    for (i, entry) in entries.iter().enumerate() {
-        sonda_core::validate_entry(entry).map_err(|e| anyhow::anyhow!("scenario[{}]: {}", i, e))?;
-    }
+    let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if cli_opts.dry_run {
-        for entry in &entries {
-            status::print_config(entry);
+        for p in &prepared {
+            status::print_config(&p.entry);
         }
         status::print_dry_run_ok();
         return Ok(());
     }
 
     if verbosity == Verbosity::Verbose {
-        for entry in &entries {
-            status::print_config(entry);
+        for p in &prepared {
+            status::print_config(&p.entry);
         }
     }
 
-    if entries.len() == 1 {
-        let entry = entries.into_iter().next().expect("len checked above");
-        status::print_start(&entry, verbosity);
+    if prepared.len() == 1 {
+        let p = prepared.into_iter().next().expect("len checked above");
+        status::print_start(&p.entry, verbosity);
         let mut handle = sonda_core::launch_scenario(
             format!("builtin-{}", args.name),
-            entry,
+            p.entry,
             Arc::clone(running),
-            None,
+            p.start_delay,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
         let join_result = handle.join(None);
@@ -368,43 +347,36 @@ fn run_builtin_scenario(
         );
         join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
-        launch_and_join_scenarios(
+        launch_and_join_prepared(
             &format!("builtin-{}", args.name),
-            entries,
+            prepared,
             running,
             verbosity,
-            |i, entry| match entry.phase_offset() {
-                Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
-                    .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e)),
-                None => Ok(None),
-            },
         )?;
     }
 
     Ok(())
 }
 
-/// Launch multiple scenarios concurrently, join them, print per-scenario stop
-/// banners, print an aggregate summary, and return an error if any failed.
+/// Launch multiple prepared scenarios concurrently, join them, print
+/// per-scenario stop banners, print an aggregate summary, and return an error
+/// if any failed.
 ///
-/// Each entry is launched via `sonda_core::launch_scenario`. The optional
-/// `start_delay_fn` computes a per-entry start delay (used by the `run`
-/// subcommand for `phase_offset`); return `Ok(None)` for no delay.
-fn launch_and_join_scenarios(
+/// Each entry is launched via `sonda_core::launch_scenario` with its
+/// pre-resolved `start_delay` from [`PreparedEntry`].
+fn launch_and_join_prepared(
     id_prefix: &str,
-    entries: Vec<ScenarioEntry>,
+    prepared: Vec<PreparedEntry>,
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
-    start_delay_fn: impl Fn(usize, &ScenarioEntry) -> anyhow::Result<Option<std::time::Duration>>,
 ) -> anyhow::Result<()> {
     let run_start = Instant::now();
-    let mut handles = Vec::with_capacity(entries.len());
+    let mut handles = Vec::with_capacity(prepared.len());
 
-    for (i, entry) in entries.into_iter().enumerate() {
-        let start_delay = start_delay_fn(i, &entry)?;
-        status::print_start(&entry, verbosity);
+    for (i, p) in prepared.into_iter().enumerate() {
+        status::print_start(&p.entry, verbosity);
         let id = format!("{id_prefix}-{i}");
-        let handle = sonda_core::launch_scenario(id, entry, Arc::clone(running), start_delay)
+        let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
