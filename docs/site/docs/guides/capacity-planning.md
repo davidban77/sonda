@@ -498,6 +498,69 @@ Run through this checklist for each environment you're sizing:
 
 ---
 
+## Performance baselines
+
+These tables provide baseline estimates for planning Sonda deployments. They represent
+Sonda-side resource usage -- generation rates, memory, and network overhead -- not backend
+capacity.
+
+!!! info "Estimates, not guarantees"
+    Actual numbers depend on your hardware, network conditions, backend performance, and label
+    complexity. Use these as starting points for capacity planning, then validate with the
+    [throughput](#test-throughput-limits) and [cardinality](#find-cardinality-limits) tests above.
+
+### Events per second by generator type
+
+Generation rates on a single CPU core with the `prometheus_text` encoder and `stdout` sink:
+
+| Generator | Approx. events/sec | Notes |
+|-----------|-------------------|-------|
+| `constant` | 50,000+ | Minimal computation per event |
+| `sine` | 50,000+ | Trigonometric calculation adds negligible overhead |
+| `step` | 50,000+ | Simple threshold comparison |
+| `csv_replay` | 10,000--20,000 | Bounded by file I/O and CSV parsing |
+| `histogram` | 5,000--15,000 | Generates multiple lines per tick (buckets + count + sum) |
+| `summary` | 5,000--15,000 | Generates multiple lines per tick (quantiles + count + sum) |
+
+### Memory footprint by cardinality
+
+Sonda-side memory usage. Backend memory is separate and typically much larger.
+
+| Unique series | Approx. memory | Typical use case |
+|---------------|---------------|-----------------|
+| Baseline (no metrics) | ~5 MB | Sonda process overhead |
+| 100 series | ~5 MB | Single-service simulation |
+| 1,000 series | ~8 MB | Small fleet or multi-service test |
+| 10,000 series | ~30 MB | Cardinality stress test or large fleet simulation |
+
+### Network throughput by encoder
+
+Approximate bytes per metric event, before network-level overhead:
+
+| Encoder | Bytes/event | Notes |
+|---------|------------|-------|
+| `prometheus_text` | 100--200 | Human-readable, uncompressed |
+| `json_lines` | 150--250 | JSON overhead from keys and quoting |
+| `remote_write` | 50--80 | Protobuf + Snappy compression |
+| `otlp` | 60--100 | Protobuf + gRPC framing |
+
+Actual size varies with metric name length, number of labels, and value precision.
+
+### Kubernetes resource recommendations
+
+Suggested resource requests for Sonda pods:
+
+| Profile | Event rate | CPU request | Memory request | Use case |
+|---------|-----------|-------------|----------------|----------|
+| Small | up to 100/sec | 100m | 64 Mi | Development, CI pipeline checks |
+| Medium | 100--1,000/sec | 250m | 128 Mi | Integration testing, alert validation |
+| Large | 1,000--10,000/sec | 500m | 256 Mi | Load testing, capacity planning |
+
+Set resource limits 2x above requests to accommodate bursts. For sustained high-cardinality
+tests (10K+ series), monitor actual usage and adjust.
+
+---
+
 ## Quick reference
 
 | Task | Command |
@@ -517,3 +580,4 @@ Run through this checklist for each environment you're sizing:
 - [E2E Testing](e2e-testing.md) -- full Docker Compose test suite
 - [Pipeline Validation](pipeline-validation.md) -- quick smoke tests without Docker
 - [Example Scenarios](examples.md) -- all example scenario files
+- [Troubleshooting](troubleshooting.md) -- common issues and how to fix them
