@@ -1,4 +1,4 @@
-//! Kafka sink -- batches encoded telemetry and delivers it as Kafka records.
+//! Kafka sink — batches encoded telemetry and delivers it as Kafka records.
 //!
 //! Uses [`rskafka`] (pure Rust, no C dependencies) to produce records to a
 //! configured topic and partition. Async operations are driven by a dedicated
@@ -98,8 +98,16 @@ fn build_rustls_config(ca_cert: Option<&str>) -> Result<rustls::ClientConfig, So
             })?;
 
             let certs: Vec<_> = rustls_pemfile::certs(&mut pem_data.as_slice())
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    SondaError::Sink(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "kafka sink: failed to parse certificate in CA cert file '{}': {}",
+                            path, e
+                        ),
+                    ))
+                })?;
 
             if certs.is_empty() {
                 return Err(SondaError::Sink(std::io::Error::new(
@@ -162,12 +170,12 @@ impl KafkaSink {
     ///
     /// # Arguments
     ///
-    /// - `brokers` -- comma-separated list of `host:port` broker addresses,
+    /// - `brokers` — comma-separated list of `host:port` broker addresses,
     ///   e.g. `"127.0.0.1:9092"` or `"broker1:9092,broker2:9092"`.
-    /// - `topic` -- the Kafka topic name to produce records to.
-    /// - `retry_policy` -- optional retry policy for transient produce failures.
-    /// - `tls_config` -- optional TLS configuration for encrypted connections.
-    /// - `sasl_config` -- optional SASL authentication configuration.
+    /// - `topic` — the Kafka topic name to produce records to.
+    /// - `retry_policy` — optional retry policy for transient produce failures.
+    /// - `tls_config` — optional TLS configuration for encrypted connections.
+    /// - `sasl_config` — optional SASL authentication configuration.
     ///
     /// # Errors
     ///
@@ -230,6 +238,14 @@ impl KafkaSink {
 
         // Build optional SASL config.
         let sasl = sasl_config.map(map_sasl_config).transpose()?;
+
+        // Warn when SASL credentials will be sent over an unencrypted connection.
+        if sasl.is_some() && tls_rustls.is_none() {
+            eprintln!(
+                "WARNING: kafka sink: SASL authentication is configured without TLS — \
+                 credentials will be sent in plaintext over the network"
+            );
+        }
 
         let topic_str = topic.to_owned();
         let brokers_str = brokers.to_owned();
@@ -305,7 +321,7 @@ impl KafkaSink {
         match &self.retry_policy {
             Some(policy) => {
                 let policy = policy.clone();
-                // The payload must be cloneable for retries -- Kafka's produce
+                // The payload must be cloneable for retries — Kafka's produce
                 // consumes the Record, so we re-create it on each attempt.
                 policy.execute(
                     || self.do_produce(&payload),
@@ -580,6 +596,32 @@ mod tests {
             "building TLS config with a valid PEM cert should succeed, got: {:?}",
             result.err()
         );
+    }
+
+    #[test]
+    fn build_tls_config_with_corrupt_cert_returns_error() {
+        let tmpdir = std::env::temp_dir();
+        let cert_path = tmpdir.join("sonda-test-corrupt.pem");
+        // A PEM file with a valid header/footer but corrupt base64 body.
+        let corrupt_pem =
+            "-----BEGIN CERTIFICATE-----\n!!INVALID_BASE64!!\n-----END CERTIFICATE-----\n";
+        std::fs::write(&cert_path, corrupt_pem).expect("failed to write corrupt cert");
+
+        let result = build_rustls_config(Some(cert_path.to_str().unwrap()));
+        let _ = std::fs::remove_file(&cert_path);
+
+        match result {
+            Err(SondaError::Sink(ref io_err)) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData);
+                let msg = io_err.to_string();
+                assert!(
+                    msg.contains("failed to parse certificate"),
+                    "error should mention parse failure, got: {msg}"
+                );
+            }
+            Err(ref e) => panic!("expected SondaError::Sink with InvalidData, got: {e:?}"),
+            Ok(_) => panic!("corrupt PEM cert must return error"),
+        }
     }
 
     #[test]

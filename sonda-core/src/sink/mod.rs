@@ -48,7 +48,7 @@ pub struct KafkaTlsConfig {
     #[cfg_attr(feature = "config", serde(default))]
     pub enabled: bool,
     /// Optional path to a PEM-encoded CA certificate file for custom or
-    /// self-signed CAs. When omitted, system root certificates are used.
+    /// self-signed CAs. When omitted, Mozilla's bundled root certificates are used.
     #[cfg_attr(feature = "config", serde(default))]
     pub ca_cert: Option<String>,
 }
@@ -57,7 +57,7 @@ pub struct KafkaTlsConfig {
 ///
 /// Supported mechanisms are `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 #[cfg(feature = "kafka")]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct KafkaSaslConfig {
     /// SASL mechanism: `"PLAIN"`, `"SCRAM-SHA-256"`, or `"SCRAM-SHA-512"`.
@@ -66,6 +66,17 @@ pub struct KafkaSaslConfig {
     pub username: String,
     /// SASL password.
     pub password: String,
+}
+
+#[cfg(feature = "kafka")]
+impl std::fmt::Debug for KafkaSaslConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaSaslConfig")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 /// Configuration selecting which sink to use for a scenario.
@@ -731,6 +742,31 @@ sink:
         );
         let s = format!("{config:?}");
         assert!(s.contains("Kafka"));
+    }
+
+    /// KafkaSaslConfig Debug output must redact the password field to prevent
+    /// accidental credential exposure in logs or error messages.
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn kafka_sasl_config_debug_redacts_password() {
+        let sasl = KafkaSaslConfig {
+            mechanism: "PLAIN".to_string(),
+            username: "alice".to_string(),
+            password: "super-secret-password".to_string(),
+        };
+        let debug_output = format!("{sasl:?}");
+        assert!(
+            debug_output.contains("alice"),
+            "Debug output should contain the username, got: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("super-secret-password"),
+            "Debug output must NOT contain the password in plaintext, got: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("***"),
+            "Debug output should show a redacted password placeholder, got: {debug_output}"
+        );
     }
 
     /// create_sink with an unreachable broker returns Err (not a panic).
