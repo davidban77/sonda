@@ -240,7 +240,8 @@ request_count{hostname="web-0",region="eu-west-1",...} 3
 
 ### Multi-scenario fields
 
-These fields are only meaningful in multi-scenario mode (via `sonda run`). They control temporal
+These fields are only meaningful in multi-scenario mode (via `sonda run` or
+[`POST /scenarios`](../deployment/sonda-server.md#multi-scenario-batch)). They control temporal
 correlation between scenarios.
 
 | Field | Type | Required | Default | Description |
@@ -309,8 +310,9 @@ sonda logs --scenario log-scenario.yaml
 
 ## Multi-scenario files
 
-Run multiple scenarios concurrently from a single file using `sonda run`. Each entry in the
-`scenarios` list must include a `signal_type` field.
+Run multiple scenarios concurrently from a single file using `sonda run` or by POSTing to the
+[Server API](../deployment/sonda-server.md#multi-scenario-batch). Each entry in the `scenarios`
+list must include a `signal_type` field.
 
 | `signal_type` | Description | Config format |
 |---------------|-------------|---------------|

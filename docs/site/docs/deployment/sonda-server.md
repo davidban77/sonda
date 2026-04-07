@@ -67,12 +67,161 @@ Error responses:
     [tutorial](../guides/tutorial.md#long-running-scenarios)
     for a full start and stop example.
 
+### Multi-scenario batch
+
+You can launch multiple scenarios in a single request by wrapping them in a `scenarios` array.
+This is the same format used by [`sonda run`](../configuration/scenario-file.md#multi-scenario-files),
+so you can POST the exact same YAML files you use locally.
+
+=== "YAML"
+
+    ```bash
+    curl -X POST \
+      -H "Content-Type: text/yaml" \
+      --data-binary @examples/multi-scenario.yaml \
+      http://localhost:8080/scenarios
+    ```
+
+    ```yaml title="examples/multi-scenario.yaml"
+    scenarios:
+      - signal_type: metrics
+        name: cpu_usage
+        rate: 100
+        duration: 30s
+        generator:
+          type: sine
+          amplitude: 50
+          period_secs: 60
+          offset: 50
+        encoder:
+          type: prometheus_text
+        sink:
+          type: stdout
+
+      - signal_type: logs
+        name: app_logs
+        rate: 10
+        duration: 30s
+        generator:
+          type: template
+          templates:
+            - message: "Request from {ip} to {endpoint}"
+              field_pools:
+                ip: ["10.0.0.1", "10.0.0.2"]
+                endpoint: ["/api/v1/health", "/api/v1/metrics"]
+          seed: 42
+        encoder:
+          type: json_lines
+        sink:
+          type: stdout
+    ```
+
+=== "JSON"
+
+    ```bash
+    curl -X POST \
+      -H "Content-Type: application/json" \
+      -d @- http://localhost:8080/scenarios <<'EOF'
+    {
+      "scenarios": [
+        {
+          "signal_type": "metrics",
+          "name": "cpu_usage",
+          "rate": 10,
+          "duration": "30s",
+          "generator": { "type": "constant", "value": 42.0 },
+          "encoder": { "type": "prometheus_text" },
+          "sink": { "type": "stdout" }
+        },
+        {
+          "signal_type": "metrics",
+          "name": "memory_usage",
+          "rate": 10,
+          "duration": "30s",
+          "generator": { "type": "constant", "value": 75.0 },
+          "encoder": { "type": "prometheus_text" },
+          "sink": { "type": "stdout" }
+        }
+      ]
+    }
+    EOF
+    ```
+
+The response wraps each launched scenario in a `scenarios` array:
+
+```json
+{
+  "scenarios": [
+    { "id": "a1b2c3d4-...", "name": "cpu_usage", "status": "running" },
+    { "id": "e5f6a7b8-...", "name": "memory_usage", "status": "running" }
+  ]
+}
+```
+
+Each scenario gets its own ID and runs on a separate thread. You manage them
+individually with `GET /scenarios/{id}`, `DELETE /scenarios/{id}`, etc.
+
+!!! info "Single vs. multi response shape"
+    The response format depends on the request body. A single-scenario body
+    returns a flat object (`{"id", "name", "status"}`). A multi-scenario body
+    returns `{"scenarios": [...]}`. Existing single-scenario clients are
+    unaffected.
+
+**Batch error handling** is atomic -- if any entry in the batch fails validation, the
+entire request is rejected and nothing is launched:
+
+| Condition | Status | Behavior |
+|-----------|--------|----------|
+| Empty `scenarios: []` | **400** | Bad request -- at least one scenario required |
+| Any entry fails validation | **422** | Nothing launched, error detail identifies the failing entry |
+| All entries valid | **201** | All scenarios launched and returned |
+
+??? tip "Phase offsets in batch requests"
+    Multi-scenario batches honor `phase_offset` and `clock_group` fields, just like
+    `sonda run`. This lets you create time-correlated scenarios over the API:
+
+    ```yaml
+    scenarios:
+      - signal_type: metrics
+        name: cpu_usage
+        phase_offset: "0s"
+        clock_group: alert-test
+        rate: 1
+        duration: 120s
+        generator:
+          type: sequence
+          values: [20, 20, 95, 95, 95, 20]
+          repeat: true
+        encoder:
+          type: prometheus_text
+        sink:
+          type: stdout
+
+      - signal_type: metrics
+        name: memory_usage
+        phase_offset: "3s"
+        clock_group: alert-test
+        rate: 1
+        duration: 120s
+        generator:
+          type: sequence
+          values: [40, 40, 88, 88, 88, 40]
+          repeat: true
+        encoder:
+          type: prometheus_text
+        sink:
+          type: stdout
+    ```
+
+    The `memory_usage` scenario starts 3 seconds after `cpu_usage`, simulating a
+    cascading failure for compound alert testing.
+
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/scenarios` | Start a scenario from YAML/JSON body |
+| POST | `/scenarios` | Start one or more scenarios from YAML/JSON body |
 | GET | `/scenarios` | List all running scenarios |
 | GET | `/scenarios/{id}` | Inspect a scenario: config, stats, elapsed |
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
