@@ -40,6 +40,12 @@ network-link-failure         network            multi        Link down with traf
 
 Available categories: `infrastructure`, `network`, `application`, `observability`.
 
+For machine-readable output, add `--json` to get a JSON array:
+
+```bash
+sonda scenarios list --json
+```
+
 ## Run a scenario
 
 Pick any scenario and run it directly:

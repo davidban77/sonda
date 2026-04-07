@@ -655,16 +655,18 @@ sonda scenarios <COMMAND>
 List all available built-in scenarios in a formatted table.
 
 ```bash
-sonda scenarios list [--category <CATEGORY>]
+sonda scenarios list [--category <CATEGORY>] [--json]
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
 | `--category <CATEGORY>` | string | Filter by category: `infrastructure`, `network`, `application`, `observability`. |
+| `--json` | flag | Output the list as a JSON array instead of a table. Each element contains `name`, `category`, `signal_type`, and `description` fields. |
 
 ```bash
 sonda scenarios list
 sonda scenarios list --category application
+sonda scenarios list --json
 ```
 
 ### scenarios show
