@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0](https://github.com/davidban77/sonda/compare/v0.8.0...v0.9.0) (2026-04-07)
+
+
+### Features
+
+* add TLS and SASL support for Kafka sink ([#165](https://github.com/davidban77/sonda/issues/165)) ([e2a785e](https://github.com/davidban77/sonda/commit/e2a785ee974ba8c7535e1698762c44fcb2ff1cef))
+
+
+### Documentation
+
+* add troubleshooting guide and performance baselines ([#166](https://github.com/davidban77/sonda/issues/166)) ([8b13c17](https://github.com/davidban77/sonda/commit/8b13c170fb4b8a7260d8032d08364013b0845bf5))
+* trim README to lean overview, move detail to docs site ([#163](https://github.com/davidban77/sonda/issues/163)) ([a8a9204](https://github.com/davidban77/sonda/commit/a8a9204ce2b2b215f29b3c4c9d41cb2157d702c7))
+
 ## [0.8.0](https://github.com/davidban77/sonda/compare/v0.7.0...v0.8.0) (2026-04-06)
 
 
