@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.11.0](https://github.com/davidban77/sonda/compare/v0.10.0...v0.11.0) (2026-04-07)
+
+
+### Features
+
+* add API key authentication for sonda-server ([#169](https://github.com/davidban77/sonda/issues/169)) ([c7f28c1](https://github.com/davidban77/sonda/commit/c7f28c1368ccb034c31a5428e33dce282b201702))
+* beautify CLI output ([#172](https://github.com/davidban77/sonda/issues/172)) ([1d47c86](https://github.com/davidban77/sonda/commit/1d47c863f455e1f05932fda9a8a0bae009528c72))
+* POST /scenarios accepts multi-scenario YAML ([#171](https://github.com/davidban77/sonda/issues/171)) ([2cf775a](https://github.com/davidban77/sonda/commit/2cf775a988d90af9d06e6bf9a30d5477fb95fee3))
+
 ## [0.10.0](https://github.com/davidban77/sonda/compare/v0.9.0...v0.10.0) (2026-04-07)
 
 
