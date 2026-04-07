@@ -62,6 +62,7 @@ Define reusable scenarios in YAML for anything beyond quick one-offs --
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
 | **Signals** | metrics, logs (template and replay modes) |
+| **Built-in scenarios** | 11 curated patterns you can run instantly -- no YAML needed |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## What next
@@ -70,6 +71,7 @@ Ready to dive in? **[Get started in 5 minutes -->](getting-started.md)**
 
 Or jump straight to what you need:
 
+- [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
 - [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference
 - [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API
 - [**Guides**](guides/tutorial.md) -- tutorial, alert testing, pipeline validation, example scenarios
