@@ -36,6 +36,10 @@ src/
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
 
 tests/
+├── common/
+│   └── mod.rs          ← shared test infrastructure: ServerGuard RAII, free_port(), spawn_server(),
+│                         spawn_server_with(), wait_for_server(), start_server(), start_server_with(),
+│                         http_client(). All test files use `mod common;` for these helpers.
 ├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
 ├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped

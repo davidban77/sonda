@@ -17,7 +17,10 @@ use tracing::{info, warn};
 use crate::state::AppState;
 
 /// Command-line arguments for sonda-server.
-#[derive(Debug, Parser)]
+///
+/// Uses a manual `Debug` implementation to redact `api_key`, preventing
+/// accidental exposure of the secret in log output.
+#[derive(Parser)]
 #[command(name = "sonda-server", about = "HTTP control plane for Sonda")]
 struct Args {
     /// Port to listen on.
@@ -37,6 +40,16 @@ struct Args {
     /// Can also be set via the `SONDA_API_KEY` environment variable.
     #[arg(long, env = "SONDA_API_KEY")]
     api_key: Option<String>,
+}
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("port", &self.port)
+            .field("bind", &self.bind)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 #[tokio::main]

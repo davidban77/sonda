@@ -3,58 +3,7 @@
 //! These tests verify the POST /scenarios endpoint by starting an actual
 //! sonda-server binary and making real HTTP requests against it.
 
-use std::net::TcpListener;
-use std::time::Duration;
-
-/// Find a free port by binding to port 0 and returning the assigned port.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("must bind to a free port");
-    listener.local_addr().unwrap().port()
-}
-
-/// Spawn the sonda-server binary on the given port. Returns the child process handle.
-fn spawn_server(port: u16) -> std::process::Child {
-    let binary = env!("CARGO_BIN_EXE_sonda-server");
-
-    std::process::Command::new(binary)
-        .args(["--port", &port.to_string(), "--bind", "127.0.0.1"])
-        .env("RUST_LOG", "warn")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn sonda-server binary")
-}
-
-/// Wait until the server is accepting connections on the given port (or timeout).
-fn wait_for_server(port: u16, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-/// Helper: start the server on a random port and return (port, child).
-fn start_server() -> (u16, std::process::Child) {
-    let port = free_port();
-    let child = spawn_server(port);
-    assert!(
-        wait_for_server(port, Duration::from_secs(5)),
-        "sonda-server must start accepting connections within 5 seconds on port {port}"
-    );
-    (port, child)
-}
-
-/// Build a reqwest blocking client with reasonable timeout.
-fn http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("must build HTTP client")
-}
+mod common;
 
 /// Valid metrics YAML (short duration for quick tests).
 const VALID_METRICS_YAML: &str = "\
@@ -107,8 +56,8 @@ sink:
 /// POST a valid metrics YAML body to the real server returns 201 with a scenario ID.
 #[test]
 fn post_valid_metrics_yaml_returns_201() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -130,9 +79,6 @@ fn post_valid_metrics_yaml_returns_201() {
     );
     assert_eq!(body["name"], "integration_metric");
     assert_eq!(body["status"], "running");
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST valid logs YAML -> 201 ----------------------------------------
@@ -140,8 +86,8 @@ fn post_valid_metrics_yaml_returns_201() {
 /// POST a valid logs YAML body returns 201 with the logs scenario name.
 #[test]
 fn post_valid_logs_yaml_returns_201() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -159,9 +105,6 @@ fn post_valid_logs_yaml_returns_201() {
     let body: serde_json::Value = resp.json().expect("response must be valid JSON");
     assert_eq!(body["name"], "integration_logs");
     assert_eq!(body["status"], "running");
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST with signal_type: metrics -> 201 (ScenarioEntry format) -------
@@ -169,8 +112,8 @@ fn post_valid_logs_yaml_returns_201() {
 /// POST a YAML body with explicit signal_type: metrics returns 201.
 #[test]
 fn post_tagged_metrics_yaml_returns_201() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -187,9 +130,6 @@ fn post_tagged_metrics_yaml_returns_201() {
 
     let body: serde_json::Value = resp.json().expect("response must be valid JSON");
     assert_eq!(body["name"], "tagged_integration");
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST invalid YAML -> 400 with error message ------------------------
@@ -197,8 +137,8 @@ fn post_tagged_metrics_yaml_returns_201() {
 /// POST garbage text returns 400 Bad Request with a descriptive error message.
 #[test]
 fn post_invalid_yaml_returns_400() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -219,9 +159,6 @@ fn post_invalid_yaml_returns_400() {
         body["detail"].is_string() && !body["detail"].as_str().unwrap().is_empty(),
         "400 response must include a non-empty detail message"
     );
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST valid YAML with rate=0 -> 422 with validation detail ----------
@@ -229,8 +166,8 @@ fn post_invalid_yaml_returns_400() {
 /// POST YAML with rate=0 returns 422 Unprocessable Entity.
 #[test]
 fn post_yaml_with_zero_rate_returns_422() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let zero_rate_yaml = "\
 name: bad_rate
@@ -264,9 +201,6 @@ sink:
         body["detail"].is_string() && !body["detail"].as_str().unwrap().is_empty(),
         "422 response must include a non-empty detail message"
     );
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST with application/json content type ----------------------------
@@ -274,8 +208,8 @@ sink:
 /// POST a valid JSON body with application/json content type returns 201.
 #[test]
 fn post_valid_json_returns_201() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let json_body = serde_json::json!({
         "signal_type": "metrics",
@@ -303,9 +237,6 @@ fn post_valid_json_returns_201() {
     let body: serde_json::Value = resp.json().expect("response must be valid JSON");
     assert_eq!(body["name"], "json_integration");
     assert_eq!(body["status"], "running");
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: Response ID is a valid UUID ----------------------------------------
@@ -313,8 +244,8 @@ fn post_valid_json_returns_201() {
 /// The scenario ID returned in the 201 response is a valid UUID v4.
 #[test]
 fn post_response_id_is_valid_uuid() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -332,9 +263,6 @@ fn post_response_id_is_valid_uuid() {
         parsed.is_ok(),
         "returned id must be a valid UUID, got: {id_str}"
     );
-
-    child.kill().ok();
-    child.wait().ok();
 }
 
 // ---- Test: POST empty body -> 400 ---------------------------------------------
@@ -342,8 +270,8 @@ fn post_response_id_is_valid_uuid() {
 /// POST with an empty body returns 400.
 #[test]
 fn post_empty_body_returns_400() {
-    let (port, mut child) = start_server();
-    let client = http_client();
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
 
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
@@ -357,7 +285,4 @@ fn post_empty_body_returns_400() {
         400,
         "POST empty body must return 400"
     );
-
-    child.kill().ok();
-    child.wait().ok();
 }
