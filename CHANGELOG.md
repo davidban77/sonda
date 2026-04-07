@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0](https://github.com/davidban77/sonda/compare/v0.9.0...v0.10.0) (2026-04-07)
+
+
+### Features
+
+* pre-built scenario library for common patterns ([#167](https://github.com/davidban77/sonda/issues/167)) ([82a690f](https://github.com/davidban77/sonda/commit/82a690fd8215e7c876849d9dc40d6a3588068d19))
+
 ## [0.9.0](https://github.com/davidban77/sonda/compare/v0.8.0...v0.9.0) (2026-04-07)
 
 
