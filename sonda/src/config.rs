@@ -1290,6 +1290,7 @@ pub fn load_summary_config(
 /// - `"metrics"` → parse as [`ScenarioConfig`], return one entry.
 /// - `"logs"` → parse as [`LogScenarioConfig`], return one entry.
 /// - `"histogram"` → parse as [`HistogramScenarioConfig`], return one entry.
+/// - `"summary"` → parse as [`SummaryScenarioConfig`], return one entry.
 /// - `"multi"` → parse as [`MultiScenarioConfig`], return all entries.
 ///
 /// Applies CLI overrides from [`ScenariosRunArgs`] (duration, rate, sink,
@@ -1304,6 +1305,7 @@ pub fn parse_builtin_scenario(
 ) -> Result<Vec<sonda_core::ScenarioEntry>> {
     use sonda_core::config::{
         HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
+        SummaryScenarioConfig,
     };
 
     let mut entries = match scenario.signal_type {
@@ -1336,6 +1338,16 @@ pub fn parse_builtin_scenario(
                     )
                 })?;
             vec![sonda_core::ScenarioEntry::Histogram(config)]
+        }
+        "summary" => {
+            let config = serde_yaml_ng::from_str::<SummaryScenarioConfig>(scenario.yaml)
+                .with_context(|| {
+                    format!(
+                        "failed to parse built-in scenario {:?} as summary config",
+                        scenario.name
+                    )
+                })?;
+            vec![sonda_core::ScenarioEntry::Summary(config)]
         }
         "multi" => {
             let config = serde_yaml_ng::from_str::<MultiScenarioConfig>(scenario.yaml)
@@ -1401,6 +1413,11 @@ fn apply_builtin_overrides(
 }
 
 /// Parse a sink name string (from CLI override) into a [`SinkConfig`].
+///
+/// Supports all sink types: `stdout`, `file`, `tcp`, `udp`, and the
+/// feature-gated sinks `http_push`, `loki`, `remote_write`, `otlp_grpc`,
+/// and `kafka`. Feature-gated sinks produce a clear error message when
+/// the required Cargo feature is not enabled.
 fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig> {
     match name {
         "stdout" => Ok(SinkConfig::Stdout),
@@ -1426,8 +1443,100 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 address: addr.to_string(),
             })
         }
+        "http_push" => {
+            #[cfg(feature = "http")]
+            {
+                let url = endpoint
+                    .ok_or_else(|| anyhow::anyhow!("--sink http_push requires --endpoint <url>"))?;
+                Ok(SinkConfig::HttpPush {
+                    url: url.to_string(),
+                    content_type: None,
+                    batch_size: None,
+                    headers: None,
+                    retry: None,
+                })
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                let _ = endpoint;
+                bail!("--sink http_push requires the http feature: cargo build -F http")
+            }
+        }
+        "loki" => {
+            #[cfg(feature = "http")]
+            {
+                let url = endpoint
+                    .ok_or_else(|| anyhow::anyhow!("--sink loki requires --endpoint <url>"))?;
+                Ok(SinkConfig::Loki {
+                    url: url.to_string(),
+                    batch_size: None,
+                    retry: None,
+                })
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                let _ = endpoint;
+                bail!("--sink loki requires the http feature: cargo build -F http")
+            }
+        }
+        "remote_write" => {
+            #[cfg(feature = "remote-write")]
+            {
+                let url = endpoint.ok_or_else(|| {
+                    anyhow::anyhow!("--sink remote_write requires --endpoint <url>")
+                })?;
+                Ok(SinkConfig::RemoteWrite {
+                    url: url.to_string(),
+                    batch_size: None,
+                    retry: None,
+                })
+            }
+            #[cfg(not(feature = "remote-write"))]
+            {
+                let _ = endpoint;
+                bail!(
+                    "--sink remote_write requires the remote-write feature: \
+                     cargo build -F remote-write"
+                )
+            }
+        }
+        "otlp_grpc" => {
+            #[cfg(feature = "otlp")]
+            {
+                let ep = endpoint
+                    .ok_or_else(|| anyhow::anyhow!("--sink otlp_grpc requires --endpoint <url>"))?;
+                Ok(SinkConfig::OtlpGrpc {
+                    endpoint: ep.to_string(),
+                    signal_type: sonda_core::sink::otlp_grpc::OtlpSignalType::Metrics,
+                    batch_size: None,
+                    retry: None,
+                })
+            }
+            #[cfg(not(feature = "otlp"))]
+            {
+                let _ = endpoint;
+                bail!("--sink otlp_grpc requires the otlp feature: cargo build -F otlp")
+            }
+        }
+        "kafka" => {
+            #[cfg(feature = "kafka")]
+            {
+                let _ = endpoint;
+                bail!(
+                    "--sink kafka requires --brokers and --topic flags which are not \
+                     available on the scenarios run subcommand; use a YAML scenario file \
+                     or the metrics/logs subcommand instead"
+                )
+            }
+            #[cfg(not(feature = "kafka"))]
+            {
+                let _ = endpoint;
+                bail!("--sink kafka requires the kafka feature: cargo build -F kafka")
+            }
+        }
         other => bail!(
-            "unknown sink {:?}; expected one of: stdout, file, tcp, udp",
+            "unknown sink {:?}; expected one of: stdout, file, tcp, udp, \
+             http_push, loki, remote_write, otlp_grpc, kafka",
             other
         ),
     }
@@ -4827,7 +4936,199 @@ mod tests {
 
     #[test]
     fn parse_sink_override_unknown_returns_error() {
-        let err = parse_sink_override("kafka", None).expect_err("unknown must fail");
+        let err = parse_sink_override("nonexistent", None).expect_err("unknown sink must fail");
         assert!(err.to_string().contains("unknown sink"));
+    }
+
+    #[test]
+    fn parse_sink_override_http_push_with_endpoint() {
+        // http feature is enabled by default in the sonda crate.
+        let sink = parse_sink_override("http_push", Some("http://localhost:9090/write"))
+            .expect("http_push with endpoint must succeed");
+        #[cfg(feature = "http")]
+        assert!(
+            matches!(sink, SinkConfig::HttpPush { ref url, .. } if url == "http://localhost:9090/write")
+        );
+        let _ = sink;
+    }
+
+    #[test]
+    fn parse_sink_override_http_push_without_endpoint_returns_error() {
+        // When the http feature is enabled, missing endpoint is an error.
+        // When disabled, the feature-gate error fires first.
+        let err = parse_sink_override("http_push", None)
+            .expect_err("http_push without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint") || msg.contains("http feature"),
+            "error must mention --endpoint or feature: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_sink_override_loki_with_endpoint() {
+        let sink = parse_sink_override("loki", Some("http://localhost:3100"))
+            .expect("loki with endpoint must succeed");
+        #[cfg(feature = "http")]
+        assert!(matches!(sink, SinkConfig::Loki { ref url, .. } if url == "http://localhost:3100"));
+        let _ = sink;
+    }
+
+    #[test]
+    fn parse_sink_override_loki_without_endpoint_returns_error() {
+        let err = parse_sink_override("loki", None).expect_err("loki without endpoint must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--endpoint") || msg.contains("http feature"),
+            "error must mention --endpoint or feature: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_sink_override_remote_write_requires_feature_or_endpoint() {
+        // remote-write is not a default feature, so this tests the disabled path
+        // unless compiled with -F remote-write.
+        let result = parse_sink_override("remote_write", None);
+        assert!(result.is_err(), "remote_write without endpoint must fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("--endpoint") || msg.contains("remote-write feature"),
+            "error must mention --endpoint or feature: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_sink_override_otlp_grpc_requires_feature_or_endpoint() {
+        let result = parse_sink_override("otlp_grpc", None);
+        assert!(result.is_err(), "otlp_grpc without endpoint must fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("--endpoint") || msg.contains("otlp feature"),
+            "error must mention --endpoint or feature: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_sink_override_kafka_returns_error() {
+        // kafka always fails in parse_sink_override: either because the feature
+        // is disabled, or because --brokers/--topic are not available.
+        let err = parse_sink_override("kafka", None).expect_err("kafka must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("kafka") || msg.contains("--brokers"),
+            "error must mention kafka: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_sink_override_error_lists_all_sink_types() {
+        let err = parse_sink_override("nonexistent", None).expect_err("unknown sink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("http_push"),
+            "error must list http_push: {msg}"
+        );
+        assert!(
+            msg.contains("remote_write"),
+            "error must list remote_write: {msg}"
+        );
+        assert!(msg.contains("loki"), "error must list loki: {msg}");
+        assert!(
+            msg.contains("otlp_grpc"),
+            "error must list otlp_grpc: {msg}"
+        );
+        assert!(msg.contains("kafka"), "error must list kafka: {msg}");
+    }
+
+    // ---- parse_builtin_scenario: summary signal type --------------------------------
+
+    #[test]
+    fn parse_builtin_summary_scenario() {
+        // No summary scenario exists in the catalog yet, so construct a synthetic one.
+        let yaml = r#"
+name: rpc_duration_seconds
+rate: 1
+duration: 10s
+generator:
+  type: uniform
+  min: 0.01
+  max: 2.0
+quantiles: [0.5, 0.9, 0.99]
+observations_per_tick: 50
+seed: 42
+distribution:
+  type: uniform
+  min: 0.01
+  max: 2.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+"#;
+        let scenario = sonda_core::BuiltinScenario {
+            name: "test-summary",
+            category: "test",
+            signal_type: "summary",
+            description: "Test summary scenario",
+            yaml,
+        };
+        let args = ScenariosRunArgs {
+            name: "test-summary".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(&scenario, &args).expect("must parse");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            matches!(entries[0], sonda_core::ScenarioEntry::Summary(_)),
+            "expected Summary entry, got {:?}",
+            std::mem::discriminant(&entries[0])
+        );
+    }
+
+    #[test]
+    fn parse_builtin_summary_applies_overrides() {
+        let yaml = r#"
+name: rpc_duration_seconds
+rate: 1
+duration: 10s
+generator:
+  type: uniform
+  min: 0.01
+  max: 2.0
+quantiles: [0.5, 0.9, 0.99]
+observations_per_tick: 50
+seed: 42
+distribution:
+  type: uniform
+  min: 0.01
+  max: 2.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+"#;
+        let scenario = sonda_core::BuiltinScenario {
+            name: "test-summary",
+            category: "test",
+            signal_type: "summary",
+            description: "Test summary scenario",
+            yaml,
+        };
+        let args = ScenariosRunArgs {
+            name: "test-summary".to_string(),
+            duration: Some("30s".to_string()),
+            rate: Some(5.0),
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(&scenario, &args).expect("must parse");
+        let base = entries[0].base();
+        assert_eq!(base.duration.as_deref(), Some("30s"));
+        assert_eq!(base.rate, 5.0);
     }
 }

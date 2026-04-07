@@ -373,7 +373,11 @@ fn run_builtin_scenario(
             entries,
             running,
             verbosity,
-            |_, _| Ok(None),
+            |i, entry| match entry.phase_offset() {
+                Some(offset) => sonda_core::config::validate::parse_phase_offset(offset)
+                    .map_err(|e| anyhow::anyhow!("scenario[{}] phase_offset: {}", i, e)),
+                None => Ok(None),
+            },
         )?;
     }
 

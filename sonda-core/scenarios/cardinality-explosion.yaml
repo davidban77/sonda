@@ -3,7 +3,7 @@
 # Models a Kubernetes environment where a misbehaving deployment creates
 # hundreds of unique pod labels within a short window. Uses a sine base
 # signal with a cardinality spike that injects 500 unique pod_name labels
-# every 2 minutes for 30 seconds. Useful for testing TSDB cardinality
+# every 60 seconds for 20 seconds. Useful for testing TSDB cardinality
 # limits and cost alerting.
 
 name: container_cpu_usage_seconds_total
