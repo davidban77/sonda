@@ -21,7 +21,7 @@ use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig}
 use sonda_core::sink::retry::RetryConfig;
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::{LogsArgs, MetricsArgs, RunArgs};
+use crate::cli::{LogsArgs, MetricsArgs, RunArgs, ScenariosRunArgs};
 
 /// Validate CLI flag combinations that are invalid regardless of the scenario
 /// file contents.
@@ -376,8 +376,7 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     validate_cli_flags(args)?;
 
     let mut config = if let Some(ref path) = args.scenario {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+        let contents = resolve_scenario_source(path)?;
         serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
@@ -916,8 +915,7 @@ pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
     validate_log_cli_flags(args)?;
 
     let mut config = if let Some(ref path) = args.scenario {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+        let contents = resolve_scenario_source(path)?;
         serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
@@ -1253,8 +1251,7 @@ fn build_log_spike_config(args: &LogsArgs) -> Result<Option<Vec<CardinalitySpike
 /// - The YAML does not match the `MultiScenarioConfig` structure.
 pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
     let path = &args.scenario;
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    let contents = resolve_scenario_source(path)?;
     serde_yaml_ng::from_str::<MultiScenarioConfig>(&contents)
         .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
 }
@@ -1268,8 +1265,7 @@ pub fn load_histogram_config(
     args: &crate::cli::HistogramArgs,
 ) -> Result<sonda_core::config::HistogramScenarioConfig> {
     let path = &args.scenario;
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    let contents = resolve_scenario_source(path)?;
     serde_yaml_ng::from_str(&contents)
         .with_context(|| format!("failed to parse histogram scenario file {}", path.display()))
 }
@@ -1283,10 +1279,186 @@ pub fn load_summary_config(
     args: &crate::cli::SummaryArgs,
 ) -> Result<sonda_core::config::SummaryScenarioConfig> {
     let path = &args.scenario;
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read scenario file {}", path.display()))?;
+    let contents = resolve_scenario_source(path)?;
     serde_yaml_ng::from_str(&contents)
         .with_context(|| format!("failed to parse summary scenario file {}", path.display()))
+}
+
+/// Parse a built-in scenario into one or more [`ScenarioEntry`] values.
+///
+/// Dispatches based on `signal_type`:
+/// - `"metrics"` → parse as [`ScenarioConfig`], return one entry.
+/// - `"logs"` → parse as [`LogScenarioConfig`], return one entry.
+/// - `"histogram"` → parse as [`HistogramScenarioConfig`], return one entry.
+/// - `"multi"` → parse as [`MultiScenarioConfig`], return all entries.
+///
+/// Applies CLI overrides from [`ScenariosRunArgs`] (duration, rate, sink,
+/// endpoint, encoder) to each entry before returning.
+///
+/// # Errors
+///
+/// Returns an error if the YAML fails to parse or if override values are invalid.
+pub fn parse_builtin_scenario(
+    scenario: &sonda_core::BuiltinScenario,
+    args: &ScenariosRunArgs,
+) -> Result<Vec<sonda_core::ScenarioEntry>> {
+    use sonda_core::config::{
+        HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
+    };
+
+    let mut entries = match scenario.signal_type {
+        "metrics" => {
+            let config =
+                serde_yaml_ng::from_str::<ScenarioConfig>(scenario.yaml).with_context(|| {
+                    format!(
+                        "failed to parse built-in scenario {:?} as metrics config",
+                        scenario.name
+                    )
+                })?;
+            vec![sonda_core::ScenarioEntry::Metrics(config)]
+        }
+        "logs" => {
+            let config =
+                serde_yaml_ng::from_str::<LogScenarioConfig>(scenario.yaml).with_context(|| {
+                    format!(
+                        "failed to parse built-in scenario {:?} as logs config",
+                        scenario.name
+                    )
+                })?;
+            vec![sonda_core::ScenarioEntry::Logs(config)]
+        }
+        "histogram" => {
+            let config = serde_yaml_ng::from_str::<HistogramScenarioConfig>(scenario.yaml)
+                .with_context(|| {
+                    format!(
+                        "failed to parse built-in scenario {:?} as histogram config",
+                        scenario.name
+                    )
+                })?;
+            vec![sonda_core::ScenarioEntry::Histogram(config)]
+        }
+        "multi" => {
+            let config = serde_yaml_ng::from_str::<MultiScenarioConfig>(scenario.yaml)
+                .with_context(|| {
+                    format!(
+                        "failed to parse built-in scenario {:?} as multi config",
+                        scenario.name
+                    )
+                })?;
+            config.scenarios
+        }
+        other => bail!(
+            "built-in scenario {:?} has unsupported signal_type {:?}",
+            scenario.name,
+            other
+        ),
+    };
+
+    // Apply overrides to each entry.
+    for entry in &mut entries {
+        apply_builtin_overrides(entry, args)?;
+    }
+
+    Ok(entries)
+}
+
+/// Apply CLI overrides from `sonda scenarios run` flags to a scenario entry.
+fn apply_builtin_overrides(
+    entry: &mut sonda_core::ScenarioEntry,
+    args: &ScenariosRunArgs,
+) -> Result<()> {
+    let base = match entry {
+        sonda_core::ScenarioEntry::Metrics(ref mut c) => &mut c.base,
+        sonda_core::ScenarioEntry::Logs(ref mut c) => &mut c.base,
+        sonda_core::ScenarioEntry::Histogram(ref mut c) => &mut c.base,
+        sonda_core::ScenarioEntry::Summary(ref mut c) => &mut c.base,
+    };
+
+    if let Some(ref dur) = args.duration {
+        base.duration = Some(dur.clone());
+    }
+    if let Some(rate) = args.rate {
+        base.rate = rate;
+    }
+
+    // Sink override: interpret string name and optional endpoint.
+    if let Some(ref sink_name) = args.sink {
+        base.sink = parse_sink_override(sink_name, args.endpoint.as_deref())?;
+    }
+
+    // Encoder override: apply to the appropriate config field.
+    if let Some(ref enc_name) = args.encoder {
+        let encoder = parse_encoder_config(enc_name, None)?;
+        match entry {
+            sonda_core::ScenarioEntry::Metrics(ref mut c) => c.encoder = encoder,
+            sonda_core::ScenarioEntry::Logs(ref mut c) => c.encoder = encoder,
+            sonda_core::ScenarioEntry::Histogram(ref mut c) => c.encoder = encoder,
+            sonda_core::ScenarioEntry::Summary(ref mut c) => c.encoder = encoder,
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse a sink name string (from CLI override) into a [`SinkConfig`].
+fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig> {
+    match name {
+        "stdout" => Ok(SinkConfig::Stdout),
+        "file" => {
+            let path = endpoint
+                .ok_or_else(|| anyhow::anyhow!("--sink file requires --endpoint <path>"))?;
+            Ok(SinkConfig::File {
+                path: path.to_string(),
+            })
+        }
+        "tcp" => {
+            let addr = endpoint
+                .ok_or_else(|| anyhow::anyhow!("--sink tcp requires --endpoint <address>"))?;
+            Ok(SinkConfig::Tcp {
+                address: addr.to_string(),
+                retry: None,
+            })
+        }
+        "udp" => {
+            let addr = endpoint
+                .ok_or_else(|| anyhow::anyhow!("--sink udp requires --endpoint <address>"))?;
+            Ok(SinkConfig::Udp {
+                address: addr.to_string(),
+            })
+        }
+        other => bail!(
+            "unknown sink {:?}; expected one of: stdout, file, tcp, udp",
+            other
+        ),
+    }
+}
+
+/// Resolve a scenario path that may be a `@name` shorthand for a built-in scenario.
+///
+/// If the path starts with `@`, the remainder is treated as a built-in scenario
+/// name and the embedded YAML is returned. Otherwise, the file is read from disk.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The path starts with `@` but no built-in scenario matches the name.
+/// - The file path cannot be read from disk.
+pub fn resolve_scenario_source(path: &std::path::Path) -> Result<String> {
+    let path_str = path.to_string_lossy();
+    if let Some(name) = path_str.strip_prefix('@') {
+        let yaml = sonda_core::scenarios::get_yaml(name).ok_or_else(|| {
+            let names = sonda_core::scenarios::available_names();
+            anyhow::anyhow!(
+                "unknown built-in scenario {:?}; available scenarios: {}",
+                name,
+                names.join(", ")
+            )
+        })?;
+        Ok(yaml.to_string())
+    } else {
+        fs::read_to_string(path)
+            .with_context(|| format!("failed to read scenario file {}", path.display()))
+    }
 }
 
 #[cfg(test)]
@@ -4368,5 +4540,294 @@ mod tests {
         };
         let err = load_log_config(&args).expect_err("partial retry flags must fail");
         assert!(err.to_string().contains("together"));
+    }
+
+    // ---- resolve_scenario_source tests ------------------------------------------
+
+    #[test]
+    fn resolve_at_name_returns_builtin_yaml() {
+        let path = PathBuf::from("@cpu-spike");
+        let yaml = resolve_scenario_source(&path).expect("@cpu-spike must resolve");
+        assert!(
+            yaml.contains("node_cpu_usage_percent"),
+            "resolved YAML must contain the metric name from cpu-spike"
+        );
+    }
+
+    #[test]
+    fn resolve_at_unknown_name_returns_error_with_hint() {
+        let path = PathBuf::from("@nonexistent");
+        let err = resolve_scenario_source(&path).expect_err("@nonexistent must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown built-in scenario"),
+            "error must mention 'unknown built-in scenario', got: {msg}"
+        );
+        assert!(
+            msg.contains("cpu-spike"),
+            "error must list available names including cpu-spike, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_file_path_reads_from_disk() {
+        // Use an existing example file to confirm disk path still works.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("examples")
+            .join("basic-metrics.yaml");
+        let yaml = resolve_scenario_source(&path).expect("example file must be readable");
+        assert!(
+            yaml.contains("interface_oper_state"),
+            "example YAML must contain the metric name"
+        );
+    }
+
+    #[test]
+    fn resolve_missing_file_path_returns_io_error() {
+        let path = PathBuf::from("/nonexistent/path/scenario.yaml");
+        let err = resolve_scenario_source(&path).expect_err("missing file must fail");
+        assert!(
+            err.to_string().contains("failed to read"),
+            "error must mention file reading failure"
+        );
+    }
+
+    #[test]
+    fn load_config_with_at_name_shorthand() {
+        let args = MetricsArgs {
+            scenario: Some(PathBuf::from("@cpu-spike")),
+            ..default_args()
+        };
+        let config = load_config(&args).expect("@cpu-spike must load as metrics config");
+        assert_eq!(config.name, "node_cpu_usage_percent");
+    }
+
+    #[test]
+    fn load_config_with_at_unknown_returns_error() {
+        let args = MetricsArgs {
+            scenario: Some(PathBuf::from("@does-not-exist")),
+            ..default_args()
+        };
+        let err = load_config(&args).expect_err("@does-not-exist must fail");
+        assert!(err.to_string().contains("unknown built-in scenario"));
+    }
+
+    #[test]
+    fn load_log_config_with_at_name_shorthand() {
+        let args = crate::cli::LogsArgs {
+            scenario: Some(PathBuf::from("@log-storm")),
+            ..default_logs_args()
+        };
+        let config = load_log_config(&args).expect("@log-storm must load as logs config");
+        assert_eq!(config.name, "app_error_storm");
+    }
+
+    #[test]
+    fn load_multi_config_with_at_name_shorthand() {
+        let args = crate::cli::RunArgs {
+            scenario: PathBuf::from("@interface-flap"),
+        };
+        let config = load_multi_config(&args).expect("@interface-flap must load as multi config");
+        assert!(
+            !config.scenarios.is_empty(),
+            "interface-flap must have at least one scenario entry"
+        );
+    }
+
+    #[test]
+    fn load_histogram_config_with_at_name_shorthand() {
+        let args = crate::cli::HistogramArgs {
+            scenario: PathBuf::from("@histogram-latency"),
+        };
+        let config =
+            load_histogram_config(&args).expect("@histogram-latency must load as histogram config");
+        assert_eq!(config.name, "http_request_duration_seconds");
+    }
+
+    // ---- parse_builtin_scenario tests -------------------------------------------
+
+    #[test]
+    fn parse_builtin_metrics_scenario() {
+        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "cpu-spike".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0], sonda_core::ScenarioEntry::Metrics(_)));
+    }
+
+    #[test]
+    fn parse_builtin_logs_scenario() {
+        let scenario = sonda_core::scenarios::get("log-storm").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "log-storm".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0], sonda_core::ScenarioEntry::Logs(_)));
+    }
+
+    #[test]
+    fn parse_builtin_multi_scenario() {
+        let scenario = sonda_core::scenarios::get("interface-flap").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "interface-flap".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        assert!(
+            entries.len() > 1,
+            "interface-flap is multi-scenario and must have multiple entries"
+        );
+    }
+
+    #[test]
+    fn parse_builtin_histogram_scenario() {
+        let scenario = sonda_core::scenarios::get("histogram-latency").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "histogram-latency".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0],
+            sonda_core::ScenarioEntry::Histogram(_)
+        ));
+    }
+
+    #[test]
+    fn parse_builtin_with_duration_override() {
+        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "cpu-spike".to_string(),
+            duration: Some("5s".to_string()),
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let base = entries[0].base();
+        assert_eq!(base.duration.as_deref(), Some("5s"));
+    }
+
+    #[test]
+    fn parse_builtin_with_rate_override() {
+        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "cpu-spike".to_string(),
+            duration: None,
+            rate: Some(5.0),
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        assert_eq!(entries[0].base().rate, 5.0);
+    }
+
+    #[test]
+    fn parse_builtin_with_sink_override() {
+        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "cpu-spike".to_string(),
+            duration: None,
+            rate: None,
+            sink: Some("file".to_string()),
+            endpoint: Some("/tmp/test-output.txt".to_string()),
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let base = entries[0].base();
+        assert!(
+            matches!(&base.sink, SinkConfig::File { path } if path == "/tmp/test-output.txt"),
+            "sink must be overridden to file"
+        );
+    }
+
+    #[test]
+    fn parse_builtin_with_encoder_override() {
+        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "cpu-spike".to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: Some("json_lines".to_string()),
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        match &entries[0] {
+            sonda_core::ScenarioEntry::Metrics(c) => {
+                assert!(matches!(c.encoder, EncoderConfig::JsonLines { .. }));
+            }
+            other => panic!("expected Metrics entry, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_builtin_multi_applies_overrides_to_all_entries() {
+        let scenario = sonda_core::scenarios::get("interface-flap").expect("must exist");
+        let args = ScenariosRunArgs {
+            name: "interface-flap".to_string(),
+            duration: Some("10s".to_string()),
+            rate: Some(2.0),
+            sink: None,
+            endpoint: None,
+            encoder: None,
+        };
+        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        for entry in &entries {
+            assert_eq!(entry.base().duration.as_deref(), Some("10s"));
+            assert_eq!(entry.base().rate, 2.0);
+        }
+    }
+
+    // ---- parse_sink_override tests ----------------------------------------------
+
+    #[test]
+    fn parse_sink_override_stdout() {
+        let sink = parse_sink_override("stdout", None).expect("stdout must succeed");
+        assert!(matches!(sink, SinkConfig::Stdout));
+    }
+
+    #[test]
+    fn parse_sink_override_file_with_path() {
+        let sink =
+            parse_sink_override("file", Some("/tmp/out.txt")).expect("file with path must succeed");
+        assert!(matches!(sink, SinkConfig::File { ref path } if path == "/tmp/out.txt"));
+    }
+
+    #[test]
+    fn parse_sink_override_file_without_path_returns_error() {
+        let err = parse_sink_override("file", None).expect_err("file without path must fail");
+        assert!(err.to_string().contains("--endpoint"));
+    }
+
+    #[test]
+    fn parse_sink_override_unknown_returns_error() {
+        let err = parse_sink_override("kafka", None).expect_err("unknown must fail");
+        assert!(err.to_string().contains("unknown sink"));
     }
 }

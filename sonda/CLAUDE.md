@@ -20,8 +20,10 @@ in sonda-core.
 ```
 src/
 ├── main.rs             ← entrypoint, clap setup, orchestration
-├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum
-├── config.rs           ← config loading: YAML file → merge CLI overrides → ScenarioConfig
+├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum,
+│                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand
+├── config.rs           ← config loading: YAML file or @builtin → merge CLI overrides → ScenarioConfig,
+│                          resolve_scenario_source (@name shorthand), parse_builtin_scenario
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
@@ -31,12 +33,20 @@ is in the wrong crate.
 ## CLI Surface
 
 ```
-sonda [--quiet | --verbose] [--dry-run] metrics --scenario <file.yaml>
+sonda [--quiet | --verbose] [--dry-run] metrics --scenario <file.yaml | @builtin-name>
 sonda [--quiet | --verbose] [--dry-run] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]... [--sink <type> --endpoint <url> ...]
-sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml>
+sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml | @builtin-name>
 sonda [--quiet | --verbose] [--dry-run] logs --mode <mode> [--sink <type> --endpoint <url> ...]
-sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml>
+sonda [--quiet | --verbose] [--dry-run] histogram --scenario <file.yaml | @builtin-name>
+sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml | @builtin-name>
+sonda scenarios list [--category <cat>]
+sonda scenarios show <name>
+sonda [--quiet | --verbose] [--dry-run] scenarios run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>]
 ```
+
+The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
+a built-in scenario from the embedded catalog (see `sonda_core::scenarios`). Example:
+`sonda metrics --scenario @cpu-spike`.
 
 ### Global Flags
 
@@ -52,7 +62,8 @@ from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-r
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
 Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
 multiple scenarios concurrently from a single YAML file whose `scenarios:` list carries
-`signal_type: metrics`, `logs`, `histogram`, or `summary` entries.
+`signal_type: metrics`, `logs`, `histogram`, or `summary` entries. `scenarios` provides access
+to the built-in scenario library: `list` to browse, `show` to dump YAML, `run` to execute.
 
 All subcommands go through the unified `sonda_core::validate_entry` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.

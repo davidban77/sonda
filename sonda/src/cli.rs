@@ -95,6 +95,13 @@ pub enum Commands {
     /// `histogram`, or `summary`, plus the scenario-specific configuration
     /// fields.
     Run(RunArgs),
+    /// Browse, inspect, and run pre-built scenario patterns.
+    ///
+    /// The `scenarios` subcommand provides access to a curated library of
+    /// built-in YAML patterns embedded in the binary. Use `list` to discover
+    /// available scenarios, `show` to view the raw YAML, and `run` to
+    /// execute one directly.
+    Scenarios(ScenariosArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -636,6 +643,79 @@ pub struct RunArgs {
     pub scenario: PathBuf,
 }
 
+/// Arguments for the `scenarios` subcommand.
+///
+/// Provides access to the built-in scenario library embedded in the binary.
+#[derive(Debug, Args)]
+pub struct ScenariosArgs {
+    /// The scenarios action to perform.
+    #[command(subcommand)]
+    pub action: ScenariosAction,
+}
+
+/// Actions available under `sonda scenarios`.
+#[derive(Debug, Subcommand)]
+pub enum ScenariosAction {
+    /// List all available built-in scenarios.
+    ///
+    /// Prints a formatted table with NAME, CATEGORY, SIGNAL, and DESCRIPTION
+    /// columns. Use `--category` to filter by category.
+    List(ScenariosListArgs),
+    /// Show the raw YAML for a built-in scenario.
+    ///
+    /// Prints the full YAML content to stdout, suitable for piping to a file
+    /// for customization.
+    Show(ScenariosShowArgs),
+    /// Run a built-in scenario with optional overrides.
+    ///
+    /// Executes the scenario directly. Use `--duration`, `--rate`, `--sink`,
+    /// `--endpoint`, and `--encoder` to override values in the embedded YAML.
+    Run(ScenariosRunArgs),
+}
+
+/// Arguments for `sonda scenarios list`.
+#[derive(Debug, Args)]
+pub struct ScenariosListArgs {
+    /// Filter scenarios by category (e.g. `infrastructure`, `network`,
+    /// `application`, `observability`).
+    #[arg(long)]
+    pub category: Option<String>,
+}
+
+/// Arguments for `sonda scenarios show`.
+#[derive(Debug, Args)]
+pub struct ScenariosShowArgs {
+    /// The kebab-case name of the built-in scenario (e.g. `cpu-spike`).
+    pub name: String,
+}
+
+/// Arguments for `sonda scenarios run`.
+#[derive(Debug, Args)]
+pub struct ScenariosRunArgs {
+    /// The kebab-case name of the built-in scenario (e.g. `cpu-spike`).
+    pub name: String,
+
+    /// Override the scenario duration (e.g. `"10s"`, `"2m"`).
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Override the event rate in events per second.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Override the sink type (e.g. `stdout`, `file`).
+    #[arg(long)]
+    pub sink: Option<String>,
+
+    /// Override the sink endpoint (required for network sinks).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
+    #[arg(long)]
+    pub encoder: Option<String>,
+}
+
 /// Parse a `key=value` label string into a `(String, String)` pair.
 ///
 /// Returns an error if the string does not contain an `=` character.
@@ -844,5 +924,122 @@ mod tests {
             }
             _ => panic!("expected Metrics command"),
         }
+    }
+
+    // ---- scenarios subcommand parsing -------------------------------------------
+
+    #[test]
+    fn cli_scenarios_list_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "scenarios", "list"])
+            .expect("scenarios list should parse");
+        match cli.command {
+            Commands::Scenarios(args) => {
+                assert!(matches!(args.action, ScenariosAction::List(_)));
+            }
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_list_with_category_filter() {
+        let cli =
+            Cli::try_parse_from(["sonda", "scenarios", "list", "--category", "infrastructure"])
+                .expect("scenarios list --category should parse");
+        match cli.command {
+            Commands::Scenarios(args) => match args.action {
+                ScenariosAction::List(list_args) => {
+                    assert_eq!(list_args.category.as_deref(), Some("infrastructure"));
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_show_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "scenarios", "show", "cpu-spike"])
+            .expect("scenarios show should parse");
+        match cli.command {
+            Commands::Scenarios(args) => match args.action {
+                ScenariosAction::Show(show_args) => {
+                    assert_eq!(show_args.name, "cpu-spike");
+                }
+                _ => panic!("expected Show action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_run_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "scenarios", "run", "cpu-spike"])
+            .expect("scenarios run should parse");
+        match cli.command {
+            Commands::Scenarios(args) => match args.action {
+                ScenariosAction::Run(run_args) => {
+                    assert_eq!(run_args.name, "cpu-spike");
+                    assert!(run_args.duration.is_none());
+                    assert!(run_args.rate.is_none());
+                    assert!(run_args.sink.is_none());
+                    assert!(run_args.endpoint.is_none());
+                    assert!(run_args.encoder.is_none());
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_run_with_overrides() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "scenarios",
+            "run",
+            "cpu-spike",
+            "--duration",
+            "5s",
+            "--rate",
+            "2",
+            "--sink",
+            "file",
+            "--endpoint",
+            "/tmp/out.txt",
+            "--encoder",
+            "json_lines",
+        ])
+        .expect("scenarios run with overrides should parse");
+        match cli.command {
+            Commands::Scenarios(args) => match args.action {
+                ScenariosAction::Run(run_args) => {
+                    assert_eq!(run_args.duration.as_deref(), Some("5s"));
+                    assert_eq!(run_args.rate, Some(2.0));
+                    assert_eq!(run_args.sink.as_deref(), Some("file"));
+                    assert_eq!(run_args.endpoint.as_deref(), Some("/tmp/out.txt"));
+                    assert_eq!(run_args.encoder.as_deref(), Some("json_lines"));
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    #[test]
+    fn cli_scenarios_show_requires_name() {
+        let result = Cli::try_parse_from(["sonda", "scenarios", "show"]);
+        assert!(result.is_err(), "show without name must fail");
+    }
+
+    #[test]
+    fn cli_scenarios_run_requires_name() {
+        let result = Cli::try_parse_from(["sonda", "scenarios", "run"]);
+        assert!(result.is_err(), "run without name must fail");
+    }
+
+    #[test]
+    fn cli_scenarios_requires_action() {
+        let result = Cli::try_parse_from(["sonda", "scenarios"]);
+        assert!(result.is_err(), "scenarios without action must fail");
     }
 }

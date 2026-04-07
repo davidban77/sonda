@@ -1,0 +1,36 @@
+# Cardinality explosion: pod label explosion on metrics.
+#
+# Models a Kubernetes environment where a misbehaving deployment creates
+# hundreds of unique pod labels within a short window. Uses a sine base
+# signal with a cardinality spike that injects 500 unique pod_name labels
+# every 2 minutes for 30 seconds. Useful for testing TSDB cardinality
+# limits and cost alerting.
+
+name: container_cpu_usage_seconds_total
+rate: 5
+duration: 120s
+
+generator:
+  type: sine
+  amplitude: 0.3
+  period_secs: 60
+  offset: 0.5
+
+labels:
+  namespace: production
+  container: worker
+  job: kubelet
+
+cardinality_spikes:
+  - label: pod_name
+    every: 60s
+    for: 20s
+    cardinality: 500
+    strategy: counter
+    prefix: "worker-"
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout

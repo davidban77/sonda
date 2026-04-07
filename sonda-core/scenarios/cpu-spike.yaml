@@ -1,0 +1,28 @@
+# CPU spike: periodic CPU usage spikes above threshold.
+#
+# Models a server experiencing recurring CPU spikes, useful for testing
+# alert rules that trigger on sustained high CPU usage.
+#
+# Pattern: baseline ~35% with periodic spikes to ~95%.
+
+name: node_cpu_usage_percent
+rate: 1
+duration: 60s
+
+generator:
+  type: spike
+  baseline: 35.0
+  magnitude: 60.0
+  duration_secs: 10
+  interval_secs: 30
+
+labels:
+  instance: web-01
+  job: node_exporter
+  cpu: "0"
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout
