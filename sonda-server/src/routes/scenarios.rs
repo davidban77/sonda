@@ -30,7 +30,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use sonda_core::config::{LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry};
-use sonda_core::schedule::launch::{launch_scenario, prepare_entries, validate_entry};
+use sonda_core::schedule::launch::{launch_scenario, prepare_entries};
 
 use crate::state::AppState;
 
@@ -237,19 +237,22 @@ enum ParsedBody {
 /// Returns a descriptive error string on failure.
 fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, String> {
     if is_yaml_content_type(headers) {
-        parse_yaml_body_v2(body)
+        parse_yaml_body(body)
     } else {
-        parse_json_body_v2(body)
+        parse_json_body(body)
     }
 }
 
-/// Parse body bytes as YAML → `ScenarioEntry`.
+/// Parse body bytes as YAML into a single [`ScenarioEntry`].
 ///
 /// Tries `ScenarioEntry` (tagged with `signal_type`) first. If that fails,
 /// falls back to `ScenarioConfig` (plain metrics) and then `LogScenarioConfig`
 /// (plain logs). This lets callers POST a bare metrics or logs YAML without
 /// having to include the `signal_type` discriminant.
-fn parse_yaml_body(body: &[u8]) -> Result<ScenarioEntry, String> {
+///
+/// This is an internal helper used by [`parse_yaml_body`] as a fallback when
+/// the body does not contain a multi-scenario `scenarios:` array.
+fn parse_yaml_single_entry(body: &[u8]) -> Result<ScenarioEntry, String> {
     let text =
         std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
 
@@ -278,12 +281,15 @@ fn parse_yaml_body(body: &[u8]) -> Result<ScenarioEntry, String> {
     Err(format!("invalid YAML scenario body: {yaml_err}"))
 }
 
-/// Parse body bytes as JSON → `ScenarioEntry`.
+/// Parse body bytes as JSON into a single [`ScenarioEntry`].
 ///
 /// Tries `ScenarioEntry` (tagged with `signal_type`) first. If that fails,
-/// falls back to plain `ScenarioConfig` (metrics only — JSON logs require the
+/// falls back to plain `ScenarioConfig` (metrics only -- JSON logs require the
 /// `signal_type` tag because the generator field shapes differ significantly).
-fn parse_json_body(body: &[u8]) -> Result<ScenarioEntry, String> {
+///
+/// This is an internal helper used by [`parse_json_body`] as a fallback when
+/// the body does not contain a multi-scenario `scenarios` field.
+fn parse_json_single_entry(body: &[u8]) -> Result<ScenarioEntry, String> {
     // Strategy 1: tagged ScenarioEntry.
     if let Ok(entry) = serde_json::from_slice::<ScenarioEntry>(body) {
         return Ok(entry);
@@ -306,8 +312,9 @@ fn parse_json_body(body: &[u8]) -> Result<ScenarioEntry, String> {
 /// single scenario entry.
 ///
 /// Tries `MultiScenarioConfig` first (requires a top-level `scenarios:` key).
-/// If that fails, falls back to single-entry parsing via [`parse_yaml_body`].
-fn parse_yaml_body_v2(body: &[u8]) -> Result<ParsedBody, String> {
+/// If that fails, falls back to single-entry parsing via
+/// [`parse_yaml_single_entry`].
+fn parse_yaml_body(body: &[u8]) -> Result<ParsedBody, String> {
     let text =
         std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
 
@@ -317,22 +324,23 @@ fn parse_yaml_body_v2(body: &[u8]) -> Result<ParsedBody, String> {
     }
 
     // Strategy 2: single scenario (all existing fallback strategies).
-    parse_yaml_body(body).map(|e| ParsedBody::Single(Box::new(e)))
+    parse_yaml_single_entry(body).map(|e| ParsedBody::Single(Box::new(e)))
 }
 
 /// Parse body bytes as JSON, returning either a multi-scenario batch or a
 /// single scenario entry.
 ///
 /// Tries `MultiScenarioConfig` first (requires a top-level `scenarios` field).
-/// If that fails, falls back to single-entry parsing via [`parse_json_body`].
-fn parse_json_body_v2(body: &[u8]) -> Result<ParsedBody, String> {
+/// If that fails, falls back to single-entry parsing via
+/// [`parse_json_single_entry`].
+fn parse_json_body(body: &[u8]) -> Result<ParsedBody, String> {
     // Strategy 1: multi-scenario.
     if let Ok(multi) = serde_json::from_slice::<MultiScenarioConfig>(body) {
         return Ok(ParsedBody::Multi(multi.scenarios));
     }
 
     // Strategy 2: single scenario.
-    parse_json_body(body).map(|e| ParsedBody::Single(Box::new(e)))
+    parse_json_single_entry(body).map(|e| ParsedBody::Single(Box::new(e)))
 }
 
 // ---- Handlers ---------------------------------------------------------------
@@ -372,43 +380,77 @@ pub async fn post_scenario(
 }
 
 /// Handle a single-scenario POST (backward-compatible path).
+///
+/// Uses [`prepare_entries`] for the same expand -> validate -> phase_offset
+/// pipeline as the multi-scenario path. This ensures identical behavior
+/// regardless of whether a scenario is posted alone or inside a `scenarios:`
+/// array.
 async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<Response, Response> {
-    // Validate the entry (rate, duration, generator parameters, etc.).
-    validate_entry(&entry).map_err(|e| {
+    // Use the shared pipeline for expansion, validation, and phase offset.
+    let mut prepared = prepare_entries(vec![entry]).map_err(|e| {
         warn!(error = %e, "POST /scenarios: validation failed");
         unprocessable(e)
     })?;
 
-    // Assign a unique ID and extract the scenario name before moving entry.
-    let id = Uuid::new_v4().to_string();
-    let name = entry.base().name.clone();
+    // After expansion a single entry may fan out into multiple entries
+    // (e.g. multi-column csv_replay). Launch all of them.
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(prepared.len());
+    let mut handles_to_store: Vec<(String, sonda_core::ScenarioHandle)> =
+        Vec::with_capacity(prepared.len());
 
-    // Launch the scenario on a new OS thread.
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handle = launch_scenario(id.clone(), entry, shutdown, None).map_err(|e| {
-        warn!(error = %e, "POST /scenarios: failed to launch scenario");
-        internal_error(e)
-    })?;
+    for prepared_entry in prepared.drain(..) {
+        let id = Uuid::new_v4().to_string();
+        let name = prepared_entry.entry.base().name.clone();
+        let shutdown = Arc::new(AtomicBool::new(true));
 
-    info!(id = %id, name = %name, "scenario launched");
-
-    // Store the handle in shared state.
-    state
-        .scenarios
-        .write()
+        let handle = launch_scenario(
+            id.clone(),
+            prepared_entry.entry,
+            shutdown,
+            prepared_entry.start_delay,
+        )
         .map_err(|e| {
-            warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
-            internal_error("internal state lock is poisoned")
-        })?
-        .insert(id.clone(), handle);
+            for (_, ref h) in &handles_to_store {
+                h.stop();
+            }
+            warn!(error = %e, "POST /scenarios: failed to launch scenario");
+            internal_error(e)
+        })?;
 
-    // Respond with 201 Created.
-    let response_body = CreatedScenario {
-        id,
-        name,
-        status: "running",
-    };
-    Ok((StatusCode::CREATED, Json(response_body)).into_response())
+        info!(id = %id, name = %name, "scenario launched");
+
+        created.push(CreatedScenario {
+            id: id.clone(),
+            name,
+            status: "running",
+        });
+        handles_to_store.push((id, handle));
+    }
+
+    // Store all handles in shared state.
+    let mut scenarios = state.scenarios.write().map_err(|e| {
+        for (_, ref h) in &handles_to_store {
+            h.stop();
+        }
+        warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
+        internal_error("internal state lock is poisoned")
+    })?;
+    for (id, handle) in handles_to_store {
+        scenarios.insert(id, handle);
+    }
+    drop(scenarios);
+
+    // Respond based on whether expansion produced a single or multiple entries.
+    if created.len() == 1 {
+        let single = created.into_iter().next().expect("len checked above");
+        Ok((StatusCode::CREATED, Json(single)).into_response())
+    } else {
+        Ok((
+            StatusCode::CREATED,
+            Json(CreatedScenariosResponse { scenarios: created }),
+        )
+            .into_response())
+    }
 }
 
 /// Handle a multi-scenario POST (batch path).
@@ -469,6 +511,11 @@ async fn post_multi_scenario(
 
     // Store all handles in shared state.
     let mut scenarios = state.scenarios.write().map_err(|e| {
+        // Stop all launched scenarios before returning the error to prevent
+        // orphaned threads that run indefinitely without a way to stop them.
+        for (_, ref h) in &handles_to_store {
+            h.stop();
+        }
         warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
         internal_error("internal state lock is poisoned")
     })?;
@@ -1716,13 +1763,13 @@ sink:
 
     // ---- Test: parse_body unit tests -------------------------------------------
 
-    /// parse_yaml_body handles valid bare metrics config (no signal_type tag).
+    /// parse_yaml_single_entry handles valid bare metrics config (no signal_type tag).
     #[test]
-    fn parse_yaml_body_accepts_bare_metrics_config() {
-        let result = parse_yaml_body(VALID_METRICS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_bare_metrics_config() {
+        let result = parse_yaml_single_entry(VALID_METRICS_YAML.as_bytes());
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept bare metrics YAML: {result:?}"
+            "parse_yaml_single_entry must accept bare metrics YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Metrics(c) => assert_eq!(c.name, "test_metric"),
@@ -1730,13 +1777,13 @@ sink:
         }
     }
 
-    /// parse_yaml_body handles valid bare logs config (no signal_type tag).
+    /// parse_yaml_single_entry handles valid bare logs config (no signal_type tag).
     #[test]
-    fn parse_yaml_body_accepts_bare_logs_config() {
-        let result = parse_yaml_body(VALID_LOGS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_bare_logs_config() {
+        let result = parse_yaml_single_entry(VALID_LOGS_YAML.as_bytes());
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept bare logs YAML: {result:?}"
+            "parse_yaml_single_entry must accept bare logs YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Logs(c) => assert_eq!(c.name, "test_logs"),
@@ -1744,13 +1791,13 @@ sink:
         }
     }
 
-    /// parse_yaml_body handles tagged ScenarioEntry format.
+    /// parse_yaml_single_entry handles tagged ScenarioEntry format.
     #[test]
-    fn parse_yaml_body_accepts_tagged_entry() {
-        let result = parse_yaml_body(VALID_TAGGED_METRICS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_tagged_entry() {
+        let result = parse_yaml_single_entry(VALID_TAGGED_METRICS_YAML.as_bytes());
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept tagged ScenarioEntry YAML: {result:?}"
+            "parse_yaml_single_entry must accept tagged ScenarioEntry YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Metrics(c) => assert_eq!(c.name, "tagged_metric"),
@@ -1758,11 +1805,14 @@ sink:
         }
     }
 
-    /// parse_yaml_body returns Err for garbage input.
+    /// parse_yaml_single_entry returns Err for garbage input.
     #[test]
-    fn parse_yaml_body_rejects_garbage() {
-        let result = parse_yaml_body(b"not valid: [}{");
-        assert!(result.is_err(), "parse_yaml_body must reject garbage input");
+    fn parse_yaml_single_entry_rejects_garbage() {
+        let result = parse_yaml_single_entry(b"not valid: [}{");
+        assert!(
+            result.is_err(),
+            "parse_yaml_single_entry must reject garbage input"
+        );
         let err = result.unwrap_err();
         assert!(
             err.contains("invalid YAML"),
@@ -1770,9 +1820,9 @@ sink:
         );
     }
 
-    /// parse_json_body accepts a tagged ScenarioEntry JSON.
+    /// parse_json_single_entry accepts a tagged ScenarioEntry JSON.
     #[test]
-    fn parse_json_body_accepts_tagged_json() {
+    fn parse_json_single_entry_accepts_tagged_json() {
         let json = serde_json::json!({
             "signal_type": "metrics",
             "name": "json_test",
@@ -1782,18 +1832,21 @@ sink:
             "encoder": { "type": "prometheus_text" },
             "sink": { "type": "stdout" }
         });
-        let result = parse_json_body(json.to_string().as_bytes());
+        let result = parse_json_single_entry(json.to_string().as_bytes());
         assert!(
             result.is_ok(),
-            "parse_json_body must accept tagged JSON: {result:?}"
+            "parse_json_single_entry must accept tagged JSON: {result:?}"
         );
     }
 
-    /// parse_json_body returns Err for invalid JSON.
+    /// parse_json_single_entry returns Err for invalid JSON.
     #[test]
-    fn parse_json_body_rejects_invalid_json() {
-        let result = parse_json_body(b"not json");
-        assert!(result.is_err(), "parse_json_body must reject invalid JSON");
+    fn parse_json_single_entry_rejects_invalid_json() {
+        let result = parse_json_single_entry(b"not json");
+        assert!(
+            result.is_err(),
+            "parse_json_single_entry must reject invalid JSON"
+        );
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
@@ -3770,12 +3823,12 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    // ---- Parse body v2 unit tests -------------------------------------------
+    // ---- Parse body unit tests (multi-aware) ---------------------------------
 
-    /// parse_yaml_body_v2 returns Multi for a scenarios-array body.
+    /// parse_yaml_body returns Multi for a scenarios-array body.
     #[test]
-    fn parse_yaml_body_v2_returns_multi_for_scenarios_array() {
-        let result = parse_yaml_body_v2(VALID_MULTI_YAML.as_bytes());
+    fn parse_yaml_body_returns_multi_for_scenarios_array() {
+        let result = parse_yaml_body(VALID_MULTI_YAML.as_bytes());
         assert!(result.is_ok(), "must parse valid multi-scenario YAML");
         match result.unwrap() {
             ParsedBody::Multi(entries) => {
@@ -3785,10 +3838,10 @@ scenarios:
         }
     }
 
-    /// parse_yaml_body_v2 returns Single for a single-scenario body.
+    /// parse_yaml_body returns Single for a single-scenario body.
     #[test]
-    fn parse_yaml_body_v2_returns_single_for_bare_config() {
-        let result = parse_yaml_body_v2(VALID_METRICS_YAML.as_bytes());
+    fn parse_yaml_body_returns_single_for_bare_config() {
+        let result = parse_yaml_body(VALID_METRICS_YAML.as_bytes());
         assert!(result.is_ok(), "must parse valid single-scenario YAML");
         match result.unwrap() {
             ParsedBody::Single(entry) => {
@@ -3798,9 +3851,9 @@ scenarios:
         }
     }
 
-    /// parse_json_body_v2 returns Multi for a scenarios-array JSON body.
+    /// parse_json_body returns Multi for a scenarios-array JSON body.
     #[test]
-    fn parse_json_body_v2_returns_multi_for_json_array() {
+    fn parse_json_body_returns_multi_for_json_array() {
         let json = serde_json::json!({
             "scenarios": [
                 {
@@ -3814,7 +3867,7 @@ scenarios:
                 }
             ]
         });
-        let result = parse_json_body_v2(json.to_string().as_bytes());
+        let result = parse_json_body(json.to_string().as_bytes());
         assert!(result.is_ok(), "must parse valid multi-scenario JSON");
         match result.unwrap() {
             ParsedBody::Multi(entries) => assert_eq!(entries.len(), 1),
@@ -3822,9 +3875,9 @@ scenarios:
         }
     }
 
-    /// parse_json_body_v2 returns Single for a single-scenario JSON body.
+    /// parse_json_body returns Single for a single-scenario JSON body.
     #[test]
-    fn parse_json_body_v2_returns_single_for_single_json() {
+    fn parse_json_body_returns_single_for_single_json() {
         let json = serde_json::json!({
             "signal_type": "metrics",
             "name": "single_json",
@@ -3834,7 +3887,7 @@ scenarios:
             "encoder": { "type": "prometheus_text" },
             "sink": { "type": "stdout" }
         });
-        let result = parse_json_body_v2(json.to_string().as_bytes());
+        let result = parse_json_body(json.to_string().as_bytes());
         assert!(result.is_ok(), "must parse valid single-scenario JSON");
         match result.unwrap() {
             ParsedBody::Single(entry) => {
@@ -3866,5 +3919,56 @@ scenarios:
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["id"], "id-1");
         assert_eq!(arr[1]["name"], "s2");
+    }
+
+    // ========================================================================
+    // Single-scenario POST parity with multi-scenario path (NOTE 1 fix)
+    // ========================================================================
+
+    /// Single-scenario POST with phase_offset returns 201 (verifies the
+    /// single-scenario path now uses prepare_entries which resolves phase_offset).
+    #[tokio::test]
+    async fn post_single_scenario_with_phase_offset_returns_201() {
+        let yaml = "\
+name: single_offset
+rate: 10
+duration: 200ms
+phase_offset: \"50ms\"
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+";
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", yaml).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST single scenario with phase_offset must return 201"
+        );
+
+        let body = body_json(response).await;
+        assert_eq!(body["name"], "single_offset");
+        assert_eq!(body["status"], "running");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Single-scenario POST with rate=0 returns 422 (verifies validation
+    /// through prepare_entries).
+    #[tokio::test]
+    async fn post_single_scenario_with_zero_rate_returns_422_via_prepare_entries() {
+        let (app, _state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", ZERO_RATE_YAML).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "POST single scenario with rate=0 must return 422"
+        );
     }
 }

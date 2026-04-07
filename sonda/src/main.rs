@@ -47,16 +47,11 @@ fn run() -> anyhow::Result<()> {
     match cli.command {
         Commands::Metrics(ref args) => {
             let config = config::load_config(args)?;
-            // Expand multi-column csv_replay into N independent scenarios.
-            let expanded =
-                sonda_core::expand_scenario(config).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let entries: Vec<sonda_core::ScenarioEntry> = expanded
-                .into_iter()
-                .map(sonda_core::ScenarioEntry::Metrics)
-                .collect();
+            let entry = sonda_core::ScenarioEntry::Metrics(config);
 
+            // prepare_entries handles expansion, validation, and phase offsets.
             let prepared =
-                sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+                sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
 
             if cli.dry_run {
                 for p in &prepared {

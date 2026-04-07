@@ -77,24 +77,29 @@ pub struct PreparedEntry {
 /// or phase-offset parsing. The error message includes the entry index for
 /// diagnostics.
 pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>, SondaError> {
-    // Phase 1: expand csv_replay multi-column entries.
-    let mut expanded: Vec<ScenarioEntry> = Vec::new();
+    // Phase 1: expand csv_replay multi-column entries, tracking the original
+    // input index for each expanded entry so error messages reference the
+    // index the caller provided rather than the post-expansion position.
+    let mut expanded: Vec<(usize, ScenarioEntry)> = Vec::new();
     for (i, entry) in entries.into_iter().enumerate() {
         let batch = expand_entry(entry)
             .map_err(|e| SondaError::Config(ConfigError::invalid(format!("scenario[{i}]: {e}"))))?;
-        expanded.extend(batch);
+        for entry in batch {
+            expanded.push((i, entry));
+        }
     }
 
     // Phase 2: validate all entries and resolve phase offsets.
     let mut prepared = Vec::with_capacity(expanded.len());
-    for (i, entry) in expanded.into_iter().enumerate() {
-        validate_entry(&entry)
-            .map_err(|e| SondaError::Config(ConfigError::invalid(format!("scenario[{i}]: {e}"))))?;
+    for (orig_idx, entry) in expanded {
+        validate_entry(&entry).map_err(|e| {
+            SondaError::Config(ConfigError::invalid(format!("scenario[{orig_idx}]: {e}")))
+        })?;
 
         let start_delay = match entry.phase_offset() {
             Some(offset) => crate::config::validate::parse_phase_offset(offset).map_err(|e| {
                 SondaError::Config(ConfigError::invalid(format!(
-                    "scenario[{i}] phase_offset: {e}"
+                    "scenario[{orig_idx}] phase_offset: {e}"
                 )))
             })?,
             None => None,
@@ -1279,5 +1284,84 @@ mod tests {
         let prepared = prepare_entries(vec![entry]).unwrap();
         let s = format!("{:?}", prepared[0]);
         assert!(s.contains("PreparedEntry"));
+    }
+
+    /// prepare_entries error messages reference the original input index, not
+    /// the post-expansion index. When entry 0 is valid and entry 1 is invalid,
+    /// the error should say "scenario[1]" regardless of how many entries the
+    /// expansion of entry 0 produced.
+    #[test]
+    fn prepare_entries_error_index_refers_to_original_input_index() {
+        let valid = metrics_entry("valid_a");
+        let invalid = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "invalid_b".to_string(),
+                rate: 0.0, // invalid
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+
+        // Entry 0 is valid, entry 1 is invalid. Even though entry 0 does not
+        // expand (single column), the error for entry 1 should reference
+        // "scenario[1]", not a shifted index.
+        let entries = vec![valid, invalid];
+        let result = prepare_entries(entries);
+        assert!(result.is_err(), "must reject batch with invalid entry");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("scenario[1]"),
+            "error must reference original input index 1, got: {err_msg}"
+        );
+    }
+
+    /// prepare_entries error message for phase_offset references the original
+    /// input index.
+    #[test]
+    fn prepare_entries_phase_offset_error_references_original_index() {
+        let valid = metrics_entry("valid_first");
+        let bad_offset = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "bad_offset".to_string(),
+                rate: 10.0,
+                duration: Some("1s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: Some("not-a-duration".to_string()),
+                clock_group: None,
+                jitter: None,
+                jitter_seed: None,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        });
+
+        let entries = vec![valid, bad_offset];
+        let result = prepare_entries(entries);
+        assert!(result.is_err(), "must reject invalid phase_offset");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("scenario[1]"),
+            "error must reference original input index 1, got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("phase_offset"),
+            "error must mention phase_offset, got: {err_msg}"
+        );
     }
 }

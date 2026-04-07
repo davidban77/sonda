@@ -31,7 +31,7 @@ src/
 │                         GET /scenarios/{id}/metrics (Prometheus text scrape),
 │                         DELETE /scenarios/{id} (stop, return final stats, remove from map)
 │                         parse_body() → ParsedBody (Single|Multi),
-│                         parse_yaml_body_v2(), parse_json_body_v2(),
+│                         parse_yaml_body(), parse_json_body(),
 │                         post_scenario() → dispatches to post_single_scenario()
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
