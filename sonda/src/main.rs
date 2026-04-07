@@ -14,13 +14,19 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser;
+use owo_colors::OwoColorize;
+use owo_colors::Stream::Stderr;
 
 use cli::{Cli, Commands, Verbosity};
 use sonda_core::PreparedEntry;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("error: {err:#}");
+        let style = owo_colors::Style::new().bold().red();
+        eprintln!(
+            "{} {err:#}",
+            "error:".if_supports_color(Stderr, |t| t.style(style))
+        );
         process::exit(1);
     }
 }
@@ -53,18 +59,8 @@ fn run() -> anyhow::Result<()> {
             let prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            if cli.dry_run {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
-                status::print_dry_run_ok();
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
-            }
-
-            if verbosity == Verbosity::Verbose {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
             }
 
             if prepared.len() == 1 {
@@ -97,18 +93,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok();
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-logs".to_string(),
@@ -132,18 +122,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok();
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-histogram".to_string(),
@@ -167,18 +151,12 @@ fn run() -> anyhow::Result<()> {
 
             let mut prepared =
                 sonda_core::prepare_entries(vec![entry]).map_err(|e| anyhow::anyhow!("{}", e))?;
-            let p = prepared.remove(0);
 
-            if cli.dry_run {
-                status::print_config(&p.entry);
-                status::print_dry_run_ok();
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
             }
 
-            if verbosity == Verbosity::Verbose {
-                status::print_config(&p.entry);
-            }
-
+            let p = prepared.remove(0);
             status::print_start(&p.entry, verbosity);
             let mut handle = sonda_core::launch_scenario(
                 "cli-summary".to_string(),
@@ -202,18 +180,8 @@ fn run() -> anyhow::Result<()> {
             let prepared = sonda_core::prepare_entries(config.scenarios)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            if cli.dry_run {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
-                status::print_dry_run_ok();
+            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
-            }
-
-            if verbosity == Verbosity::Verbose {
-                for p in &prepared {
-                    status::print_config(&p.entry);
-                }
             }
 
             launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
@@ -252,24 +220,49 @@ fn run_scenarios_command(
                 return Ok(());
             }
 
-            // Print a formatted table to stdout.
-            let header_name = "NAME";
-            let header_cat = "CATEGORY";
-            let header_sig = "SIGNAL";
-            let header_desc = "DESCRIPTION";
-            println!(
-                "{:<28} {:<18} {:<12} {}",
-                header_name, header_cat, header_sig, header_desc
-            );
-            for s in &items {
+            if list_args.json {
+                // JSON array output to stdout.
+                let entries: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "category": s.category,
+                            "signal_type": s.signal_type,
+                            "description": s.description,
+                        })
+                    })
+                    .collect();
                 println!(
-                    "{:<28} {:<18} {:<12} {}",
-                    s.name, s.category, s.signal_type, s.description
+                    "{}",
+                    serde_json::to_string_pretty(&entries)
+                        .expect("JSON serialization of builtin scenarios cannot fail")
                 );
+            } else {
+                // Print a formatted table to stdout with a bold header row.
+                // Pad plain text first, then apply bold — ANSI escape bytes
+                // would be counted as visible characters by `format!`, breaking
+                // column alignment.
+                use owo_colors::Stream::Stdout;
+
+                let header_name = format!("{:<28}", "NAME");
+                let header_name = header_name.if_supports_color(Stdout, |t| t.bold());
+                let header_cat = format!("{:<18}", "CATEGORY");
+                let header_cat = header_cat.if_supports_color(Stdout, |t| t.bold());
+                let header_sig = format!("{:<12}", "SIGNAL");
+                let header_sig = header_sig.if_supports_color(Stdout, |t| t.bold());
+                let header_desc = "DESCRIPTION".if_supports_color(Stdout, |t| t.bold());
+                println!("{header_name} {header_cat} {header_sig} {header_desc}");
+                for s in &items {
+                    println!(
+                        "{:<28} {:<18} {:<12} {}",
+                        s.name, s.category, s.signal_type, s.description
+                    );
+                }
             }
         }
         ScenariosAction::Show(ref show_args) => {
-            let yaml = scenarios::get_yaml(&show_args.name).ok_or_else(|| {
+            let scenario = scenarios::get(&show_args.name).ok_or_else(|| {
                 let names = scenarios::available_names();
                 anyhow::anyhow!(
                     "unknown scenario {:?}; available scenarios: {}",
@@ -277,6 +270,9 @@ fn run_scenarios_command(
                     names.join(", ")
                 )
             })?;
+            status::print_show_header(scenario.name, scenario.category, scenario.signal_type);
+            let yaml = scenarios::get_yaml(&show_args.name)
+                .expect("scenario must exist after get() succeeded");
             print!("{yaml}");
         }
         ScenariosAction::Run(ref run_args) => {
@@ -309,18 +305,8 @@ fn run_builtin_scenario(
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if cli_opts.dry_run {
-        for p in &prepared {
-            status::print_config(&p.entry);
-        }
-        status::print_dry_run_ok();
+    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
         return Ok(());
-    }
-
-    if verbosity == Verbosity::Verbose {
-        for p in &prepared {
-            status::print_config(&p.entry);
-        }
     }
 
     if prepared.len() == 1 {
@@ -351,6 +337,31 @@ fn run_builtin_scenario(
     }
 
     Ok(())
+}
+
+/// Handle verbose version display, dry-run config printing, and verbose config display.
+///
+/// Returns `true` if dry-run mode was active (caller should return early).
+fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: bool) -> bool {
+    if verbosity == Verbosity::Verbose {
+        status::print_version();
+    }
+
+    if dry_run {
+        for p in prepared {
+            status::print_config(&p.entry);
+        }
+        status::print_dry_run_ok(prepared.len());
+        return true;
+    }
+
+    if verbosity == Verbosity::Verbose {
+        for p in prepared {
+            status::print_config(&p.entry);
+        }
+    }
+
+    false
 }
 
 /// Launch multiple prepared scenarios concurrently, join them, print
