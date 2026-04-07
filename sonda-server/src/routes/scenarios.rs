@@ -1,7 +1,10 @@
 //! Scenario management endpoints.
 //!
 //! Implements:
-//! - `POST /scenarios` — start a new scenario from a YAML or JSON body.
+//! - `POST /scenarios` — start one or more scenarios from a YAML or JSON body.
+//!   Accepts both single-scenario bodies (backward compatible) and multi-scenario
+//!   bodies with a top-level `scenarios:` array. Multi-scenario POST uses atomic
+//!   batch semantics: all entries are validated before any are launched.
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/{id}` — inspect a single scenario with full detail and stats.
 //! - `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
@@ -26,8 +29,8 @@ use sonda_core::ScenarioStats;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use sonda_core::config::{LogScenarioConfig, ScenarioConfig, ScenarioEntry};
-use sonda_core::schedule::launch::{launch_scenario, validate_entry};
+use sonda_core::config::{LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry};
+use sonda_core::schedule::launch::{launch_scenario, prepare_entries};
 
 use crate::state::AppState;
 
@@ -42,6 +45,17 @@ pub struct CreatedScenario {
     pub name: String,
     /// Always `"running"` for a freshly launched scenario.
     pub status: &'static str,
+}
+
+/// Response body for a successfully created multi-scenario batch.
+///
+/// Returned when `POST /scenarios` receives a multi-scenario YAML/JSON body
+/// (one with a top-level `scenarios:` array). Each element describes one
+/// launched scenario.
+#[derive(Debug, Serialize)]
+pub struct CreatedScenariosResponse {
+    /// One entry per launched scenario, in the same order as the input.
+    pub scenarios: Vec<CreatedScenario>,
 }
 
 /// Summary of a single scenario in the list response.
@@ -197,18 +211,31 @@ fn is_yaml_content_type(headers: &HeaderMap) -> bool {
         .unwrap_or(true) // default: assume YAML
 }
 
-/// Attempt to parse the raw body bytes as a [`ScenarioEntry`].
+/// The result of parsing a `POST /scenarios` body.
 ///
-/// Tries the following strategies in order:
+/// Distinguishes between a single scenario entry (backward-compatible) and
+/// a multi-scenario batch (new capability). The handler uses this to decide
+/// the response shape.
+enum ParsedBody {
+    /// A single scenario entry (the existing behavior).
+    ///
+    /// Boxed to avoid a large size difference between variants (clippy
+    /// `large_enum_variant`). `ScenarioEntry` is ~656 bytes while `Vec` is 24.
+    Single(Box<ScenarioEntry>),
+    /// A batch of scenario entries from a `scenarios:` array.
+    Multi(Vec<ScenarioEntry>),
+}
+
+/// Attempt to parse the raw body bytes as either a single [`ScenarioEntry`]
+/// or a [`MultiScenarioConfig`] batch.
 ///
-/// 1. If JSON content-type: parse as JSON → `ScenarioEntry` (tagged with
-///    `signal_type`), or as plain `ScenarioConfig` (metrics).
-/// 2. Otherwise (YAML or unknown): parse as YAML → `ScenarioEntry` (tagged),
-///    or as plain `ScenarioConfig` (metrics), or as plain `LogScenarioConfig`
-///    (logs).
+/// Tries multi-scenario (`scenarios:` array) first, then falls back to
+/// single-scenario parsing. This order is safe because a valid
+/// `MultiScenarioConfig` always has a top-level `scenarios:` key that
+/// single-scenario configs never have.
 ///
 /// Returns a descriptive error string on failure.
-fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ScenarioEntry, String> {
+fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, String> {
     if is_yaml_content_type(headers) {
         parse_yaml_body(body)
     } else {
@@ -216,16 +243,19 @@ fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ScenarioEntry, String>
     }
 }
 
-/// Parse body bytes as YAML → `ScenarioEntry`.
+/// Parse body bytes as YAML into a single [`ScenarioEntry`].
 ///
 /// Tries `ScenarioEntry` (tagged with `signal_type`) first. If that fails,
 /// falls back to `ScenarioConfig` (plain metrics) and then `LogScenarioConfig`
 /// (plain logs). This lets callers POST a bare metrics or logs YAML without
 /// having to include the `signal_type` discriminant.
-fn parse_yaml_body(body: &[u8]) -> Result<ScenarioEntry, String> {
-    let text =
-        std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
-
+///
+/// This is an internal helper used by [`parse_yaml_body`] as a fallback when
+/// the body does not contain a multi-scenario `scenarios:` array.
+///
+/// Accepts a `&str` because the caller ([`parse_yaml_body`]) already performs
+/// UTF-8 validation — no need to repeat it here.
+fn parse_yaml_single_entry(text: &str) -> Result<ScenarioEntry, String> {
     // Strategy 1: tagged ScenarioEntry (has `signal_type: metrics|logs`).
     if let Ok(entry) = serde_yaml_ng::from_str::<ScenarioEntry>(text) {
         return Ok(entry);
@@ -251,12 +281,15 @@ fn parse_yaml_body(body: &[u8]) -> Result<ScenarioEntry, String> {
     Err(format!("invalid YAML scenario body: {yaml_err}"))
 }
 
-/// Parse body bytes as JSON → `ScenarioEntry`.
+/// Parse body bytes as JSON into a single [`ScenarioEntry`].
 ///
 /// Tries `ScenarioEntry` (tagged with `signal_type`) first. If that fails,
-/// falls back to plain `ScenarioConfig` (metrics only — JSON logs require the
+/// falls back to plain `ScenarioConfig` (metrics only -- JSON logs require the
 /// `signal_type` tag because the generator field shapes differ significantly).
-fn parse_json_body(body: &[u8]) -> Result<ScenarioEntry, String> {
+///
+/// This is an internal helper used by [`parse_json_body`] as a fallback when
+/// the body does not contain a multi-scenario `scenarios` field.
+fn parse_json_single_entry(body: &[u8]) -> Result<ScenarioEntry, String> {
     // Strategy 1: tagged ScenarioEntry.
     if let Ok(entry) = serde_json::from_slice::<ScenarioEntry>(body) {
         return Ok(entry);
@@ -275,19 +308,58 @@ fn parse_json_body(body: &[u8]) -> Result<ScenarioEntry, String> {
     Err(format!("invalid JSON scenario body: {json_err}"))
 }
 
+/// Parse body bytes as YAML, returning either a multi-scenario batch or a
+/// single scenario entry.
+///
+/// Tries `MultiScenarioConfig` first (requires a top-level `scenarios:` key).
+/// If that fails, falls back to single-entry parsing via
+/// [`parse_yaml_single_entry`].
+fn parse_yaml_body(body: &[u8]) -> Result<ParsedBody, String> {
+    let text =
+        std::str::from_utf8(body).map_err(|e| format!("request body is not valid UTF-8: {e}"))?;
+
+    // Strategy 1: multi-scenario with top-level `scenarios:` key.
+    if let Ok(multi) = serde_yaml_ng::from_str::<MultiScenarioConfig>(text) {
+        return Ok(ParsedBody::Multi(multi.scenarios));
+    }
+
+    // Strategy 2: single scenario (all existing fallback strategies).
+    parse_yaml_single_entry(text).map(|e| ParsedBody::Single(Box::new(e)))
+}
+
+/// Parse body bytes as JSON, returning either a multi-scenario batch or a
+/// single scenario entry.
+///
+/// Tries `MultiScenarioConfig` first (requires a top-level `scenarios` field).
+/// If that fails, falls back to single-entry parsing via
+/// [`parse_json_single_entry`].
+fn parse_json_body(body: &[u8]) -> Result<ParsedBody, String> {
+    // Strategy 1: multi-scenario.
+    if let Ok(multi) = serde_json::from_slice::<MultiScenarioConfig>(body) {
+        return Ok(ParsedBody::Multi(multi.scenarios));
+    }
+
+    // Strategy 2: single scenario.
+    parse_json_single_entry(body).map(|e| ParsedBody::Single(Box::new(e)))
+}
+
 // ---- Handlers ---------------------------------------------------------------
 
-/// `POST /scenarios` — start a new scenario from a YAML or JSON body.
+/// `POST /scenarios` — start scenarios from a YAML or JSON body.
 ///
-/// Accepts both `application/x-yaml` / `text/yaml` (YAML) and
-/// `application/json` (JSON) request bodies. The body must describe a valid
-/// scenario (metrics or logs).
+/// Accepts both single-scenario and multi-scenario (`scenarios:` array)
+/// request bodies in YAML or JSON format.
 ///
-/// Returns `201 Created` with `{"id": "...", "name": "...", "status": "running"}`
-/// on success.
+/// **Single-scenario** (backward compatible): Returns `201 Created` with
+/// `{"id": "...", "name": "...", "status": "running"}`.
+///
+/// **Multi-scenario**: Returns `201 Created` with
+/// `{"scenarios": [{"id", "name", "status"}, ...]}`. All entries are
+/// validated atomically before any are launched — if any entry fails
+/// validation, nothing is launched and the entire request fails.
 ///
 /// # Error responses
-/// - `400 Bad Request` — body cannot be parsed as YAML or JSON.
+/// - `400 Bad Request` — body cannot be parsed, or `scenarios: []` is empty.
 /// - `422 Unprocessable Entity` — body parsed but failed validation (e.g. rate=0).
 /// - `500 Internal Server Error` — scenario thread could not be spawned.
 pub async fn post_scenario(
@@ -295,47 +367,165 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    // 1. Parse the body into a ScenarioEntry.
-    let entry = parse_body(&body, &headers).map_err(|msg| {
+    // 1. Parse the body, detecting single vs multi-scenario.
+    let parsed = parse_body(&body, &headers).map_err(|msg| {
         warn!(error = %msg, "POST /scenarios: invalid request body");
         bad_request(msg)
     })?;
 
-    // 2. Validate the entry (rate, duration, generator parameters, etc.).
-    validate_entry(&entry).map_err(|e| {
+    match parsed {
+        ParsedBody::Single(entry) => post_single_scenario(state, *entry).await,
+        ParsedBody::Multi(entries) => post_multi_scenario(state, entries).await,
+    }
+}
+
+/// Handle a single-scenario POST (backward-compatible path).
+///
+/// Uses [`prepare_entries`] for the same expand -> validate -> phase_offset
+/// pipeline as the multi-scenario path. This ensures identical behavior
+/// regardless of whether a scenario is posted alone or inside a `scenarios:`
+/// array.
+async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<Response, Response> {
+    // Use the shared pipeline for expansion, validation, and phase offset.
+    let mut prepared = prepare_entries(vec![entry]).map_err(|e| {
         warn!(error = %e, "POST /scenarios: validation failed");
         unprocessable(e)
     })?;
 
-    // 3. Assign a unique ID and extract the scenario name before moving entry.
-    let id = Uuid::new_v4().to_string();
-    let name = entry.base().name.clone();
+    // After expansion a single entry may fan out into multiple entries
+    // (e.g. multi-column csv_replay). Launch all of them.
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(prepared.len());
+    let mut handles_to_store: Vec<(String, sonda_core::ScenarioHandle)> =
+        Vec::with_capacity(prepared.len());
 
-    // 4. Launch the scenario on a new OS thread.
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handle = launch_scenario(id.clone(), entry, shutdown, None).map_err(|e| {
-        warn!(error = %e, "POST /scenarios: failed to launch scenario");
-        internal_error(e)
+    for prepared_entry in prepared.drain(..) {
+        let id = Uuid::new_v4().to_string();
+        let name = prepared_entry.entry.base().name.clone();
+        let shutdown = Arc::new(AtomicBool::new(true));
+
+        let handle = launch_scenario(
+            id.clone(),
+            prepared_entry.entry,
+            shutdown,
+            prepared_entry.start_delay,
+        )
+        .map_err(|e| {
+            for (_, ref h) in &handles_to_store {
+                h.stop();
+            }
+            warn!(error = %e, "POST /scenarios: failed to launch scenario");
+            internal_error(e)
+        })?;
+
+        info!(id = %id, name = %name, "scenario launched");
+
+        created.push(CreatedScenario {
+            id: id.clone(),
+            name,
+            status: "running",
+        });
+        handles_to_store.push((id, handle));
+    }
+
+    // Store all handles in shared state.
+    let mut scenarios = state.scenarios.write().map_err(|e| {
+        for (_, ref h) in &handles_to_store {
+            h.stop();
+        }
+        warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
+        internal_error("internal state lock is poisoned")
+    })?;
+    for (id, handle) in handles_to_store {
+        scenarios.insert(id, handle);
+    }
+    drop(scenarios);
+
+    // Respond based on whether expansion produced a single or multiple entries.
+    if created.len() == 1 {
+        let single = created.into_iter().next().expect("len checked above");
+        Ok((StatusCode::CREATED, Json(single)).into_response())
+    } else {
+        Ok((
+            StatusCode::CREATED,
+            Json(CreatedScenariosResponse { scenarios: created }),
+        )
+            .into_response())
+    }
+}
+
+/// Handle a multi-scenario POST (batch path).
+///
+/// Atomic batch semantics: all entries are expanded, validated, and have their
+/// phase offsets resolved before any are launched. If any entry fails, the
+/// entire request returns an error and nothing is launched.
+async fn post_multi_scenario(
+    state: AppState,
+    entries: Vec<ScenarioEntry>,
+) -> Result<Response, Response> {
+    // Reject empty batches.
+    if entries.is_empty() {
+        warn!("POST /scenarios: empty scenarios array");
+        return Err(bad_request("scenarios array must not be empty"));
+    }
+
+    // Expand, validate, and resolve phase offsets atomically.
+    let prepared = prepare_entries(entries).map_err(|e| {
+        warn!(error = %e, "POST /scenarios: multi-scenario validation failed");
+        unprocessable(e)
     })?;
 
-    info!(id = %id, name = %name, "scenario launched");
+    // Launch all scenarios and collect response entries.
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(prepared.len());
+    let mut handles_to_store: Vec<(String, sonda_core::ScenarioHandle)> =
+        Vec::with_capacity(prepared.len());
 
-    // 5. Store the handle in shared state.
-    state
-        .scenarios
-        .write()
+    for prepared_entry in prepared {
+        let id = Uuid::new_v4().to_string();
+        let name = prepared_entry.entry.base().name.clone();
+        let shutdown = Arc::new(AtomicBool::new(true));
+
+        let handle = launch_scenario(
+            id.clone(),
+            prepared_entry.entry,
+            shutdown,
+            prepared_entry.start_delay,
+        )
         .map_err(|e| {
-            warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
-            internal_error("internal state lock is poisoned")
-        })?
-        .insert(id.clone(), handle);
+            // If a launch fails, stop any already-launched scenarios.
+            for (_, ref h) in &handles_to_store {
+                h.stop();
+            }
+            warn!(error = %e, "POST /scenarios: failed to launch scenario in batch");
+            internal_error(e)
+        })?;
 
-    // 6. Respond with 201 Created.
-    let response_body = CreatedScenario {
-        id,
-        name,
-        status: "running",
-    };
+        info!(id = %id, name = %name, "scenario launched (batch)");
+
+        created.push(CreatedScenario {
+            id: id.clone(),
+            name,
+            status: "running",
+        });
+        handles_to_store.push((id, handle));
+    }
+
+    // Store all handles in shared state.
+    let mut scenarios = state.scenarios.write().map_err(|e| {
+        // Stop all launched scenarios before returning the error to prevent
+        // orphaned threads that run indefinitely without a way to stop them.
+        for (_, ref h) in &handles_to_store {
+            h.stop();
+        }
+        warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
+        internal_error("internal state lock is poisoned")
+    })?;
+    for (id, handle) in handles_to_store {
+        scenarios.insert(id, handle);
+    }
+    drop(scenarios);
+
+    // Respond with 201 Created.
+    let response_body = CreatedScenariosResponse { scenarios: created };
     Ok((StatusCode::CREATED, Json(response_body)).into_response())
 }
 
@@ -1573,13 +1763,13 @@ sink:
 
     // ---- Test: parse_body unit tests -------------------------------------------
 
-    /// parse_yaml_body handles valid bare metrics config (no signal_type tag).
+    /// parse_yaml_single_entry handles valid bare metrics config (no signal_type tag).
     #[test]
-    fn parse_yaml_body_accepts_bare_metrics_config() {
-        let result = parse_yaml_body(VALID_METRICS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_bare_metrics_config() {
+        let result = parse_yaml_single_entry(VALID_METRICS_YAML);
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept bare metrics YAML: {result:?}"
+            "parse_yaml_single_entry must accept bare metrics YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Metrics(c) => assert_eq!(c.name, "test_metric"),
@@ -1587,13 +1777,13 @@ sink:
         }
     }
 
-    /// parse_yaml_body handles valid bare logs config (no signal_type tag).
+    /// parse_yaml_single_entry handles valid bare logs config (no signal_type tag).
     #[test]
-    fn parse_yaml_body_accepts_bare_logs_config() {
-        let result = parse_yaml_body(VALID_LOGS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_bare_logs_config() {
+        let result = parse_yaml_single_entry(VALID_LOGS_YAML);
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept bare logs YAML: {result:?}"
+            "parse_yaml_single_entry must accept bare logs YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Logs(c) => assert_eq!(c.name, "test_logs"),
@@ -1601,13 +1791,13 @@ sink:
         }
     }
 
-    /// parse_yaml_body handles tagged ScenarioEntry format.
+    /// parse_yaml_single_entry handles tagged ScenarioEntry format.
     #[test]
-    fn parse_yaml_body_accepts_tagged_entry() {
-        let result = parse_yaml_body(VALID_TAGGED_METRICS_YAML.as_bytes());
+    fn parse_yaml_single_entry_accepts_tagged_entry() {
+        let result = parse_yaml_single_entry(VALID_TAGGED_METRICS_YAML);
         assert!(
             result.is_ok(),
-            "parse_yaml_body must accept tagged ScenarioEntry YAML: {result:?}"
+            "parse_yaml_single_entry must accept tagged ScenarioEntry YAML: {result:?}"
         );
         match result.unwrap() {
             ScenarioEntry::Metrics(c) => assert_eq!(c.name, "tagged_metric"),
@@ -1615,11 +1805,14 @@ sink:
         }
     }
 
-    /// parse_yaml_body returns Err for garbage input.
+    /// parse_yaml_single_entry returns Err for garbage input.
     #[test]
-    fn parse_yaml_body_rejects_garbage() {
-        let result = parse_yaml_body(b"not valid: [}{");
-        assert!(result.is_err(), "parse_yaml_body must reject garbage input");
+    fn parse_yaml_single_entry_rejects_garbage() {
+        let result = parse_yaml_single_entry("not valid: [}{");
+        assert!(
+            result.is_err(),
+            "parse_yaml_single_entry must reject garbage input"
+        );
         let err = result.unwrap_err();
         assert!(
             err.contains("invalid YAML"),
@@ -1627,9 +1820,9 @@ sink:
         );
     }
 
-    /// parse_json_body accepts a tagged ScenarioEntry JSON.
+    /// parse_json_single_entry accepts a tagged ScenarioEntry JSON.
     #[test]
-    fn parse_json_body_accepts_tagged_json() {
+    fn parse_json_single_entry_accepts_tagged_json() {
         let json = serde_json::json!({
             "signal_type": "metrics",
             "name": "json_test",
@@ -1639,18 +1832,21 @@ sink:
             "encoder": { "type": "prometheus_text" },
             "sink": { "type": "stdout" }
         });
-        let result = parse_json_body(json.to_string().as_bytes());
+        let result = parse_json_single_entry(json.to_string().as_bytes());
         assert!(
             result.is_ok(),
-            "parse_json_body must accept tagged JSON: {result:?}"
+            "parse_json_single_entry must accept tagged JSON: {result:?}"
         );
     }
 
-    /// parse_json_body returns Err for invalid JSON.
+    /// parse_json_single_entry returns Err for invalid JSON.
     #[test]
-    fn parse_json_body_rejects_invalid_json() {
-        let result = parse_json_body(b"not json");
-        assert!(result.is_err(), "parse_json_body must reject invalid JSON");
+    fn parse_json_single_entry_rejects_invalid_json() {
+        let result = parse_json_single_entry(b"not json");
+        assert!(
+            result.is_err(),
+            "parse_json_single_entry must reject invalid JSON"
+        );
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
@@ -3180,6 +3376,599 @@ sink:
             body["error"].as_str().unwrap(),
             "internal_server_error",
             "500 response must have error='internal_server_error'"
+        );
+    }
+
+    // ========================================================================
+    // POST /scenarios multi-scenario tests
+    // ========================================================================
+
+    /// YAML body for a valid multi-scenario batch with two entries.
+    const VALID_MULTI_YAML: &str = "\
+scenarios:
+  - signal_type: metrics
+    name: multi_metric_a
+    rate: 10
+    duration: 200ms
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - signal_type: metrics
+    name: multi_metric_b
+    rate: 10
+    duration: 200ms
+    generator:
+      type: constant
+      value: 2.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+";
+
+    /// YAML body for a multi-scenario batch with phase_offset.
+    const MULTI_YAML_WITH_PHASE_OFFSET: &str = "\
+scenarios:
+  - signal_type: metrics
+    name: offset_a
+    rate: 10
+    duration: 200ms
+    phase_offset: \"0s\"
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - signal_type: metrics
+    name: offset_b
+    rate: 10
+    duration: 200ms
+    phase_offset: \"50ms\"
+    generator:
+      type: constant
+      value: 2.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+";
+
+    /// Multi-scenario YAML POST returns 201 with a scenarios array.
+    #[tokio::test]
+    async fn post_multi_scenario_yaml_returns_201_with_scenarios_array() {
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST valid multi-scenario YAML must return 201 Created"
+        );
+
+        let body = body_json(response).await;
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("response must contain a 'scenarios' array");
+        assert_eq!(
+            scenarios.len(),
+            2,
+            "multi-scenario response must have 2 entries"
+        );
+
+        // Each entry must have id, name, status.
+        for (i, entry) in scenarios.iter().enumerate() {
+            assert!(
+                entry["id"].is_string() && !entry["id"].as_str().unwrap().is_empty(),
+                "scenario[{i}] must have a non-empty id"
+            );
+            assert!(
+                entry["name"].is_string(),
+                "scenario[{i}] must have a name string"
+            );
+            assert_eq!(
+                entry["status"], "running",
+                "scenario[{i}] status must be 'running'"
+            );
+        }
+
+        // Verify names match input order.
+        assert_eq!(scenarios[0]["name"], "multi_metric_a");
+        assert_eq!(scenarios[1]["name"], "multi_metric_b");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Multi-scenario POST stores all handles in AppState.
+    #[tokio::test]
+    async fn post_multi_scenario_stores_all_handles() {
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let body = body_json(response).await;
+        let scenarios = body["scenarios"].as_array().unwrap();
+        let map = state.scenarios.read().expect("lock must not be poisoned");
+        for entry in scenarios {
+            let id = entry["id"].as_str().unwrap();
+            assert!(
+                map.contains_key(id),
+                "AppState must contain handle for scenario id={id}"
+            );
+        }
+        drop(map);
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Multi-scenario POST with JSON content type returns 201.
+    #[tokio::test]
+    async fn post_multi_scenario_json_returns_201() {
+        let json_body = serde_json::json!({
+            "scenarios": [
+                {
+                    "signal_type": "metrics",
+                    "name": "json_multi_a",
+                    "rate": 10,
+                    "duration": "200ms",
+                    "generator": { "type": "constant", "value": 1.0 },
+                    "encoder": { "type": "prometheus_text" },
+                    "sink": { "type": "stdout" }
+                },
+                {
+                    "signal_type": "metrics",
+                    "name": "json_multi_b",
+                    "rate": 10,
+                    "duration": "200ms",
+                    "generator": { "type": "constant", "value": 2.0 },
+                    "encoder": { "type": "prometheus_text" },
+                    "sink": { "type": "stdout" }
+                }
+            ]
+        });
+
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/json", &json_body.to_string()).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST multi-scenario JSON must return 201"
+        );
+
+        let body = body_json(response).await;
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("JSON multi-scenario response must have scenarios array");
+        assert_eq!(scenarios.len(), 2);
+        assert_eq!(scenarios[0]["name"], "json_multi_a");
+        assert_eq!(scenarios[1]["name"], "json_multi_b");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Empty scenarios array returns 400.
+    #[tokio::test]
+    async fn post_multi_scenario_empty_array_returns_400() {
+        let yaml = "scenarios: []\n";
+        let (app, _state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", yaml).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "POST with empty scenarios array must return 400"
+        );
+
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "bad_request");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("must not be empty"),
+            "400 detail must mention empty array"
+        );
+    }
+
+    /// Invalid entry in batch returns 422 and nothing is launched.
+    #[tokio::test]
+    async fn post_multi_scenario_invalid_entry_returns_422_nothing_launched() {
+        let yaml = "\
+scenarios:
+  - signal_type: metrics
+    name: valid_entry
+    rate: 10
+    duration: 200ms
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - signal_type: metrics
+    name: invalid_entry
+    rate: 0
+    duration: 200ms
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+";
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", yaml).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "POST with invalid entry in batch must return 422"
+        );
+
+        // Verify nothing was launched (atomic batch semantics).
+        let map = state.scenarios.read().expect("lock must not be poisoned");
+        assert!(
+            map.is_empty(),
+            "no scenarios must be launched when batch validation fails"
+        );
+    }
+
+    /// Multi-scenario POST with phase_offset honored per entry.
+    #[tokio::test]
+    async fn post_multi_scenario_phase_offset_honored() {
+        let (app, state) = test_router();
+        let response =
+            post_scenarios(app, "application/x-yaml", MULTI_YAML_WITH_PHASE_OFFSET).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST multi-scenario with phase_offset must return 201"
+        );
+
+        let body = body_json(response).await;
+        let scenarios = body["scenarios"].as_array().unwrap();
+        assert_eq!(scenarios.len(), 2);
+        assert_eq!(scenarios[0]["name"], "offset_a");
+        assert_eq!(scenarios[1]["name"], "offset_b");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Single-scenario POST still returns backward-compatible response.
+    #[tokio::test]
+    async fn post_single_scenario_backward_compat() {
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body_json(response).await;
+
+        // Single scenario response must NOT have a "scenarios" key.
+        assert!(
+            body.get("scenarios").is_none(),
+            "single-scenario POST must not return a 'scenarios' wrapper"
+        );
+        // Must have the flat {id, name, status} shape.
+        assert!(body["id"].is_string());
+        assert_eq!(body["name"], "test_metric");
+        assert_eq!(body["status"], "running");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// All launched multi-scenario entries are visible in GET /scenarios.
+    #[tokio::test]
+    async fn post_multi_scenario_entries_visible_in_get_list() {
+        let state = AppState::new();
+        let app = router(state.clone());
+        let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let post_body = body_json(response).await;
+        let posted_ids: Vec<&str> = post_body["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+
+        // GET /scenarios to list all.
+        let app2 = router(state.clone());
+        let req = Request::builder()
+            .uri("/scenarios")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app2.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let list_body = body_json(resp).await;
+        let listed_ids: Vec<&str> = list_body["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+
+        for id in &posted_ids {
+            assert!(
+                listed_ids.contains(id),
+                "posted scenario id={id} must appear in GET /scenarios list"
+            );
+        }
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Multi-scenario entries are stoppable via DELETE.
+    #[tokio::test]
+    async fn post_multi_scenario_entries_stoppable_via_delete() {
+        let state = AppState::new();
+        let app = router(state.clone());
+        let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let post_body = body_json(response).await;
+        let ids: Vec<String> = post_body["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect();
+
+        // DELETE each scenario.
+        for id in &ids {
+            let app = router(state.clone());
+            let resp = delete_scenario_req(app, id).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "DELETE for multi-scenario id={id} must return 200"
+            );
+        }
+
+        // Verify all are gone.
+        let map = state.scenarios.read().unwrap();
+        assert!(
+            map.is_empty(),
+            "all multi-scenario handles must be removed after DELETE"
+        );
+    }
+
+    /// Multi-scenario response has unique IDs for each entry.
+    #[tokio::test]
+    async fn post_multi_scenario_ids_are_unique() {
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let body = body_json(response).await;
+        let ids: Vec<&str> = body["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+
+        let mut unique_ids = ids.clone();
+        unique_ids.sort();
+        unique_ids.dedup();
+        assert_eq!(
+            ids.len(),
+            unique_ids.len(),
+            "all scenario IDs must be unique"
+        );
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Multi-scenario with mixed signal types (metrics + logs) returns 201.
+    #[tokio::test]
+    async fn post_multi_scenario_mixed_signal_types() {
+        let yaml = "\
+scenarios:
+  - signal_type: metrics
+    name: mixed_metric
+    rate: 10
+    duration: 200ms
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - signal_type: logs
+    name: mixed_logs
+    rate: 10
+    duration: 200ms
+    generator:
+      type: template
+      templates:
+        - message: \"test log\"
+          field_pools: {}
+      seed: 0
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+";
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", yaml).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST multi-scenario with mixed signal types must return 201"
+        );
+
+        let body = body_json(response).await;
+        let scenarios = body["scenarios"].as_array().unwrap();
+        assert_eq!(scenarios.len(), 2);
+        assert_eq!(scenarios[0]["name"], "mixed_metric");
+        assert_eq!(scenarios[1]["name"], "mixed_logs");
+
+        cleanup_scenarios(&state);
+    }
+
+    // ---- Parse body unit tests (multi-aware) ---------------------------------
+
+    /// parse_yaml_body returns Multi for a scenarios-array body.
+    #[test]
+    fn parse_yaml_body_returns_multi_for_scenarios_array() {
+        let result = parse_yaml_body(VALID_MULTI_YAML.as_bytes());
+        assert!(result.is_ok(), "must parse valid multi-scenario YAML");
+        match result.unwrap() {
+            ParsedBody::Multi(entries) => {
+                assert_eq!(entries.len(), 2, "must contain 2 entries");
+            }
+            ParsedBody::Single(_) => panic!("expected ParsedBody::Multi"),
+        }
+    }
+
+    /// parse_yaml_body returns Single for a single-scenario body.
+    #[test]
+    fn parse_yaml_body_returns_single_for_bare_config() {
+        let result = parse_yaml_body(VALID_METRICS_YAML.as_bytes());
+        assert!(result.is_ok(), "must parse valid single-scenario YAML");
+        match result.unwrap() {
+            ParsedBody::Single(entry) => {
+                assert_eq!(entry.base().name, "test_metric");
+            }
+            ParsedBody::Multi(_) => panic!("expected ParsedBody::Single"),
+        }
+    }
+
+    /// parse_json_body returns Multi for a scenarios-array JSON body.
+    #[test]
+    fn parse_json_body_returns_multi_for_json_array() {
+        let json = serde_json::json!({
+            "scenarios": [
+                {
+                    "signal_type": "metrics",
+                    "name": "a",
+                    "rate": 10,
+                    "duration": "1s",
+                    "generator": { "type": "constant", "value": 1.0 },
+                    "encoder": { "type": "prometheus_text" },
+                    "sink": { "type": "stdout" }
+                }
+            ]
+        });
+        let result = parse_json_body(json.to_string().as_bytes());
+        assert!(result.is_ok(), "must parse valid multi-scenario JSON");
+        match result.unwrap() {
+            ParsedBody::Multi(entries) => assert_eq!(entries.len(), 1),
+            ParsedBody::Single(_) => panic!("expected ParsedBody::Multi"),
+        }
+    }
+
+    /// parse_json_body returns Single for a single-scenario JSON body.
+    #[test]
+    fn parse_json_body_returns_single_for_single_json() {
+        let json = serde_json::json!({
+            "signal_type": "metrics",
+            "name": "single_json",
+            "rate": 10,
+            "duration": "1s",
+            "generator": { "type": "constant", "value": 1.0 },
+            "encoder": { "type": "prometheus_text" },
+            "sink": { "type": "stdout" }
+        });
+        let result = parse_json_body(json.to_string().as_bytes());
+        assert!(result.is_ok(), "must parse valid single-scenario JSON");
+        match result.unwrap() {
+            ParsedBody::Single(entry) => {
+                assert_eq!(entry.base().name, "single_json");
+            }
+            ParsedBody::Multi(_) => panic!("expected ParsedBody::Single"),
+        }
+    }
+
+    /// CreatedScenariosResponse serializes to expected JSON structure.
+    #[test]
+    fn created_scenarios_response_serializes_correctly() {
+        let resp = CreatedScenariosResponse {
+            scenarios: vec![
+                CreatedScenario {
+                    id: "id-1".to_string(),
+                    name: "s1".to_string(),
+                    status: "running",
+                },
+                CreatedScenario {
+                    id: "id-2".to_string(),
+                    name: "s2".to_string(),
+                    status: "running",
+                },
+            ],
+        };
+        let json = serde_json::to_value(&resp).expect("must serialize");
+        let arr = json["scenarios"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], "id-1");
+        assert_eq!(arr[1]["name"], "s2");
+    }
+
+    // ========================================================================
+    // Single-scenario POST parity with multi-scenario path (NOTE 1 fix)
+    // ========================================================================
+
+    /// Single-scenario POST with phase_offset returns 201 (verifies the
+    /// single-scenario path now uses prepare_entries which resolves phase_offset).
+    #[tokio::test]
+    async fn post_single_scenario_with_phase_offset_returns_201() {
+        let yaml = "\
+name: single_offset
+rate: 10
+duration: 200ms
+phase_offset: \"50ms\"
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+";
+        let (app, state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", yaml).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "POST single scenario with phase_offset must return 201"
+        );
+
+        let body = body_json(response).await;
+        assert_eq!(body["name"], "single_offset");
+        assert_eq!(body["status"], "running");
+
+        cleanup_scenarios(&state);
+    }
+
+    /// Single-scenario POST with rate=0 returns 422 (verifies validation
+    /// through prepare_entries).
+    #[tokio::test]
+    async fn post_single_scenario_with_zero_rate_returns_422_via_prepare_entries() {
+        let (app, _state) = test_router();
+        let response = post_scenarios(app, "application/x-yaml", ZERO_RATE_YAML).await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "POST single scenario with rate=0 must return 422"
         );
     }
 }

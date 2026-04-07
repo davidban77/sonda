@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::config::MultiScenarioConfig;
-use crate::schedule::launch::{launch_scenario, validate_entry};
-use crate::{ConfigError, RuntimeError, SondaError};
+use crate::schedule::launch::{launch_scenario, prepare_entries};
+use crate::{RuntimeError, SondaError};
 
 /// Run all scenarios in `config` concurrently, one OS thread per scenario.
 ///
@@ -39,28 +39,18 @@ use crate::{ConfigError, RuntimeError, SondaError};
 /// thread errors are collected and formatted into a single
 /// [`RuntimeError::ScenariosFailed`] error.
 pub fn run_multi(config: MultiScenarioConfig, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
-    let mut handles = Vec::with_capacity(config.scenarios.len());
+    // Expand, validate, and resolve phase offsets for all entries atomically.
+    let prepared = prepare_entries(config.scenarios)?;
 
-    for (i, entry) in config.scenarios.into_iter().enumerate() {
-        // Validate before spawning so errors are caught synchronously.
-        if let Err(e) = validate_entry(&entry) {
-            return Err(SondaError::Config(ConfigError::invalid(format!(
-                "scenario[{i}]: {e}"
-            ))));
-        }
-
-        // Parse the optional phase_offset into a Duration for the launcher.
-        let start_delay = match entry.phase_offset() {
-            Some(offset) => crate::config::validate::parse_phase_offset(offset).map_err(|e| {
-                SondaError::Config(ConfigError::invalid(format!(
-                    "scenario[{i}] phase_offset: {e}"
-                )))
-            })?,
-            None => None,
-        };
-
+    let mut handles = Vec::with_capacity(prepared.len());
+    for (i, prepared_entry) in prepared.into_iter().enumerate() {
         let id = format!("multi-{i}");
-        let handle = launch_scenario(id, entry, Arc::clone(&shutdown), start_delay)?;
+        let handle = launch_scenario(
+            id,
+            prepared_entry.entry,
+            Arc::clone(&shutdown),
+            prepared_entry.start_delay,
+        )?;
         handles.push(handle);
     }
 

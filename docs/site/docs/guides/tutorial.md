@@ -753,6 +753,28 @@ curl -X POST \
       http://localhost:8080/scenarios | jq -r '.id')
     ```
 
+You can also submit multi-scenario files in a single request. The same `scenarios:` array
+format used by `sonda run` works over the API:
+
+```bash
+curl -X POST \
+  -H "Content-Type: text/yaml" \
+  --data-binary @examples/multi-scenario.yaml \
+  http://localhost:8080/scenarios
+```
+
+```json
+{
+  "scenarios": [
+    { "id": "a1b2c3d4-...", "name": "cpu_usage", "status": "running" },
+    { "id": "e5f6a7b8-...", "name": "app_logs", "status": "running" }
+  ]
+}
+```
+
+See [Multi-scenario batch](../deployment/sonda-server.md#multi-scenario-batch) for the full
+reference including error handling and phase offsets.
+
 ### List scenarios
 
 ```bash
