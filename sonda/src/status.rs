@@ -600,13 +600,31 @@ pub fn print_summary(agg: &AggregateStats, total_elapsed: Duration, verbosity: V
         return;
     }
 
+    let has_errors = agg.total_errors > 0;
+
     let bar = "\u{2501}\u{2501}".if_supports_color(Stderr, |t| t.bold());
     let label = "run complete".if_supports_color(Stderr, |t| t.bold());
     let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
     let elapsed_str = format!("{:.1}s", total_elapsed.as_secs_f64());
     let bytes_str = format_bytes(agg.total_bytes);
 
-    let errors_value = if agg.total_errors > 0 {
+    let scenarios_value = format!(
+        "{}",
+        agg.scenario_count.if_supports_color(Stderr, |t| t.bold())
+    );
+
+    let events_value = if has_errors {
+        format!("{}", agg.total_events)
+    } else {
+        format!(
+            "{}",
+            agg.total_events.if_supports_color(Stderr, |t| t.green())
+        )
+    };
+
+    let bytes_value = bytes_str.if_supports_color(Stderr, |t| t.cyan());
+
+    let errors_value = if has_errors {
         format!(
             "{}",
             agg.total_errors.if_supports_color(Stderr, |t| t.red())
@@ -616,8 +634,7 @@ pub fn print_summary(agg: &AggregateStats, total_elapsed: Duration, verbosity: V
     };
 
     eprintln!(
-        "{bar} {label}  scenarios: {} {pipe} events: {} {pipe} bytes: {bytes_str} {pipe} errors: {errors_value} {pipe} elapsed: {elapsed_str}",
-        agg.scenario_count, agg.total_events
+        "{bar} {label}  scenarios: {scenarios_value} {pipe} events: {events_value} {pipe} bytes: {bytes_value} {pipe} errors: {errors_value} {pipe} elapsed: {elapsed_str}"
     );
 }
 

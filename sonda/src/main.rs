@@ -283,16 +283,19 @@ fn run_scenarios_command(
                 );
             } else {
                 // Print a formatted table to stdout with a bold header row.
+                // Pad plain text first, then apply bold — ANSI escape bytes
+                // would be counted as visible characters by `format!`, breaking
+                // column alignment.
                 use owo_colors::Stream::Stdout;
 
-                let header_name = "NAME".if_supports_color(Stdout, |t| t.bold());
-                let header_cat = "CATEGORY".if_supports_color(Stdout, |t| t.bold());
-                let header_sig = "SIGNAL".if_supports_color(Stdout, |t| t.bold());
+                let header_name = format!("{:<28}", "NAME");
+                let header_name = header_name.if_supports_color(Stdout, |t| t.bold());
+                let header_cat = format!("{:<18}", "CATEGORY");
+                let header_cat = header_cat.if_supports_color(Stdout, |t| t.bold());
+                let header_sig = format!("{:<12}", "SIGNAL");
+                let header_sig = header_sig.if_supports_color(Stdout, |t| t.bold());
                 let header_desc = "DESCRIPTION".if_supports_color(Stdout, |t| t.bold());
-                println!(
-                    "{:<28} {:<18} {:<12} {}",
-                    header_name, header_cat, header_sig, header_desc
-                );
+                println!("{header_name} {header_cat} {header_sig} {header_desc}");
                 for s in &items {
                     println!(
                         "{:<28} {:<18} {:<12} {}",

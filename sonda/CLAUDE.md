@@ -39,7 +39,7 @@ sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml | @builtin-na
 sonda [--quiet | --verbose] [--dry-run] logs --mode <mode> [--sink <type> --endpoint <url> ...]
 sonda [--quiet | --verbose] [--dry-run] histogram --scenario <file.yaml | @builtin-name>
 sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml | @builtin-name>
-sonda scenarios list [--category <cat>]
+sonda scenarios list [--category <cat>] [--json]
 sonda scenarios show <name>
 sonda [--quiet | --verbose] [--dry-run] scenarios run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>]
 ```
@@ -102,6 +102,7 @@ This crate depends on:
 - `sonda-core` (workspace dependency)
 - `clap` with derive feature
 - `serde` + `serde_yaml_ng` for config loading
+- `serde_json` for JSON output in `scenarios list`
 - `anyhow` for error handling
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
 

@@ -728,7 +728,7 @@ pub struct ScenariosRunArgs {
 /// Returns a [`clap::builder::styling::Styles`] with colored headers, usage
 /// patterns, flag names, and placeholders that match the conventions of modern
 /// Rust CLIs like `cargo`.
-pub fn clap_styles() -> clap::builder::styling::Styles {
+fn clap_styles() -> clap::builder::styling::Styles {
     use clap::builder::styling::{AnsiColor, Style, Styles};
 
     Styles::styled()
