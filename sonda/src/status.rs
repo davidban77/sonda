@@ -671,6 +671,46 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             let max_str = max.map(|m| format!(", max: {m}")).unwrap_or_default();
             format!("step (start: {start_val}, step: {step_size}{max_str})")
         }
+        // Operational aliases — these should be desugared before display in
+        // normal operation, but we handle them for completeness.
+        GeneratorConfig::Flap { up_duration, down_duration, .. } => {
+            let up = up_duration.as_deref().unwrap_or("10s");
+            let down = down_duration.as_deref().unwrap_or("5s");
+            format!("flap (up: {up}, down: {down})")
+        }
+        GeneratorConfig::Saturation { baseline, ceiling, time_to_saturate } => {
+            let base = baseline.unwrap_or(0.0);
+            let ceil = ceiling.unwrap_or(100.0);
+            let dur = time_to_saturate.as_deref().unwrap_or("5m");
+            format!("saturation (baseline: {base}, ceiling: {ceil}, period: {dur})")
+        }
+        GeneratorConfig::Leak { baseline, ceiling, time_to_ceiling } => {
+            let base = baseline.unwrap_or(0.0);
+            let ceil = ceiling.unwrap_or(100.0);
+            let dur = time_to_ceiling.as_deref().unwrap_or("10m");
+            format!("leak (baseline: {base}, ceiling: {ceil}, time: {dur})")
+        }
+        GeneratorConfig::Degradation { baseline, ceiling, time_to_degrade, noise, .. } => {
+            let base = baseline.unwrap_or(0.0);
+            let ceil = ceiling.unwrap_or(100.0);
+            let dur = time_to_degrade.as_deref().unwrap_or("5m");
+            let n = noise.unwrap_or(1.0);
+            format!("degradation (baseline: {base}, ceiling: {ceil}, time: {dur}, noise: {n})")
+        }
+        GeneratorConfig::Steady { center, amplitude, period, noise, .. } => {
+            let c = center.unwrap_or(50.0);
+            let a = amplitude.unwrap_or(10.0);
+            let p = period.as_deref().unwrap_or("60s");
+            let n = noise.unwrap_or(1.0);
+            format!("steady (center: {c}, amplitude: {a}, period: {p}, noise: {n})")
+        }
+        GeneratorConfig::SpikeEvent { baseline, spike_height, spike_duration, spike_interval } => {
+            let base = baseline.unwrap_or(0.0);
+            let h = spike_height.unwrap_or(100.0);
+            let d = spike_duration.as_deref().unwrap_or("10s");
+            let i = spike_interval.as_deref().unwrap_or("30s");
+            format!("spike_event (baseline: {base}, height: {h}, duration: {d}, interval: {i})")
+        }
     }
 }
 

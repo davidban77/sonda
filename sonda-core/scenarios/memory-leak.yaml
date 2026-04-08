@@ -1,18 +1,18 @@
 # Memory leak: monotonically growing memory usage.
 #
-# Models a process with a memory leak using a sawtooth generator that
-# ramps from 40% to 95% over 120 seconds before resetting. Useful for
-# testing alert rules on memory growth rate or threshold breaches.
+# Models a process with a memory leak using the `leak` alias — a
+# one-way ramp from 40% to 95% over 120 seconds. Useful for testing
+# alert rules on memory growth rate or threshold breaches.
 
 name: process_memory_usage_percent
 rate: 1
 duration: 120s
 
 generator:
-  type: sawtooth
-  min: 40.0
-  max: 95.0
-  period_secs: 120
+  type: leak
+  baseline: 40.0
+  ceiling: 95.0
+  time_to_ceiling: "120s"
 
 labels:
   instance: app-server-01

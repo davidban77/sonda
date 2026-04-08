@@ -1,8 +1,8 @@
 # Latency degradation: growing response latency with jitter.
 #
 # Models an application experiencing gradual latency degradation using
-# a sawtooth generator with jitter. Latency ramps from 50ms to 500ms
-# over 60 seconds, then resets. The jitter adds realistic noise.
+# the `degradation` alias (sawtooth + noise). Latency ramps from 50ms
+# to 500ms over 60 seconds. The noise adds realistic variation.
 # Useful for testing latency SLO alerting.
 
 name: http_request_duration_seconds
@@ -10,13 +10,12 @@ rate: 2
 duration: 60s
 
 generator:
-  type: sawtooth
-  min: 0.05
-  max: 0.5
-  period_secs: 60
-
-jitter: 0.02
-jitter_seed: 42
+  type: degradation
+  baseline: 0.05
+  ceiling: 0.5
+  time_to_degrade: "60s"
+  noise: 0.02
+  noise_seed: 42
 
 labels:
   instance: api-gateway-01

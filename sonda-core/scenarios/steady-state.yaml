@@ -1,22 +1,21 @@
 # Steady state: normal oscillating baseline metrics.
 #
 # Models a healthy server with normal CPU and memory oscillation using
-# sine waves with jitter. Represents the "everything is fine" baseline.
-# Useful as a control signal when testing alert rules — this scenario
-# should NOT trigger any alerts.
+# the `steady` alias (sine + jitter). Represents the "everything is fine"
+# baseline. Useful as a control signal when testing alert rules — this
+# scenario should NOT trigger any alerts.
 
 name: node_cpu_usage_idle_percent
 rate: 1
 duration: 60s
 
 generator:
-  type: sine
+  type: steady
+  center: 75.0
   amplitude: 10.0
-  period_secs: 60
-  offset: 75.0
-
-jitter: 2.0
-jitter_seed: 7
+  period: "60s"
+  noise: 2.0
+  noise_seed: 7
 
 labels:
   instance: web-01

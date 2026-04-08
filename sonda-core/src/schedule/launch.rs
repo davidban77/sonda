@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
@@ -88,6 +89,20 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
             expanded.push((i, entry));
         }
     }
+
+    // Phase 1.5: desugar operational generator aliases (flap, steady, leak,
+    // etc.) into their underlying GeneratorConfig variants. This must happen
+    // after expand (so csv_replay is resolved) and before validate (so the
+    // concrete generator types pass validation).
+    let expanded: Vec<(usize, ScenarioEntry)> = expanded
+        .into_iter()
+        .map(|(idx, entry)| {
+            let desugared = desugar_entry(entry).map_err(|e| {
+                SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {e}")))
+            })?;
+            Ok((idx, desugared))
+        })
+        .collect::<Result<Vec<_>, SondaError>>()?;
 
     // Phase 2: validate all entries and resolve phase offsets.
     let mut prepared = Vec::with_capacity(expanded.len());
