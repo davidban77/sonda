@@ -794,9 +794,9 @@ sonda --dry-run scenarios run cpu-spike
 
 ## sonda packs
 
-Browse, inspect, and run [built-in metric packs](../guides/metric-packs.md) embedded in the
-binary. A metric pack is a reusable bundle of metric names and label schemas that expands into
-a multi-metric scenario.
+Browse, inspect, and run [metric packs](../guides/metric-packs.md) discovered from the
+filesystem. A metric pack is a reusable bundle of metric names and label schemas that expands
+into a multi-metric scenario.
 
 ```bash
 sonda packs <COMMAND>
