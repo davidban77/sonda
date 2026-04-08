@@ -1,8 +1,8 @@
 //! Live progress display for running scenarios.
 //!
-//! Polls [`ScenarioHandle::stats_snapshot()`] at regular intervals and renders
-//! updating status lines to stderr. All output goes to stderr so that stdout
-//! remains clean for data when the sink is stdout.
+//! Polls [`ScenarioStats`] via the shared [`RwLock`] at regular intervals and
+//! renders updating status lines to stderr. All output goes to stderr so that
+//! stdout remains clean for data when the sink is stdout.
 //!
 //! **TTY mode** (stderr is a terminal): Uses ANSI escape sequences to overwrite
 //! progress lines in place, producing a compact, live-updating display.
