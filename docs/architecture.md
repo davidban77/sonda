@@ -113,6 +113,8 @@ All generators are constructed via a factory function and stored as `Box<dyn Val
 
 > **Trade-off:** Trait objects (`Box<dyn ValueGenerator>`) introduce one layer of dynamic dispatch per tick. For a generator producing 1,000 events/sec, this overhead is measured in nanoseconds and is negligible relative to encoding and I/O cost. The extensibility benefit justifies the choice.
 
+**Operational aliases.** Six high-level aliases (`flap`, `saturation`, `leak`, `degradation`, `steady`, `spike_event`) provide an operational vocabulary on top of the core generators. Aliases are desugared into their underlying `GeneratorConfig` variants at config parse time — in the `config::aliases` module — before the generator factory ever sees them. The runtime and generator trait layer are completely unaware of aliases. Aliases that imply jitter (`steady`, `degradation`) also set jitter fields on the scenario's `BaseScheduleConfig` during desugaring, which is why desugaring operates at the scenario level rather than the generator level alone.
+
 ### 5.3 Schedules
 
 A schedule controls when events are emitted: their rate, duration, and any intentional gaps or burst windows.

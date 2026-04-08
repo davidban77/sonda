@@ -70,7 +70,7 @@ sonda metrics --scenario full-example.yaml
 | `name` | string | yes | -- | Metric name. Must match `[a-zA-Z_:][a-zA-Z0-9_:]*`. |
 | `rate` | float | yes | -- | Events per second. Must be positive. Fractional values allowed (e.g. `0.5`). |
 | `duration` | string | no | runs forever | Total run time. Supports `ms`, `s`, `m`, `h` units. |
-| `generator` | object | yes | -- | Value generator configuration. See [Generators](generators.md). |
+| `generator` | object | yes | -- | Value generator configuration. Core types and [operational aliases](generators.md#operational-aliases). See [Generators](generators.md). |
 | `encoder` | object | no | `prometheus_text` | Output format. See [Encoders](encoders.md). |
 | `sink` | object | no | `stdout` | Output destination. See [Sinks](sinks.md). |
 | `dynamic_labels` | list | no | none | Rotating labels that cycle through values on every tick. See [Dynamic labels](#dynamic-labels). |
@@ -316,7 +316,7 @@ list must include a `signal_type` field.
 
 | `signal_type` | Description | Config format |
 |---------------|-------------|---------------|
-| `metrics` | Gauge/counter metrics via a [generator](generators.md#metric-generators) | `generator.type` + standard fields |
+| `metrics` | Gauge/counter metrics via a [generator](generators.md#metric-generators) or [operational alias](generators.md#operational-aliases) | `generator.type` + standard fields |
 | `logs` | Structured log events | `generator.type: template` or `replay` |
 | `histogram` | Prometheus-style histogram (bucket, count, sum) | `distribution` + histogram fields |
 | `summary` | Prometheus-style summary (quantile, count, sum) | `distribution` + summary fields |
