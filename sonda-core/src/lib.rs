@@ -33,7 +33,6 @@ pub use model::log::Severity;
 pub use model::metric::Labels;
 pub use model::metric::MetricEvent;
 pub use model::metric::ValidatedMetricName;
-pub use packs::BuiltinPack;
 pub use scenarios::BuiltinScenario;
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};

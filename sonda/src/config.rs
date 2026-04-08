@@ -1579,34 +1579,41 @@ pub fn resolve_scenario_source(path: &std::path::Path) -> Result<String> {
 // Pack loading
 // ---------------------------------------------------------------------------
 
-/// Load and expand a built-in metric pack from its catalog name, applying
-/// CLI overrides from [`PacksRunArgs`].
+/// Load and expand a metric pack from the [`PackCatalog`], applying CLI
+/// overrides from [`PacksRunArgs`].
 ///
-/// Looks up the pack by name, parses its YAML into a [`MetricPackDef`],
-/// builds a [`PackScenarioConfig`] from the CLI flags, and returns the
-/// expanded scenario entries.
+/// Looks up the pack by name in the catalog, reads its YAML from disk,
+/// parses it into a [`MetricPackDef`], builds a [`PackScenarioConfig`]
+/// from the CLI flags, and returns the expanded scenario entries.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The pack name is not found in the catalog.
-/// - The pack YAML fails to parse.
+/// - The pack YAML cannot be read or fails to parse.
 /// - The expansion fails (e.g., empty metrics list).
-pub fn load_builtin_pack(args: &PacksRunArgs) -> Result<Vec<sonda_core::ScenarioEntry>> {
-    use sonda_core::packs;
+///
+/// [`PackCatalog`]: crate::packs::PackCatalog
+pub fn load_pack_from_catalog(
+    args: &PacksRunArgs,
+    catalog: &crate::packs::PackCatalog,
+) -> Result<Vec<sonda_core::ScenarioEntry>> {
     use sonda_core::packs::{MetricPackDef, PackScenarioConfig};
 
-    let pack = packs::get(&args.name).ok_or_else(|| {
-        let names = packs::available_names();
-        anyhow::anyhow!(
-            "unknown pack {:?}; available packs: {}",
-            args.name,
-            names.join(", ")
-        )
-    })?;
+    let pack_yaml = catalog
+        .read_yaml(&args.name)
+        .ok_or_else(|| {
+            let names = catalog.available_names();
+            anyhow::anyhow!(
+                "unknown pack {:?}; available packs: {}",
+                args.name,
+                names.join(", ")
+            )
+        })?
+        .with_context(|| format!("failed to read pack {:?} from disk", args.name))?;
 
-    let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml)
-        .with_context(|| format!("failed to parse built-in pack {:?}", pack.name))?;
+    let def: MetricPackDef = serde_yaml_ng::from_str(&pack_yaml)
+        .with_context(|| format!("failed to parse pack {:?}", args.name))?;
 
     let mut labels: Option<HashMap<String, String>> = None;
     if !args.labels.is_empty() {
@@ -1637,23 +1644,26 @@ pub fn load_builtin_pack(args: &PacksRunArgs) -> Result<Vec<sonda_core::Scenario
         overrides: None,
     };
 
-    let entries = packs::expand_pack(&def, &pack_config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let entries =
+        sonda_core::packs::expand_pack(&def, &pack_config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(entries)
 }
 
-/// Resolve a pack reference that may be a built-in name or a file path.
+/// Resolve a pack reference that may be a catalog name or a file path.
 ///
-/// If the pack string contains `/` or starts with `.`, it is treated as a
-/// file path and the YAML is read from disk. Otherwise, the string is
-/// treated as a built-in pack name and looked up in the catalog.
+/// If the pack string contains `/` or starts with `.`, or ends with
+/// `.yaml`/`.yml`, it is treated as a file path and the YAML is read from
+/// disk. Otherwise, the string is looked up in the [`PackCatalog`].
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The string is a built-in name that does not exist.
+/// - The string is a catalog name that does not exist.
 /// - The file path cannot be read from disk.
-pub fn resolve_pack_source(pack_ref: &str) -> Result<String> {
+///
+/// [`PackCatalog`]: crate::packs::PackCatalog
+pub fn resolve_pack_source(pack_ref: &str, catalog: &crate::packs::PackCatalog) -> Result<String> {
     let looks_like_file = pack_ref.contains('/')
         || pack_ref.starts_with('.')
         || pack_ref.ends_with(".yaml")
@@ -1663,7 +1673,7 @@ pub fn resolve_pack_source(pack_ref: &str) -> Result<String> {
         fs::read_to_string(pack_ref).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 anyhow::anyhow!(
-                    "failed to read pack file {:?}: {}\n\n  hint: use a built-in pack name (e.g. `telegraf_snmp_interface`) or a valid file path",
+                    "failed to read pack file {:?}: {}\n\n  hint: use a pack name on the search path (e.g. `telegraf_snmp_interface`) or a valid file path",
                     pack_ref, e
                 )
             } else {
@@ -1671,17 +1681,18 @@ pub fn resolve_pack_source(pack_ref: &str) -> Result<String> {
             }
         })
     } else {
-        // Built-in name.
-        sonda_core::packs::get_yaml(pack_ref)
-            .map(|s| s.to_string())
+        // Catalog name.
+        catalog
+            .read_yaml(pack_ref)
             .ok_or_else(|| {
-                let names = sonda_core::packs::available_names();
+                let names = catalog.available_names();
                 anyhow::anyhow!(
                     "unknown pack {:?}; available packs: {}",
                     pack_ref,
                     names.join(", ")
                 )
-            })
+            })?
+            .map_err(|e| anyhow::anyhow!("failed to read pack {:?} from disk: {}", pack_ref, e))
     }
 }
 
@@ -1707,7 +1718,7 @@ pub fn is_pack_config(yaml: &str) -> bool {
 /// Load a pack scenario from a YAML string (from a file or inline).
 ///
 /// Parses the YAML as [`PackScenarioConfig`], resolves the pack definition
-/// (built-in or file), and expands it into scenario entries.
+/// (catalog name or file path), and expands it into scenario entries.
 ///
 /// # Errors
 ///
@@ -1716,13 +1727,16 @@ pub fn is_pack_config(yaml: &str) -> bool {
 /// - The pack reference cannot be resolved.
 /// - The pack definition fails to parse.
 /// - The expansion fails.
-pub fn load_pack_from_yaml(yaml: &str) -> Result<Vec<sonda_core::ScenarioEntry>> {
+pub fn load_pack_from_yaml(
+    yaml: &str,
+    catalog: &crate::packs::PackCatalog,
+) -> Result<Vec<sonda_core::ScenarioEntry>> {
     use sonda_core::packs::{MetricPackDef, PackScenarioConfig};
 
     let config: PackScenarioConfig =
         serde_yaml_ng::from_str(yaml).context("failed to parse YAML as pack scenario config")?;
 
-    let pack_yaml = resolve_pack_source(&config.pack)?;
+    let pack_yaml = resolve_pack_source(&config.pack, catalog)?;
 
     let def: MetricPackDef = serde_yaml_ng::from_str(&pack_yaml)
         .with_context(|| format!("failed to parse pack definition for {:?}", config.pack))?;
@@ -5297,6 +5311,15 @@ sink:
 
     // ---- Pack loading tests -----------------------------------------------------
 
+    /// Build a PackCatalog pointing to the repo-root `packs/` directory.
+    fn test_pack_catalog() -> crate::packs::PackCatalog {
+        let packs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("packs");
+        crate::packs::PackCatalog::discover(&[packs_dir])
+    }
+
     fn default_packs_run_args(name: &str) -> PacksRunArgs {
         PacksRunArgs {
             name: name.to_string(),
@@ -5310,30 +5333,34 @@ sink:
     }
 
     #[test]
-    fn load_builtin_pack_telegraf_snmp_produces_five_entries() {
+    fn load_pack_telegraf_snmp_produces_five_entries() {
+        let catalog = test_pack_catalog();
         let args = default_packs_run_args("telegraf_snmp_interface");
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         assert_eq!(entries.len(), 5);
     }
 
     #[test]
-    fn load_builtin_pack_node_cpu_produces_eight_entries() {
+    fn load_pack_node_cpu_produces_eight_entries() {
+        let catalog = test_pack_catalog();
         let args = default_packs_run_args("node_exporter_cpu");
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         assert_eq!(entries.len(), 8);
     }
 
     #[test]
-    fn load_builtin_pack_node_memory_produces_five_entries() {
+    fn load_pack_node_memory_produces_five_entries() {
+        let catalog = test_pack_catalog();
         let args = default_packs_run_args("node_exporter_memory");
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         assert_eq!(entries.len(), 5);
     }
 
     #[test]
-    fn load_builtin_pack_unknown_name_returns_error() {
+    fn load_pack_unknown_name_returns_error() {
+        let catalog = test_pack_catalog();
         let args = default_packs_run_args("nonexistent_pack");
-        let err = load_builtin_pack(&args).expect_err("unknown pack must fail");
+        let err = load_pack_from_catalog(&args, &catalog).expect_err("unknown pack must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("unknown pack"),
@@ -5342,10 +5369,11 @@ sink:
     }
 
     #[test]
-    fn load_builtin_pack_applies_rate_override() {
+    fn load_pack_applies_rate_override() {
+        let catalog = test_pack_catalog();
         let mut args = default_packs_run_args("node_exporter_memory");
         args.rate = Some(5.0);
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         for entry in &entries {
             assert!(
                 (entry.base().rate - 5.0).abs() < f64::EPSILON,
@@ -5355,23 +5383,25 @@ sink:
     }
 
     #[test]
-    fn load_builtin_pack_applies_duration_override() {
+    fn load_pack_applies_duration_override() {
+        let catalog = test_pack_catalog();
         let mut args = default_packs_run_args("node_exporter_memory");
         args.duration = Some("30s".to_string());
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         for entry in &entries {
             assert_eq!(entry.base().duration.as_deref(), Some("30s"));
         }
     }
 
     #[test]
-    fn load_builtin_pack_applies_labels() {
+    fn load_pack_applies_labels() {
+        let catalog = test_pack_catalog();
         let mut args = default_packs_run_args("telegraf_snmp_interface");
         args.labels = vec![
             ("device".to_string(), "rtr-01".to_string()),
             ("ifName".to_string(), "eth0".to_string()),
         ];
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         for entry in &entries {
             let labels = entry.base().labels.as_ref().expect("must have labels");
             assert_eq!(labels.get("device").map(String::as_str), Some("rtr-01"));
@@ -5380,9 +5410,10 @@ sink:
     }
 
     #[test]
-    fn load_builtin_pack_default_rate_is_one() {
+    fn load_pack_default_rate_is_one() {
+        let catalog = test_pack_catalog();
         let args = default_packs_run_args("node_exporter_memory");
-        let entries = load_builtin_pack(&args).expect("must succeed");
+        let entries = load_pack_from_catalog(&args, &catalog).expect("must succeed");
         for entry in &entries {
             assert!(
                 (entry.base().rate - 1.0).abs() < f64::EPSILON,
@@ -5394,14 +5425,16 @@ sink:
     // ---- resolve_pack_source tests ----------------------------------------------
 
     #[test]
-    fn resolve_pack_source_builtin_name_returns_yaml() {
-        let yaml = resolve_pack_source("telegraf_snmp_interface").expect("must succeed");
+    fn resolve_pack_source_catalog_name_returns_yaml() {
+        let catalog = test_pack_catalog();
+        let yaml = resolve_pack_source("telegraf_snmp_interface", &catalog).expect("must succeed");
         assert!(yaml.contains("name:"));
     }
 
     #[test]
     fn resolve_pack_source_unknown_name_returns_error() {
-        let err = resolve_pack_source("nonexistent").expect_err("must fail");
+        let catalog = test_pack_catalog();
+        let err = resolve_pack_source("nonexistent", &catalog).expect_err("must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("unknown pack"),
@@ -5411,7 +5444,8 @@ sink:
 
     #[test]
     fn resolve_pack_source_file_path_not_found() {
-        let err = resolve_pack_source("./nonexistent/pack.yaml").expect_err("must fail");
+        let catalog = test_pack_catalog();
+        let err = resolve_pack_source("./nonexistent/pack.yaml", &catalog).expect_err("must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("failed to read"),
@@ -5421,7 +5455,8 @@ sink:
 
     #[test]
     fn resolve_pack_source_bare_yaml_filename_treated_as_file() {
-        let err = resolve_pack_source("my_pack.yaml").expect_err("must fail");
+        let catalog = test_pack_catalog();
+        let err = resolve_pack_source("my_pack.yaml", &catalog).expect_err("must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("failed to read"),
@@ -5452,7 +5487,8 @@ sink:
     // ---- load_pack_from_yaml tests ----------------------------------------------
 
     #[test]
-    fn load_pack_from_yaml_expands_builtin_pack() {
+    fn load_pack_from_yaml_expands_pack() {
+        let catalog = test_pack_catalog();
         let yaml = r#"
 pack: telegraf_snmp_interface
 rate: 1
@@ -5464,12 +5500,13 @@ sink:
 encoder:
   type: prometheus_text
 "#;
-        let entries = load_pack_from_yaml(yaml).expect("must succeed");
+        let entries = load_pack_from_yaml(yaml, &catalog).expect("must succeed");
         assert_eq!(entries.len(), 5);
     }
 
     #[test]
     fn load_pack_from_yaml_with_overrides() {
+        let catalog = test_pack_catalog();
         let yaml = r#"
 pack: telegraf_snmp_interface
 rate: 1
@@ -5486,7 +5523,7 @@ sink:
 encoder:
   type: prometheus_text
 "#;
-        let entries = load_pack_from_yaml(yaml).expect("must succeed");
+        let entries = load_pack_from_yaml(yaml, &catalog).expect("must succeed");
         assert_eq!(entries.len(), 5);
 
         // ifOperStatus should have the overridden generator.
@@ -5508,32 +5545,35 @@ encoder:
 
     #[test]
     fn load_pack_from_yaml_example_file() {
+        let catalog = test_pack_catalog();
         let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("examples/pack-scenario.yaml");
         let yaml = std::fs::read_to_string(&example_path)
             .expect("example pack-scenario.yaml must be readable");
-        let entries = load_pack_from_yaml(&yaml).expect("example file must expand");
+        let entries = load_pack_from_yaml(&yaml, &catalog).expect("example file must expand");
         assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
     }
 
     #[test]
     fn load_pack_from_yaml_example_with_overrides() {
+        let catalog = test_pack_catalog();
         let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .join("examples/pack-with-overrides.yaml");
         let yaml = std::fs::read_to_string(&example_path)
             .expect("example pack-with-overrides.yaml must be readable");
-        let entries = load_pack_from_yaml(&yaml).expect("example file must expand");
+        let entries = load_pack_from_yaml(&yaml, &catalog).expect("example file must expand");
         assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
     }
 
     #[test]
     fn load_pack_from_yaml_invalid_yaml_returns_error() {
+        let catalog = test_pack_catalog();
         let yaml = "not: valid: pack: yaml: :::";
-        let result = load_pack_from_yaml(yaml);
+        let result = load_pack_from_yaml(yaml, &catalog);
         assert!(result.is_err(), "invalid YAML must return error");
     }
 }

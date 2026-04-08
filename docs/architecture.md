@@ -181,16 +181,31 @@ Sink implementations follow a natural progression of complexity:
 
 A metric pack is a reusable bundle of metric names and label schemas that expands into a multi-metric scenario. Packs are a **config-level composition concept** — the `packs/` module resolves a pack reference into N `ScenarioEntry` items before `prepare_entries()` runs. The runtime (scheduler, core loop, runners) has no knowledge of packs; it only sees the expanded entries.
 
-Key types:
+The architecture separates **engine** (in `sonda-core`) from **data** (YAML files) and **discovery** (in the CLI crate):
+
+- **sonda-core `packs/` module** — contains the engine types and expansion logic only. No pack YAML is embedded in the library.
+- **`packs/` directory at repo root** — contains the pack YAML files as standalone data. These are not compiled into any crate.
+- **CLI `packs` module** — discovers pack YAML files from the filesystem via a search path and caches the results for the CLI invocation.
+
+Key types (in `sonda-core`):
 
 - **MetricPackDef** — a pack definition: name, description, category, shared labels, and a list of `MetricSpec` entries.
 - **MetricSpec** — a single metric within a pack: name, optional per-metric labels, optional default generator.
 - **PackScenarioConfig** — user-facing YAML config that references a pack by name and provides rate, duration, sink, encoder, labels, and per-metric overrides.
 - **expand_pack()** — the expansion function. Takes a `MetricPackDef` and a `PackScenarioConfig`, returns `Vec<ScenarioEntry>`. Label merge order: shared → per-metric → user → override. Generator selection: override → spec → constant(0.0).
 
-Built-in packs are embedded via `include_str!` and stored in a static catalog array (zero heap allocations for catalog access). Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Overrides key on metric name, so a single override entry applies to all specs sharing that name.
+Key types (in the CLI crate):
+
+- **PackCatalog** — cached directory scan results. Built once per CLI invocation from the search path.
+- **PackEntry** — lightweight metadata (name, description, category, metric count, source path) parsed from YAML without full deserialization.
+
+**Pack discovery search path** (priority order): `--pack-path` CLI flag > `SONDA_PACK_PATH` env var (colon-separated) > `./packs/` relative to CWD > `~/.sonda/packs/`. Name collisions are resolved by first-match-wins.
+
+Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Overrides key on metric name, so a single override entry applies to all specs sharing that name.
 
 > **Design note:** Packs deliberately do not carry rate, duration, sink, or encoder — those are delivery concerns supplied by the user at run time. This separation means the same pack definition works unchanged across stdout testing, remote-write to production, and Kafka ingest.
+
+> **Scenarios asymmetry:** Built-in scenarios still use the `include_str!()` embedded pattern. Externalizing scenarios to the filesystem is tracked as follow-up #186.
 
 ### 5.7 Cargo Features
 

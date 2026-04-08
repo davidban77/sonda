@@ -4,8 +4,9 @@ Metric packs are reusable bundles of metric names and label schemas for specific
 of writing YAML for every individual metric, you reference a pack and get all the right metrics
 pre-filled -- with correct names, labels, and generators that match real-world tooling.
 
-Sonda ships with 3 built-in packs covering common observability targets: Telegraf SNMP interface
-metrics, Prometheus node_exporter CPU counters, and node_exporter memory gauges.
+Sonda ships with 3 packs covering common observability targets: Telegraf SNMP interface
+metrics, Prometheus node_exporter CPU counters, and node_exporter memory gauges. Pack YAML files
+live in the `packs/` directory and are discovered from the filesystem at runtime.
 
 ## Why metric packs
 
@@ -17,9 +18,24 @@ Packs solve this by encoding the exact schema your tooling expects. You provide 
 labels (which device, which interface), and the pack fills in the metric names, shared labels,
 and default generators.
 
+## Pack search path
+
+Sonda discovers pack YAML files from the filesystem via a search path:
+
+1. **`--pack-path <dir>`** CLI flag -- when present, only this directory is searched.
+2. **`SONDA_PACK_PATH`** env var -- colon-separated list of directories.
+3. **`./packs/`** relative to the current working directory.
+4. **`~/.sonda/packs/`** in the user's home directory.
+
+Non-existent directories are silently skipped. If the same pack name appears in multiple
+directories, the first match wins (highest-priority path).
+
+When running from the repo root, the included `packs/` directory is found automatically.
+For Docker, the `SONDA_PACK_PATH` env var is set to `/packs` in the image.
+
 ## Browse the catalog
 
-List every built-in pack with `sonda packs list`:
+List every available pack with `sonda packs list`:
 
 ```bash
 sonda packs list
@@ -347,7 +363,8 @@ Set `instance` to identify the target host.
 
 ## Custom packs
 
-You can create your own pack YAML files and reference them by file path.
+You can create your own pack YAML files and place them on the search path, or reference them
+by file path in a scenario file.
 
 ### Pack definition format
 
@@ -382,9 +399,25 @@ metrics:
       value: 0.0
 ```
 
+### Place on the search path
+
+Drop your pack YAML file into any directory on the search path. For example, create
+`~/.sonda/packs/my-app-pack.yaml` and it will be discovered automatically:
+
+```bash
+sonda packs list                        # shows my_app_metrics
+sonda packs run my_app_metrics --rate 1 --duration 60s --label service=api-gateway
+```
+
+Or use `--pack-path` to point to a custom directory:
+
+```bash
+sonda --pack-path ./my-packs packs list
+```
+
 ### Reference by file path
 
-In a scenario file, use a path (containing `/` or starting with `.`) instead of a built-in name:
+In a scenario file, use a path (containing `/` or starting with `.`) instead of a pack name:
 
 ```yaml title="run-my-pack.yaml"
 pack: ./my-app-pack.yaml
@@ -407,12 +440,13 @@ sonda run --scenario run-my-pack.yaml
 ```
 
 Sonda detects that the `pack:` value is a file path (because it contains `/`) and reads the
-pack definition from disk instead of the built-in catalog.
+pack definition from disk.
 
-!!! info "Built-in vs. file path detection"
+!!! info "Name vs. file path detection"
     If the `pack:` value contains `/` or starts with `.`, it is treated as a file path.
-    Otherwise, it is looked up as a built-in pack name. For example, `pack: telegraf_snmp_interface`
-    resolves from the catalog, while `pack: ./telegraf-snmp-interface.yaml` reads from disk.
+    Otherwise, it is looked up by name on the search path. For example,
+    `pack: telegraf_snmp_interface` resolves via the search path, while
+    `pack: ./telegraf-snmp-interface.yaml` reads from a specific file path.
 
 ### Pack definition fields
 

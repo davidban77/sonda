@@ -3,8 +3,12 @@
 # When `sonda run --scenario` encounters a YAML file with a `pack:` field,
 # it expands the pack into one metric scenario per metric in the pack.
 #
-# This example uses the built-in telegraf_snmp_interface pack with user
-# labels for a specific device and interface.
+# This example uses the telegraf_snmp_interface pack with user labels for
+# a specific device and interface.
+#
+# The pack must be findable on the search path. Run from the repo root
+# (where `./packs/` exists), or set SONDA_PACK_PATH to point to the
+# packs directory, or use `--pack-path ./packs`.
 
 pack: telegraf_snmp_interface
 rate: 1

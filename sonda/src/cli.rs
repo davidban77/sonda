@@ -34,6 +34,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub dry_run: bool,
 
+    /// Directory containing metric pack YAML files.
+    ///
+    /// When provided, this is the **sole** search path for packs — the
+    /// `SONDA_PACK_PATH` env var and default directories (`./packs/`,
+    /// `~/.sonda/packs/`) are not consulted. Useful for one-off testing
+    /// with a custom pack collection.
+    #[arg(long, global = true)]
+    pub pack_path: Option<PathBuf>,
+
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,
@@ -102,12 +111,13 @@ pub enum Commands {
     /// available scenarios, `show` to view the raw YAML, and `run` to
     /// execute one directly.
     Scenarios(ScenariosArgs),
-    /// Browse, inspect, and run pre-built metric packs.
+    /// Browse, inspect, and run metric packs from the filesystem.
     ///
     /// A metric pack is a reusable bundle of metric names and label schemas
-    /// that expands into a multi-metric scenario. Use `list` to discover
-    /// available packs, `show` to view the raw YAML definition, and `run`
-    /// to execute one directly with rate/duration/sink overrides.
+    /// that expands into a multi-metric scenario. Packs are discovered from
+    /// the search path (`--pack-path`, `SONDA_PACK_PATH`, `./packs/`,
+    /// `~/.sonda/packs/`). Use `list` to discover available packs, `show`
+    /// to view the raw YAML, and `run` to execute one with overrides.
     Packs(PacksArgs),
 }
 
@@ -732,7 +742,7 @@ pub struct ScenariosRunArgs {
 
 /// Arguments for the `packs` subcommand.
 ///
-/// Provides access to the built-in metric pack library embedded in the binary.
+/// Provides access to metric packs discovered from the filesystem search path.
 #[derive(Debug, Args)]
 pub struct PacksArgs {
     /// The packs action to perform.
@@ -743,17 +753,17 @@ pub struct PacksArgs {
 /// Actions available under `sonda packs`.
 #[derive(Debug, Subcommand)]
 pub enum PacksAction {
-    /// List all available built-in metric packs.
+    /// List all available metric packs found on the search path.
     ///
-    /// Prints a formatted table with NAME, CATEGORY, METRICS, and DESCRIPTION
-    /// columns. Use `--category` to filter by category.
+    /// Prints a formatted table with NAME, CATEGORY, METRICS, DESCRIPTION,
+    /// and SOURCE columns. Use `--category` to filter by category.
     List(PacksListArgs),
-    /// Show the raw YAML definition for a built-in metric pack.
+    /// Show the raw YAML definition for a metric pack.
     ///
     /// Prints the full YAML content to stdout, suitable for piping to a file
     /// for customization.
     Show(PacksShowArgs),
-    /// Run a built-in metric pack with the given schedule and delivery options.
+    /// Run a metric pack with the given schedule and delivery options.
     ///
     /// Expands the pack into one metric scenario per metric in the pack, then
     /// runs them all concurrently.
@@ -769,8 +779,8 @@ pub struct PacksListArgs {
 
     /// Output the pack list as a JSON array instead of a table.
     ///
-    /// Each element contains `name`, `category`, `metric_count`, and
-    /// `description` fields.
+    /// Each element contains `name`, `category`, `metric_count`,
+    /// `description`, and `source` fields.
     #[arg(long)]
     pub json: bool,
 }
@@ -778,14 +788,14 @@ pub struct PacksListArgs {
 /// Arguments for `sonda packs show`.
 #[derive(Debug, Args)]
 pub struct PacksShowArgs {
-    /// The snake_case name of the built-in pack (e.g. `telegraf_snmp_interface`).
+    /// The snake_case name of the pack (e.g. `telegraf_snmp_interface`).
     pub name: String,
 }
 
 /// Arguments for `sonda packs run`.
 #[derive(Debug, Args)]
 pub struct PacksRunArgs {
-    /// The snake_case name of the built-in pack (e.g. `telegraf_snmp_interface`).
+    /// The snake_case name of the pack (e.g. `telegraf_snmp_interface`).
     pub name: String,
 
     /// Override the scenario duration (e.g. `"10s"`, `"2m"`).

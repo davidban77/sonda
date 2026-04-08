@@ -11,11 +11,10 @@ src/
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
-│   └── mod.rs          ← metric pack catalog and expansion: MetricPackDef, MetricSpec,
-│                          PackScenarioConfig, MetricOverride, BuiltinPack, expand_pack().
-│                          YAML files live in sonda-core/packs/*.yaml (embedded via include_str!).
-│                          Built-in packs: telegraf_snmp_interface, node_exporter_cpu,
-│                          node_exporter_memory.
+│   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
+│                          MetricOverride, expand_pack(). Engine types and expansion logic only.
+│                          Pack YAML files live outside this crate, in `packs/` at repo root,
+│                          discovered by the CLI via a search path.
 ├── scenarios/
 │   └── mod.rs          ← pre-built scenario catalog: BuiltinScenario struct, static CATALOG array,
 │                          list(), get(), get_yaml(), list_by_category(), available_names().

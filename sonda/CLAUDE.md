@@ -22,16 +22,23 @@ src/
 ├── main.rs             ← entrypoint, clap setup, orchestration
 ├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum,
 │                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand,
-│                          PacksArgs/PacksAction for the `packs` subcommand
+│                          PacksArgs/PacksAction for the `packs` subcommand,
+│                          --pack-path global flag
 ├── config.rs           ← config loading: YAML file or @builtin → merge CLI overrides → ScenarioConfig,
 │                          resolve_scenario_source (@name shorthand), parse_builtin_scenario,
-│                          load_builtin_pack, resolve_pack_source, is_pack_config, load_pack_from_yaml
+│                          load_pack_from_catalog, resolve_pack_source, is_pack_config,
+│                          load_pack_from_yaml
+├── packs.rs            ← filesystem-based metric pack discovery: PackCatalog, PackEntry,
+│                          build_search_path(). Scans directories for pack YAML files and
+│                          caches results for the CLI invocation.
+│                          Search path (priority): --pack-path > SONDA_PACK_PATH > ./packs/ >
+│                          ~/.sonda/packs/
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
-This crate should stay small. Three to five files is the target. If it grows beyond five, something
+This crate should stay small. Four to six files is the target. If it grows beyond six, something
 is in the wrong crate.
 
 ## CLI Surface
@@ -46,8 +53,8 @@ sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml | @b
 sonda scenarios list [--category <cat>] [--json]
 sonda scenarios show <name>
 sonda [--quiet | --verbose] [--dry-run] scenarios run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>]
-sonda packs list [--category <cat>] [--json]
-sonda packs show <name>
+sonda [--pack-path <dir>] packs list [--category <cat>] [--json]
+sonda [--pack-path <dir>] packs show <name>
 sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>] [--label k=v]...
 ```
 
@@ -65,6 +72,7 @@ via `sonda_core::packs::expand_pack` before feeding into `prepare_entries()`.
 | `--quiet` | `-q` | Suppress all status banners (start/stop/summary). Errors are still printed to stderr. |
 | `--verbose` | `-v` | Show the resolved scenario config at startup, then run normally with start/stop banners. Mutually exclusive with `--quiet`. |
 | `--dry-run` | | Parse and validate the scenario config, print it, then exit without emitting any events. Orthogonal to `--quiet`/`--verbose` — always prints the resolved config. |
+| `--pack-path` | | Directory containing metric pack YAML files. When set, this is the sole search path for packs — `SONDA_PACK_PATH`, `./packs/`, and `~/.sonda/packs/` are not consulted. |
 
 The verbosity model is captured in the `Verbosity` enum (`Quiet`, `Normal`, `Verbose`), constructed
 from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-run` is orthogonal.
@@ -83,6 +91,17 @@ All subcommands go through the unified `sonda_core::prepare_entries` +
 
 The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total
 scenarios, events, bytes, errors, and elapsed time.
+
+### Pack Discovery Search Path
+
+Metric packs are standalone YAML files discovered from the filesystem. The search path is:
+
+1. `--pack-path` CLI flag (sole path when present)
+2. `SONDA_PACK_PATH` env var (colon-separated directories)
+3. `./packs/` relative to CWD
+4. `~/.sonda/packs/`
+
+Non-existent directories are silently skipped. Name collisions are resolved by first-match-wins.
 
 ## Adding a New Subcommand
 

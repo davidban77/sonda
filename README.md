@@ -91,14 +91,18 @@ sonda metrics --scenario @cpu-spike        # @name shorthand in any subcommand
 See the [Built-in Scenarios](https://davidban77.github.io/sonda/guides/scenarios/) guide for the
 full catalog and customization workflow.
 
-## Built-in metric packs
+## Metric packs
 
 Metric packs are reusable bundles of metric names and label schemas that expand into multi-metric
 scenarios. Each pack models a real exporter (Telegraf SNMP, node_exporter) so generated data
-matches the exact schema your dashboards and alert rules expect:
+matches the exact schema your dashboards and alert rules expect.
+
+Pack YAML files live in the `packs/` directory and are discovered from the filesystem at runtime.
+Run from the repo root, set `SONDA_PACK_PATH`, or use `--pack-path` to point to a custom
+directory:
 
 ```bash
-sonda packs list                                     # browse the catalog
+sonda packs list                                     # browse discovered packs
 sonda packs show telegraf_snmp_interface              # view the raw YAML definition
 sonda packs run telegraf_snmp_interface --rate 1 \
   --duration 60s --label device=rtr-edge-01           # run a pack directly

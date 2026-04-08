@@ -3,6 +3,10 @@
 # The overrides map lets you replace the default generator for specific
 # metrics without modifying the pack definition. Here ifOperStatus uses
 # a flap alias to simulate interface up/down toggling.
+#
+# The pack must be findable on the search path. Run from the repo root
+# (where `./packs/` exists), or set SONDA_PACK_PATH to point to the
+# packs directory, or use `--pack-path ./packs`.
 
 pack: telegraf_snmp_interface
 rate: 1

@@ -1,27 +1,20 @@
-//! Metric pack catalog and expansion.
+//! Metric pack engine: types and expansion logic.
 //!
 //! A metric pack is a reusable bundle of metric names and label schemas that
 //! expands into a multi-metric scenario. Packs define *what metrics* to emit
 //! (names, labels, default generators) but leave *how to deliver them* (rate,
 //! duration, sink, encoder) to the user.
 //!
-//! This module provides:
+//! This module provides the **engine** — the types and expansion function:
+//!
 //! - [`MetricPackDef`] and [`MetricSpec`]: the pack definition data model.
 //! - [`PackScenarioConfig`]: the user-facing YAML config for referencing a pack.
-//! - A built-in catalog of packs compiled into the binary via [`include_str!`].
+//! - [`MetricOverride`]: per-metric overrides for generators and labels.
 //! - [`expand_pack`]: the expansion function that produces `Vec<ScenarioEntry>`.
 //!
-//! # Built-in Packs
-//!
-//! ```
-//! use sonda_core::packs;
-//!
-//! let all = packs::list();
-//! assert!(!all.is_empty());
-//!
-//! let snmp = packs::get("telegraf_snmp_interface");
-//! assert!(snmp.is_some());
-//! ```
+//! Pack YAML files are **not embedded** in this crate. They live as standalone
+//! files on the filesystem, discovered by the CLI via a search path. See the
+//! `sonda` CLI crate for catalog/discovery logic.
 
 use std::collections::HashMap;
 
@@ -97,8 +90,8 @@ pub struct MetricPackDef {
 
 /// User-facing configuration for running a metric pack.
 ///
-/// Combines a pack reference (built-in name or file path) with the schedule
-/// and delivery parameters needed to produce runnable scenarios.
+/// Combines a pack reference (name or file path) with the schedule and delivery
+/// parameters needed to produce runnable scenarios.
 ///
 /// # YAML Schema
 ///
@@ -120,8 +113,9 @@ pub struct MetricPackDef {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
 pub struct PackScenarioConfig {
-    /// Pack reference: a built-in snake_case name (e.g. `"telegraf_snmp_interface"`)
-    /// or a file path to a user-defined pack YAML (detected by containing `/` or `.`).
+    /// Pack reference: a snake_case name resolved via the CLI search path,
+    /// or a file path to a user-defined pack YAML (detected by containing
+    /// `/` or `.`).
     pub pack: String,
     /// Target event rate in events per second.
     pub rate: f64,
@@ -167,93 +161,6 @@ fn default_sink() -> SinkConfig {
 #[cfg(feature = "config")]
 fn default_encoder() -> EncoderConfig {
     EncoderConfig::PrometheusText { precision: None }
-}
-
-// ---------------------------------------------------------------------------
-// Built-in pack catalog
-// ---------------------------------------------------------------------------
-
-/// A built-in metric pack definition embedded in the binary.
-///
-/// All fields are `&'static str` because the data is compiled in via
-/// [`include_str!`]. The `yaml` field contains the full YAML content
-/// that can be parsed into a [`MetricPackDef`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BuiltinPack {
-    /// Snake_case identifier (e.g. `"telegraf_snmp_interface"`).
-    pub name: &'static str,
-    /// Broad grouping: `"network"`, `"infrastructure"`, etc.
-    pub category: &'static str,
-    /// One-line human-readable description for list display.
-    pub description: &'static str,
-    /// Number of metric specs in this pack.
-    pub metric_count: usize,
-    /// The full embedded YAML content.
-    pub yaml: &'static str,
-}
-
-/// The complete catalog of built-in metric packs.
-///
-/// This is a static array so there are zero heap allocations. The catalog
-/// is small enough that linear scan is the right choice over a `HashMap`.
-static CATALOG: &[BuiltinPack] = &[
-    BuiltinPack {
-        name: "telegraf_snmp_interface",
-        category: "network",
-        description: "Standard SNMP interface metrics (Telegraf-normalized)",
-        metric_count: 5,
-        yaml: include_str!("../../packs/telegraf-snmp-interface.yaml"),
-    },
-    BuiltinPack {
-        name: "node_exporter_cpu",
-        category: "infrastructure",
-        description: "Per-CPU mode counters (node_exporter-compatible)",
-        metric_count: 8,
-        yaml: include_str!("../../packs/node-exporter-cpu.yaml"),
-    },
-    BuiltinPack {
-        name: "node_exporter_memory",
-        category: "infrastructure",
-        description: "Memory gauge metrics (node_exporter-compatible)",
-        metric_count: 5,
-        yaml: include_str!("../../packs/node-exporter-memory.yaml"),
-    },
-];
-
-/// Return the full catalog of built-in metric packs.
-///
-/// The returned slice is `&'static` — no allocation, no copying.
-pub fn list() -> &'static [BuiltinPack] {
-    CATALOG
-}
-
-/// Look up a built-in pack by its snake_case name.
-///
-/// Returns `None` if no pack with that name exists.
-pub fn get(name: &str) -> Option<&'static BuiltinPack> {
-    CATALOG.iter().find(|p| p.name == name)
-}
-
-/// Convenience function to get the raw YAML for a built-in pack.
-///
-/// Equivalent to `get(name).map(|p| p.yaml)`.
-pub fn get_yaml(name: &str) -> Option<&'static str> {
-    get(name).map(|p| p.yaml)
-}
-
-/// Return all built-in packs in a given category.
-///
-/// The category match is case-sensitive. Returns an empty `Vec` if no
-/// packs belong to the requested category.
-pub fn list_by_category(category: &str) -> Vec<&'static BuiltinPack> {
-    CATALOG.iter().filter(|p| p.category == category).collect()
-}
-
-/// Return a formatted list of all available pack names.
-///
-/// Useful for error messages that want to hint at valid names.
-pub fn available_names() -> Vec<&'static str> {
-    CATALOG.iter().map(|p| p.name).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -397,267 +304,6 @@ pub fn expand_pack(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- Catalog structure tests ------------------------------------------------
-
-    #[test]
-    fn catalog_is_not_empty() {
-        assert!(
-            !list().is_empty(),
-            "built-in pack catalog must contain at least one pack"
-        );
-    }
-
-    #[test]
-    fn all_names_are_unique() {
-        let names: Vec<&str> = list().iter().map(|p| p.name).collect();
-        let mut sorted = names.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(
-            names.len(),
-            sorted.len(),
-            "duplicate pack names found in catalog"
-        );
-    }
-
-    #[test]
-    fn all_names_are_snake_case() {
-        for pack in list() {
-            assert!(
-                pack.name
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit()),
-                "pack name {:?} must be snake_case (lowercase + underscores)",
-                pack.name
-            );
-            assert!(!pack.name.is_empty(), "pack name must not be empty");
-        }
-    }
-
-    #[test]
-    fn all_categories_are_known() {
-        let known = ["infrastructure", "network", "application", "observability"];
-        for pack in list() {
-            assert!(
-                known.contains(&pack.category),
-                "pack {:?} has unknown category {:?}; expected one of {:?}",
-                pack.name,
-                pack.category,
-                known
-            );
-        }
-    }
-
-    #[test]
-    fn all_descriptions_are_non_empty() {
-        for pack in list() {
-            assert!(
-                !pack.description.is_empty(),
-                "pack {:?} must have a non-empty description",
-                pack.name
-            );
-        }
-    }
-
-    #[test]
-    fn all_yamls_are_non_empty() {
-        for pack in list() {
-            assert!(
-                !pack.yaml.is_empty(),
-                "pack {:?} must have non-empty YAML",
-                pack.name
-            );
-        }
-    }
-
-    #[test]
-    fn all_metric_counts_are_positive() {
-        for pack in list() {
-            assert!(
-                pack.metric_count > 0,
-                "pack {:?} must have at least one metric (metric_count = {})",
-                pack.name,
-                pack.metric_count
-            );
-        }
-    }
-
-    // ---- YAML parsing tests (require `config` feature) --------------------------
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn all_pack_yamls_parse_as_metric_pack_def() {
-        for pack in list() {
-            let result = serde_yaml_ng::from_str::<MetricPackDef>(pack.yaml);
-            assert!(
-                result.is_ok(),
-                "pack {:?} failed to parse: {:?}",
-                pack.name,
-                result.err()
-            );
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn all_pack_yamls_have_matching_metric_count() {
-        for pack in list() {
-            let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml).expect("pack must parse");
-            assert_eq!(
-                def.metrics.len(),
-                pack.metric_count,
-                "pack {:?} metric_count ({}) does not match parsed metrics ({})",
-                pack.name,
-                pack.metric_count,
-                def.metrics.len()
-            );
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn all_pack_yamls_have_matching_name() {
-        for pack in list() {
-            let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml).expect("pack must parse");
-            assert_eq!(
-                def.name, pack.name,
-                "pack {:?} YAML name {:?} does not match catalog name",
-                pack.name, def.name
-            );
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn telegraf_snmp_interface_has_correct_metrics() {
-        let pack = get("telegraf_snmp_interface").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml).expect("must parse");
-        let names: Vec<&str> = def.metrics.iter().map(|m| m.name.as_str()).collect();
-        assert!(names.contains(&"ifOperStatus"));
-        assert!(names.contains(&"ifHCInOctets"));
-        assert!(names.contains(&"ifHCOutOctets"));
-        assert!(names.contains(&"ifInErrors"));
-        assert!(names.contains(&"ifOutErrors"));
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn node_exporter_cpu_has_eight_modes() {
-        let pack = get("node_exporter_cpu").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml).expect("must parse");
-        assert_eq!(def.metrics.len(), 8, "node_exporter_cpu must have 8 modes");
-
-        // All metrics have the same name but different mode labels.
-        for spec in &def.metrics {
-            assert_eq!(spec.name, "node_cpu_seconds_total");
-            let mode = spec
-                .labels
-                .as_ref()
-                .and_then(|l| l.get("mode"))
-                .expect("each spec must have a mode label");
-            assert!(!mode.is_empty());
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn node_exporter_memory_has_five_metrics() {
-        let pack = get("node_exporter_memory").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml).expect("must parse");
-        assert_eq!(
-            def.metrics.len(),
-            5,
-            "node_exporter_memory must have 5 metrics"
-        );
-    }
-
-    // ---- Lookup function tests --------------------------------------------------
-
-    #[test]
-    fn get_existing_pack_returns_some() {
-        let pack = get("telegraf_snmp_interface");
-        assert!(
-            pack.is_some(),
-            "telegraf_snmp_interface must exist in catalog"
-        );
-        let p = pack.expect("checked above");
-        assert_eq!(p.name, "telegraf_snmp_interface");
-        assert_eq!(p.category, "network");
-    }
-
-    #[test]
-    fn get_nonexistent_pack_returns_none() {
-        assert!(
-            get("nonexistent_pack").is_none(),
-            "nonexistent pack must return None"
-        );
-    }
-
-    #[test]
-    fn get_yaml_returns_yaml_content() {
-        let yaml = get_yaml("telegraf_snmp_interface");
-        assert!(yaml.is_some());
-        let content = yaml.expect("checked above");
-        assert!(content.contains("name:"), "YAML must contain a name field");
-    }
-
-    #[test]
-    fn get_yaml_nonexistent_returns_none() {
-        assert!(get_yaml("does_not_exist").is_none());
-    }
-
-    #[test]
-    fn list_by_category_network() {
-        let network = list_by_category("network");
-        assert!(
-            !network.is_empty(),
-            "network category must have at least one pack"
-        );
-        for p in &network {
-            assert_eq!(p.category, "network");
-        }
-    }
-
-    #[test]
-    fn list_by_category_infrastructure() {
-        let infra = list_by_category("infrastructure");
-        assert!(
-            !infra.is_empty(),
-            "infrastructure category must have at least one pack"
-        );
-        for p in &infra {
-            assert_eq!(p.category, "infrastructure");
-        }
-    }
-
-    #[test]
-    fn list_by_category_unknown_returns_empty() {
-        let unknown = list_by_category("nonexistent-category");
-        assert!(
-            unknown.is_empty(),
-            "unknown category must return empty list"
-        );
-    }
-
-    #[test]
-    fn available_names_matches_catalog_count() {
-        let names = available_names();
-        assert_eq!(
-            names.len(),
-            list().len(),
-            "available_names must return one name per catalog entry"
-        );
-    }
-
-    #[test]
-    fn available_names_contains_telegraf_snmp_interface() {
-        let names = available_names();
-        assert!(
-            names.contains(&"telegraf_snmp_interface"),
-            "available_names must include telegraf_snmp_interface"
-        );
-    }
 
     // ---- Expansion tests --------------------------------------------------------
 
@@ -1053,129 +699,12 @@ mod tests {
     // ---- Contract tests ---------------------------------------------------------
 
     #[test]
-    fn builtin_pack_is_send_and_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<BuiltinPack>();
-    }
-
-    #[test]
     fn metric_pack_def_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MetricPackDef>();
     }
 
-    // ---- Expansion with built-in packs (config feature) -------------------------
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn expand_builtin_telegraf_snmp_produces_five_entries() {
-        let pack_entry = get("telegraf_snmp_interface").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
-
-        let config = PackScenarioConfig {
-            pack: "telegraf_snmp_interface".to_string(),
-            rate: 1.0,
-            duration: Some("10s".to_string()),
-            labels: None,
-            sink: SinkConfig::Stdout,
-            encoder: EncoderConfig::PrometheusText { precision: None },
-            overrides: None,
-        };
-
-        let entries = expand_pack(&def, &config).expect("must succeed");
-        assert_eq!(entries.len(), 5);
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn expand_builtin_node_cpu_produces_eight_entries() {
-        let pack_entry = get("node_exporter_cpu").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
-
-        let config = PackScenarioConfig {
-            pack: "node_exporter_cpu".to_string(),
-            rate: 1.0,
-            duration: Some("10s".to_string()),
-            labels: None,
-            sink: SinkConfig::Stdout,
-            encoder: EncoderConfig::PrometheusText { precision: None },
-            overrides: None,
-        };
-
-        let entries = expand_pack(&def, &config).expect("must succeed");
-        assert_eq!(entries.len(), 8);
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn override_applies_to_all_duplicate_metric_names_in_node_cpu() {
-        let pack_entry = get("node_exporter_cpu").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
-
-        // All 8 metrics share the name "node_cpu_seconds_total".
-        assert_eq!(def.metrics.len(), 8);
-        for spec in &def.metrics {
-            assert_eq!(spec.name, "node_cpu_seconds_total");
-        }
-
-        // Apply an override for that shared name — it should hit all 8.
-        let mut overrides = HashMap::new();
-        overrides.insert(
-            "node_cpu_seconds_total".to_string(),
-            MetricOverride {
-                generator: Some(GeneratorConfig::Constant { value: 99.0 }),
-                labels: None,
-            },
-        );
-
-        let config = PackScenarioConfig {
-            pack: "node_exporter_cpu".to_string(),
-            rate: 1.0,
-            duration: Some("10s".to_string()),
-            labels: None,
-            sink: SinkConfig::Stdout,
-            encoder: EncoderConfig::PrometheusText { precision: None },
-            overrides: Some(overrides),
-        };
-
-        let entries = expand_pack(&def, &config).expect("must succeed");
-        assert_eq!(entries.len(), 8, "must still produce 8 entries");
-
-        // Every entry must have the overridden generator.
-        for (i, entry) in entries.iter().enumerate() {
-            match entry {
-                ScenarioEntry::Metrics(c) => {
-                    assert!(
-                        matches!(c.generator, GeneratorConfig::Constant { value } if (value - 99.0).abs() < f64::EPSILON),
-                        "entry {} must have overridden generator constant(99.0), got {:?}",
-                        i,
-                        c.generator
-                    );
-                }
-                _ => panic!("entry {} must be Metrics", i),
-            }
-        }
-    }
-
-    #[cfg(feature = "config")]
-    #[test]
-    fn expand_builtin_node_memory_produces_five_entries() {
-        let pack_entry = get("node_exporter_memory").expect("must exist");
-        let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
-
-        let config = PackScenarioConfig {
-            pack: "node_exporter_memory".to_string(),
-            rate: 1.0,
-            duration: Some("10s".to_string()),
-            labels: None,
-            sink: SinkConfig::Stdout,
-            encoder: EncoderConfig::PrometheusText { precision: None },
-            overrides: None,
-        };
-
-        let entries = expand_pack(&def, &config).expect("must succeed");
-        assert_eq!(entries.len(), 5);
-    }
+    // ---- Deserialization tests (config feature) ---------------------------------
 
     #[cfg(feature = "config")]
     #[test]
