@@ -30,7 +30,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.3.0
+sonda 0.11.0
 ```
 
 ## Status output
@@ -53,6 +53,24 @@ Printed when a scenario completes:
 ```text
 ■ cpu_usage  completed in 30.0s | events: 30000 | bytes: 1.2 MB | errors: 0
 ```
+
+### Multi-scenario numbering
+
+When running multiple scenarios (via `sonda run` or a multi-scenario built-in), each banner
+includes a `[N/total]` prefix showing its position in the run:
+
+```text
+[1/3] ▶ interface_oper_state  signal_type: metrics | rate: 1/s | ...
+[2/3] ▶ interface_in_octets   signal_type: metrics | rate: 1/s | ...
+[3/3] ▶ interface_errors      signal_type: metrics | rate: 1/s | ...
+...
+[1/3] ■ interface_oper_state  completed in 3.0s | events: 4 | bytes: 500 B | errors: 0
+[2/3] ■ interface_in_octets   completed in 3.0s | events: 4 | bytes: 528 B | errors: 0
+[3/3] ■ interface_errors      completed in 3.0s | events: 4 | bytes: 484 B | errors: 0
+━━ run complete  scenarios: 3 | events: 12 | bytes: 1.5 KB | errors: 0 | elapsed: 3.0s
+```
+
+Stop banners always print in launch order regardless of which scenario finishes first.
 
 ### Color behavior
 
@@ -94,18 +112,18 @@ errors and confirming what Sonda *would* do before committing to a long run.
     ```
 
     ```text title="Output"
-    [config] Resolved scenario config:
+    [config] cpu
 
-      name:       cpu
-      signal:     metrics
-      rate:       10/s
-      duration:   30s
-      generator:  sine (amplitude: 50, period: 60s, offset: 50)
-      encoder:    prometheus_text
-      sink:       stdout
-      labels:     host=web-01
+      name:          cpu
+      signal:        metrics
+      rate:          10/s
+      duration:      30s
+      generator:     sine (amplitude: 50, period: 60s, offset: 50)
+      encoder:       prometheus_text
+      sink:          stdout
+      labels:        host=web-01
 
-    Validation: OK
+    Validation: OK (1 scenario)
     ```
 
 === "Logs"
@@ -117,17 +135,17 @@ errors and confirming what Sonda *would* do before committing to a long run.
     ```
 
     ```text title="Output"
-    [config] Resolved scenario config:
+    [config] logs
 
-      name:       logs
-      signal:     logs
-      rate:       5/s
-      duration:   10s
-      generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2)
-      encoder:    json_lines
-      sink:       stdout
+      name:          logs
+      signal:        logs
+      rate:          5/s
+      duration:      10s
+      generator:     template (1 template(s), severity: error=0.1/info=0.7/warn=0.2)
+      encoder:       json_lines
+      sink:          stdout
 
-    Validation: OK
+    Validation: OK (1 scenario)
     ```
 
 === "Run (multi-scenario)"
@@ -137,27 +155,28 @@ errors and confirming what Sonda *would* do before committing to a long run.
     ```
 
     ```text title="Output"
-    [config] Resolved scenario config:
+    [config] [1/2] cpu_usage
 
-      name:       cpu_usage
-      signal:     metrics
-      rate:       100/s
-      duration:   30s
-      generator:  sine (amplitude: 50, period: 60s, offset: 50)
-      encoder:    prometheus_text
-      sink:       stdout
+      name:          cpu_usage
+      signal:        metrics
+      rate:          100/s
+      duration:      30s
+      generator:     sine (amplitude: 50, period: 60s, offset: 50)
+      encoder:       prometheus_text
+      sink:          stdout
 
-    [config] Resolved scenario config:
+    ───
+    [config] [2/2] app_logs
 
-      name:       app_logs
-      signal:     logs
-      rate:       10/s
-      duration:   30s
-      generator:  template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
-      encoder:    json_lines
-      sink:       file: /tmp/sonda-logs.json
+      name:          app_logs
+      signal:        logs
+      rate:          10/s
+      duration:      30s
+      generator:     template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
+      encoder:       json_lines
+      sink:          file: /tmp/sonda-logs.json
 
-    Validation: OK
+    Validation: OK (2 scenarios)
     ```
 
 `--dry-run` works with scenario files too -- handy for validating YAML before deploying:
@@ -181,15 +200,16 @@ sonda --verbose metrics --name up --rate 1 --duration 2s
 ```
 
 ```text title="Output (stderr)"
-[config] Resolved scenario config:
+sonda 0.11.0 (http) — synthetic telemetry generator
+[config] up
 
-  name:       up
-  signal:     metrics
-  rate:       1/s
-  duration:   2s
-  generator:  constant (value: 0)
-  encoder:    prometheus_text
-  sink:       stdout
+  name:          up
+  signal:        metrics
+  rate:          1/s
+  duration:      2s
+  generator:     constant (value: 0)
+  encoder:       prometheus_text
+  sink:          stdout
 
 ▶ up  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 2s
 ■ up  completed in 2.0s | events: 3 | bytes: 57 B | errors: 0
@@ -205,6 +225,7 @@ error: the argument '--verbose' cannot be used with '--quiet'
 
 | Output | Default | `--quiet` | `--verbose` | `--dry-run` |
 |--------|---------|-----------|-------------|-------------|
+| Branding header | -- | -- | Yes | -- |
 | Resolved config | -- | -- | Yes | Yes |
 | Start banner | Yes | -- | Yes | -- |
 | Event data | Yes | Yes | Yes | -- |
@@ -536,20 +557,20 @@ sonda --dry-run histogram --scenario examples/histogram.yaml
 ```
 
 ```text title="Output"
-[config] Resolved scenario config:
+[config] http_request_duration_seconds
 
-  name:       http_request_duration_seconds
-  signal:     histogram
-  rate:       1/s
-  duration:   10s
-  buckets:    default (Prometheus)
-  distribution: Exponential { rate: 10.0 }
-  obs/tick:   100
-  encoder:    prometheus_text
-  sink:       stdout
-  labels:     handler=/api/v1/query, method=GET
+  name:          http_request_duration_seconds
+  signal:        histogram
+  rate:          1/s
+  duration:      10s
+  buckets:       default (Prometheus)
+  distribution:  Exponential { rate: 10.0 }
+  obs/tick:      100
+  encoder:       prometheus_text
+  sink:          stdout
+  labels:        handler=/api/v1/query, method=GET
 
-Validation: OK
+Validation: OK (1 scenario)
 ```
 
 !!! note
@@ -584,20 +605,20 @@ sonda --dry-run summary --scenario examples/summary.yaml
 ```
 
 ```text title="Output"
-[config] Resolved scenario config:
+[config] rpc_duration_seconds
 
-  name:       rpc_duration_seconds
-  signal:     summary
-  rate:       1/s
-  duration:   10s
-  quantiles:  default [0.5, 0.9, 0.95, 0.99]
-  distribution: Normal { mean: 0.1, stddev: 0.02 }
-  obs/tick:   100
-  encoder:    prometheus_text
-  sink:       stdout
-  labels:     method=GetUser, service=auth
+  name:          rpc_duration_seconds
+  signal:        summary
+  rate:          1/s
+  duration:      10s
+  quantiles:     default [0.5, 0.9, 0.95, 0.99]
+  distribution:  Normal { mean: 0.1, stddev: 0.02 }
+  obs/tick:      100
+  encoder:       prometheus_text
+  sink:          stdout
+  labels:        method=GetUser, service=auth
 
-Validation: OK
+Validation: OK (1 scenario)
 ```
 
 !!! note
@@ -634,8 +655,8 @@ every scenario in the file:
 ```
 
 The summary includes the scenario count, total events emitted, total bytes written, error count,
-and wall-clock elapsed time. Each individual scenario still prints its own stop banner before
-the aggregate line appears.
+and wall-clock elapsed time. Each individual scenario prints its own `[N/total]`-prefixed stop
+banner in launch order before the aggregate line appears.
 
 !!! tip
     Pipe the summary to a monitoring script to gate CI pipelines -- a non-zero `errors` count

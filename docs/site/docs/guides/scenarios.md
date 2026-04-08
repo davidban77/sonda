@@ -24,6 +24,7 @@ log-storm                    application        logs         Error-level log bur
 steady-state                 infrastructure     metrics      Normal oscillating baseline (sine + jitter)
 network-link-failure         network            multi        Link down with traffic shift to backup path
 histogram-latency            application        histogram    Request latency histogram (normal distribution)
+11 scenarios
 ```
 
 Filter by category to narrow the list:
@@ -36,6 +37,7 @@ sonda scenarios list --category network
 NAME                         CATEGORY           SIGNAL       DESCRIPTION
 interface-flap               network            multi        Network interface toggling up/down with traffic shifts
 network-link-failure         network            multi        Link down with traffic shift to backup path
+2 scenarios in category "network"
 ```
 
 Available categories: `infrastructure`, `network`, `application`, `observability`.
