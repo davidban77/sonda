@@ -1654,7 +1654,11 @@ pub fn load_builtin_pack(args: &PacksRunArgs) -> Result<Vec<sonda_core::Scenario
 /// - The string is a built-in name that does not exist.
 /// - The file path cannot be read from disk.
 pub fn resolve_pack_source(pack_ref: &str) -> Result<String> {
-    if pack_ref.contains('/') || pack_ref.starts_with('.') {
+    let looks_like_file = pack_ref.contains('/')
+        || pack_ref.starts_with('.')
+        || pack_ref.ends_with(".yaml")
+        || pack_ref.ends_with(".yml");
+    if looks_like_file {
         // File path.
         fs::read_to_string(pack_ref).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -5412,6 +5416,16 @@ sink:
         assert!(
             msg.contains("failed to read"),
             "error must mention failed read, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_pack_source_bare_yaml_filename_treated_as_file() {
+        let err = resolve_pack_source("my_pack.yaml").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to read"),
+            "bare .yaml filename must be treated as file path, got: {msg}"
         );
     }
 
