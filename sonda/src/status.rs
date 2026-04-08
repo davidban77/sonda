@@ -8,7 +8,7 @@
 //! complete in the `run` subcommand. [`print_version`] displays the crate
 //! version and enabled features. [`print_show_header`] prints a styled header
 //! for the `scenarios show` subcommand. [`print_dry_run_ok`] shows the
-//! validation result with a scenario count. [`print_hint`] prints a styled
+//! validation result with a scenario count.
 //! hint message for contextual help on errors.
 
 use std::time::Duration;
@@ -297,16 +297,6 @@ fn print_summary_config(c: &SummaryScenarioConfig, index: usize, total: usize) {
     eprintln!();
 }
 
-/// Print a styled hint message to stderr.
-///
-/// Displays `  hint: {msg}` with a dimmed `hint:` prefix and cyan message
-/// text. Used to provide contextual guidance after error messages.
-pub fn print_hint(msg: &str) {
-    let prefix = "  hint:".if_supports_color(Stderr, |t| t.dimmed());
-    let body = msg.if_supports_color(Stderr, |t| t.cyan());
-    eprintln!("{prefix} {body}");
-}
-
 /// Format a `[index/total]` position prefix for multi-scenario banners.
 ///
 /// Returns a dimmed `[1/5] ` string when `total > 1`, or an empty string
@@ -520,9 +510,10 @@ pub fn print_version() {
     let tagline = "synthetic telemetry generator".if_supports_color(Stderr, |t| t.dimmed());
 
     // If features are enabled, show them after the version.
-    let features_suffix = if vs.len() > format!("sonda {version}").len() {
+    let prefix_len = format!("sonda {version}").len();
+    let features_suffix = if vs.len() > prefix_len {
         // Extract the features part from version_string (e.g. " (http, kafka)")
-        &vs[format!("sonda {version}").len()..]
+        &vs[prefix_len..]
     } else {
         ""
     };
@@ -1971,15 +1962,6 @@ mod tests {
             result.ends_with(' '),
             "position prefix must end with a space, got: {result:?}"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // print_hint: does not panic
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn print_hint_does_not_panic() {
-        print_hint("try `sonda metrics --scenario @cpu-spike`");
     }
 
     // -----------------------------------------------------------------------

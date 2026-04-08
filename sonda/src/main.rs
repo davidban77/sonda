@@ -285,9 +285,10 @@ fn run_scenarios_command(
                     names.join(", ")
                 );
                 if let Some(closest) = suggestion {
-                    status::print_hint(&format!("did you mean `{closest}`?"));
+                    anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+                } else {
+                    anyhow::anyhow!("{}", base_msg)
                 }
-                anyhow::anyhow!("{}", base_msg)
             })?;
             status::print_show_header(scenario.name, scenario.category, scenario.signal_type);
             let yaml = scenarios::get_yaml(&show_args.name)
@@ -320,9 +321,10 @@ fn run_builtin_scenario(
             names.join(", ")
         );
         if let Some(closest) = suggestion {
-            status::print_hint(&format!("did you mean `{closest}`?"));
+            anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+        } else {
+            anyhow::anyhow!("{}", base_msg)
         }
-        anyhow::anyhow!("{}", base_msg)
     })?;
 
     let entries = config::parse_builtin_scenario(scenario, args)?;
@@ -477,11 +479,13 @@ fn launch_and_join_prepared(
 fn find_closest_name<'a>(query: &str, candidates: &[&'a str]) -> Option<&'a str> {
     let query_lower = query.to_lowercase();
 
-    // First, try substring matching.
-    for &name in candidates {
-        let name_lower = name.to_lowercase();
-        if name_lower.contains(&query_lower) || query_lower.contains(&name_lower) {
-            return Some(name);
+    // First, try substring matching (skip very short queries to avoid false positives).
+    if query_lower.len() >= 3 {
+        for &name in candidates {
+            let name_lower = name.to_lowercase();
+            if name_lower.contains(&query_lower) || query_lower.contains(&name_lower) {
+                return Some(name);
+            }
         }
     }
 

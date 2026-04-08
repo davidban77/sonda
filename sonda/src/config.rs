@@ -382,16 +382,10 @@ pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
     } else {
         // No scenario file — build a baseline config from required flags.
         let name = args.name.clone().ok_or_else(|| {
-            crate::status::print_hint(
-                "try `sonda metrics --scenario @cpu-spike` to use a built-in scenario",
-            );
-            anyhow::anyhow!("--name is required when no --scenario file is provided")
+            anyhow::anyhow!("--name is required when no --scenario file is provided\n\n  hint: try `sonda metrics --scenario @cpu-spike` to use a built-in scenario")
         })?;
         let rate = args.rate.ok_or_else(|| {
-            crate::status::print_hint(
-                "try `sonda metrics --scenario @cpu-spike` to use a built-in scenario",
-            );
-            anyhow::anyhow!("--rate is required when no --scenario file is provided")
+            anyhow::anyhow!("--rate is required when no --scenario file is provided\n\n  hint: try `sonda metrics --scenario @cpu-spike` to use a built-in scenario")
         })?;
 
         ScenarioConfig {
@@ -1573,11 +1567,10 @@ pub fn resolve_scenario_source(path: &std::path::Path) -> Result<String> {
     } else {
         fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                crate::status::print_hint(
-                    "use `@name` for built-in scenarios, e.g. `--scenario @cpu-spike`",
-                );
+                anyhow::anyhow!("failed to read scenario file {}: {}\n\n  hint: use `@name` for built-in scenarios, e.g. `--scenario @cpu-spike`", path.display(), e)
+            } else {
+                anyhow::anyhow!("failed to read scenario file {}: {}", path.display(), e)
             }
-            anyhow::anyhow!("failed to read scenario file {}: {}", path.display(), e)
         })
     }
 }
