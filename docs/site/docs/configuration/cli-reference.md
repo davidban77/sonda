@@ -792,6 +792,93 @@ sonda --dry-run scenarios run cpu-spike
     use the `@name` shorthand with `metrics`, `logs`, or `histogram` instead:
     `sonda metrics --scenario @cpu-spike --label env=staging`
 
+## sonda packs
+
+Browse, inspect, and run [metric packs](../guides/metric-packs.md) discovered from the
+filesystem. A metric pack is a reusable bundle of metric names and label schemas that expands
+into a multi-metric scenario.
+
+```bash
+sonda packs <COMMAND>
+```
+
+### packs list
+
+List all available built-in metric packs in a formatted table.
+
+```bash
+sonda packs list [--category <CATEGORY>] [--json]
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--category <CATEGORY>` | string | Filter by category: `infrastructure`, `network`. |
+| `--json` | flag | Output the list as a JSON array. Each element contains `name`, `category`, `metric_count`, and `description` fields. |
+
+```bash
+sonda packs list
+sonda packs list --category network
+sonda packs list --json
+```
+
+### packs show
+
+Print the raw YAML definition for a built-in pack to stdout. Pipe to a file to create a
+customizable copy.
+
+```bash
+sonda packs show <NAME>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `<NAME>` | string | Snake_case pack name (e.g. `telegraf_snmp_interface`). |
+
+```bash
+sonda packs show telegraf_snmp_interface
+sonda packs show node_exporter_cpu > my-cpu-pack.yaml
+```
+
+### packs run
+
+Execute a built-in pack with optional overrides. Expands the pack into one metric scenario per
+metric and runs them concurrently.
+
+```bash
+sonda packs run <NAME> [OPTIONS]
+```
+
+| Argument / Flag | Type | Description |
+|-----------------|------|-------------|
+| `<NAME>` | string | Snake_case pack name (e.g. `telegraf_snmp_interface`). |
+| `--rate <RATE>` | float | Events per second for each metric in the pack. |
+| `--duration <DURATION>` | string | Run duration (e.g. `10s`, `2m`). |
+| `--encoder <ENCODER>` | string | Override the encoder format (e.g. `prometheus_text`, `json_lines`). |
+| `--sink <TYPE>` | string | Override the sink type (e.g. `stdout`, `http_push`). |
+| `--endpoint <URL>` | string | Override the sink endpoint (required for network sinks). |
+| `--label <KEY=VALUE>` | string | Add or override a label (repeatable). |
+
+```bash
+sonda packs run telegraf_snmp_interface \
+  --rate 1 --duration 10s \
+  --label device=rtr-edge-01 \
+  --label ifName=GigabitEthernet0/0/0 \
+  --label ifIndex=1
+
+sonda packs run node_exporter_cpu \
+  --rate 1 --duration 30s \
+  --label instance=web-01
+
+sonda --dry-run packs run node_exporter_memory \
+  --rate 1 --duration 10s \
+  --label instance=db-01
+```
+
+!!! tip
+    For per-metric generator overrides, use a [pack scenario YAML file](../guides/metric-packs.md#per-metric-overrides)
+    instead of `packs run`. The CLI does not support overrides directly -- those require the
+    `overrides:` block in YAML.
+
 ## Precedence rules
 
 Configuration values are resolved in this order (highest priority wins):

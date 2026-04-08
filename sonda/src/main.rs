@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod packs;
 mod progress;
 mod status;
 
@@ -50,6 +51,10 @@ fn run() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
+
+    // Build the pack catalog once for the entire invocation.
+    let search_path = packs::build_search_path(cli.pack_path.as_deref());
+    let pack_catalog = packs::PackCatalog::discover(&search_path);
 
     match cli.command {
         Commands::Metrics(ref args) => {
@@ -115,10 +120,18 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-summary".to_string(), p, &running, verbosity)?;
         }
         Commands::Run(ref args) => {
-            let config = config::load_multi_config(args)?;
+            // Read the YAML first to detect pack configs before parsing.
+            let yaml = config::resolve_scenario_source(&args.scenario)?;
 
-            let prepared = sonda_core::prepare_entries(config.scenarios)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let entries = if config::is_pack_config(&yaml) {
+                config::load_pack_from_yaml(&yaml, &pack_catalog)?
+            } else {
+                let multi = config::load_multi_config(args)?;
+                multi.scenarios
+            };
+
+            let prepared =
+                sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
             if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
                 return Ok(());
@@ -128,6 +141,9 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Scenarios(ref args) => {
             run_scenarios_command(args, &cli, verbosity, &running)?;
+        }
+        Commands::Packs(ref args) => {
+            run_packs_command(args, &cli, verbosity, &running, &pack_catalog)?;
         }
     }
 
@@ -281,6 +297,148 @@ fn run_builtin_scenario(
             running,
             verbosity,
         )?;
+    }
+
+    Ok(())
+}
+
+/// Handle the `packs` subcommand (list, show, run).
+fn run_packs_command(
+    args: &cli::PacksArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+    catalog: &packs::PackCatalog,
+) -> anyhow::Result<()> {
+    use cli::PacksAction;
+
+    match args.action {
+        PacksAction::List(ref list_args) => {
+            let items: Vec<&packs::PackEntry> = match list_args.category {
+                Some(ref cat) => catalog.list_by_category(cat),
+                None => catalog.list().iter().collect(),
+            };
+
+            if items.is_empty() {
+                if let Some(ref cat) = list_args.category {
+                    eprintln!("no packs found in category {:?}", cat);
+                } else {
+                    eprintln!("no packs found (search path has no pack YAML files)");
+                }
+                return Ok(());
+            }
+
+            if list_args.json {
+                let entries: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "name": p.name,
+                            "category": p.category,
+                            "metric_count": p.metric_count,
+                            "description": p.description,
+                            "source": p.source_path.display().to_string(),
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries)
+                        .expect("JSON serialization of pack entries cannot fail")
+                );
+            } else {
+                use owo_colors::Stream::Stdout;
+
+                let header_name = format!("{:<32}", "NAME");
+                let header_name = header_name.if_supports_color(Stdout, |t| t.bold());
+                let header_cat = format!("{:<18}", "CATEGORY");
+                let header_cat = header_cat.if_supports_color(Stdout, |t| t.bold());
+                let header_count = format!("{:<10}", "METRICS");
+                let header_count = header_count.if_supports_color(Stdout, |t| t.bold());
+                let header_desc = format!("{:<40}", "DESCRIPTION");
+                let header_desc = header_desc.if_supports_color(Stdout, |t| t.bold());
+                let header_source = "SOURCE".if_supports_color(Stdout, |t| t.bold());
+                println!("{header_name} {header_cat} {header_count} {header_desc} {header_source}");
+                for p in &items {
+                    let cat_padded = format!("{:<18}", p.category);
+                    let cat_styled = cat_padded.if_supports_color(Stdout, |t| t.dimmed());
+                    let count_padded = format!("{:<10}", p.metric_count);
+                    let count_styled = count_padded.if_supports_color(Stdout, |t| t.cyan());
+                    let desc_padded = format!("{:<40}", p.description);
+                    let source = format!("{}", p.source_path.display());
+                    let source_styled = source.if_supports_color(Stdout, |t| t.dimmed());
+                    println!(
+                        "{:<32} {cat_styled} {count_styled} {desc_padded} {source_styled}",
+                        p.name
+                    );
+                }
+                let count = items.len();
+                let noun = if count == 1 { "pack" } else { "packs" };
+                let footer = match list_args.category {
+                    Some(ref cat) => format!("{count} {noun} in category \"{cat}\""),
+                    None => format!("{count} {noun}"),
+                };
+                let footer = footer.if_supports_color(Stdout, |t| t.dimmed());
+                println!("{footer}");
+            }
+        }
+        PacksAction::Show(ref show_args) => {
+            let entry = catalog.find(&show_args.name).ok_or_else(|| {
+                let names = catalog.available_names();
+                let suggestion = find_closest_name(&show_args.name, &names);
+                let base_msg = format!(
+                    "unknown pack {:?}; available packs: {}",
+                    show_args.name,
+                    names.join(", ")
+                );
+                if let Some(closest) = suggestion {
+                    anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+                } else {
+                    anyhow::anyhow!("{}", base_msg)
+                }
+            })?;
+            status::print_show_header(&entry.name, &entry.category, "pack");
+            let yaml = catalog
+                .read_yaml(&show_args.name)
+                .expect("pack must exist after find() succeeded")
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to read pack file {}: {}",
+                        entry.source_path.display(),
+                        e
+                    )
+                })?;
+            print!("{yaml}");
+        }
+        PacksAction::Run(ref run_args) => {
+            run_pack(run_args, cli_opts, verbosity, running, catalog)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute a metric pack from the catalog, applying optional CLI overrides.
+fn run_pack(
+    args: &cli::PacksRunArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+    catalog: &packs::PackCatalog,
+) -> anyhow::Result<()> {
+    let entries = config::load_pack_from_catalog(args, catalog)?;
+
+    let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
+        return Ok(());
+    }
+
+    if prepared.len() == 1 {
+        let p = prepared.into_iter().next().expect("len checked above");
+        run_single_scenario(format!("pack-{}", args.name), p, running, verbosity)?;
+    } else {
+        launch_and_join_prepared(&format!("pack-{}", args.name), prepared, running, verbosity)?;
     }
 
     Ok(())

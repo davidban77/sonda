@@ -34,6 +34,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub dry_run: bool,
 
+    /// Directory containing metric pack YAML files.
+    ///
+    /// When provided, this is the **sole** search path for packs — the
+    /// `SONDA_PACK_PATH` env var and default directories (`./packs/`,
+    /// `~/.sonda/packs/`) are not consulted. Useful for one-off testing
+    /// with a custom pack collection.
+    #[arg(long, global = true)]
+    pub pack_path: Option<PathBuf>,
+
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,
@@ -102,6 +111,14 @@ pub enum Commands {
     /// available scenarios, `show` to view the raw YAML, and `run` to
     /// execute one directly.
     Scenarios(ScenariosArgs),
+    /// Browse, inspect, and run metric packs from the filesystem.
+    ///
+    /// A metric pack is a reusable bundle of metric names and label schemas
+    /// that expands into a multi-metric scenario. Packs are discovered from
+    /// the search path (`--pack-path`, `SONDA_PACK_PATH`, `./packs/`,
+    /// `~/.sonda/packs/`). Use `list` to discover available packs, `show`
+    /// to view the raw YAML, and `run` to execute one with overrides.
+    Packs(PacksArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -723,6 +740,90 @@ pub struct ScenariosRunArgs {
     pub encoder: Option<String>,
 }
 
+/// Arguments for the `packs` subcommand.
+///
+/// Provides access to metric packs discovered from the filesystem search path.
+#[derive(Debug, Args)]
+pub struct PacksArgs {
+    /// The packs action to perform.
+    #[command(subcommand)]
+    pub action: PacksAction,
+}
+
+/// Actions available under `sonda packs`.
+#[derive(Debug, Subcommand)]
+pub enum PacksAction {
+    /// List all available metric packs found on the search path.
+    ///
+    /// Prints a formatted table with NAME, CATEGORY, METRICS, DESCRIPTION,
+    /// and SOURCE columns. Use `--category` to filter by category.
+    List(PacksListArgs),
+    /// Show the raw YAML definition for a metric pack.
+    ///
+    /// Prints the full YAML content to stdout, suitable for piping to a file
+    /// for customization.
+    Show(PacksShowArgs),
+    /// Run a metric pack with the given schedule and delivery options.
+    ///
+    /// Expands the pack into one metric scenario per metric in the pack, then
+    /// runs them all concurrently.
+    Run(PacksRunArgs),
+}
+
+/// Arguments for `sonda packs list`.
+#[derive(Debug, Args)]
+pub struct PacksListArgs {
+    /// Filter packs by category (e.g. `infrastructure`, `network`).
+    #[arg(long)]
+    pub category: Option<String>,
+
+    /// Output the pack list as a JSON array instead of a table.
+    ///
+    /// Each element contains `name`, `category`, `metric_count`,
+    /// `description`, and `source` fields.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `sonda packs show`.
+#[derive(Debug, Args)]
+pub struct PacksShowArgs {
+    /// The snake_case name of the pack (e.g. `telegraf_snmp_interface`).
+    pub name: String,
+}
+
+/// Arguments for `sonda packs run`.
+#[derive(Debug, Args)]
+pub struct PacksRunArgs {
+    /// The snake_case name of the pack (e.g. `telegraf_snmp_interface`).
+    pub name: String,
+
+    /// Override the scenario duration (e.g. `"10s"`, `"2m"`).
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Override the event rate in events per second.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Override the sink type (e.g. `stdout`, `file`).
+    #[arg(long, help_heading = "Sink")]
+    pub sink: Option<String>,
+
+    /// Override the sink endpoint (required for network sinks).
+    #[arg(long, help_heading = "Sink")]
+    pub endpoint: Option<String>,
+
+    /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
+    #[arg(long, help_heading = "Encoder")]
+    pub encoder: Option<String>,
+
+    /// Add or override a label (format: `key=value`). Can be specified
+    /// multiple times to set multiple labels.
+    #[arg(long = "label", value_parser = parse_label)]
+    pub labels: Vec<(String, String)>,
+}
+
 /// Build clap help styling for the CLI.
 ///
 /// Returns a [`clap::builder::styling::Styles`] with colored headers, usage
@@ -1128,6 +1229,174 @@ mod tests {
                 _ => panic!("expected List action"),
             },
             _ => panic!("expected Scenarios command"),
+        }
+    }
+
+    // ---- Packs subcommand parsing -----------------------------------------------
+
+    #[test]
+    fn cli_packs_list_parses() {
+        let cli = Cli::try_parse_from(["sonda", "packs", "list"]).expect("packs list must parse");
+        assert!(matches!(cli.command, Commands::Packs(_)));
+        match cli.command {
+            Commands::Packs(ref args) => {
+                assert!(matches!(args.action, PacksAction::List(_)));
+            }
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_list_with_category() {
+        let cli = Cli::try_parse_from(["sonda", "packs", "list", "--category", "network"])
+            .expect("packs list --category must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::List(ref list_args) => {
+                    assert_eq!(list_args.category.as_deref(), Some("network"));
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_list_with_json() {
+        let cli = Cli::try_parse_from(["sonda", "packs", "list", "--json"])
+            .expect("packs list --json must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::List(ref list_args) => {
+                    assert!(list_args.json);
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_show_parses() {
+        let cli = Cli::try_parse_from(["sonda", "packs", "show", "telegraf_snmp_interface"])
+            .expect("packs show must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::Show(ref show_args) => {
+                    assert_eq!(show_args.name, "telegraf_snmp_interface");
+                }
+                _ => panic!("expected Show action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_run_parses() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "packs",
+            "run",
+            "telegraf_snmp_interface",
+            "--rate",
+            "2",
+            "--duration",
+            "10s",
+        ])
+        .expect("packs run must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::Run(ref run_args) => {
+                    assert_eq!(run_args.name, "telegraf_snmp_interface");
+                    assert_eq!(run_args.rate, Some(2.0));
+                    assert_eq!(run_args.duration.as_deref(), Some("10s"));
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_run_with_label() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "packs",
+            "run",
+            "telegraf_snmp_interface",
+            "--label",
+            "device=rtr-01",
+            "--label",
+            "ifName=eth0",
+        ])
+        .expect("packs run --label must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::Run(ref run_args) => {
+                    assert_eq!(run_args.labels.len(), 2);
+                    assert_eq!(
+                        run_args.labels[0],
+                        ("device".to_string(), "rtr-01".to_string())
+                    );
+                    assert_eq!(
+                        run_args.labels[1],
+                        ("ifName".to_string(), "eth0".to_string())
+                    );
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_run_with_sink_and_encoder() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "packs",
+            "run",
+            "node_exporter_cpu",
+            "--sink",
+            "file",
+            "--endpoint",
+            "/tmp/out.txt",
+            "--encoder",
+            "json_lines",
+        ])
+        .expect("packs run --sink --encoder must parse");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::Run(ref run_args) => {
+                    assert_eq!(run_args.sink.as_deref(), Some("file"));
+                    assert_eq!(run_args.endpoint.as_deref(), Some("/tmp/out.txt"));
+                    assert_eq!(run_args.encoder.as_deref(), Some("json_lines"));
+                }
+                _ => panic!("expected Run action"),
+            },
+            _ => panic!("expected Packs command"),
+        }
+    }
+
+    #[test]
+    fn cli_packs_list_json_and_category_combined() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "packs",
+            "list",
+            "--json",
+            "--category",
+            "infrastructure",
+        ])
+        .expect("--json + --category should parse together");
+        match cli.command {
+            Commands::Packs(ref args) => match args.action {
+                PacksAction::List(ref list_args) => {
+                    assert!(list_args.json);
+                    assert_eq!(list_args.category.as_deref(), Some("infrastructure"));
+                }
+                _ => panic!("expected List action"),
+            },
+            _ => panic!("expected Packs command"),
         }
     }
 }

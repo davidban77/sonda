@@ -8,6 +8,7 @@ pub mod config;
 pub mod encoder;
 pub mod generator;
 pub mod model;
+pub mod packs;
 pub mod scenarios;
 pub mod schedule;
 pub mod sink;

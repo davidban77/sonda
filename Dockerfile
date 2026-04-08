@@ -88,6 +88,12 @@ FROM scratch
 COPY --from=builder /out/sonda /sonda
 COPY --from=builder /out/sonda-server /sonda-server
 
+# Include built-in pack YAML files so `sonda packs list/show/run` work
+# out of the box. Users can mount their own pack directories to override
+# or extend with custom packs.
+COPY packs/ /packs/
+ENV SONDA_PACK_PATH=/packs
+
 EXPOSE 8080
 
 ENTRYPOINT ["/sonda-server"]

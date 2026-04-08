@@ -18,6 +18,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics (gauge, histogram, summary), logs (template and replay modes) |
 | **Built-in scenarios** | 11 curated patterns (cpu-spike, memory-leak, interface-flap, log-storm, and more) |
+| **Metric packs** | 3 reusable metric bundles (telegraf-snmp-interface, node-exporter-cpu, node-exporter-memory) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## Quick install
@@ -89,6 +90,42 @@ sonda metrics --scenario @cpu-spike        # @name shorthand in any subcommand
 
 See the [Built-in Scenarios](https://davidban77.github.io/sonda/guides/scenarios/) guide for the
 full catalog and customization workflow.
+
+## Metric packs
+
+Metric packs are reusable bundles of metric names and label schemas that expand into multi-metric
+scenarios. Each pack models a real exporter (Telegraf SNMP, node_exporter) so generated data
+matches the exact schema your dashboards and alert rules expect.
+
+Pack YAML files live in the `packs/` directory and are discovered from the filesystem at runtime.
+Run from the repo root, set `SONDA_PACK_PATH`, or use `--pack-path` to point to a custom
+directory:
+
+```bash
+sonda packs list                                     # browse discovered packs
+sonda packs show telegraf_snmp_interface              # view the raw YAML definition
+sonda packs run telegraf_snmp_interface --rate 1 \
+  --duration 60s --label device=rtr-edge-01           # run a pack directly
+```
+
+Override the generator for specific metrics without editing the pack definition:
+
+```yaml
+# scenario.yaml
+pack: node_exporter_cpu
+rate: 1
+duration: 60s
+labels:
+  instance: web-01:9100
+overrides:
+  node_cpu_seconds_total:
+    generator:
+      type: spike
+      baseline: 0.1
+      spike_value: 0.95
+      spike_duration: 5
+      spike_interval: 30
+```
 
 ## Documentation
 

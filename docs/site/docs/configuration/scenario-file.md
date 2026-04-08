@@ -447,6 +447,36 @@ sonda run --scenario mixed-signals.yaml
     See [Generators -- histogram and summary](generators.md#histogram-and-summary-generators)
     for the full field reference.
 
+## Pack scenario files
+
+A YAML file with a `pack:` field instead of `name:` and `generator:` references a
+[metric pack](../guides/metric-packs.md) -- a reusable bundle of metric names and label schemas.
+Sonda expands the pack into one scenario per metric before running.
+
+```yaml title="pack-scenario.yaml"
+pack: telegraf_snmp_interface
+rate: 1
+duration: 10s
+
+labels:
+  device: rtr-edge-01
+  ifName: GigabitEthernet0/0/0
+  ifIndex: "1"
+
+sink:
+  type: stdout
+encoder:
+  type: prometheus_text
+```
+
+```bash
+sonda run --scenario pack-scenario.yaml
+```
+
+Pack scenario files support per-metric `overrides` and all the same `sink`, `encoder`, and
+`labels` fields as standard scenarios. See the [Metric Packs guide](../guides/metric-packs.md)
+for the full reference.
+
 ## CLI overrides
 
 Any field in the scenario file can be overridden from the command line. CLI flags always take

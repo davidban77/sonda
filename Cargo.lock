@@ -1923,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1938,7 +1938,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum",

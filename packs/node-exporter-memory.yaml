@@ -1,0 +1,40 @@
+# Node exporter memory metrics pack.
+#
+# Models the memory gauge metrics exposed by the Prometheus node_exporter.
+# Each metric represents one /proc/meminfo field. Default generators use
+# constants that approximate a server with 16 GiB total memory under
+# moderate load.
+
+name: node_exporter_memory
+description: "Memory gauge metrics (node_exporter-compatible)"
+category: infrastructure
+
+shared_labels:
+  instance: ""
+  job: node_exporter
+
+metrics:
+  - name: node_memory_MemTotal_bytes
+    generator:
+      type: constant
+      value: 17179869184.0
+
+  - name: node_memory_MemFree_bytes
+    generator:
+      type: constant
+      value: 2147483648.0
+
+  - name: node_memory_MemAvailable_bytes
+    generator:
+      type: constant
+      value: 8589934592.0
+
+  - name: node_memory_Buffers_bytes
+    generator:
+      type: constant
+      value: 536870912.0
+
+  - name: node_memory_Cached_bytes
+    generator:
+      type: constant
+      value: 5368709120.0

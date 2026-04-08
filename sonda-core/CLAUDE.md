@@ -10,6 +10,11 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
+├── packs/
+│   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
+│                          MetricOverride, expand_pack(). Engine types and expansion logic only.
+│                          Pack YAML files live outside this crate, in `packs/` at repo root,
+│                          discovered by the CLI via a search path.
 ├── scenarios/
 │   └── mod.rs          ← pre-built scenario catalog: BuiltinScenario struct, static CATALOG array,
 │                          list(), get(), get_yaml(), list_by_category(), available_names().
