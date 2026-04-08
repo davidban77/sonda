@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod progress;
 mod status;
 
 use std::process;
@@ -74,7 +75,11 @@ fn run() -> anyhow::Result<()> {
                     p.start_delay,
                 )
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let progress = maybe_start_progress(&handle, verbosity);
                 let join_result = handle.join(None);
+                if let Some(p) = progress {
+                    p.stop();
+                }
                 status::print_stop(
                     &handle.name,
                     handle.elapsed(),
@@ -108,7 +113,11 @@ fn run() -> anyhow::Result<()> {
                 p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let progress = maybe_start_progress(&handle, verbosity);
             let join_result = handle.join(None);
+            if let Some(p) = progress {
+                p.stop();
+            }
             status::print_stop(
                 &handle.name,
                 handle.elapsed(),
@@ -138,7 +147,11 @@ fn run() -> anyhow::Result<()> {
                 p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let progress = maybe_start_progress(&handle, verbosity);
             let join_result = handle.join(None);
+            if let Some(p) = progress {
+                p.stop();
+            }
             status::print_stop(
                 &handle.name,
                 handle.elapsed(),
@@ -168,7 +181,11 @@ fn run() -> anyhow::Result<()> {
                 p.start_delay,
             )
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let progress = maybe_start_progress(&handle, verbosity);
             let join_result = handle.join(None);
+            if let Some(p) = progress {
+                p.stop();
+            }
             status::print_stop(
                 &handle.name,
                 handle.elapsed(),
@@ -345,7 +362,11 @@ fn run_builtin_scenario(
             p.start_delay,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let progress = maybe_start_progress(&handle, verbosity);
         let join_result = handle.join(None);
+        if let Some(p) = progress {
+            p.stop();
+        }
         status::print_stop(
             &handle.name,
             handle.elapsed(),
@@ -393,6 +414,41 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
     false
 }
 
+/// Start a progress display for a single running scenario handle.
+///
+/// Returns `None` when verbosity is [`Verbosity::Quiet`], so progress output
+/// is suppressed entirely in quiet mode.
+fn maybe_start_progress(
+    handle: &sonda_core::ScenarioHandle,
+    verbosity: Verbosity,
+) -> Option<progress::ProgressDisplay> {
+    if verbosity == Verbosity::Quiet {
+        return None;
+    }
+    Some(progress::ProgressDisplay::start(vec![(
+        handle.name.clone(),
+        Arc::clone(&handle.stats),
+        handle.target_rate,
+    )]))
+}
+
+/// Start a progress display for multiple running scenario handles.
+///
+/// Returns `None` when verbosity is [`Verbosity::Quiet`].
+fn maybe_start_progress_multi(
+    handles: &[sonda_core::ScenarioHandle],
+    verbosity: Verbosity,
+) -> Option<progress::ProgressDisplay> {
+    if verbosity == Verbosity::Quiet {
+        return None;
+    }
+    let scenarios: Vec<_> = handles
+        .iter()
+        .map(|h| (h.name.clone(), Arc::clone(&h.stats), h.target_rate))
+        .collect();
+    Some(progress::ProgressDisplay::start(scenarios))
+}
+
 /// Launch multiple prepared scenarios concurrently, join them, print
 /// per-scenario stop banners in launch order, print an aggregate summary,
 /// and return an error if any failed.
@@ -418,6 +474,9 @@ fn launch_and_join_prepared(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
+
+    // Start progress display for all launched scenarios.
+    let progress = maybe_start_progress_multi(&handles, verbosity);
 
     // Collect results from all handles first, preserving launch order.
     let mut errors: Vec<String> = Vec::new();
@@ -447,6 +506,11 @@ fn launch_and_join_prepared(
         total_bytes += info.stats.bytes_emitted;
         total_errors += info.stats.errors;
         stop_infos.push(info);
+    }
+
+    // Stop progress display before printing stop banners.
+    if let Some(p) = progress {
+        p.stop();
     }
 
     // Print stop banners in launch order.

@@ -24,6 +24,8 @@ src/
 │                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand
 ├── config.rs           ← config loading: YAML file or @builtin → merge CLI overrides → ScenarioConfig,
 │                          resolve_scenario_source (@name shorthand), parse_builtin_scenario
+├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
+│                          polls ScenarioHandle stats, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
