@@ -1,0 +1,45 @@
+# Telegraf SNMP interface metrics pack.
+#
+# Models the standard interface metrics collected by the Telegraf SNMP
+# input plugin. Metric names and label keys match the Telegraf-normalized
+# schema exactly, so sonda output can replace real device telemetry in
+# dashboards and alert rules.
+
+name: telegraf_snmp_interface
+description: "Standard SNMP interface metrics (Telegraf-normalized)"
+category: network
+
+shared_labels:
+  device: ""
+  ifName: ""
+  ifAlias: ""
+  ifIndex: ""
+  job: snmp
+
+metrics:
+  - name: ifOperStatus
+    generator:
+      type: constant
+      value: 1.0
+
+  - name: ifHCInOctets
+    generator:
+      type: step
+      start: 0.0
+      step_size: 125000.0
+
+  - name: ifHCOutOctets
+    generator:
+      type: step
+      start: 0.0
+      step_size: 62500.0
+
+  - name: ifInErrors
+    generator:
+      type: constant
+      value: 0.0
+
+  - name: ifOutErrors
+    generator:
+      type: constant
+      value: 0.0

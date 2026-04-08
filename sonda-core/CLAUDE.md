@@ -10,6 +10,12 @@ src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
+├── packs/
+│   └── mod.rs          ← metric pack catalog and expansion: MetricPackDef, MetricSpec,
+│                          PackScenarioConfig, MetricOverride, BuiltinPack, expand_pack().
+│                          YAML files live in sonda-core/packs/*.yaml (embedded via include_str!).
+│                          Built-in packs: telegraf_snmp_interface, node_exporter_cpu,
+│                          node_exporter_memory.
 ├── scenarios/
 │   └── mod.rs          ← pre-built scenario catalog: BuiltinScenario struct, static CATALOG array,
 │                          list(), get(), get_yaml(), list_by_category(), available_names().

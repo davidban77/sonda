@@ -21,7 +21,7 @@ use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig}
 use sonda_core::sink::retry::RetryConfig;
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::{LogsArgs, MetricsArgs, RunArgs, ScenariosRunArgs};
+use crate::cli::{LogsArgs, MetricsArgs, PacksRunArgs, RunArgs, ScenariosRunArgs};
 
 /// Validate CLI flag combinations that are invalid regardless of the scenario
 /// file contents.
@@ -1573,6 +1573,160 @@ pub fn resolve_scenario_source(path: &std::path::Path) -> Result<String> {
             }
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pack loading
+// ---------------------------------------------------------------------------
+
+/// Load and expand a built-in metric pack from its catalog name, applying
+/// CLI overrides from [`PacksRunArgs`].
+///
+/// Looks up the pack by name, parses its YAML into a [`MetricPackDef`],
+/// builds a [`PackScenarioConfig`] from the CLI flags, and returns the
+/// expanded scenario entries.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The pack name is not found in the catalog.
+/// - The pack YAML fails to parse.
+/// - The expansion fails (e.g., empty metrics list).
+pub fn load_builtin_pack(args: &PacksRunArgs) -> Result<Vec<sonda_core::ScenarioEntry>> {
+    use sonda_core::packs;
+    use sonda_core::packs::{MetricPackDef, PackScenarioConfig};
+
+    let pack = packs::get(&args.name).ok_or_else(|| {
+        let names = packs::available_names();
+        anyhow::anyhow!(
+            "unknown pack {:?}; available packs: {}",
+            args.name,
+            names.join(", ")
+        )
+    })?;
+
+    let def: MetricPackDef = serde_yaml_ng::from_str(pack.yaml)
+        .with_context(|| format!("failed to parse built-in pack {:?}", pack.name))?;
+
+    let mut labels: Option<HashMap<String, String>> = None;
+    if !args.labels.is_empty() {
+        let mut map = HashMap::new();
+        for (k, v) in &args.labels {
+            map.insert(k.clone(), v.clone());
+        }
+        labels = Some(map);
+    }
+
+    let sink = match args.sink {
+        Some(ref sink_name) => parse_sink_override(sink_name, args.endpoint.as_deref())?,
+        None => sonda_core::sink::SinkConfig::Stdout,
+    };
+
+    let encoder = match args.encoder {
+        Some(ref enc_name) => parse_encoder_config(enc_name, None)?,
+        None => sonda_core::encoder::EncoderConfig::PrometheusText { precision: None },
+    };
+
+    let pack_config = PackScenarioConfig {
+        pack: args.name.clone(),
+        rate: args.rate.unwrap_or(1.0),
+        duration: args.duration.clone(),
+        labels,
+        sink,
+        encoder,
+        overrides: None,
+    };
+
+    let entries = packs::expand_pack(&def, &pack_config).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    Ok(entries)
+}
+
+/// Resolve a pack reference that may be a built-in name or a file path.
+///
+/// If the pack string contains `/` or starts with `.`, it is treated as a
+/// file path and the YAML is read from disk. Otherwise, the string is
+/// treated as a built-in pack name and looked up in the catalog.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The string is a built-in name that does not exist.
+/// - The file path cannot be read from disk.
+pub fn resolve_pack_source(pack_ref: &str) -> Result<String> {
+    if pack_ref.contains('/') || pack_ref.starts_with('.') {
+        // File path.
+        fs::read_to_string(pack_ref).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "failed to read pack file {:?}: {}\n\n  hint: use a built-in pack name (e.g. `telegraf_snmp_interface`) or a valid file path",
+                    pack_ref, e
+                )
+            } else {
+                anyhow::anyhow!("failed to read pack file {:?}: {}", pack_ref, e)
+            }
+        })
+    } else {
+        // Built-in name.
+        sonda_core::packs::get_yaml(pack_ref)
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                let names = sonda_core::packs::available_names();
+                anyhow::anyhow!(
+                    "unknown pack {:?}; available packs: {}",
+                    pack_ref,
+                    names.join(", ")
+                )
+            })
+    }
+}
+
+/// Detect whether a YAML string contains a `pack:` field, indicating it
+/// should be loaded as a [`PackScenarioConfig`] rather than a standard
+/// scenario config.
+///
+/// Uses a lightweight YAML pre-parse to check for the presence of a `pack`
+/// key at the top level.
+pub fn is_pack_config(yaml: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct PackProbe {
+        #[allow(dead_code)]
+        pack: Option<String>,
+    }
+
+    serde_yaml_ng::from_str::<PackProbe>(yaml)
+        .ok()
+        .and_then(|p| p.pack)
+        .is_some()
+}
+
+/// Load a pack scenario from a YAML string (from a file or inline).
+///
+/// Parses the YAML as [`PackScenarioConfig`], resolves the pack definition
+/// (built-in or file), and expands it into scenario entries.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The YAML fails to parse as a pack config.
+/// - The pack reference cannot be resolved.
+/// - The pack definition fails to parse.
+/// - The expansion fails.
+pub fn load_pack_from_yaml(yaml: &str) -> Result<Vec<sonda_core::ScenarioEntry>> {
+    use sonda_core::packs::{MetricPackDef, PackScenarioConfig};
+
+    let config: PackScenarioConfig =
+        serde_yaml_ng::from_str(yaml).context("failed to parse YAML as pack scenario config")?;
+
+    let pack_yaml = resolve_pack_source(&config.pack)?;
+
+    let def: MetricPackDef = serde_yaml_ng::from_str(&pack_yaml)
+        .with_context(|| format!("failed to parse pack definition for {:?}", config.pack))?;
+
+    let entries =
+        sonda_core::packs::expand_pack(&def, &config).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -5135,5 +5289,237 @@ sink:
         let base = entries[0].base();
         assert_eq!(base.duration.as_deref(), Some("30s"));
         assert_eq!(base.rate, 5.0);
+    }
+
+    // ---- Pack loading tests -----------------------------------------------------
+
+    fn default_packs_run_args(name: &str) -> PacksRunArgs {
+        PacksRunArgs {
+            name: name.to_string(),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+            labels: vec![],
+        }
+    }
+
+    #[test]
+    fn load_builtin_pack_telegraf_snmp_produces_five_entries() {
+        let args = default_packs_run_args("telegraf_snmp_interface");
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn load_builtin_pack_node_cpu_produces_eight_entries() {
+        let args = default_packs_run_args("node_exporter_cpu");
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        assert_eq!(entries.len(), 8);
+    }
+
+    #[test]
+    fn load_builtin_pack_node_memory_produces_five_entries() {
+        let args = default_packs_run_args("node_exporter_memory");
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn load_builtin_pack_unknown_name_returns_error() {
+        let args = default_packs_run_args("nonexistent_pack");
+        let err = load_builtin_pack(&args).expect_err("unknown pack must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown pack"),
+            "error must mention unknown pack, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_builtin_pack_applies_rate_override() {
+        let mut args = default_packs_run_args("node_exporter_memory");
+        args.rate = Some(5.0);
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        for entry in &entries {
+            assert!(
+                (entry.base().rate - 5.0).abs() < f64::EPSILON,
+                "rate override must be applied"
+            );
+        }
+    }
+
+    #[test]
+    fn load_builtin_pack_applies_duration_override() {
+        let mut args = default_packs_run_args("node_exporter_memory");
+        args.duration = Some("30s".to_string());
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        for entry in &entries {
+            assert_eq!(entry.base().duration.as_deref(), Some("30s"));
+        }
+    }
+
+    #[test]
+    fn load_builtin_pack_applies_labels() {
+        let mut args = default_packs_run_args("telegraf_snmp_interface");
+        args.labels = vec![
+            ("device".to_string(), "rtr-01".to_string()),
+            ("ifName".to_string(), "eth0".to_string()),
+        ];
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        for entry in &entries {
+            let labels = entry.base().labels.as_ref().expect("must have labels");
+            assert_eq!(labels.get("device").map(String::as_str), Some("rtr-01"));
+            assert_eq!(labels.get("ifName").map(String::as_str), Some("eth0"));
+        }
+    }
+
+    #[test]
+    fn load_builtin_pack_default_rate_is_one() {
+        let args = default_packs_run_args("node_exporter_memory");
+        let entries = load_builtin_pack(&args).expect("must succeed");
+        for entry in &entries {
+            assert!(
+                (entry.base().rate - 1.0).abs() < f64::EPSILON,
+                "default rate must be 1.0"
+            );
+        }
+    }
+
+    // ---- resolve_pack_source tests ----------------------------------------------
+
+    #[test]
+    fn resolve_pack_source_builtin_name_returns_yaml() {
+        let yaml = resolve_pack_source("telegraf_snmp_interface").expect("must succeed");
+        assert!(yaml.contains("name:"));
+    }
+
+    #[test]
+    fn resolve_pack_source_unknown_name_returns_error() {
+        let err = resolve_pack_source("nonexistent").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown pack"),
+            "error must mention unknown pack, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_pack_source_file_path_not_found() {
+        let err = resolve_pack_source("./nonexistent/pack.yaml").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to read"),
+            "error must mention failed read, got: {msg}"
+        );
+    }
+
+    // ---- is_pack_config tests ---------------------------------------------------
+
+    #[test]
+    fn is_pack_config_detects_pack_field() {
+        let yaml = "pack: telegraf_snmp_interface\nrate: 1\n";
+        assert!(is_pack_config(yaml));
+    }
+
+    #[test]
+    fn is_pack_config_rejects_normal_scenario() {
+        let yaml = "name: cpu_usage\nrate: 1\ngenerator:\n  type: constant\n  value: 1.0\n";
+        assert!(!is_pack_config(yaml));
+    }
+
+    #[test]
+    fn is_pack_config_rejects_multi_scenario() {
+        let yaml = "scenarios:\n  - signal_type: metrics\n    name: test\n    rate: 1\n";
+        assert!(!is_pack_config(yaml));
+    }
+
+    // ---- load_pack_from_yaml tests ----------------------------------------------
+
+    #[test]
+    fn load_pack_from_yaml_expands_builtin_pack() {
+        let yaml = r#"
+pack: telegraf_snmp_interface
+rate: 1
+duration: 10s
+labels:
+  device: rtr-01
+sink:
+  type: stdout
+encoder:
+  type: prometheus_text
+"#;
+        let entries = load_pack_from_yaml(yaml).expect("must succeed");
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[test]
+    fn load_pack_from_yaml_with_overrides() {
+        let yaml = r#"
+pack: telegraf_snmp_interface
+rate: 1
+duration: 10s
+labels:
+  device: rtr-01
+overrides:
+  ifOperStatus:
+    generator:
+      type: constant
+      value: 0.0
+sink:
+  type: stdout
+encoder:
+  type: prometheus_text
+"#;
+        let entries = load_pack_from_yaml(yaml).expect("must succeed");
+        assert_eq!(entries.len(), 5);
+
+        // ifOperStatus should have the overridden generator.
+        let if_oper = entries
+            .iter()
+            .find(|e| e.base().name == "ifOperStatus")
+            .expect("must find ifOperStatus");
+        match if_oper {
+            sonda_core::ScenarioEntry::Metrics(c) => {
+                assert!(
+                    matches!(c.generator, GeneratorConfig::Constant { value } if value.abs() < f64::EPSILON),
+                    "override generator must be constant(0.0), got {:?}",
+                    c.generator
+                );
+            }
+            _ => panic!("expected Metrics"),
+        }
+    }
+
+    #[test]
+    fn load_pack_from_yaml_example_file() {
+        let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/pack-scenario.yaml");
+        let yaml = std::fs::read_to_string(&example_path)
+            .expect("example pack-scenario.yaml must be readable");
+        let entries = load_pack_from_yaml(&yaml).expect("example file must expand");
+        assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
+    }
+
+    #[test]
+    fn load_pack_from_yaml_example_with_overrides() {
+        let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("examples/pack-with-overrides.yaml");
+        let yaml = std::fs::read_to_string(&example_path)
+            .expect("example pack-with-overrides.yaml must be readable");
+        let entries = load_pack_from_yaml(&yaml).expect("example file must expand");
+        assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
+    }
+
+    #[test]
+    fn load_pack_from_yaml_invalid_yaml_returns_error() {
+        let yaml = "not: valid: pack: yaml: :::";
+        let result = load_pack_from_yaml(yaml);
+        assert!(result.is_err(), "invalid YAML must return error");
     }
 }

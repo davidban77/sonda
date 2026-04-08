@@ -1,0 +1,26 @@
+# Example: pack with per-metric generator overrides.
+#
+# The overrides map lets you replace the default generator for specific
+# metrics without modifying the pack definition. Here ifOperStatus uses
+# a flap alias to simulate interface up/down toggling.
+
+pack: telegraf_snmp_interface
+rate: 1
+duration: 30s
+
+labels:
+  device: rtr-edge-01
+  ifName: GigabitEthernet0/0/0
+  ifAlias: "Uplink to Core"
+  ifIndex: "1"
+
+overrides:
+  ifOperStatus:
+    generator:
+      type: flap
+
+sink:
+  type: stdout
+
+encoder:
+  type: prometheus_text

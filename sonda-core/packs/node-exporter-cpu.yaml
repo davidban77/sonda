@@ -1,0 +1,80 @@
+# Node exporter CPU metrics pack.
+#
+# Models the per-CPU mode counters exposed by the Prometheus node_exporter.
+# Each metric spec represents one mode of node_cpu_seconds_total with a
+# default monotonic step counter whose rate reflects typical CPU
+# utilization proportions.
+
+name: node_exporter_cpu
+description: "Per-CPU mode counters (node_exporter-compatible)"
+category: infrastructure
+
+shared_labels:
+  instance: ""
+  job: node_exporter
+  cpu: "0"
+
+metrics:
+  - name: node_cpu_seconds_total
+    labels:
+      mode: user
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.25
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: system
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.10
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: idle
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.55
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: iowait
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.03
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: irq
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.01
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: softirq
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.02
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: nice
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.01
+
+  - name: node_cpu_seconds_total
+    labels:
+      mode: steal
+    generator:
+      type: step
+      start: 0.0
+      step_size: 0.03
