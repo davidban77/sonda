@@ -13,6 +13,7 @@ pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
 
+pub use config::aliases::{desugar_entry, desugar_scenario_config};
 pub use config::BaseScheduleConfig;
 pub use config::BurstConfig;
 pub use config::CardinalitySpikeConfig;

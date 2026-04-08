@@ -1,7 +1,8 @@
 # CPU spike: periodic CPU usage spikes above threshold.
 #
-# Models a server experiencing recurring CPU spikes, useful for testing
-# alert rules that trigger on sustained high CPU usage.
+# Models a server experiencing recurring CPU spikes using the
+# `spike_event` alias. Useful for testing alert rules that trigger
+# on sustained high CPU usage.
 #
 # Pattern: baseline ~35% with periodic spikes to ~95%.
 
@@ -10,11 +11,11 @@ rate: 1
 duration: 60s
 
 generator:
-  type: spike
+  type: spike_event
   baseline: 35.0
-  magnitude: 60.0
-  duration_secs: 10
-  interval_secs: 30
+  spike_height: 60.0
+  spike_duration: "10s"
+  spike_interval: "30s"
 
 labels:
   instance: web-01

@@ -100,8 +100,9 @@ sonda scenarios show cpu-spike
 ```yaml title="Output"
 # CPU spike: periodic CPU usage spikes above threshold.
 #
-# Models a server experiencing recurring CPU spikes, useful for testing
-# alert rules that trigger on sustained high CPU usage.
+# Models a server experiencing recurring CPU spikes using the
+# `spike_event` alias. Useful for testing alert rules that trigger
+# on sustained high CPU usage.
 #
 # Pattern: baseline ~35% with periodic spikes to ~95%.
 
@@ -110,11 +111,11 @@ rate: 1
 duration: 60s
 
 generator:
-  type: spike
+  type: spike_event
   baseline: 35.0
-  magnitude: 60.0
-  duration_secs: 10
-  interval_secs: 30
+  spike_height: 60.0
+  spike_duration: "10s"
+  spike_interval: "30s"
 
 labels:
   instance: web-01
@@ -185,10 +186,10 @@ embedded YAML. For example, `--duration 10s` overrides whatever duration the bui
 
 | Name | Signal | Generator | What it models |
 |------|--------|-----------|----------------|
-| `cpu-spike` | metrics | spike | Server CPU surging from ~35% baseline to ~95% for 10s every 30s. Tests threshold alerts. |
-| `memory-leak` | metrics | sawtooth | Memory ramping from 40% to 95% over 120s (linear growth). Tests growth-rate alerts. |
-| `disk-fill` | metrics | step | Disk usage climbing in fixed increments. Tests capacity alerts. |
-| `steady-state` | metrics | sine + jitter | Normal oscillating baseline (~50% +/- 20%) with jitter noise. Use as a healthy control signal. |
+| `cpu-spike` | metrics | `spike_event` | Server CPU surging from ~35% baseline to ~95% for 10s every 30s. Tests threshold alerts. |
+| `memory-leak` | metrics | `leak` | Memory ramping from 40% to 95% over 120s (linear growth). Tests growth-rate alerts. |
+| `disk-fill` | metrics | `step` | Disk usage climbing in fixed increments. Tests capacity alerts. |
+| `steady-state` | metrics | `steady` | Normal oscillating baseline (~75% +/- 10) with noise. Use as a healthy control signal. |
 
 ### Network
 
@@ -201,8 +202,8 @@ embedded YAML. For example, `--duration 10s` overrides whatever duration the bui
 
 | Name | Signal | Generator | What it models |
 |------|--------|-----------|----------------|
-| `latency-degradation` | metrics | sawtooth | HTTP response latency growing over time (sawtooth with jitter). Tests latency SLO alerts. |
-| `error-rate-spike` | metrics | spike | Periodic bursts of HTTP 5xx errors. Tests error-rate alerts. |
+| `latency-degradation` | metrics | `degradation` | HTTP response latency growing over time with noise. Tests latency SLO alerts. |
+| `error-rate-spike` | metrics | `spike` | Periodic bursts of HTTP 5xx errors. Tests error-rate alerts. |
 | `log-storm` | logs | template | Error-heavy log burst (60% error, 30% warn) with 10x volume spikes. Tests log pipeline backpressure. |
 | `histogram-latency` | histogram | normal distribution | Request latency histogram (mean 100ms, stddev 30ms). Tests p99 SLO alerting and heatmap panels. |
 

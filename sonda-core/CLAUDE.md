@@ -22,7 +22,10 @@ src/
 │   └── log.rs          ← LogEvent (with Labels support for scenario-level static labels).
 │                          Severity has explicit Ord/PartialOrd (rank-based, not derived from variant order).
 ├── generator/
-│   ├── mod.rs          ← ValueGenerator trait + factory, CsvColumnSpec (multi-column csv_replay)
+│   ├── mod.rs          ← ValueGenerator trait + factory, CsvColumnSpec (multi-column csv_replay),
+│   │                      GeneratorConfig enum (core types + 6 operational aliases:
+│   │                      flap, saturation, leak, degradation, steady, spike_event).
+│   │                      Aliases are pure syntactic sugar — desugared before create_generator().
 │   ├── constant.rs
 │   ├── uniform.rs
 │   ├── sine.rs
@@ -89,6 +92,11 @@ src/
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_entry (entry-level wrapper for expand_scenario)
+    ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
+    │                      Transforms high-level aliases (flap, steady, leak, saturation,
+    │                      degradation, spike_event) into underlying GeneratorConfig variants.
+    │                      Jitter-implying aliases (steady, degradation) set jitter on
+    │                      BaseScheduleConfig. Integrated into prepare_entries pipeline.
     └── validate.rs     ← config validation logic, parse_duration (accepts fractional seconds via f64),
                            validate_cardinality_spike_config, validate_dynamic_label_config,
                            validate_histogram_config, validate_summary_config,

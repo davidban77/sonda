@@ -351,6 +351,203 @@ one per tick.
     Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is not
     compatible with auto-discovery and requires explicit `columns:` instead.
 
+## Operational aliases
+
+Writing `type: sawtooth` with `min`, `max`, and `period_secs` works, but it forces you to think
+in signal-processing terms. Operational aliases let you describe *what is happening* -- a memory
+leak, a flapping interface, a healthy baseline -- and Sonda translates that into the right
+generator with sensible defaults.
+
+Aliases are syntactic sugar. At config load time, each alias is desugared into a concrete
+generator (and optionally jitter settings). The runtime never sees aliases -- everything runs
+through the same generator engine. All existing generator types still work unchanged.
+
+| Alias | Desugars to | Operational meaning |
+|-------|-------------|---------------------|
+| `steady` | `sine` + jitter | Normal healthy oscillation |
+| `flap` | `sequence` | Binary up/down toggle (interface flapping) |
+| `saturation` | `sawtooth` | Resource filling up then resetting |
+| `leak` | `sawtooth` | One-way resource growth (no reset) |
+| `degradation` | `sawtooth` + jitter | Gradual performance loss with noise |
+| `spike_event` | `spike` | Periodic anomalous bursts |
+
+### steady
+
+Models a healthy, "everything is fine" signal. Values oscillate gently around a center point
+with slight noise -- the kind of metric you see on a server under normal load.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `center` | float | `50.0` | Midpoint of the oscillation. |
+| `amplitude` | float | `10.0` | Half the peak-to-peak swing. |
+| `period` | duration | `"60s"` | Duration of one full cycle. |
+| `noise` | float | `1.0` | Jitter amplitude (uniform noise in `[-noise, +noise]`). |
+| `noise_seed` | integer | `0` | Seed for deterministic noise. |
+
+```yaml title="Steady baseline"
+generator:
+  type: steady
+  center: 75.0
+  amplitude: 10.0
+  period: "60s"
+  noise: 2.0
+  noise_seed: 7
+```
+
+Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-second cycle.
+
+!!! tip "Built-in scenario"
+    Run `sonda scenarios run steady-state` for a ready-to-use version with Prometheus labels.
+
+### flap
+
+Models a binary signal toggling between two states -- an interface going up and down, a service
+bouncing between healthy and unhealthy.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `up_duration` | duration | `"10s"` | How long the signal stays "up" per cycle. |
+| `down_duration` | duration | `"5s"` | How long the signal stays "down" per cycle. |
+| `up_value` | float | `1.0` | Value emitted during the "up" state. |
+| `down_value` | float | `0.0` | Value emitted during the "down" state. |
+
+```yaml title="Interface flap"
+generator:
+  type: flap
+  up_duration: "10s"
+  down_duration: "5s"
+```
+
+At `rate: 1`, this produces 10 ticks of `1.0` followed by 5 ticks of `0.0`, then repeats.
+The number of ticks per state is derived from the duration and the scenario `rate`.
+
+??? tip "Custom values"
+    Use `up_value` and `down_value` to model non-binary signals. For example, a link that
+    alternates between full speed and degraded:
+
+    ```yaml
+    generator:
+      type: flap
+      up_duration: "30s"
+      down_duration: "10s"
+      up_value: 1000.0
+      down_value: 100.0
+    ```
+
+### saturation
+
+Models a resource that fills up and resets on a repeating cycle -- disk usage growing between
+log rotations, a buffer draining when a consumer catches up.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `baseline` | float | `0.0` | Value at the start of each cycle. |
+| `ceiling` | float | `100.0` | Maximum value before reset. |
+| `time_to_saturate` | duration | `"5m"` | Duration of one fill cycle. |
+
+```yaml title="Disk saturation"
+generator:
+  type: saturation
+  baseline: 20.0
+  ceiling: 95.0
+  time_to_saturate: "5m"
+```
+
+Values ramp linearly from 20 to 95 over 5 minutes, then snap back to 20 and repeat.
+
+### leak
+
+Models a resource growing toward a ceiling without ever resetting -- a memory leak, a
+connection pool that never releases, a queue that fills but never drains.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `baseline` | float | `0.0` | Starting resource level. |
+| `ceiling` | float | `100.0` | Target ceiling value. |
+| `time_to_ceiling` | duration | `"10m"` | Time to grow from baseline to ceiling. |
+
+```yaml title="Memory leak"
+generator:
+  type: leak
+  baseline: 40.0
+  ceiling: 95.0
+  time_to_ceiling: "120s"
+```
+
+Values ramp linearly from 40 to 95 over 120 seconds with no reset.
+
+!!! warning "time_to_ceiling must be >= duration"
+    If you set a scenario `duration` and `time_to_ceiling` is shorter, Sonda rejects the
+    config with an error. A leak that resets mid-run is the `saturation` pattern -- use that
+    alias instead if you want repeating fill-and-reset cycles.
+
+!!! tip "Built-in scenario"
+    Run `sonda scenarios run memory-leak` for a ready-to-use version modeling a process
+    leaking from 40% to 95% over 120 seconds.
+
+### degradation
+
+Models gradual performance loss with realistic noise -- latency increasing over time, error
+rates climbing, throughput dropping.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `baseline` | float | `0.0` | Starting performance level. |
+| `ceiling` | float | `100.0` | Worst-case performance level. |
+| `time_to_degrade` | duration | `"5m"` | Duration of the degradation ramp. |
+| `noise` | float | `1.0` | Jitter amplitude added as noise. |
+| `noise_seed` | integer | `0` | Seed for deterministic noise. |
+
+```yaml title="Latency degradation"
+generator:
+  type: degradation
+  baseline: 0.05
+  ceiling: 0.5
+  time_to_degrade: "60s"
+  noise: 0.02
+  noise_seed: 42
+```
+
+Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
+
+!!! tip "Built-in scenario"
+    Run `sonda scenarios run latency-degradation` for a ready-to-use version with HTTP
+    latency labels.
+
+### spike_event
+
+Models periodic anomalous bursts above a baseline -- CPU spikes, sudden request surges,
+momentary error floods.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `baseline` | float | `0.0` | Normal value between spikes. |
+| `spike_height` | float | `100.0` | Amount added to baseline during a spike. |
+| `spike_duration` | duration | `"10s"` | How long each spike lasts. |
+| `spike_interval` | duration | `"30s"` | Time between spike starts. |
+
+```yaml title="CPU spike event"
+generator:
+  type: spike_event
+  baseline: 35.0
+  spike_height: 60.0
+  spike_duration: "10s"
+  spike_interval: "30s"
+```
+
+Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
+
+!!! tip "Built-in scenario"
+    Run `sonda scenarios run cpu-spike` for a ready-to-use version with node exporter labels.
+
+??? tip "Aliases vs. core generators"
+    You can always use the underlying generator directly if you need parameters that the alias
+    does not expose. For example, `spike_event` does not expose the `spike` generator's
+    `magnitude` parameter (which supports negative values for dip testing). In that case,
+    use `type: spike` with `magnitude: -50.0` directly.
+
+    Aliases and core generators are interchangeable in any scenario file. Mix them freely.
+
 ## Histogram and summary generators
 
 The metric generators above produce a single number per tick -- one value, one time series, one

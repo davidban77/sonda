@@ -86,7 +86,7 @@ pub struct CsvColumnSpec {
 /// The `type` field selects which generator to instantiate. Additional fields
 /// are specific to each variant.
 ///
-/// # Example YAML
+/// # Core generators
 ///
 /// ```yaml
 /// generator:
@@ -94,6 +94,34 @@ pub struct CsvColumnSpec {
 ///   amplitude: 5.0
 ///   period_secs: 30
 ///   offset: 10.0
+/// ```
+///
+/// # Operational aliases
+///
+/// Aliases desugar into core generators at config expansion time. They use
+/// domain-relevant parameter names and have sensible defaults.
+///
+/// ```yaml
+/// # Normal healthy oscillation (desugars to sine + jitter)
+/// generator:
+///   type: steady
+///   center: 75.0
+///   amplitude: 10.0
+///   period: "60s"
+///   noise: 2.0
+///
+/// # Resource leak (desugars to sawtooth)
+/// generator:
+///   type: leak
+///   baseline: 40.0
+///   ceiling: 95.0
+///   time_to_ceiling: "120s"
+///
+/// # Interface flap (desugars to sequence)
+/// generator:
+///   type: flap
+///   up_duration: "10s"
+///   down_duration: "5s"
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Deserialize))]
@@ -194,6 +222,240 @@ pub enum GeneratorConfig {
         /// the value wraps via modular arithmetic.
         max: Option<f64>,
     },
+
+    // -----------------------------------------------------------------
+    // Operational aliases — syntactic sugar that desugars into the above
+    // generators at config expansion time. The runtime never sees these.
+    // -----------------------------------------------------------------
+    /// Binary up/down toggle modeling an interface flap.
+    ///
+    /// Desugars into a [`Sequence`](GeneratorConfig::Sequence) generator that
+    /// alternates between `up_value` (default 1.0) and `down_value` (default 0.0).
+    /// The number of consecutive up/down ticks is derived from `up_duration` and
+    /// `down_duration` relative to the scenario `rate`.
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: flap
+    ///   up_duration: "10s"
+    ///   down_duration: "5s"
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "flap"))]
+    Flap {
+        /// How long the signal stays in the "up" state per cycle.
+        /// Defaults to `"10s"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        up_duration: Option<String>,
+        /// How long the signal stays in the "down" state per cycle.
+        /// Defaults to `"5s"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        down_duration: Option<String>,
+        /// Value emitted during the "up" state. Defaults to `1.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        up_value: Option<f64>,
+        /// Value emitted during the "down" state. Defaults to `0.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        down_value: Option<f64>,
+    },
+
+    /// Resource filling up and resetting on a repeating cycle (e.g. disk usage
+    /// sawtoothing after log rotation).
+    ///
+    /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with
+    /// `min = baseline`, `max = ceiling`, `period_secs` derived from
+    /// `time_to_saturate`. The sawtooth resets to `baseline` after each
+    /// `time_to_saturate` period, modeling a resource that fills and is
+    /// periodically reclaimed.
+    ///
+    /// # Distinction from `Leak`
+    ///
+    /// - **Saturation**: repeating fill-and-reset cycle. Default period is
+    ///   `"5m"`.
+    /// - **Leak**: one-way ramp, no reset expected within the scenario
+    ///   duration. Default period is `"10m"`.
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: saturation
+    ///   baseline: 20.0
+    ///   ceiling: 95.0
+    ///   time_to_saturate: "5m"
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "saturation"))]
+    Saturation {
+        /// Resource level at the start of each cycle. Defaults to `0.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        baseline: Option<f64>,
+        /// Maximum resource level before reset. Defaults to `100.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        ceiling: Option<f64>,
+        /// Duration of one fill cycle. Defaults to `"5m"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        time_to_saturate: Option<String>,
+    },
+
+    /// Resource growing toward a ceiling without resetting — a one-way ramp
+    /// modeling a memory leak or similar resource exhaustion.
+    ///
+    /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator.
+    /// The intent is that `time_to_ceiling` equals or exceeds the scenario
+    /// `duration` so values only ramp upward and never reset within the run.
+    /// If the scenario has a `duration` set and `time_to_ceiling` is shorter
+    /// than that duration, desugaring returns a config error because the
+    /// sawtooth would reset mid-run, which is the
+    /// [`Saturation`](GeneratorConfig::Saturation) pattern instead.
+    ///
+    /// # Distinction from `Saturation`
+    ///
+    /// - **Leak**: one-way ramp, no reset expected. `time_to_ceiling` should
+    ///   be >= scenario `duration`. Default period is `"10m"`.
+    /// - **Saturation**: repeating fill-and-reset cycle. Default period is
+    ///   `"5m"`.
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: leak
+    ///   baseline: 40.0
+    ///   ceiling: 95.0
+    ///   time_to_ceiling: "120s"
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "leak"))]
+    Leak {
+        /// Initial resource level. Defaults to `0.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        baseline: Option<f64>,
+        /// Target ceiling value. Defaults to `100.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        ceiling: Option<f64>,
+        /// Time to grow from baseline to ceiling. Defaults to `"10m"`.
+        /// The sawtooth period is set to this value so values only ramp
+        /// upward within the scenario duration.
+        #[cfg_attr(feature = "config", serde(default))]
+        time_to_ceiling: Option<String>,
+    },
+
+    /// Gradual performance loss with noise — models degradation over time
+    /// (e.g. growing latency, increasing error rate).
+    ///
+    /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with
+    /// jitter automatically applied on [`BaseScheduleConfig`].
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: degradation
+    ///   baseline: 0.05
+    ///   ceiling: 0.5
+    ///   time_to_degrade: "60s"
+    ///   noise: 0.02
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "degradation"))]
+    Degradation {
+        /// Starting performance level. Defaults to `0.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        baseline: Option<f64>,
+        /// Worst-case performance level. Defaults to `100.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        ceiling: Option<f64>,
+        /// Duration of the degradation ramp. Defaults to `"5m"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        time_to_degrade: Option<String>,
+        /// Jitter amplitude added as noise. Defaults to `1.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        noise: Option<f64>,
+        /// Seed for the noise generator. Defaults to `0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        noise_seed: Option<u64>,
+    },
+
+    /// Normal healthy oscillation around a center value — the "everything is
+    /// fine" baseline signal.
+    ///
+    /// Desugars into a [`Sine`](GeneratorConfig::Sine) generator with jitter
+    /// automatically applied on [`BaseScheduleConfig`].
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: steady
+    ///   center: 75.0
+    ///   amplitude: 10.0
+    ///   period: "60s"
+    ///   noise: 2.0
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "steady"))]
+    Steady {
+        /// Center of the oscillation (the sine wave's offset). Defaults to `50.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        center: Option<f64>,
+        /// Half the peak-to-peak swing. Defaults to `10.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        amplitude: Option<f64>,
+        /// Duration of one full oscillation cycle. Defaults to `"60s"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        period: Option<String>,
+        /// Jitter amplitude added as noise. Defaults to `1.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        noise: Option<f64>,
+        /// Seed for the noise generator. Defaults to `0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        noise_seed: Option<u64>,
+    },
+
+    /// Periodic anomalous bursts above a baseline — models sudden spikes
+    /// in CPU, memory, or request rate.
+    ///
+    /// Desugars into a [`Spike`](GeneratorConfig::Spike) generator.
+    ///
+    /// # Example YAML
+    ///
+    /// ```yaml
+    /// generator:
+    ///   type: spike_event
+    ///   baseline: 35.0
+    ///   spike_height: 60.0
+    ///   spike_duration: "10s"
+    ///   spike_interval: "30s"
+    /// ```
+    #[cfg_attr(feature = "config", serde(rename = "spike_event"))]
+    SpikeEvent {
+        /// Normal output value between spikes. Defaults to `0.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        baseline: Option<f64>,
+        /// Amount added to baseline during a spike. Defaults to `100.0`.
+        #[cfg_attr(feature = "config", serde(default))]
+        spike_height: Option<f64>,
+        /// How long each spike lasts. Defaults to `"10s"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        spike_duration: Option<String>,
+        /// Time between spike starts. Defaults to `"30s"`.
+        #[cfg_attr(feature = "config", serde(default))]
+        spike_interval: Option<String>,
+    },
+}
+
+impl GeneratorConfig {
+    /// Returns `true` if this variant is an operational alias that must be
+    /// desugared before the generator factory can process it.
+    pub fn is_alias(&self) -> bool {
+        matches!(
+            self,
+            GeneratorConfig::Flap { .. }
+                | GeneratorConfig::Saturation { .. }
+                | GeneratorConfig::Leak { .. }
+                | GeneratorConfig::Degradation { .. }
+                | GeneratorConfig::Steady { .. }
+                | GeneratorConfig::SpikeEvent { .. }
+        )
+    }
 }
 
 /// Construct a `Box<dyn ValueGenerator>` from the given configuration.
@@ -281,6 +543,17 @@ pub fn create_generator(
             start.unwrap_or(0.0),
             *step_size,
             *max,
+        ))),
+        // Operational aliases must be desugared before reaching this factory.
+        // If one arrives here it means the config expansion pipeline was bypassed.
+        GeneratorConfig::Flap { .. }
+        | GeneratorConfig::Saturation { .. }
+        | GeneratorConfig::Leak { .. }
+        | GeneratorConfig::Degradation { .. }
+        | GeneratorConfig::Steady { .. }
+        | GeneratorConfig::SpikeEvent { .. } => Err(SondaError::Config(ConfigError::invalid(
+            "operational alias generator must be desugared via \
+             desugar_entry() or desugar_scenario_config() before calling create_generator()",
         ))),
     }
 }

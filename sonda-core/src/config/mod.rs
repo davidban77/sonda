@@ -4,6 +4,7 @@
 //! `config` Cargo feature is enabled (active by default). Without the feature,
 //! configs can still be constructed in code — only YAML/JSON parsing is gated.
 
+pub mod aliases;
 pub mod validate;
 
 use std::collections::HashMap;
