@@ -16,7 +16,7 @@ By the end, you will have synthetic telemetry streaming to stdout.
     To pin a specific version:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.3.0 sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.11.0 sh
     ```
 
 === "Cargo"
@@ -62,7 +62,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.3.0
+sonda 0.11.0
 ```
 
 ## Your first metric

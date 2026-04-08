@@ -9,6 +9,7 @@
 //! version and enabled features. [`print_show_header`] prints a styled header
 //! for the `scenarios show` subcommand. [`print_dry_run_ok`] shows the
 //! validation result with a scenario count.
+//! hint message for contextual help on errors.
 
 use std::time::Duration;
 
@@ -29,8 +30,10 @@ use sonda_core::sink::SinkConfig;
 /// Print a start banner for a scenario to stderr.
 ///
 /// Displays the scenario name, signal type, rate, encoder, sink, and optional
-/// duration. Returns immediately if verbosity is [`Verbosity::Quiet`].
-pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity) {
+/// duration. When `position` is `Some((index, total))` and `total > 1`, a
+/// dimmed `[index/total]` prefix is prepended. Returns immediately if
+/// verbosity is [`Verbosity::Quiet`].
+pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option<(usize, usize)>) {
     if verbosity == Verbosity::Quiet {
         return;
     }
@@ -71,6 +74,7 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity) {
     };
 
     let arrow = "\u{25b6}".if_supports_color(Stderr, |t| t.green());
+    let pos_prefix = format_position_prefix(position);
     let bold_name = name.if_supports_color(Stderr, |t| t.bold());
     let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
     let signal_label = "signal_type:".if_supports_color(Stderr, |t| t.dimmed());
@@ -90,12 +94,12 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity) {
             let dur_label = "duration:".if_supports_color(Stderr, |t| t.dimmed());
             let dur_value = dur.if_supports_color(Stderr, |t| t.cyan());
             eprintln!(
-                "{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value} {pipe} {dur_label} {dur_value}"
+                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value} {pipe} {dur_label} {dur_value}"
             );
         }
         None => {
             eprintln!(
-                "{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
+                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
             );
         }
     }
@@ -105,9 +109,16 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity) {
 ///
 /// Displays the scenario name, elapsed time, total events, bytes emitted, and
 /// error count. The stop icon is colored blue normally, or yellow if there were
-/// errors. The error count is red when non-zero. Returns immediately if
-/// verbosity is [`Verbosity::Quiet`].
-pub fn print_stop(name: &str, elapsed: Duration, stats: &ScenarioStats, verbosity: Verbosity) {
+/// errors. The error count is red when non-zero. When `position` is
+/// `Some((index, total))` and `total > 1`, a dimmed `[index/total]` prefix is
+/// prepended. Returns immediately if verbosity is [`Verbosity::Quiet`].
+pub fn print_stop(
+    name: &str,
+    elapsed: Duration,
+    stats: &ScenarioStats,
+    verbosity: Verbosity,
+    position: Option<(usize, usize)>,
+) {
     if verbosity == Verbosity::Quiet {
         return;
     }
@@ -120,6 +131,7 @@ pub fn print_stop(name: &str, elapsed: Duration, stats: &ScenarioStats, verbosit
         format!("{}", "\u{25a0}".if_supports_color(Stderr, |t| t.blue()))
     };
 
+    let pos_prefix = format_position_prefix(position);
     let bold_name = name.if_supports_color(Stderr, |t| t.bold());
     let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
     let elapsed_secs = elapsed.as_secs_f64();
@@ -148,7 +160,7 @@ pub fn print_stop(name: &str, elapsed: Duration, stats: &ScenarioStats, verbosit
     };
 
     eprintln!(
-        "{square} {bold_name}  completed in {elapsed_str} {pipe} {events_label} {events_value} {pipe} {bytes_label} {bytes_value} {pipe} {errors_label} {errors_value}"
+        "{pos_prefix}{square} {bold_name}  completed in {elapsed_str} {pipe} {events_label} {events_value} {pipe} {bytes_label} {bytes_value} {pipe} {errors_label} {errors_value}"
     );
 }
 
@@ -156,45 +168,36 @@ pub fn print_stop(name: &str, elapsed: Duration, stats: &ScenarioStats, verbosit
 ///
 /// Used by `--dry-run` (always) and `--verbose` (at startup). The output is
 /// human-readable custom formatting, not YAML or Debug output.
-pub fn print_config(entry: &ScenarioEntry) {
+///
+/// When `index` >= 1 and `total` > 1, a `[index/total]` prefix is shown on the
+/// header line and a dimmed separator is printed before each block except the
+/// first.
+pub fn print_config(entry: &ScenarioEntry, index: usize, total: usize) {
+    // Separator between scenario blocks when multiple are shown.
+    if total > 1 && index > 1 {
+        let sep = "\u{2500}\u{2500}\u{2500}".if_supports_color(Stderr, |t| t.dimmed());
+        eprintln!("{sep}");
+    }
+
     match entry {
-        ScenarioEntry::Metrics(c) => print_metrics_config(c),
-        ScenarioEntry::Logs(c) => print_logs_config(c),
-        ScenarioEntry::Histogram(c) => print_histogram_config(c),
-        ScenarioEntry::Summary(c) => print_summary_config(c),
+        ScenarioEntry::Metrics(c) => print_metrics_config(c, index, total),
+        ScenarioEntry::Logs(c) => print_logs_config(c, index, total),
+        ScenarioEntry::Histogram(c) => print_histogram_config(c, index, total),
+        ScenarioEntry::Summary(c) => print_summary_config(c, index, total),
     }
 }
 
 /// Print the resolved config for a metrics scenario.
-fn print_metrics_config(c: &ScenarioConfig) {
-    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
-    let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("{header} {bold_name}");
+fn print_metrics_config(c: &ScenarioConfig, index: usize, total: usize) {
+    print_config_header(&c.name, index, total);
     eprintln!();
-    let label = format!("{:<14}", "name:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.name);
-    let label = format!("{:<14}", "signal:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} metrics");
-    let label = format!("{:<14}", "rate:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}/s", format_rate(c.rate));
-    let label = format!("{:<14}", "duration:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        c.duration.as_deref().unwrap_or("indefinite")
-    );
-    let label = format!("{:<14}", "generator:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", generator_display(&c.generator));
-    let label = format!("{:<14}", "encoder:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", encoder_display(&c.encoder));
-    let label = format!("{:<14}", "sink:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", sink_display(&c.sink));
+    print_config_field("name:", &c.name);
+    print_config_field("signal:", "metrics");
+    print_config_field("rate:", &format!("{}/s", format_rate(c.rate)));
+    print_config_field("duration:", c.duration.as_deref().unwrap_or("indefinite"));
+    print_config_field("generator:", &generator_display(&c.generator));
+    print_config_field("encoder:", &encoder_display(&c.encoder));
+    print_config_field("sink:", &sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -207,35 +210,16 @@ fn print_metrics_config(c: &ScenarioConfig) {
 }
 
 /// Print the resolved config for a logs scenario.
-fn print_logs_config(c: &LogScenarioConfig) {
-    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
-    let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("{header} {bold_name}");
+fn print_logs_config(c: &LogScenarioConfig, index: usize, total: usize) {
+    print_config_header(&c.name, index, total);
     eprintln!();
-    let label = format!("{:<14}", "name:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.name);
-    let label = format!("{:<14}", "signal:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} logs");
-    let label = format!("{:<14}", "rate:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}/s", format_rate(c.rate));
-    let label = format!("{:<14}", "duration:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        c.duration.as_deref().unwrap_or("indefinite")
-    );
-    let label = format!("{:<14}", "generator:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", log_generator_display(&c.generator));
-    let label = format!("{:<14}", "encoder:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", encoder_display(&c.encoder));
-    let label = format!("{:<14}", "sink:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", sink_display(&c.sink));
+    print_config_field("name:", &c.name);
+    print_config_field("signal:", "logs");
+    print_config_field("rate:", &format!("{}/s", format_rate(c.rate)));
+    print_config_field("duration:", c.duration.as_deref().unwrap_or("indefinite"));
+    print_config_field("generator:", &log_generator_display(&c.generator));
+    print_config_field("encoder:", &encoder_display(&c.encoder));
+    print_config_field("sink:", &sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -248,47 +232,27 @@ fn print_logs_config(c: &LogScenarioConfig) {
 }
 
 /// Print the resolved config for a histogram scenario.
-fn print_histogram_config(c: &HistogramScenarioConfig) {
-    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
-    let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("{header} {bold_name}");
+fn print_histogram_config(c: &HistogramScenarioConfig, index: usize, total: usize) {
+    print_config_header(&c.name, index, total);
     eprintln!();
-    let label = format!("{:<14}", "name:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.name);
-    let label = format!("{:<14}", "signal:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} histogram");
-    let label = format!("{:<14}", "rate:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}/s", format_rate(c.rate));
-    let label = format!("{:<14}", "duration:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        c.duration.as_deref().unwrap_or("indefinite")
-    );
-    let label = format!("{:<14}", "buckets:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        match &c.buckets {
+    print_config_field("name:", &c.name);
+    print_config_field("signal:", "histogram");
+    print_config_field("rate:", &format!("{}/s", format_rate(c.rate)));
+    print_config_field("duration:", c.duration.as_deref().unwrap_or("indefinite"));
+    print_config_field(
+        "buckets:",
+        &match &c.buckets {
             Some(b) => format!("{:?}", b),
             None => "default (Prometheus)".to_string(),
-        }
+        },
     );
-    let label = format!("{:<14}", "distribution:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {:?}", c.distribution);
-    let label = format!("{:<14}", "obs/tick:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.observations_per_tick.unwrap_or(100));
-    let label = format!("{:<14}", "encoder:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", encoder_display(&c.encoder));
-    let label = format!("{:<14}", "sink:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", sink_display(&c.sink));
+    print_config_field("distribution:", &format!("{:?}", c.distribution));
+    print_config_field(
+        "obs/tick:",
+        &format!("{}", c.observations_per_tick.unwrap_or(100)),
+    );
+    print_config_field("encoder:", &encoder_display(&c.encoder));
+    print_config_field("sink:", &sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -301,47 +265,27 @@ fn print_histogram_config(c: &HistogramScenarioConfig) {
 }
 
 /// Print the resolved config for a summary scenario.
-fn print_summary_config(c: &SummaryScenarioConfig) {
-    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
-    let bold_name = c.name.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("{header} {bold_name}");
+fn print_summary_config(c: &SummaryScenarioConfig, index: usize, total: usize) {
+    print_config_header(&c.name, index, total);
     eprintln!();
-    let label = format!("{:<14}", "name:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.name);
-    let label = format!("{:<14}", "signal:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} summary");
-    let label = format!("{:<14}", "rate:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}/s", format_rate(c.rate));
-    let label = format!("{:<14}", "duration:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        c.duration.as_deref().unwrap_or("indefinite")
-    );
-    let label = format!("{:<14}", "quantiles:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!(
-        "  {label} {}",
-        match &c.quantiles {
+    print_config_field("name:", &c.name);
+    print_config_field("signal:", "summary");
+    print_config_field("rate:", &format!("{}/s", format_rate(c.rate)));
+    print_config_field("duration:", c.duration.as_deref().unwrap_or("indefinite"));
+    print_config_field(
+        "quantiles:",
+        &match &c.quantiles {
             Some(q) => format!("{:?}", q),
             None => "default [0.5, 0.9, 0.95, 0.99]".to_string(),
-        }
+        },
     );
-    let label = format!("{:<14}", "distribution:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {:?}", c.distribution);
-    let label = format!("{:<14}", "obs/tick:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", c.observations_per_tick.unwrap_or(100));
-    let label = format!("{:<14}", "encoder:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", encoder_display(&c.encoder));
-    let label = format!("{:<14}", "sink:");
-    let label = label.if_supports_color(Stderr, |t| t.bold());
-    eprintln!("  {label} {}", sink_display(&c.sink));
+    print_config_field("distribution:", &format!("{:?}", c.distribution));
+    print_config_field(
+        "obs/tick:",
+        &format!("{}", c.observations_per_tick.unwrap_or(100)),
+    );
+    print_config_field("encoder:", &encoder_display(&c.encoder));
+    print_config_field("sink:", &sink_display(&c.sink));
     print_labels_line(&c.labels);
     print_gaps_line(&c.gaps);
     print_bursts_line(&c.bursts);
@@ -351,6 +295,44 @@ fn print_summary_config(c: &SummaryScenarioConfig) {
     print_phase_offset_line(&c.phase_offset);
     print_clock_group_line(&c.clock_group);
     eprintln!();
+}
+
+/// Format a `[index/total]` position prefix for multi-scenario banners.
+///
+/// Returns a dimmed `[1/5] ` string when `total > 1`, or an empty string
+/// when there is only one scenario (or no position info).
+fn format_position_prefix(position: Option<(usize, usize)>) -> String {
+    match position {
+        Some((index, total)) if total > 1 => {
+            let tag = format!("[{index}/{total}]");
+            format!("{} ", tag.if_supports_color(Stderr, |t| t.dimmed()))
+        }
+        _ => String::new(),
+    }
+}
+
+/// Print the `[config]` header line for a scenario config block.
+///
+/// When `total > 1`, a numbering prefix is included: `[config] [1/5] name`.
+/// When `total == 1`, the format is `[config] name`.
+fn print_config_header(name: &str, index: usize, total: usize) {
+    let header = "[config]".if_supports_color(Stderr, |t| t.cyan());
+    let bold_name = name.if_supports_color(Stderr, |t| t.bold());
+    if total > 1 {
+        let numbering = format!("[{index}/{total}]");
+        let numbering = numbering.if_supports_color(Stderr, |t| t.dimmed());
+        eprintln!("{header} {numbering} {bold_name}");
+    } else {
+        eprintln!("{header} {bold_name}");
+    }
+}
+
+/// Print a single config field line: bold label, cyan value.
+fn print_config_field(field_label: &str, value: &str) {
+    let label = format!("{:<14}", field_label);
+    let label = label.if_supports_color(Stderr, |t| t.bold());
+    let colored_value = value.if_supports_color(Stderr, |t| t.cyan());
+    eprintln!("  {label} {colored_value}");
 }
 
 /// Print the labels line if labels are present and non-empty.
@@ -510,13 +492,33 @@ pub fn version_string() -> String {
     }
 }
 
-/// Print a version line to stderr.
+/// Print a styled product header to stderr.
 ///
-/// Displays the crate version and any enabled optional features (e.g.
-/// `"sonda 0.10.0 (http, kafka)"`). Called when verbosity is
-/// [`Verbosity::Verbose`], before printing the config.
+/// Displays the crate name in bold cyan, version in plain text, and a dimmed
+/// tagline: `sonda 0.11.0 -- synthetic telemetry generator`. Called when
+/// verbosity is [`Verbosity::Verbose`], before printing the config.
+///
+/// The plain-text version string (from [`version_string`]) is embedded in
+/// the styled output so that integration tests can assert on
+/// `"sonda {version}"`.
 pub fn print_version() {
-    eprintln!("{}", version_string());
+    let vs = version_string();
+    let version = env!("CARGO_PKG_VERSION");
+    let style = owo_colors::Style::new().bold().cyan();
+    let name = "sonda".if_supports_color(Stderr, |t| t.style(style));
+    let dash = "\u{2014}".if_supports_color(Stderr, |t| t.dimmed());
+    let tagline = "synthetic telemetry generator".if_supports_color(Stderr, |t| t.dimmed());
+
+    // If features are enabled, show them after the version.
+    let prefix_len = format!("sonda {version}").len();
+    let features_suffix = if vs.len() > prefix_len {
+        // Extract the features part from version_string (e.g. " (http, kafka)")
+        &vs[prefix_len..]
+    } else {
+        ""
+    };
+
+    eprintln!("{name} {version}{features_suffix} {dash} {tagline}");
 }
 
 /// Print a styled header line for the `scenarios show` subcommand to stderr.
@@ -1326,38 +1328,38 @@ mod tests {
     fn print_start_quiet_mode_does_not_panic_for_metrics() {
         let entry = make_metrics_entry();
         // Should return immediately without writing anything.
-        print_start(&entry, Verbosity::Quiet);
+        print_start(&entry, Verbosity::Quiet, None);
     }
 
     #[test]
     fn print_start_quiet_mode_does_not_panic_for_logs() {
         let entry = make_logs_entry();
-        print_start(&entry, Verbosity::Quiet);
+        print_start(&entry, Verbosity::Quiet, None);
     }
 
     #[test]
     fn print_start_normal_mode_does_not_panic_for_metrics() {
         let entry = make_metrics_entry();
         // Output goes to stderr; we just verify no panic.
-        print_start(&entry, Verbosity::Normal);
+        print_start(&entry, Verbosity::Normal, None);
     }
 
     #[test]
     fn print_start_normal_mode_does_not_panic_for_logs() {
         let entry = make_logs_entry();
-        print_start(&entry, Verbosity::Normal);
+        print_start(&entry, Verbosity::Normal, None);
     }
 
     #[test]
     fn print_start_verbose_mode_does_not_panic_for_metrics() {
         let entry = make_metrics_entry();
-        print_start(&entry, Verbosity::Verbose);
+        print_start(&entry, Verbosity::Verbose, None);
     }
 
     #[test]
     fn print_start_verbose_mode_does_not_panic_for_logs() {
         let entry = make_logs_entry();
-        print_start(&entry, Verbosity::Verbose);
+        print_start(&entry, Verbosity::Verbose, None);
     }
 
     #[test]
@@ -1381,7 +1383,7 @@ mod tests {
             generator: GeneratorConfig::Constant { value: 0.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
         });
-        print_start(&entry, Verbosity::Normal);
+        print_start(&entry, Verbosity::Normal, None);
     }
 
     // -----------------------------------------------------------------------
@@ -1391,19 +1393,37 @@ mod tests {
     #[test]
     fn print_stop_quiet_mode_does_not_panic() {
         let stats = ScenarioStats::default();
-        print_stop("test", Duration::from_secs(5), &stats, Verbosity::Quiet);
+        print_stop(
+            "test",
+            Duration::from_secs(5),
+            &stats,
+            Verbosity::Quiet,
+            None,
+        );
     }
 
     #[test]
     fn print_stop_normal_mode_does_not_panic() {
         let stats = ScenarioStats::default();
-        print_stop("test", Duration::from_secs(5), &stats, Verbosity::Normal);
+        print_stop(
+            "test",
+            Duration::from_secs(5),
+            &stats,
+            Verbosity::Normal,
+            None,
+        );
     }
 
     #[test]
     fn print_stop_verbose_mode_does_not_panic() {
         let stats = ScenarioStats::default();
-        print_stop("test", Duration::from_secs(5), &stats, Verbosity::Verbose);
+        print_stop(
+            "test",
+            Duration::from_secs(5),
+            &stats,
+            Verbosity::Verbose,
+            None,
+        );
     }
 
     #[test]
@@ -1421,6 +1441,7 @@ mod tests {
             Duration::from_secs(10),
             &stats,
             Verbosity::Normal,
+            None,
         );
     }
 
@@ -1432,6 +1453,7 @@ mod tests {
             Duration::from_secs(0),
             &stats,
             Verbosity::Normal,
+            None,
         );
     }
 
@@ -1446,6 +1468,7 @@ mod tests {
             Duration::from_secs(60),
             &stats,
             Verbosity::Normal,
+            None,
         );
     }
 
@@ -1456,13 +1479,13 @@ mod tests {
     #[test]
     fn print_config_metrics_does_not_panic() {
         let entry = make_metrics_entry();
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     #[test]
     fn print_config_logs_does_not_panic() {
         let entry = make_logs_entry();
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     #[test]
@@ -1520,7 +1543,7 @@ mod tests {
             },
             encoder: EncoderConfig::PrometheusText { precision: Some(2) },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     #[test]
@@ -1551,7 +1574,7 @@ mod tests {
                 app_name: None,
             },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -1714,7 +1737,7 @@ mod tests {
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     #[test]
@@ -1745,7 +1768,7 @@ mod tests {
             },
             encoder: EncoderConfig::JsonLines { precision: None },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -1867,7 +1890,7 @@ mod tests {
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
     }
 
     #[test]
@@ -1905,6 +1928,88 @@ mod tests {
             },
             encoder: EncoderConfig::JsonLines { precision: None },
         });
-        print_config(&entry);
+        print_config(&entry, 1, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // format_position_prefix: output depends on total count
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_position_prefix_none_returns_empty() {
+        assert_eq!(format_position_prefix(None), "");
+    }
+
+    #[test]
+    fn format_position_prefix_single_scenario_returns_empty() {
+        assert_eq!(format_position_prefix(Some((1, 1))), "");
+    }
+
+    #[test]
+    fn format_position_prefix_multi_scenario_contains_index() {
+        let result = format_position_prefix(Some((2, 5)));
+        // The raw string should contain [2/5] regardless of ANSI coloring.
+        assert!(
+            result.contains("[2/5]"),
+            "position prefix for 2/5 must contain [2/5], got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn format_position_prefix_multi_scenario_ends_with_space() {
+        let result = format_position_prefix(Some((1, 3)));
+        assert!(
+            result.ends_with(' '),
+            "position prefix must end with a space, got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // print_config: multi-scenario numbering does not panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_config_multi_scenario_numbering_does_not_panic() {
+        let entry = make_metrics_entry();
+        // Simulate second of three scenarios.
+        print_config(&entry, 2, 3);
+    }
+
+    #[test]
+    fn print_config_first_of_multi_does_not_print_separator() {
+        let entry = make_metrics_entry();
+        // First entry: no separator expected (no panic).
+        print_config(&entry, 1, 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // print_start / print_stop with position: does not panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_start_with_position_does_not_panic() {
+        let entry = make_metrics_entry();
+        print_start(&entry, Verbosity::Normal, Some((1, 3)));
+    }
+
+    #[test]
+    fn print_stop_with_position_does_not_panic() {
+        let stats = ScenarioStats::default();
+        print_stop(
+            "test",
+            Duration::from_secs(5),
+            &stats,
+            Verbosity::Normal,
+            Some((2, 3)),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // print_version: styled header does not panic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn print_version_styled_does_not_panic() {
+        print_version();
     }
 }

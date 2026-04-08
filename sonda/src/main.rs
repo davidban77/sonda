@@ -66,7 +66,7 @@ fn run() -> anyhow::Result<()> {
             if prepared.len() == 1 {
                 // Single scenario — original code path.
                 let p = prepared.into_iter().next().expect("len checked above");
-                status::print_start(&p.entry, verbosity);
+                status::print_start(&p.entry, verbosity, None);
                 let mut handle = sonda_core::launch_scenario(
                     "cli-metrics".to_string(),
                     p.entry,
@@ -80,6 +80,7 @@ fn run() -> anyhow::Result<()> {
                     handle.elapsed(),
                     &handle.stats_snapshot(),
                     verbosity,
+                    None,
                 );
                 join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
             } else {
@@ -99,7 +100,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity);
+            status::print_start(&p.entry, verbosity, None);
             let mut handle = sonda_core::launch_scenario(
                 "cli-logs".to_string(),
                 p.entry,
@@ -113,6 +114,7 @@ fn run() -> anyhow::Result<()> {
                 handle.elapsed(),
                 &handle.stats_snapshot(),
                 verbosity,
+                None,
             );
             join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -128,7 +130,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity);
+            status::print_start(&p.entry, verbosity, None);
             let mut handle = sonda_core::launch_scenario(
                 "cli-histogram".to_string(),
                 p.entry,
@@ -142,6 +144,7 @@ fn run() -> anyhow::Result<()> {
                 handle.elapsed(),
                 &handle.stats_snapshot(),
                 verbosity,
+                None,
             );
             join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -157,7 +160,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity);
+            status::print_start(&p.entry, verbosity, None);
             let mut handle = sonda_core::launch_scenario(
                 "cli-summary".to_string(),
                 p.entry,
@@ -171,6 +174,7 @@ fn run() -> anyhow::Result<()> {
                 handle.elapsed(),
                 &handle.stats_snapshot(),
                 verbosity,
+                None,
             );
             join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
         }
@@ -254,21 +258,37 @@ fn run_scenarios_command(
                 let header_desc = "DESCRIPTION".if_supports_color(Stdout, |t| t.bold());
                 println!("{header_name} {header_cat} {header_sig} {header_desc}");
                 for s in &items {
-                    println!(
-                        "{:<28} {:<18} {:<12} {}",
-                        s.name, s.category, s.signal_type, s.description
-                    );
+                    let cat_padded = format!("{:<18}", s.category);
+                    let cat_styled = cat_padded.if_supports_color(Stdout, |t| t.dimmed());
+                    let sig_padded = format!("{:<12}", s.signal_type);
+                    let sig_styled = sig_padded.if_supports_color(Stdout, |t| t.cyan());
+                    println!("{:<28} {cat_styled} {sig_styled} {}", s.name, s.description);
                 }
+                // Footer: scenario count.
+                let count = items.len();
+                let noun = if count == 1 { "scenario" } else { "scenarios" };
+                let footer = match list_args.category {
+                    Some(ref cat) => format!("{count} {noun} in category \"{cat}\""),
+                    None => format!("{count} {noun}"),
+                };
+                let footer = footer.if_supports_color(Stdout, |t| t.dimmed());
+                println!("{footer}");
             }
         }
         ScenariosAction::Show(ref show_args) => {
             let scenario = scenarios::get(&show_args.name).ok_or_else(|| {
                 let names = scenarios::available_names();
-                anyhow::anyhow!(
+                let suggestion = find_closest_name(&show_args.name, &names);
+                let base_msg = format!(
                     "unknown scenario {:?}; available scenarios: {}",
                     show_args.name,
                     names.join(", ")
-                )
+                );
+                if let Some(closest) = suggestion {
+                    anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+                } else {
+                    anyhow::anyhow!("{}", base_msg)
+                }
             })?;
             status::print_show_header(scenario.name, scenario.category, scenario.signal_type);
             let yaml = scenarios::get_yaml(&show_args.name)
@@ -294,11 +314,17 @@ fn run_builtin_scenario(
 
     let scenario = scenarios::get(&args.name).ok_or_else(|| {
         let names = scenarios::available_names();
-        anyhow::anyhow!(
+        let suggestion = find_closest_name(&args.name, &names);
+        let base_msg = format!(
             "unknown scenario {:?}; available scenarios: {}",
             args.name,
             names.join(", ")
-        )
+        );
+        if let Some(closest) = suggestion {
+            anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+        } else {
+            anyhow::anyhow!("{}", base_msg)
+        }
     })?;
 
     let entries = config::parse_builtin_scenario(scenario, args)?;
@@ -311,7 +337,7 @@ fn run_builtin_scenario(
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
-        status::print_start(&p.entry, verbosity);
+        status::print_start(&p.entry, verbosity, None);
         let mut handle = sonda_core::launch_scenario(
             format!("builtin-{}", args.name),
             p.entry,
@@ -325,6 +351,7 @@ fn run_builtin_scenario(
             handle.elapsed(),
             &handle.stats_snapshot(),
             verbosity,
+            None,
         );
         join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
@@ -347,17 +374,19 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
         status::print_version();
     }
 
+    let total = prepared.len();
+
     if dry_run {
-        for p in prepared {
-            status::print_config(&p.entry);
+        for (i, p) in prepared.iter().enumerate() {
+            status::print_config(&p.entry, i + 1, total);
         }
-        status::print_dry_run_ok(prepared.len());
+        status::print_dry_run_ok(total);
         return true;
     }
 
     if verbosity == Verbosity::Verbose {
-        for p in prepared {
-            status::print_config(&p.entry);
+        for (i, p) in prepared.iter().enumerate() {
+            status::print_config(&p.entry, i + 1, total);
         }
     }
 
@@ -365,11 +394,12 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
 }
 
 /// Launch multiple prepared scenarios concurrently, join them, print
-/// per-scenario stop banners, print an aggregate summary, and return an error
-/// if any failed.
+/// per-scenario stop banners in launch order, print an aggregate summary,
+/// and return an error if any failed.
 ///
 /// Each entry is launched via `sonda_core::launch_scenario` with its
-/// pre-resolved `start_delay` from [`PreparedEntry`].
+/// pre-resolved `start_delay` from [`PreparedEntry`]. Stop banners are
+/// collected and printed in launch order after all scenarios complete.
 fn launch_and_join_prepared(
     id_prefix: &str,
     prepared: Vec<PreparedEntry>,
@@ -377,31 +407,52 @@ fn launch_and_join_prepared(
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
     let run_start = Instant::now();
-    let mut handles = Vec::with_capacity(prepared.len());
+    let scenario_count = prepared.len();
+    let mut handles = Vec::with_capacity(scenario_count);
 
     for (i, p) in prepared.into_iter().enumerate() {
-        status::print_start(&p.entry, verbosity);
+        let position = Some((i + 1, scenario_count));
+        status::print_start(&p.entry, verbosity, position);
         let id = format!("{id_prefix}-{i}");
         let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
 
+    // Collect results from all handles first, preserving launch order.
     let mut errors: Vec<String> = Vec::new();
     let mut total_events: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut total_errors: u64 = 0;
-    let scenario_count = handles.len();
+
+    struct StopInfo {
+        name: String,
+        elapsed: std::time::Duration,
+        stats: sonda_core::schedule::stats::ScenarioStats,
+    }
+
+    let mut stop_infos: Vec<StopInfo> = Vec::with_capacity(scenario_count);
 
     for mut handle in handles {
         if let Err(e) = handle.join(None) {
             errors.push(e.to_string());
         }
         let stats = handle.stats_snapshot();
-        status::print_stop(&handle.name, handle.elapsed(), &stats, verbosity);
-        total_events += stats.total_events;
-        total_bytes += stats.bytes_emitted;
-        total_errors += stats.errors;
+        let info = StopInfo {
+            name: handle.name.clone(),
+            elapsed: handle.elapsed(),
+            stats,
+        };
+        total_events += info.stats.total_events;
+        total_bytes += info.stats.bytes_emitted;
+        total_errors += info.stats.errors;
+        stop_infos.push(info);
+    }
+
+    // Print stop banners in launch order.
+    for (i, info) in stop_infos.iter().enumerate() {
+        let position = Some((i + 1, scenario_count));
+        status::print_stop(&info.name, info.elapsed, &info.stats, verbosity, position);
     }
 
     let total_elapsed = run_start.elapsed();
@@ -418,4 +469,155 @@ fn launch_and_join_prepared(
     }
 
     Ok(())
+}
+
+/// Find the closest matching name from a list of candidates.
+///
+/// Uses simple Levenshtein edit distance. Returns `Some(name)` if the best
+/// match has an edit distance of 3 or less, or if the query is a substring
+/// of a candidate (or vice versa). Returns `None` if no close match is found.
+fn find_closest_name<'a>(query: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let query_lower = query.to_lowercase();
+
+    // First, try substring matching (skip very short queries to avoid false positives).
+    if query_lower.len() >= 3 {
+        for &name in candidates {
+            let name_lower = name.to_lowercase();
+            if name_lower.contains(&query_lower) || query_lower.contains(&name_lower) {
+                return Some(name);
+            }
+        }
+    }
+
+    // Fall back to edit distance.
+    let mut best: Option<(&str, usize)> = None;
+    for &name in candidates {
+        let dist = edit_distance(&query_lower, &name.to_lowercase());
+        match best {
+            Some((_, best_dist)) if dist < best_dist => best = Some((name, dist)),
+            None => best = Some((name, dist)),
+            _ => {}
+        }
+    }
+
+    best.filter(|(_, dist)| *dist <= 3).map(|(name, _)| name)
+}
+
+/// Compute the Levenshtein edit distance between two strings.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+
+    let mut prev = (0..=n).collect::<Vec<_>>();
+    let mut curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // edit_distance: correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn edit_distance_identical_strings() {
+        assert_eq!(edit_distance("abc", "abc"), 0);
+    }
+
+    #[test]
+    fn edit_distance_empty_strings() {
+        assert_eq!(edit_distance("", ""), 0);
+    }
+
+    #[test]
+    fn edit_distance_one_empty() {
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    #[test]
+    fn edit_distance_single_substitution() {
+        assert_eq!(edit_distance("cat", "bat"), 1);
+    }
+
+    #[test]
+    fn edit_distance_single_insertion() {
+        assert_eq!(edit_distance("abc", "abcd"), 1);
+    }
+
+    #[test]
+    fn edit_distance_single_deletion() {
+        assert_eq!(edit_distance("abcd", "abc"), 1);
+    }
+
+    #[test]
+    fn edit_distance_completely_different() {
+        assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // find_closest_name: suggestions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn find_closest_name_exact_match() {
+        let candidates = vec!["cpu-spike", "memory-leak", "disk-full"];
+        assert_eq!(
+            find_closest_name("cpu-spike", &candidates),
+            Some("cpu-spike")
+        );
+    }
+
+    #[test]
+    fn find_closest_name_substring_match() {
+        let candidates = vec!["cpu-spike", "memory-leak", "disk-full"];
+        assert_eq!(find_closest_name("cpu", &candidates), Some("cpu-spike"));
+    }
+
+    #[test]
+    fn find_closest_name_close_typo() {
+        let candidates = vec!["cpu-spike", "memory-leak", "disk-full"];
+        // "cpu-spke" is 1 edit away from "cpu-spike"
+        assert_eq!(
+            find_closest_name("cpu-spke", &candidates),
+            Some("cpu-spike")
+        );
+    }
+
+    #[test]
+    fn find_closest_name_no_close_match() {
+        let candidates = vec!["cpu-spike", "memory-leak"];
+        // "zzzzzzzzz" is too far from anything
+        assert_eq!(find_closest_name("zzzzzzzzz", &candidates), None);
+    }
+
+    #[test]
+    fn find_closest_name_empty_candidates() {
+        let candidates: Vec<&str> = vec![];
+        assert_eq!(find_closest_name("cpu-spike", &candidates), None);
+    }
+
+    #[test]
+    fn find_closest_name_case_insensitive_substring() {
+        let candidates = vec!["cpu-spike", "memory-leak"];
+        assert_eq!(find_closest_name("CPU", &candidates), Some("cpu-spike"));
+    }
 }
