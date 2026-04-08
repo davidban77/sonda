@@ -1108,6 +1108,57 @@ mod tests {
 
     #[cfg(feature = "config")]
     #[test]
+    fn override_applies_to_all_duplicate_metric_names_in_node_cpu() {
+        let pack_entry = get("node_exporter_cpu").expect("must exist");
+        let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
+
+        // All 8 metrics share the name "node_cpu_seconds_total".
+        assert_eq!(def.metrics.len(), 8);
+        for spec in &def.metrics {
+            assert_eq!(spec.name, "node_cpu_seconds_total");
+        }
+
+        // Apply an override for that shared name — it should hit all 8.
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "node_cpu_seconds_total".to_string(),
+            MetricOverride {
+                generator: Some(GeneratorConfig::Constant { value: 99.0 }),
+                labels: None,
+            },
+        );
+
+        let config = PackScenarioConfig {
+            pack: "node_exporter_cpu".to_string(),
+            rate: 1.0,
+            duration: Some("10s".to_string()),
+            labels: None,
+            sink: SinkConfig::Stdout,
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            overrides: Some(overrides),
+        };
+
+        let entries = expand_pack(&def, &config).expect("must succeed");
+        assert_eq!(entries.len(), 8, "must still produce 8 entries");
+
+        // Every entry must have the overridden generator.
+        for (i, entry) in entries.iter().enumerate() {
+            match entry {
+                ScenarioEntry::Metrics(c) => {
+                    assert!(
+                        matches!(c.generator, GeneratorConfig::Constant { value } if (value - 99.0).abs() < f64::EPSILON),
+                        "entry {} must have overridden generator constant(99.0), got {:?}",
+                        i,
+                        c.generator
+                    );
+                }
+                _ => panic!("entry {} must be Metrics", i),
+            }
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
     fn expand_builtin_node_memory_produces_five_entries() {
         let pack_entry = get("node_exporter_memory").expect("must exist");
         let def: MetricPackDef = serde_yaml_ng::from_str(pack_entry.yaml).expect("must parse");
