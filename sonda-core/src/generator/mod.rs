@@ -265,7 +265,16 @@ pub enum GeneratorConfig {
     ///
     /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with
     /// `min = baseline`, `max = ceiling`, `period_secs` derived from
-    /// `time_to_saturate`.
+    /// `time_to_saturate`. The sawtooth resets to `baseline` after each
+    /// `time_to_saturate` period, modeling a resource that fills and is
+    /// periodically reclaimed.
+    ///
+    /// # Distinction from `Leak`
+    ///
+    /// - **Saturation**: repeating fill-and-reset cycle. Default period is
+    ///   `"5m"`.
+    /// - **Leak**: one-way ramp, no reset expected within the scenario
+    ///   duration. Default period is `"10m"`.
     ///
     /// # Example YAML
     ///
@@ -292,8 +301,20 @@ pub enum GeneratorConfig {
     /// Resource growing toward a ceiling without resetting — a one-way ramp
     /// modeling a memory leak or similar resource exhaustion.
     ///
-    /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator with a
-    /// long period so that values only ramp upward within the scenario duration.
+    /// Desugars into a [`Sawtooth`](GeneratorConfig::Sawtooth) generator.
+    /// The intent is that `time_to_ceiling` equals or exceeds the scenario
+    /// `duration` so values only ramp upward and never reset within the run.
+    /// If the scenario has a `duration` set and `time_to_ceiling` is shorter
+    /// than that duration, desugaring returns a config error because the
+    /// sawtooth would reset mid-run, which is the
+    /// [`Saturation`](GeneratorConfig::Saturation) pattern instead.
+    ///
+    /// # Distinction from `Saturation`
+    ///
+    /// - **Leak**: one-way ramp, no reset expected. `time_to_ceiling` should
+    ///   be >= scenario `duration`. Default period is `"10m"`.
+    /// - **Saturation**: repeating fill-and-reset cycle. Default period is
+    ///   `"5m"`.
     ///
     /// # Example YAML
     ///
@@ -532,7 +553,7 @@ pub fn create_generator(
         | GeneratorConfig::Steady { .. }
         | GeneratorConfig::SpikeEvent { .. } => Err(SondaError::Config(ConfigError::invalid(
             "operational alias generator must be desugared via \
-             desugar_generator_aliases() before calling create_generator()",
+             desugar_entry() or desugar_scenario_config() before calling create_generator()",
         ))),
     }
 }

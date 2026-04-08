@@ -1,10 +1,10 @@
 //! Operational vocabulary aliases for generator types.
 //!
-//! This module provides [`desugar_generator_aliases`], which transforms
-//! high-level operational aliases (e.g. `flap`, `steady`, `leak`) into
-//! their underlying [`GeneratorConfig`] variants. The desugaring happens
-//! at config expansion time — the runtime and generator factory never see
-//! alias variants.
+//! This module provides [`desugar_entry`] and [`desugar_scenario_config`],
+//! which transform high-level operational aliases (e.g. `flap`, `steady`,
+//! `leak`) into their underlying [`GeneratorConfig`] variants. The
+//! desugaring happens at config expansion time — the runtime and generator
+//! factory never see alias variants.
 //!
 //! Aliases that imply jitter (`steady`, `degradation`) set the `jitter` and
 //! `jitter_seed` fields on the scenario's [`BaseScheduleConfig`]. This is
@@ -85,7 +85,13 @@ pub fn desugar_scenario_config(config: &mut ScenarioConfig) -> Result<(), SondaE
                 )));
             }
 
-            let mut values = Vec::with_capacity(up_ticks + down_ticks);
+            // Clamp each phase to at least 1 tick so both the up and down
+            // states are always represented in the sequence. Without this,
+            // a very short duration at a low rate could round to 0 ticks,
+            // causing one state to vanish entirely from the cycle. The
+            // guard above already rejects the case where *both* round to
+            // zero; this `.max(1)` handles the case where only one does.
+            let mut values = Vec::with_capacity(up_ticks.max(1) + down_ticks.max(1));
             values.extend(std::iter::repeat_n(up_val, up_ticks.max(1)));
             values.extend(std::iter::repeat_n(down_val, down_ticks.max(1)));
 
@@ -119,6 +125,24 @@ pub fn desugar_scenario_config(config: &mut ScenarioConfig) -> Result<(), SondaE
             let max = ceiling.unwrap_or(100.0);
             let dur = time_to_ceiling.as_deref().unwrap_or("10m");
             let period_secs = duration_to_secs(dur)?;
+
+            // Validate that time_to_ceiling is at least as long as the
+            // scenario duration. If the scenario runs longer than the
+            // ramp period, the underlying sawtooth will reset and values
+            // will start climbing again — that is the saturation pattern,
+            // not a leak. Catching this early prevents subtle behavioral
+            // mismatches.
+            if let Some(ref scenario_dur) = config.base.duration {
+                let scenario_secs = duration_to_secs(scenario_dur)?;
+                if period_secs < scenario_secs {
+                    return Err(SondaError::Config(ConfigError::invalid(format!(
+                        "leak: time_to_ceiling ({dur}) is shorter than scenario duration \
+                         ({scenario_dur}); the sawtooth would reset mid-run. \
+                         Use 'saturation' instead for repeating fill-and-reset cycles, \
+                         or increase time_to_ceiling to >= duration"
+                    ))));
+                }
+            }
 
             config.generator = GeneratorConfig::Sawtooth {
                 min,
@@ -755,5 +779,140 @@ generator:
             msg.contains("desugar"),
             "error must mention desugaring, got: {msg}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge case: flap with very low rate rounds one tick count to zero
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flap_low_rate_inflates_zero_ticks_to_one() {
+        // rate=0.05 means 1 tick every 20s. up_duration="1s" rounds to
+        // 0.05 ticks -> 0. The `.max(1)` clamp ensures the up phase still
+        // gets exactly 1 tick, so both states are represented.
+        let yaml = r#"
+name: test_flap_low_rate
+rate: 0.05
+generator:
+  type: flap
+  up_duration: "1s"
+  down_duration: "60s"
+  up_value: 1.0
+  down_value: 0.0
+"#;
+        let mut config = parse_scenario(yaml);
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sequence { values, repeat } => {
+                // up_ticks = round(1 * 0.05) = 0, clamped to 1
+                // down_ticks = round(60 * 0.05) = 3
+                assert_eq!(values.len(), 4, "1 up tick (clamped) + 3 down ticks");
+                assert_eq!(values[0], 1.0, "first tick must be up_value");
+                assert!(
+                    values[1..].iter().all(|v| *v == 0.0),
+                    "remaining ticks must be down_value"
+                );
+                assert_eq!(*repeat, Some(true));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge case: desugar_entry with non-alias metrics passes through
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn desugar_entry_passes_non_alias_metrics_unchanged() {
+        let yaml = r#"
+signal_type: metrics
+name: test_const
+rate: 1
+generator:
+  type: constant
+  value: 42.0
+"#;
+        let entry: ScenarioEntry = serde_yaml_ng::from_str(yaml).expect("must parse");
+        let result = desugar_entry(entry).expect("must succeed");
+        match result {
+            ScenarioEntry::Metrics(config) => {
+                assert!(
+                    matches!(config.generator, GeneratorConfig::Constant { value } if value == 42.0),
+                    "constant generator must pass through unchanged"
+                );
+            }
+            other => panic!("expected Metrics entry, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Leak validation: time_to_ceiling < duration is rejected
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn leak_rejects_time_to_ceiling_shorter_than_duration() {
+        let yaml = r#"
+name: test_leak_short
+rate: 1
+duration: "10m"
+generator:
+  type: leak
+  time_to_ceiling: "2m"
+"#;
+        let mut config = parse_scenario(yaml);
+        let result = desugar_scenario_config(&mut config);
+        assert!(
+            result.is_err(),
+            "leak with time_to_ceiling < duration must fail"
+        );
+        let msg = format!("{}", result.err().expect("checked"));
+        assert!(
+            msg.contains("saturation"),
+            "error must suggest using saturation, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn leak_accepts_time_to_ceiling_equal_to_duration() {
+        let yaml = r#"
+name: test_leak_equal
+rate: 1
+duration: "10m"
+generator:
+  type: leak
+  time_to_ceiling: "10m"
+"#;
+        let mut config = parse_scenario(yaml);
+        desugar_scenario_config(&mut config).expect("time_to_ceiling == duration must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sawtooth { period_secs, .. } => {
+                assert_eq!(*period_secs, 600.0);
+            }
+            other => panic!("expected Sawtooth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leak_accepts_when_no_duration_set() {
+        // When no scenario duration is configured, the leak validation
+        // cannot compare periods, so it must pass unconditionally.
+        let yaml = r#"
+name: test_leak_no_duration
+rate: 1
+generator:
+  type: leak
+  time_to_ceiling: "30s"
+"#;
+        let mut config = parse_scenario(yaml);
+        desugar_scenario_config(&mut config).expect("leak without duration must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sawtooth { period_secs, .. } => {
+                assert_eq!(*period_secs, 30.0);
+            }
+            other => panic!("expected Sawtooth, got {other:?}"),
+        }
     }
 }

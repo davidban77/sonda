@@ -22,6 +22,19 @@ use crate::schedule::summary_runner::run_with_sink as run_summary_with_sink;
 use crate::sink::create_sink;
 use crate::{ConfigError, RuntimeError, SondaError};
 
+/// Extract the inner message from a [`SondaError`] for re-wrapping.
+///
+/// When the error is [`SondaError::Config`], extracts the inner
+/// [`ConfigError`] message to avoid duplicating the "configuration error:"
+/// prefix that `SondaError::Config`'s `Display` adds. For other variants,
+/// falls back to the full `Display` representation.
+fn inner_error_message(err: &SondaError) -> String {
+    match err {
+        SondaError::Config(config_err) => format!("{config_err}"),
+        other => format!("{other}"),
+    }
+}
+
 /// Validate any scenario entry (metrics, logs, histogram, or summary).
 ///
 /// Dispatches to the appropriate validator based on the entry variant. This
@@ -83,8 +96,12 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
     // index the caller provided rather than the post-expansion position.
     let mut expanded: Vec<(usize, ScenarioEntry)> = Vec::new();
     for (i, entry) in entries.into_iter().enumerate() {
-        let batch = expand_entry(entry)
-            .map_err(|e| SondaError::Config(ConfigError::invalid(format!("scenario[{i}]: {e}"))))?;
+        let batch = expand_entry(entry).map_err(|e| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "scenario[{i}]: {}",
+                inner_error_message(&e)
+            )))
+        })?;
         for entry in batch {
             expanded.push((i, entry));
         }
@@ -98,7 +115,10 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
         .into_iter()
         .map(|(idx, entry)| {
             let desugared = desugar_entry(entry).map_err(|e| {
-                SondaError::Config(ConfigError::invalid(format!("scenario[{idx}]: {e}")))
+                SondaError::Config(ConfigError::invalid(format!(
+                    "scenario[{idx}]: desugaring failed: {}",
+                    inner_error_message(&e)
+                )))
             })?;
             Ok((idx, desugared))
         })
@@ -108,13 +128,17 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
     let mut prepared = Vec::with_capacity(expanded.len());
     for (orig_idx, entry) in expanded {
         validate_entry(&entry).map_err(|e| {
-            SondaError::Config(ConfigError::invalid(format!("scenario[{orig_idx}]: {e}")))
+            SondaError::Config(ConfigError::invalid(format!(
+                "scenario[{orig_idx}]: {}",
+                inner_error_message(&e)
+            )))
         })?;
 
         let start_delay = match entry.phase_offset() {
             Some(offset) => crate::config::validate::parse_phase_offset(offset).map_err(|e| {
                 SondaError::Config(ConfigError::invalid(format!(
-                    "scenario[{orig_idx}] phase_offset: {e}"
+                    "scenario[{orig_idx}] phase_offset: {}",
+                    inner_error_message(&e)
                 )))
             })?,
             None => None,
