@@ -1,7 +1,23 @@
 # Built-in Scenarios
 
-Sonda ships with 11 curated scenario patterns embedded in the binary. You can discover, inspect,
-and run common observability patterns without writing any YAML.
+Sonda ships with 11 curated scenario patterns you can discover, inspect, and run without writing
+any YAML. Scenario YAML files live on the filesystem and are loaded at runtime through a
+configurable search path.
+
+## Scenario search path
+
+Sonda discovers scenario YAML files from the filesystem via a search path:
+
+1. **`--scenario-path <dir>`** CLI flag -- when present, only this directory is searched.
+2. **`SONDA_SCENARIO_PATH`** env var -- colon-separated list of directories.
+3. **`./scenarios/`** relative to the current working directory.
+4. **`~/.sonda/scenarios/`** in the user's home directory.
+
+Non-existent directories are silently skipped. If the same scenario name appears in multiple
+directories, the first match wins (highest-priority path).
+
+When running from the repo root, the included `scenarios/` directory is found automatically.
+For Docker, the `SONDA_SCENARIO_PATH` env var is set to `/scenarios` in the image.
 
 ## Browse the catalog
 
@@ -91,7 +107,7 @@ sonda scenarios run cpu-spike --sink http_push --endpoint http://localhost:9090/
 
 ## Inspect the YAML
 
-Every built-in scenario is a standard YAML file. View it with `sonda scenarios show`:
+Every built-in scenario is a standard YAML file on disk. View it with `sonda scenarios show`:
 
 ```bash
 sonda scenarios show cpu-spike
@@ -105,6 +121,11 @@ sonda scenarios show cpu-spike
 # on sustained high CPU usage.
 #
 # Pattern: baseline ~35% with periodic spikes to ~95%.
+
+scenario_name: cpu-spike
+category: infrastructure
+signal_type: metrics
+description: "Periodic CPU usage spikes above threshold"
 
 name: node_cpu_usage_percent
 rate: 1
@@ -172,12 +193,12 @@ pointing to a file on disk, prefix the scenario name with `@` to load a built-in
     ```
 
 The `@name` shorthand works exactly like a file path -- CLI flags still override values in the
-embedded YAML. For example, `--duration 10s` overrides whatever duration the built-in defines.
+scenario YAML. For example, `--duration 10s` overrides whatever duration the built-in defines.
 
 !!! info
     The `@name` shorthand is an alternative to `sonda scenarios run`. Both resolve the same
-    embedded YAML. Use `scenarios run` when you want purpose-built override flags
-    (`--sink`, `--encoder`, `--endpoint`). Use `@name` when you want the full set of flags
+    scenario YAML from the search path. Use `scenarios run` when you want purpose-built override
+    flags (`--sink`, `--encoder`, `--endpoint`). Use `@name` when you want the full set of flags
     available on `metrics`, `logs`, or `histogram`.
 
 ## Scenario catalog
@@ -212,6 +233,53 @@ embedded YAML. For example, `--duration 10s` overrides whatever duration the bui
 | Name | Signal | Generator | What it models |
 |------|--------|-----------|----------------|
 | `cardinality-explosion` | metrics | sine + cardinality spike | 500 unique pod labels injected for 20s every 60s. Tests TSDB cardinality limits. |
+
+## Custom scenarios
+
+You can add your own scenario YAML files to any directory on the search path. For example,
+create `~/.sonda/scenarios/my-scenario.yaml` and it will be discovered automatically:
+
+```bash
+sonda scenarios list                        # shows your custom scenario
+sonda scenarios run my-scenario             # run it by name
+sonda metrics --scenario @my-scenario       # @name shorthand works too
+```
+
+Or use `--scenario-path` to point to a custom directory:
+
+```bash
+sonda --scenario-path ./my-scenarios scenarios list
+```
+
+Custom scenario files use the same YAML format as any scenario file. The only addition is
+metadata fields at the top for catalog display:
+
+```yaml title="~/.sonda/scenarios/my-scenario.yaml"
+scenario_name: my-scenario
+category: application
+signal_type: metrics
+description: "My custom scenario pattern"
+
+name: my_metric
+rate: 1
+duration: 30s
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 50.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `scenario_name` | yes | Kebab-case identifier used with `scenarios run` and `@name` |
+| `category` | yes | Grouping for `--category` filter |
+| `signal_type` | yes | Signal type: `metrics`, `logs`, `histogram`, `multi` |
+| `description` | yes | One-line description shown in `scenarios list` |
 
 ## What next
 

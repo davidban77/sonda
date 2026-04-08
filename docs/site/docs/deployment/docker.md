@@ -42,6 +42,11 @@ docker run --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
 docker run -p 8080:8080 -v ./examples:/scenarios ghcr.io/davidban77/sonda:latest
 ```
 
+The image includes built-in [scenario](../guides/scenarios.md) and
+[pack](../guides/metric-packs.md) YAML files at `/scenarios` and `/packs`, with
+`SONDA_SCENARIO_PATH=/scenarios` and `SONDA_PACK_PATH=/packs` set so all built-in patterns
+work out of the box. Mount a host directory to the same path to add or override scenarios.
+
 ## Authentication
 
 You can protect the server's `/scenarios/*` endpoints with API key authentication.
