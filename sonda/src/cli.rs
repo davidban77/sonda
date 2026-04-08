@@ -171,50 +171,50 @@ pub struct MetricsArgs {
     /// Accepted values: `constant`, `uniform`, `sine`, `sawtooth`.
     /// Defaults to `constant` when no scenario file is provided and this
     /// flag is omitted.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub value_mode: Option<String>,
 
     /// Sine wave amplitude (half the peak-to-peak swing).
     ///
     /// Used when `--value-mode sine`. Default: `1.0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub amplitude: Option<f64>,
 
     /// Sine wave or sawtooth period in seconds.
     ///
     /// Used when `--value-mode sine` or `--value-mode sawtooth`. Default: `60.0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub period_secs: Option<f64>,
 
     /// Fixed value emitted by the `constant` generator.
     ///
     /// Only valid when `--value-mode` is `constant` (the default).
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub value: Option<f64>,
 
     /// Sine wave vertical offset.
     ///
     /// Sets the midpoint around which the wave oscillates. Used when
     /// `--value-mode sine`. Default: `0.0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub offset: Option<f64>,
 
     /// Minimum value for the `uniform` generator.
     ///
     /// Used when `--value-mode uniform`. Default: `0.0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub min: Option<f64>,
 
     /// Maximum value for the `uniform` generator.
     ///
     /// Used when `--value-mode uniform`. Default: `1.0`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub max: Option<f64>,
 
     /// RNG seed for the `uniform` generator (enables deterministic replay).
     ///
     /// When absent a seed of `0` is used.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub seed: Option<u64>,
 
     /// Gap recurrence interval (e.g. `"2m"`).
@@ -222,13 +222,13 @@ pub struct MetricsArgs {
     /// Together with `--gap-for`, this defines a recurring silent period:
     /// no events are emitted for `--gap-for` out of every `--gap-every` cycle.
     /// Both `--gap-every` and `--gap-for` must be provided together.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub gap_every: Option<String>,
 
     /// Gap duration within each cycle (e.g. `"20s"`).
     ///
     /// Must be strictly less than `--gap-every`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub gap_for: Option<String>,
 
     /// Burst recurrence interval (e.g. `"10s"`).
@@ -237,19 +237,19 @@ pub struct MetricsArgs {
     /// recurring high-rate period: events are emitted at `rate * multiplier`
     /// for `--burst-for` out of every `--burst-every` cycle.
     /// All three `--burst-*` flags must be provided together.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_every: Option<String>,
 
     /// Burst duration within each cycle (e.g. `"1s"`).
     ///
     /// Must be strictly less than `--burst-every`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_for: Option<String>,
 
     /// Rate multiplier during each burst (must be strictly positive, e.g. `10.0`).
     ///
     /// Effective rate during burst = base rate × multiplier.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_multiplier: Option<f64>,
 
     /// Label key for a cardinality spike (e.g. `"pod_name"`).
@@ -257,44 +257,44 @@ pub struct MetricsArgs {
     /// Together with `--spike-every`, `--spike-for`, and `--spike-cardinality`,
     /// defines a recurring window that injects dynamic label values to simulate
     /// cardinality explosions. All four `--spike-*` flags must be provided together.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_label: Option<String>,
 
     /// Spike recurrence interval (e.g. `"2m"`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_every: Option<String>,
 
     /// Spike duration within each cycle (e.g. `"30s"`).
     ///
     /// Must be strictly less than `--spike-every`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_for: Option<String>,
 
     /// Number of unique label values during the spike.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_cardinality: Option<u64>,
 
     /// Spike strategy: `counter` or `random`. Default: `counter`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_strategy: Option<String>,
 
     /// Prefix for generated spike label values.
     ///
     /// Defaults to `"{spike_label}_"` when not specified.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_prefix: Option<String>,
 
     /// RNG seed for the `random` spike strategy.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_seed: Option<u64>,
 
     /// Optional jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to
     /// every generated value for more realistic output.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub jitter: Option<f64>,
 
     /// Optional seed for jitter noise. Defaults to `0` when absent.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub jitter_seed: Option<u64>,
 
     /// Static label attached to every emitted event (repeatable).
@@ -309,7 +309,7 @@ pub struct MetricsArgs {
     /// Accepted values: `prometheus_text`, `influx_lp`, `json_lines`. Default: `prometheus_text`.
     /// When omitted, the YAML scenario file's `encoder` field is used; when
     /// neither is set, `prometheus_text` is the default.
-    #[arg(long)]
+    #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
 
     /// Decimal precision for metric values (0--17).
@@ -317,7 +317,7 @@ pub struct MetricsArgs {
     /// Limits the number of decimal places in formatted metric values.
     /// When absent, full f64 precision is used. Applies to text-based
     /// encoders (`prometheus_text`, `influx_lp`, `json_lines`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Encoder")]
     pub precision: Option<u8>,
 
     /// Write output to a file at this path instead of stdout.
@@ -325,7 +325,7 @@ pub struct MetricsArgs {
     /// Shorthand for `sink: file` in a YAML scenario. Parent directories are
     /// created automatically if they do not exist. Takes precedence over any
     /// sink configured in the scenario file.
-    #[arg(long, conflicts_with = "sink")]
+    #[arg(long, conflicts_with = "sink", help_heading = "Sink")]
     pub output: Option<PathBuf>,
 
     /// Sink type for delivering encoded events.
@@ -333,45 +333,45 @@ pub struct MetricsArgs {
     /// Accepted values: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`.
     /// Mutually exclusive with `--output`. For OTLP, Kafka, and remote write sinks,
     /// the corresponding Cargo feature must be compiled in.
-    #[arg(long, conflicts_with = "output")]
+    #[arg(long, conflicts_with = "output", help_heading = "Sink")]
     pub sink: Option<String>,
 
     /// Endpoint URL for the selected sink.
     ///
     /// Required for `--sink http_push`, `--sink remote_write`, `--sink loki`,
     /// and `--sink otlp_grpc`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub endpoint: Option<String>,
 
     /// OTLP signal type: `metrics` or `logs`.
     ///
     /// Required for `--sink otlp_grpc` in the metrics subcommand (where the
     /// signal type is ambiguous). In the logs subcommand this defaults to `logs`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub signal_type: Option<String>,
 
     /// Batch size for batching sinks (number of entries or bytes, depending on sink).
     ///
     /// Optional for `http_push`, `remote_write`, `loki`, and `otlp_grpc`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub batch_size: Option<usize>,
 
     /// Content-Type header for the `http_push` sink.
     ///
     /// Optional; defaults to `application/octet-stream` when not specified.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub content_type: Option<String>,
 
     /// Comma-separated Kafka broker addresses (e.g. `127.0.0.1:9092`).
     ///
     /// Required for `--sink kafka`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub brokers: Option<String>,
 
     /// Kafka topic name.
     ///
     /// Required for `--sink kafka`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub topic: Option<String>,
 
     /// Maximum retry attempts after initial failure.
@@ -379,21 +379,21 @@ pub struct MetricsArgs {
     /// Together with `--retry-backoff` and `--retry-max-backoff`, configures
     /// exponential backoff retry for network sinks. All three flags must be
     /// provided together.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_max_attempts: Option<u32>,
 
     /// Initial backoff duration for retries (e.g. `"100ms"`, `"1s"`).
     ///
     /// Must be provided together with `--retry-max-attempts` and
     /// `--retry-max-backoff`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_backoff: Option<String>,
 
     /// Maximum backoff cap for retries (e.g. `"5s"`, `"30s"`).
     ///
     /// Must be >= `--retry-backoff`. Must be provided together with
     /// `--retry-max-attempts` and `--retry-backoff`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_max_backoff: Option<String>,
 }
 
@@ -414,14 +414,14 @@ pub struct LogsArgs {
     ///
     /// Accepted values: `template`, `replay`.
     /// Required when no `--scenario` file is provided.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub mode: Option<String>,
 
     /// Path to a log file for use with `--mode replay`.
     ///
     /// Lines from this file are replayed in order, cycling back to the start
     /// when exhausted. `--replay-file` is accepted as an alias for this flag.
-    #[arg(long, alias = "replay-file")]
+    #[arg(long, alias = "replay-file", help_heading = "Generator")]
     pub file: Option<String>,
 
     /// Target event rate in events per second.
@@ -440,7 +440,7 @@ pub struct LogsArgs {
     /// Output encoder format.
     ///
     /// Accepted values: `json_lines`, `syslog`. Default: `json_lines`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
 
     /// Decimal precision for numeric values in log fields (0--17).
@@ -448,7 +448,7 @@ pub struct LogsArgs {
     /// Limits the number of decimal places when the encoder formats
     /// numeric values. When absent, full f64 precision is used.
     /// Only applies to `json_lines`; ignored for `syslog`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Encoder")]
     pub precision: Option<u8>,
 
     /// Static label attached to every emitted event (repeatable).
@@ -461,77 +461,77 @@ pub struct LogsArgs {
     /// Gap recurrence interval (e.g. `"2m"`).
     ///
     /// Together with `--gap-for`, this defines a recurring silent period.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub gap_every: Option<String>,
 
     /// Gap duration within each cycle (e.g. `"20s"`).
     ///
     /// Must be strictly less than `--gap-every`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub gap_for: Option<String>,
 
     /// Burst recurrence interval (e.g. `"5s"`).
     ///
     /// Together with `--burst-for` and `--burst-multiplier`, this defines a
     /// recurring high-rate period.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_every: Option<String>,
 
     /// Burst duration within each cycle (e.g. `"1s"`).
     ///
     /// Must be strictly less than `--burst-every`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_for: Option<String>,
 
     /// Rate multiplier during burst periods (e.g. `10.0` for 10× the base rate).
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub burst_multiplier: Option<f64>,
 
     /// Label key for a cardinality spike (e.g. `"pod_name"`).
     ///
     /// Together with `--spike-every`, `--spike-for`, and `--spike-cardinality`,
     /// defines a recurring window that injects dynamic label values.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_label: Option<String>,
 
     /// Spike recurrence interval (e.g. `"2m"`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_every: Option<String>,
 
     /// Spike duration within each cycle (e.g. `"30s"`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_for: Option<String>,
 
     /// Number of unique label values during the spike.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_cardinality: Option<u64>,
 
     /// Spike strategy: `counter` or `random`. Default: `counter`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_strategy: Option<String>,
 
     /// Prefix for generated spike label values.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_prefix: Option<String>,
 
     /// RNG seed for the `random` spike strategy.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub spike_seed: Option<u64>,
 
     /// Optional jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to
     /// every generated value for more realistic output.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub jitter: Option<f64>,
 
     /// Optional seed for jitter noise. Defaults to `0` when absent.
-    #[arg(long)]
+    #[arg(long, help_heading = "Schedule")]
     pub jitter_seed: Option<u64>,
 
     /// Write output to a file at this path instead of stdout.
     ///
     /// Shorthand for `sink: file` in a YAML scenario. Takes precedence over
     /// any sink configured in the scenario file.
-    #[arg(long, conflicts_with = "sink")]
+    #[arg(long, conflicts_with = "sink", help_heading = "Sink")]
     pub output: Option<PathBuf>,
 
     /// Sink type for delivering encoded events.
@@ -539,45 +539,45 @@ pub struct LogsArgs {
     /// Accepted values: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`.
     /// Mutually exclusive with `--output`. For OTLP, Kafka, and remote write sinks,
     /// the corresponding Cargo feature must be compiled in.
-    #[arg(long, conflicts_with = "output")]
+    #[arg(long, conflicts_with = "output", help_heading = "Sink")]
     pub sink: Option<String>,
 
     /// Endpoint URL for the selected sink.
     ///
     /// Required for `--sink http_push`, `--sink remote_write`, `--sink loki`,
     /// and `--sink otlp_grpc`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub endpoint: Option<String>,
 
     /// OTLP signal type: `metrics` or `logs`.
     ///
     /// For the logs subcommand this defaults to `logs` when `--sink otlp_grpc`
     /// is used, so typically you do not need to specify it.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub signal_type: Option<String>,
 
     /// Batch size for batching sinks (number of entries or bytes, depending on sink).
     ///
     /// Optional for `http_push`, `remote_write`, `loki`, and `otlp_grpc`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub batch_size: Option<usize>,
 
     /// Content-Type header for the `http_push` sink.
     ///
     /// Optional; defaults to `application/octet-stream` when not specified.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub content_type: Option<String>,
 
     /// Comma-separated Kafka broker addresses (e.g. `127.0.0.1:9092`).
     ///
     /// Required for `--sink kafka`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub brokers: Option<String>,
 
     /// Kafka topic name.
     ///
     /// Required for `--sink kafka`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub topic: Option<String>,
 
     /// A single static message template for use with `--mode template`.
@@ -586,7 +586,7 @@ pub struct LogsArgs {
     /// may contain `{placeholder}` tokens, but no field pools are configured
     /// from the CLI, so placeholders remain as-is unless a scenario file
     /// supplies them.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub message: Option<String>,
 
     /// Comma-separated severity weight pairs for `--mode template`.
@@ -594,13 +594,13 @@ pub struct LogsArgs {
     /// Format: `info=0.7,warn=0.2,error=0.1`. Weights are relative — they do
     /// not need to sum to 1.0. Valid severity names: `trace`, `debug`, `info`,
     /// `warn`, `error`, `fatal`.
-    #[arg(long = "severity-weights")]
+    #[arg(long = "severity-weights", help_heading = "Generator")]
     pub severity_weights: Option<String>,
 
     /// RNG seed for deterministic template resolution.
     ///
     /// Used with `--mode template`. When absent a seed of `0` is used.
-    #[arg(long)]
+    #[arg(long, help_heading = "Generator")]
     pub seed: Option<u64>,
 
     /// Maximum retry attempts after initial failure.
@@ -608,21 +608,21 @@ pub struct LogsArgs {
     /// Together with `--retry-backoff` and `--retry-max-backoff`, configures
     /// exponential backoff retry for network sinks. All three flags must be
     /// provided together.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_max_attempts: Option<u32>,
 
     /// Initial backoff duration for retries (e.g. `"100ms"`, `"1s"`).
     ///
     /// Must be provided together with `--retry-max-attempts` and
     /// `--retry-max-backoff`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_backoff: Option<String>,
 
     /// Maximum backoff cap for retries (e.g. `"5s"`, `"30s"`).
     ///
     /// Must be >= `--retry-backoff`. Must be provided together with
     /// `--retry-max-attempts` and `--retry-backoff`.
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub retry_max_backoff: Option<String>,
 }
 
@@ -711,15 +711,15 @@ pub struct ScenariosRunArgs {
     pub rate: Option<f64>,
 
     /// Override the sink type (e.g. `stdout`, `file`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub sink: Option<String>,
 
     /// Override the sink endpoint (required for network sinks).
-    #[arg(long)]
+    #[arg(long, help_heading = "Sink")]
     pub endpoint: Option<String>,
 
     /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
-    #[arg(long)]
+    #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
 }
 
