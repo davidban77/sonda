@@ -215,6 +215,7 @@ embedded YAML. For example, `--duration 10s` overrides whatever duration the bui
 
 ## What next
 
+- [**Metric Packs**](metric-packs.md) -- pre-built metric bundles for Telegraf SNMP and node_exporter with correct schemas
 - [**Alert Testing**](alert-testing.md) -- end-to-end walkthrough using shaped signals to validate alert rules
 - [**CLI Reference**](../configuration/cli-reference.md#sonda-scenarios) -- full flag reference for all `scenarios` subcommands
 - [**Scenario Files**](../configuration/scenario-file.md) -- YAML reference for writing your own scenarios from scratch
