@@ -11,7 +11,7 @@ sonda [--quiet | --verbose] [--dry-run] <COMMAND>
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--quiet` | `-q` | Suppress start/stop status banners. Errors still print to stderr. |
+| `--quiet` | `-q` | Suppress start/stop banners and live progress. Errors still print to stderr. |
 | `--verbose` | `-v` | Print resolved scenario config at startup, then run normally. Mutually exclusive with `--quiet`. |
 | `--dry-run` | -- | Parse and validate the scenario config, print it, then exit without emitting events. |
 | `--help` | `-h` | Print help information. |
@@ -54,6 +54,60 @@ Printed when a scenario completes:
 ■ cpu_usage  completed in 30.0s | events: 30000 | bytes: 1.2 MB | errors: 0
 ```
 
+### Live progress
+
+Between the start and stop banners, Sonda shows live progress for each running scenario.
+The display updates in place and cleans up before the stop banner prints, so your terminal
+stays tidy.
+
+Each progress line shows the event count, bytes emitted, current rate versus configured rate,
+and elapsed time. When a gap, burst, or cardinality spike window is active, a colored tag
+appears at the end of the line.
+
+**Interactive terminal (TTY):**
+
+Progress lines update in place every 200ms using ANSI cursor control:
+
+```text
+  ~ cpu_usage  events: 1,234 | rate: 98.5/s | bytes: 12.3 KB | elapsed: 5.2s
+```
+
+The `~` indicator changes color to reflect the scenario state:
+
+| Color | Meaning |
+|-------|---------|
+| Green | Normal operation |
+| Yellow | Gap window active -- events paused |
+| Magenta | Burst window active -- elevated rate |
+
+Window state tags also appear when active:
+
+```text
+  ~ cpu_usage  events: 1,234 | rate: 0.0/s | bytes: 12.3 KB | elapsed: 5.2s [gap]
+  ~ cpu_usage  events: 1,234 | rate: 500.0/s | bytes: 12.3 KB | elapsed: 7.1s [burst]
+  ~ cpu_usage  events: 1,234 | rate: 98.5/s | bytes: 12.3 KB | elapsed: 9.0s [spike]
+```
+
+**Non-TTY (piped or redirected stderr):**
+
+When stderr is not a terminal, Sonda emits a static `[progress]`-prefixed line every 5 seconds
+instead of using ANSI escape sequences. This avoids flooding CI logs while still showing that
+the scenario is alive:
+
+```text
+[progress] cpu_usage  events: 1234 | rate: 98.5/s | bytes: 12.3 KB | elapsed: 5.1s
+```
+
+**Suppression:**
+
+Use `--quiet` / `-q` to suppress all progress output along with banners. Use Ctrl+C at any
+time for a clean shutdown -- progress lines are erased and no dangling ANSI sequences are left
+behind.
+
+!!! tip
+    For short runs (under 5 seconds), you may not see progress lines in non-TTY mode because
+    the first update fires at the 5-second mark. TTY mode shows progress within the first 200ms.
+
 ### Multi-scenario numbering
 
 When running multiple scenarios (via `sonda run` or a multi-scenario built-in), each banner
@@ -81,9 +135,10 @@ Colors are automatic and require no configuration:
 - **`NO_COLOR` environment variable** -- set `NO_COLOR=1` to disable colors everywhere. Sonda respects the [no-color.org](https://no-color.org) convention.
 - **Non-TTY stderr** -- colors are disabled when stderr is redirected to a file or pipe.
 
-### Suppressing banners
+### Suppressing banners and progress
 
-Use `--quiet` / `-q` to suppress all status output. Only errors are printed:
+Use `--quiet` / `-q` to suppress all status output including live progress. Only errors are
+printed:
 
 ```bash
 # No banners, just data on stdout
@@ -228,6 +283,7 @@ error: the argument '--verbose' cannot be used with '--quiet'
 | Branding header | -- | -- | Yes | -- |
 | Resolved config | -- | -- | Yes | Yes |
 | Start banner | Yes | -- | Yes | -- |
+| Live progress | Yes | -- | Yes | -- |
 | Event data | Yes | Yes | Yes | -- |
 | Stop banner | Yes | -- | Yes | -- |
 | Errors | Yes | Yes | Yes | Yes |

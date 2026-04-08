@@ -73,7 +73,9 @@ Generate a constant metric at 2 events per second for 5 seconds:
 sonda metrics --name cpu_usage --rate 2 --duration 5s
 ```
 
-You will see a colored start banner on stderr, followed by data on stdout, then a stop banner:
+You will see a colored start banner on stderr, followed by data on stdout, then a stop banner.
+On longer runs, live progress lines appear between the banners showing event count, rate, and
+elapsed time (see [CLI Reference -- Live progress](configuration/cli-reference.md#live-progress)).
 
 ```text title="stderr"
 ▶ cpu_usage  signal_type: metrics | rate: 2/s | encoder: prometheus_text | sink: stdout | duration: 5s
