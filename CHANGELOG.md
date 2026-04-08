@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.12.0](https://github.com/davidban77/sonda/compare/v0.11.0...v0.12.0) (2026-04-08)
+
+
+### Features
+
+* CLI UX polish — help grouping, hints, banners, list styling ([#174](https://github.com/davidban77/sonda/issues/174)) ([783f1ef](https://github.com/davidban77/sonda/commit/783f1eff53c6d51fa60929c827b896cfa07e41c6))
+* live progress indicator during scenario execution ([#176](https://github.com/davidban77/sonda/issues/176)) ([f29bce2](https://github.com/davidban77/sonda/commit/f29bce2c737a4264cec24c0b69e5c8f26b1e2253))
+
 ## [0.11.0](https://github.com/davidban77/sonda/compare/v0.10.0...v0.11.0) (2026-04-07)
 
 
