@@ -43,6 +43,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub pack_path: Option<PathBuf>,
 
+    /// Directory containing scenario YAML files.
+    ///
+    /// When provided, this is the **sole** search path for scenarios — the
+    /// `SONDA_SCENARIO_PATH` env var and default directories (`./scenarios/`,
+    /// `~/.sonda/scenarios/`) are not consulted. Useful for one-off testing
+    /// with a custom scenario collection.
+    #[arg(long, global = true)]
+    pub scenario_path: Option<PathBuf>,
+
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,

@@ -5,6 +5,11 @@
 # errors. The burst window produces 10x log volume every 20 seconds for
 # 5 seconds. Useful for testing log pipeline backpressure and alerting.
 
+scenario_name: log-storm
+category: application
+signal_type: logs
+description: "Error-level log burst with template generation"
+
 name: app_error_storm
 rate: 10
 duration: 60s

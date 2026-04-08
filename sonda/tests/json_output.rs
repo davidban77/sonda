@@ -1,7 +1,8 @@
 //! Integration tests for the `sonda scenarios list --json` output.
 //!
 //! Validates that the JSON structure emitted on stdout is a well-formed array
-//! with the expected keys, and that the count matches the embedded catalog.
+//! with the expected keys, and that the count matches the scenario files
+//! discovered from the search path.
 
 use std::process::Command;
 
@@ -20,11 +21,36 @@ fn sonda_bin() -> std::path::PathBuf {
     workspace_root.join("target").join("debug").join("sonda")
 }
 
+/// Return the repo-root `scenarios/` directory path.
+fn repo_scenarios_dir() -> std::path::PathBuf {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .parent()
+        .expect("sonda crate must have a parent directory")
+        .join("scenarios")
+}
+
+/// Count the number of `.yaml` / `.yml` files in a directory.
+fn count_yaml_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .expect("scenarios directory must be readable")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let path = e.path();
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("yaml") | Some("yml")
+            )
+        })
+        .count()
+}
+
 /// `sonda scenarios list --json` should produce valid JSON on stdout.
 #[test]
 fn scenarios_list_json_is_valid_json() {
     let output = Command::new(sonda_bin())
         .args(["scenarios", "list", "--json"])
+        .env("SONDA_SCENARIO_PATH", repo_scenarios_dir())
         .output()
         .expect("failed to execute sonda binary");
 
@@ -49,6 +75,7 @@ fn scenarios_list_json_is_valid_json() {
 fn scenarios_list_json_elements_have_required_keys() {
     let output = Command::new(sonda_bin())
         .args(["scenarios", "list", "--json"])
+        .env("SONDA_SCENARIO_PATH", repo_scenarios_dir())
         .output()
         .expect("failed to execute sonda binary");
 
@@ -61,7 +88,7 @@ fn scenarios_list_json_elements_have_required_keys() {
     let arr = parsed.as_array().expect("output must be an array");
     assert!(!arr.is_empty(), "scenario list must not be empty");
 
-    let required_keys = ["name", "category", "signal_type", "description"];
+    let required_keys = ["name", "category", "signal_type", "description", "source"];
     for (i, elem) in arr.iter().enumerate() {
         let obj = elem
             .as_object()
@@ -77,19 +104,22 @@ fn scenarios_list_json_elements_have_required_keys() {
         }
         assert_eq!(
             obj.len(),
-            4,
-            "expected exactly 4 fields per scenario, got {}",
+            required_keys.len(),
+            "expected exactly {} fields per scenario, got {}",
+            required_keys.len(),
             obj.len()
         );
     }
 }
 
-/// The JSON array length must match the total number of built-in scenarios
-/// from `sonda_core::scenarios::list()`.
+/// The JSON array length must match the total number of scenario YAML files
+/// in the repo's `scenarios/` directory.
 #[test]
-fn scenarios_list_json_count_matches_core_catalog() {
+fn scenarios_list_json_count_matches_scenario_files() {
+    let scenarios_dir = repo_scenarios_dir();
     let output = Command::new(sonda_bin())
         .args(["scenarios", "list", "--json"])
+        .env("SONDA_SCENARIO_PATH", &scenarios_dir)
         .output()
         .expect("failed to execute sonda binary");
 
@@ -100,11 +130,11 @@ fn scenarios_list_json_count_matches_core_catalog() {
         serde_json::from_str(&stdout).expect("stdout must be valid JSON");
 
     let arr = parsed.as_array().expect("output must be an array");
-    let expected_count = sonda_core::scenarios::list().len();
+    let expected_count = count_yaml_files(&scenarios_dir);
     assert_eq!(
         arr.len(),
         expected_count,
-        "JSON array length ({}) must match sonda_core::scenarios::list().len() ({})",
+        "JSON array length ({}) must match scenario YAML file count ({})",
         arr.len(),
         expected_count
     );

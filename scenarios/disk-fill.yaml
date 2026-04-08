@@ -4,6 +4,11 @@
 # increments by 0.5 GB each tick. At rate=1, the disk grows from 100 GB
 # to ~160 GB over 120 seconds. Useful for testing disk-full predictions.
 
+scenario_name: disk-fill
+category: infrastructure
+signal_type: metrics
+description: "Constant-rate disk consumption (step counter)"
+
 name: node_disk_used_bytes
 rate: 1
 duration: 120s

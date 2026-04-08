@@ -23,22 +23,27 @@ src/
 ├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum,
 │                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand,
 │                          PacksArgs/PacksAction for the `packs` subcommand,
-│                          --pack-path global flag
-├── config.rs           ← config loading: YAML file or @builtin → merge CLI overrides → ScenarioConfig,
-│                          resolve_scenario_source (@name shorthand), parse_builtin_scenario,
-│                          load_pack_from_catalog, resolve_pack_source, is_pack_config,
-│                          load_pack_from_yaml
+│                          --pack-path and --scenario-path global flags
+├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig,
+│                          resolve_scenario_source (@name shorthand via ScenarioCatalog),
+│                          parse_builtin_scenario, load_pack_from_catalog, resolve_pack_source,
+│                          is_pack_config, load_pack_from_yaml
 ├── packs.rs            ← filesystem-based metric pack discovery: PackCatalog, PackEntry,
 │                          build_search_path(). Scans directories for pack YAML files and
 │                          caches results for the CLI invocation.
 │                          Search path (priority): --pack-path > SONDA_PACK_PATH > ./packs/ >
 │                          ~/.sonda/packs/
+├── scenarios.rs        ← filesystem-based scenario discovery: ScenarioCatalog,
+│                          build_search_path(). Scans directories for scenario YAML files
+│                          with metadata (scenario_name, category, signal_type, description).
+│                          Search path (priority): --scenario-path > SONDA_SCENARIO_PATH >
+│                          ./scenarios/ > ~/.sonda/scenarios/
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
-This crate should stay small. Four to six files is the target. If it grows beyond six, something
+This crate should stay small. Five to seven files is the target. If it grows beyond seven, something
 is in the wrong crate.
 
 ## CLI Surface
@@ -59,7 +64,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
-a built-in scenario from the embedded catalog (see `sonda_core::scenarios`). Example:
+a scenario from the filesystem catalog discovered via the scenario search path. Example:
 `sonda metrics --scenario @cpu-spike`.
 
 The `run --scenario` path also detects YAML files with a `pack:` field and expands them
@@ -72,7 +77,8 @@ via `sonda_core::packs::expand_pack` before feeding into `prepare_entries()`.
 | `--quiet` | `-q` | Suppress all status banners (start/stop/summary). Errors are still printed to stderr. |
 | `--verbose` | `-v` | Show the resolved scenario config at startup, then run normally with start/stop banners. Mutually exclusive with `--quiet`. |
 | `--dry-run` | | Parse and validate the scenario config, print it, then exit without emitting any events. Orthogonal to `--quiet`/`--verbose` — always prints the resolved config. |
-| `--pack-path` | | Directory containing metric pack YAML files. When set, this is the sole search path for packs — `SONDA_PACK_PATH`, `./packs/`, and `~/.sonda/packs/` are not consulted. |
+| `--pack-path` | | Directory containing metric pack YAML files. When set, this is the sole search path for packs -- `SONDA_PACK_PATH`, `./packs/`, and `~/.sonda/packs/` are not consulted. |
+| `--scenario-path` | | Directory containing scenario YAML files. When set, this is the sole search path for scenarios -- `SONDA_SCENARIO_PATH`, `./scenarios/`, and `~/.sonda/scenarios/` are not consulted. |
 
 The verbosity model is captured in the `Verbosity` enum (`Quiet`, `Normal`, `Verbose`), constructed
 from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-run` is orthogonal.
@@ -80,11 +86,12 @@ from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-r
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
 Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
 multiple scenarios concurrently from a single YAML file whose `scenarios:` list carries
-`signal_type: metrics`, `logs`, `histogram`, or `summary` entries — or from a YAML file with a
-`pack:` field that references a metric pack. `scenarios` provides access to the built-in scenario
-library: `list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to
-the built-in metric pack library: `list` to browse, `show` to dump YAML, `run` to execute with
-rate/duration/sink/encoder overrides.
+`signal_type: metrics`, `logs`, `histogram`, or `summary` entries -- or from a YAML file with a
+`pack:` field that references a metric pack. `scenarios` discovers scenario YAML files from the
+search path (`--scenario-path`, `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`):
+`list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to metric pack
+files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duration/sink/encoder
+overrides.
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
@@ -100,6 +107,19 @@ Metric packs are standalone YAML files discovered from the filesystem. The searc
 2. `SONDA_PACK_PATH` env var (colon-separated directories)
 3. `./packs/` relative to CWD
 4. `~/.sonda/packs/`
+
+Non-existent directories are silently skipped. Name collisions are resolved by first-match-wins.
+
+### Scenario Discovery Search Path
+
+Scenarios are standalone YAML files discovered from the filesystem. Each file contains
+metadata fields (`scenario_name`, `category`, `signal_type`, `description`) alongside
+the scenario config. The search path is:
+
+1. `--scenario-path` CLI flag (sole path when present)
+2. `SONDA_SCENARIO_PATH` env var (colon-separated directories)
+3. `./scenarios/` relative to CWD
+4. `~/.sonda/scenarios/`
 
 Non-existent directories are silently skipped. Name collisions are resolved by first-match-wins.
 

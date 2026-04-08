@@ -2,8 +2,13 @@
 #
 # Models a healthy server with normal CPU and memory oscillation using
 # the `steady` alias (sine + jitter). Represents the "everything is fine"
-# baseline. Useful as a control signal when testing alert rules — this
+# baseline. Useful as a control signal when testing alert rules -- this
 # scenario should NOT trigger any alerts.
+
+scenario_name: steady-state
+category: infrastructure
+signal_type: metrics
+description: "Normal oscillating baseline (sine + jitter)"
 
 name: node_cpu_usage_idle_percent
 rate: 1

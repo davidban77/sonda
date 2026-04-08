@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod packs;
 mod progress;
+mod scenarios;
 mod status;
 
 use std::process;
@@ -53,12 +54,16 @@ fn run() -> anyhow::Result<()> {
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
     // Build the pack catalog once for the entire invocation.
-    let search_path = packs::build_search_path(cli.pack_path.as_deref());
-    let pack_catalog = packs::PackCatalog::discover(&search_path);
+    let pack_search_path = packs::build_search_path(cli.pack_path.as_deref());
+    let pack_catalog = packs::PackCatalog::discover(&pack_search_path);
+
+    // Build the scenario catalog once for the entire invocation.
+    let scenario_search_path = scenarios::build_search_path(cli.scenario_path.as_deref());
+    let scenario_catalog = scenarios::ScenarioCatalog::discover(&scenario_search_path);
 
     match cli.command {
         Commands::Metrics(ref args) => {
-            let config = config::load_config(args)?;
+            let config = config::load_config(args, &scenario_catalog)?;
             let entry = sonda_core::ScenarioEntry::Metrics(config);
 
             // prepare_entries handles expansion, validation, and phase offsets.
@@ -78,7 +83,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Logs(ref args) => {
-            let config = config::load_log_config(args)?;
+            let config = config::load_log_config(args, &scenario_catalog)?;
             let entry = sonda_core::ScenarioEntry::Logs(config);
 
             let mut prepared =
@@ -92,7 +97,7 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-logs".to_string(), p, &running, verbosity)?;
         }
         Commands::Histogram(ref args) => {
-            let config = config::load_histogram_config(args)?;
+            let config = config::load_histogram_config(args, &scenario_catalog)?;
             let entry = sonda_core::ScenarioEntry::Histogram(config);
 
             let mut prepared =
@@ -106,7 +111,7 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-histogram".to_string(), p, &running, verbosity)?;
         }
         Commands::Summary(ref args) => {
-            let config = config::load_summary_config(args)?;
+            let config = config::load_summary_config(args, &scenario_catalog)?;
             let entry = sonda_core::ScenarioEntry::Summary(config);
 
             let mut prepared =
@@ -121,12 +126,12 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Run(ref args) => {
             // Read the YAML first to detect pack configs before parsing.
-            let yaml = config::resolve_scenario_source(&args.scenario)?;
+            let yaml = config::resolve_scenario_source(&args.scenario, &scenario_catalog)?;
 
             let entries = if config::is_pack_config(&yaml) {
                 config::load_pack_from_yaml(&yaml, &pack_catalog)?
             } else {
-                let multi = config::load_multi_config(args)?;
+                let multi = config::load_multi_config(args, &scenario_catalog)?;
                 multi.scenarios
             };
 
@@ -140,7 +145,7 @@ fn run() -> anyhow::Result<()> {
             launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
         }
         Commands::Scenarios(ref args) => {
-            run_scenarios_command(args, &cli, verbosity, &running)?;
+            run_scenarios_command(args, &cli, verbosity, &running, &scenario_catalog)?;
         }
         Commands::Packs(ref args) => {
             run_packs_command(args, &cli, verbosity, &running, &pack_catalog)?;
@@ -156,22 +161,22 @@ fn run_scenarios_command(
     cli_opts: &Cli,
     verbosity: Verbosity,
     running: &Arc<AtomicBool>,
+    catalog: &scenarios::ScenarioCatalog,
 ) -> anyhow::Result<()> {
     use cli::ScenariosAction;
-    use sonda_core::scenarios;
 
     match args.action {
         ScenariosAction::List(ref list_args) => {
             let items: Vec<&sonda_core::BuiltinScenario> = match list_args.category {
-                Some(ref cat) => scenarios::list_by_category(cat),
-                None => scenarios::list().iter().collect(),
+                Some(ref cat) => catalog.list_by_category(cat),
+                None => catalog.list().iter().collect(),
             };
 
             if items.is_empty() {
                 if let Some(ref cat) = list_args.category {
                     eprintln!("no scenarios found in category {:?}", cat);
                 } else {
-                    eprintln!("no built-in scenarios available");
+                    eprintln!("no scenarios found (search path has no scenario YAML files)");
                 }
                 return Ok(());
             }
@@ -186,13 +191,14 @@ fn run_scenarios_command(
                             "category": s.category,
                             "signal_type": s.signal_type,
                             "description": s.description,
+                            "source": s.source_path.display().to_string(),
                         })
                     })
                     .collect();
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&entries)
-                        .expect("JSON serialization of builtin scenarios cannot fail")
+                        .expect("JSON serialization of scenario entries cannot fail")
                 );
             } else {
                 // Print a formatted table to stdout with a bold header row.
@@ -228,8 +234,8 @@ fn run_scenarios_command(
             }
         }
         ScenariosAction::Show(ref show_args) => {
-            let scenario = scenarios::get(&show_args.name).ok_or_else(|| {
-                let names = scenarios::available_names();
+            let scenario = catalog.find(&show_args.name).ok_or_else(|| {
+                let names = catalog.available_names();
                 let suggestion = find_closest_name(&show_args.name, &names);
                 let base_msg = format!(
                     "unknown scenario {:?}; available scenarios: {}",
@@ -242,13 +248,21 @@ fn run_scenarios_command(
                     anyhow::anyhow!("{}", base_msg)
                 }
             })?;
-            status::print_show_header(scenario.name, scenario.category, scenario.signal_type);
-            let yaml = scenarios::get_yaml(&show_args.name)
-                .expect("scenario must exist after get() succeeded");
+            status::print_show_header(&scenario.name, &scenario.category, &scenario.signal_type);
+            let yaml = catalog
+                .read_yaml(&show_args.name)
+                .expect("scenario must exist after find() succeeded")
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to read scenario file {}: {}",
+                        scenario.source_path.display(),
+                        e
+                    )
+                })?;
             print!("{yaml}");
         }
         ScenariosAction::Run(ref run_args) => {
-            run_builtin_scenario(run_args, cli_opts, verbosity, running)?;
+            run_builtin_scenario(run_args, cli_opts, verbosity, running, catalog)?;
         }
     }
 
@@ -261,11 +275,10 @@ fn run_builtin_scenario(
     cli_opts: &Cli,
     verbosity: Verbosity,
     running: &Arc<AtomicBool>,
+    catalog: &scenarios::ScenarioCatalog,
 ) -> anyhow::Result<()> {
-    use sonda_core::scenarios;
-
-    let scenario = scenarios::get(&args.name).ok_or_else(|| {
-        let names = scenarios::available_names();
+    let scenario = catalog.find(&args.name).ok_or_else(|| {
+        let names = catalog.available_names();
         let suggestion = find_closest_name(&args.name, &names);
         let base_msg = format!(
             "unknown scenario {:?}; available scenarios: {}",

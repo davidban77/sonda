@@ -5,6 +5,11 @@
 # to 500ms over 60 seconds. The noise adds realistic variation.
 # Useful for testing latency SLO alerting.
 
+scenario_name: latency-degradation
+category: application
+signal_type: metrics
+description: "Growing response latency with jitter (sawtooth)"
+
 name: http_request_duration_seconds
 rate: 2
 duration: 60s
