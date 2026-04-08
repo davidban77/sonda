@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod progress;
 mod status;
 
 use std::process;
@@ -64,25 +65,8 @@ fn run() -> anyhow::Result<()> {
             }
 
             if prepared.len() == 1 {
-                // Single scenario — original code path.
                 let p = prepared.into_iter().next().expect("len checked above");
-                status::print_start(&p.entry, verbosity, None);
-                let mut handle = sonda_core::launch_scenario(
-                    "cli-metrics".to_string(),
-                    p.entry,
-                    Arc::clone(&running),
-                    p.start_delay,
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-                let join_result = handle.join(None);
-                status::print_stop(
-                    &handle.name,
-                    handle.elapsed(),
-                    &handle.stats_snapshot(),
-                    verbosity,
-                    None,
-                );
-                join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+                run_single_scenario("cli-metrics".to_string(), p, &running, verbosity)?;
             } else {
                 // Multi-column expansion — launch all scenarios concurrently.
                 launch_and_join_prepared("cli-metrics", prepared, &running, verbosity)?;
@@ -100,23 +84,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity, None);
-            let mut handle = sonda_core::launch_scenario(
-                "cli-logs".to_string(),
-                p.entry,
-                Arc::clone(&running),
-                p.start_delay,
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let join_result = handle.join(None);
-            status::print_stop(
-                &handle.name,
-                handle.elapsed(),
-                &handle.stats_snapshot(),
-                verbosity,
-                None,
-            );
-            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+            run_single_scenario("cli-logs".to_string(), p, &running, verbosity)?;
         }
         Commands::Histogram(ref args) => {
             let config = config::load_histogram_config(args)?;
@@ -130,23 +98,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity, None);
-            let mut handle = sonda_core::launch_scenario(
-                "cli-histogram".to_string(),
-                p.entry,
-                Arc::clone(&running),
-                p.start_delay,
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let join_result = handle.join(None);
-            status::print_stop(
-                &handle.name,
-                handle.elapsed(),
-                &handle.stats_snapshot(),
-                verbosity,
-                None,
-            );
-            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+            run_single_scenario("cli-histogram".to_string(), p, &running, verbosity)?;
         }
         Commands::Summary(ref args) => {
             let config = config::load_summary_config(args)?;
@@ -160,23 +112,7 @@ fn run() -> anyhow::Result<()> {
             }
 
             let p = prepared.remove(0);
-            status::print_start(&p.entry, verbosity, None);
-            let mut handle = sonda_core::launch_scenario(
-                "cli-summary".to_string(),
-                p.entry,
-                Arc::clone(&running),
-                p.start_delay,
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let join_result = handle.join(None);
-            status::print_stop(
-                &handle.name,
-                handle.elapsed(),
-                &handle.stats_snapshot(),
-                verbosity,
-                None,
-            );
-            join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+            run_single_scenario("cli-summary".to_string(), p, &running, verbosity)?;
         }
         Commands::Run(ref args) => {
             let config = config::load_multi_config(args)?;
@@ -337,23 +273,7 @@ fn run_builtin_scenario(
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
-        status::print_start(&p.entry, verbosity, None);
-        let mut handle = sonda_core::launch_scenario(
-            format!("builtin-{}", args.name),
-            p.entry,
-            Arc::clone(running),
-            p.start_delay,
-        )
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-        let join_result = handle.join(None);
-        status::print_stop(
-            &handle.name,
-            handle.elapsed(),
-            &handle.stats_snapshot(),
-            verbosity,
-            None,
-        );
-        join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+        run_single_scenario(format!("builtin-{}", args.name), p, running, verbosity)?;
     } else {
         launch_and_join_prepared(
             &format!("builtin-{}", args.name),
@@ -393,6 +313,76 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
     false
 }
 
+/// Run a single prepared scenario with progress tracking.
+///
+/// Encapsulates the full single-scenario lifecycle: print start banner, launch
+/// the scenario, show live progress, join the thread, stop progress, print the
+/// stop banner, and propagate any runner error.
+fn run_single_scenario(
+    name: String,
+    prepared: PreparedEntry,
+    running: &Arc<AtomicBool>,
+    verbosity: Verbosity,
+) -> anyhow::Result<()> {
+    status::print_start(&prepared.entry, verbosity, None);
+    let mut handle = sonda_core::launch_scenario(
+        name,
+        prepared.entry,
+        Arc::clone(running),
+        prepared.start_delay,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let progress = maybe_start_progress(&handle, verbosity);
+    let join_result = handle.join(None);
+    if let Some(p) = progress {
+        p.stop();
+    }
+    status::print_stop(
+        &handle.name,
+        handle.elapsed(),
+        &handle.stats_snapshot(),
+        verbosity,
+        None,
+    );
+    join_result.map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(())
+}
+
+/// Start a progress display for a single running scenario handle.
+///
+/// Returns `None` when verbosity is [`Verbosity::Quiet`], so progress output
+/// is suppressed entirely in quiet mode.
+fn maybe_start_progress(
+    handle: &sonda_core::ScenarioHandle,
+    verbosity: Verbosity,
+) -> Option<progress::ProgressDisplay> {
+    if verbosity == Verbosity::Quiet {
+        return None;
+    }
+    Some(progress::ProgressDisplay::start(vec![(
+        handle.name.clone(),
+        Arc::clone(&handle.stats),
+        handle.target_rate,
+    )]))
+}
+
+/// Start a progress display for multiple running scenario handles.
+///
+/// Returns `None` when verbosity is [`Verbosity::Quiet`].
+fn maybe_start_progress_multi(
+    handles: &[sonda_core::ScenarioHandle],
+    verbosity: Verbosity,
+) -> Option<progress::ProgressDisplay> {
+    if verbosity == Verbosity::Quiet {
+        return None;
+    }
+    let scenarios: Vec<_> = handles
+        .iter()
+        .map(|h| (h.name.clone(), Arc::clone(&h.stats), h.target_rate))
+        .collect();
+    Some(progress::ProgressDisplay::start(scenarios))
+}
+
 /// Launch multiple prepared scenarios concurrently, join them, print
 /// per-scenario stop banners in launch order, print an aggregate summary,
 /// and return an error if any failed.
@@ -418,6 +408,9 @@ fn launch_and_join_prepared(
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
+
+    // Start progress display for all launched scenarios.
+    let progress = maybe_start_progress_multi(&handles, verbosity);
 
     // Collect results from all handles first, preserving launch order.
     let mut errors: Vec<String> = Vec::new();
@@ -447,6 +440,11 @@ fn launch_and_join_prepared(
         total_bytes += info.stats.bytes_emitted;
         total_errors += info.stats.errors;
         stop_infos.push(info);
+    }
+
+    // Stop progress display before printing stop banners.
+    if let Some(p) = progress {
+        p.stop();
     }
 
     // Print stop banners in launch order.
