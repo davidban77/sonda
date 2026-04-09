@@ -164,14 +164,19 @@ sonda init
 ? Metric name node_cpu_usage_percent
 ? What situation should this metric simulate? spike_event - baseline with periodic spikes
 ? Baseline value (between spikes) 35
-? Spike height 60
+? Spike height (amount added during spike) 60
 ? Events per second (rate) 1
-? Duration 60s
+? Duration (e.g., 30s, 5m, 1h) 60s
 ? Output encoding format prometheus_text
 ? Where should output be sent? stdout
 ? Output file path ./scenarios/node-cpu-usage-percent.yaml
 
-done: Scenario written to ./scenarios/node-cpu-usage-percent.yaml
+✔ Scenario created
+  name:  node_cpu_usage_percent
+  type:  metrics
+  file:  ./scenarios/node-cpu-usage-percent.yaml
+
+? Run it now? Yes
 ```
 
 The generated YAML is commented, immediately runnable, and includes scenario metadata so it
