@@ -363,10 +363,7 @@ fn run_logs_prompts(
     };
 
     // Merge prefill labels with interactive labels.
-    let mut labels = prefill.labels.clone();
-    if labels.is_empty() {
-        labels = prompt_labels(theme)?;
-    }
+    let labels = prompt_labels(theme, &prefill.labels)?;
 
     // Section 3: Delivery.
     print_section(3, 4, "Delivery");
@@ -421,10 +418,7 @@ fn prompt_single_metric(
     let situation_params = prompt_situation_params(theme, &situation, prefill)?;
 
     // Merge prefill labels with interactive labels.
-    let mut labels = prefill.labels.clone();
-    if labels.is_empty() {
-        labels = prompt_labels(theme)?;
-    }
+    let labels = prompt_labels(theme, &prefill.labels)?;
 
     Ok(ScenarioKind::SingleMetric(MetricAnswers {
         name,
@@ -512,9 +506,12 @@ fn prompt_pack(
         }
     }
 
-    // Ask for any additional labels (skip if we already have prefilled labels).
+    // Ask for any additional labels. When prefill already has labels, pass
+    // them through so prompt_labels returns immediately. Otherwise the TTY
+    // guard inside prompt_labels handles non-interactive mode.
     if prefill.labels.is_empty() {
-        let extra_labels = prompt_labels(theme)?;
+        let empty = BTreeMap::new();
+        let extra_labels = prompt_labels(theme, &empty)?;
         for (k, v) in extra_labels {
             labels.insert(k, v);
         }
@@ -871,7 +868,24 @@ fn prompt_severity_interactive(theme: &ColorfulTheme) -> Result<Vec<(String, f64
 /// The user enters labels as `key=value` strings. An empty input ends the
 /// label collection. After each successful addition, the accumulated labels
 /// are shown in dimmed text so the user can see what has been collected.
-fn prompt_labels(theme: &ColorfulTheme) -> Result<BTreeMap<String, String>, io::Error> {
+///
+/// When `prefilled` is non-empty, those labels are returned directly without
+/// prompting. When stdin is not a TTY and no labels are prefilled, returns
+/// an empty map (non-interactive mode).
+fn prompt_labels(
+    theme: &ColorfulTheme,
+    prefilled: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, io::Error> {
+    // If the caller already has labels (from --label flags or --from), use them.
+    if !prefilled.is_empty() {
+        return Ok(prefilled.clone());
+    }
+
+    // Non-interactive: no prefilled labels and no TTY — return empty.
+    if !io::stdin().is_terminal() {
+        return Ok(BTreeMap::new());
+    }
+
     let mut labels = BTreeMap::new();
 
     loop {
@@ -1657,5 +1671,42 @@ mod tests {
         assert!(pf.kafka_brokers.is_none());
         assert!(pf.kafka_topic.is_none());
         assert!(pf.otlp_signal_type.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // prompt_labels: prefill and TTY guard
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prompt_labels_returns_prefilled_labels_immediately() {
+        let theme = ColorfulTheme::default();
+        let mut prefilled = BTreeMap::new();
+        prefilled.insert("env".to_string(), "prod".to_string());
+        prefilled.insert("region".to_string(), "us-west".to_string());
+
+        let result = prompt_labels(&theme, &prefilled).expect("should succeed");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("env").map(String::as_str), Some("prod"));
+        assert_eq!(result.get("region").map(String::as_str), Some("us-west"));
+    }
+
+    #[test]
+    fn prompt_labels_with_empty_prefill_returns_empty_in_non_tty() {
+        // In CI / test harness, stdin is not a TTY.
+        // When prefilled labels are empty AND stdin is not a TTY,
+        // prompt_labels must return an empty map without attempting
+        // to read from the terminal.
+        let theme = ColorfulTheme::default();
+        let prefilled = BTreeMap::new();
+
+        // This test only verifies behavior when stdin is NOT a TTY,
+        // which is the case in test harnesses and CI environments.
+        if !std::io::stdin().is_terminal() {
+            let result = prompt_labels(&theme, &prefilled).expect("should succeed");
+            assert!(
+                result.is_empty(),
+                "non-TTY stdin with no prefilled labels must return empty map"
+            );
+        }
     }
 }

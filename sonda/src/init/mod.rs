@@ -320,6 +320,7 @@ fn prefill_from_csv(path: &str) -> Result<Prefill> {
             if msg.contains("no numeric data found") {
                 return Ok(Prefill {
                     signal_type: Some("metrics".to_string()),
+                    domain: Some("custom".to_string()),
                     ..Prefill::default()
                 });
             }
@@ -329,6 +330,7 @@ fn prefill_from_csv(path: &str) -> Result<Prefill> {
 
     let mut prefill = Prefill {
         signal_type: Some("metrics".to_string()),
+        domain: Some("custom".to_string()),
         ..Prefill::default()
     };
 
@@ -1241,6 +1243,93 @@ sink:
         assert_eq!(
             prefill.labels.get("region").map(String::as_str),
             Some("us-west")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_prefill: CSV sets domain to "custom"
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_prefill_from_csv_sets_domain_to_custom() {
+        use std::fs;
+
+        let dir =
+            std::env::temp_dir().join(format!("sonda-init-csv-domain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let csv_content = "timestamp,cpu_usage\n\
+            1000,50.1\n\
+            1001,49.9\n\
+            1002,50.3\n\
+            1003,49.7\n\
+            1004,50.2\n\
+            1005,49.8\n\
+            1006,50.1\n\
+            1007,49.9\n\
+            1008,50.3\n\
+            1009,49.7\n\
+            1010,50.2\n\
+            1011,49.8\n\
+            1012,50.0\n\
+            1013,50.1\n\
+            1014,49.9\n\
+            1015,50.2\n\
+            1016,49.8\n\
+            1017,50.1\n\
+            1018,49.9\n\
+            1019,50.0\n";
+        let csv_path = dir.join("domain-test.csv");
+        fs::write(&csv_path, csv_content).expect("write CSV");
+
+        let catalog = ScenarioCatalog::discover(&[]);
+        let args = InitArgs {
+            from: Some(csv_path.to_str().unwrap().to_string()),
+            ..default_init_args()
+        };
+
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(
+            prefill.domain.as_deref(),
+            Some("custom"),
+            "CSV-based prefill must set domain to 'custom'"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_prefill_from_csv_no_numeric_columns_sets_domain_to_custom() {
+        use std::fs;
+
+        let dir = std::env::temp_dir().join(format!(
+            "sonda-init-csv-no-num-domain-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let csv_content = "timestamp,status\n\
+            1000,ok\n\
+            1001,ok\n\
+            1002,error\n";
+        let csv_path = dir.join("no-numeric-domain.csv");
+        fs::write(&csv_path, csv_content).expect("write CSV");
+
+        let catalog = ScenarioCatalog::discover(&[]);
+        let args = InitArgs {
+            from: Some(csv_path.to_str().unwrap().to_string()),
+            ..default_init_args()
+        };
+
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(
+            prefill.domain.as_deref(),
+            Some("custom"),
+            "CSV-based prefill with no numeric columns must set domain to 'custom'"
         );
 
         let _ = fs::remove_dir_all(&dir);
