@@ -3,10 +3,12 @@
 //! Converts the collected user answers from the interactive prompts into
 //! valid, commented scenario YAML that is immediately runnable by
 //! `sonda metrics --scenario <file>`, `sonda logs --scenario <file>`,
+//! `sonda histogram --scenario <file>`, `sonda summary --scenario <file>`,
 //! or `sonda run --scenario <file>`.
 //!
-//! Supports all sink types including advanced sinks (remote_write, loki,
-//! otlp_grpc, kafka, tcp, udp) with their protocol-specific YAML fields.
+//! Supports all signal types (metrics, logs, histogram, summary) and all
+//! sink types including advanced sinks (remote_write, loki, otlp_grpc,
+//! kafka, tcp, udp) with their protocol-specific YAML fields.
 
 use std::collections::BTreeMap;
 
@@ -48,6 +50,44 @@ pub struct LogAnswers {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Collected answers for a histogram scenario.
+#[derive(Debug, Clone)]
+pub struct HistogramAnswers {
+    /// The metric name (e.g., `"http_request_duration_seconds"`).
+    pub name: String,
+    /// Distribution model type: `"normal"`, `"exponential"`, or `"uniform"`.
+    pub distribution_type: String,
+    /// Distribution-specific parameters as key-value pairs.
+    pub distribution_params: Vec<(String, ParamValue)>,
+    /// Observations per tick.
+    pub observations_per_tick: u64,
+    /// Bucket boundaries (`None` = use Prometheus defaults).
+    pub buckets: Option<Vec<f64>>,
+    /// RNG seed.
+    pub seed: u64,
+    /// Static labels.
+    pub labels: BTreeMap<String, String>,
+}
+
+/// Collected answers for a summary scenario.
+#[derive(Debug, Clone)]
+pub struct SummaryAnswers {
+    /// The metric name (e.g., `"rpc_duration_seconds"`).
+    pub name: String,
+    /// Distribution model type: `"normal"`, `"exponential"`, or `"uniform"`.
+    pub distribution_type: String,
+    /// Distribution-specific parameters as key-value pairs.
+    pub distribution_params: Vec<(String, ParamValue)>,
+    /// Observations per tick.
+    pub observations_per_tick: u64,
+    /// Quantile targets (`None` = use defaults `[0.5, 0.9, 0.95, 0.99]`).
+    pub quantiles: Option<Vec<f64>>,
+    /// RNG seed.
+    pub seed: u64,
+    /// Static labels.
+    pub labels: BTreeMap<String, String>,
+}
+
 /// Common delivery configuration collected from the user.
 #[derive(Debug, Clone)]
 pub struct DeliveryAnswers {
@@ -76,6 +116,10 @@ pub enum ScenarioKind {
     Pack(PackAnswers),
     /// A logs scenario.
     Logs(LogAnswers),
+    /// A histogram scenario with distribution-based observations.
+    Histogram(HistogramAnswers),
+    /// A summary scenario with quantile-based observations.
+    Summary(SummaryAnswers),
 }
 
 /// Classifies the generated YAML so the run-now path can dispatch to the
@@ -88,6 +132,10 @@ pub enum InitScenarioType {
     Pack,
     /// Logs scenario — parse as `LogScenarioConfig`.
     Logs,
+    /// Histogram scenario — parse as `HistogramScenarioConfig`.
+    Histogram,
+    /// Summary scenario — parse as `SummaryScenarioConfig`.
+    Summary,
 }
 
 impl ScenarioKind {
@@ -97,6 +145,8 @@ impl ScenarioKind {
             ScenarioKind::SingleMetric(_) => InitScenarioType::SingleMetric,
             ScenarioKind::Pack(_) => InitScenarioType::Pack,
             ScenarioKind::Logs(_) => InitScenarioType::Logs,
+            ScenarioKind::Histogram(_) => InitScenarioType::Histogram,
+            ScenarioKind::Summary(_) => InitScenarioType::Summary,
         }
     }
 }
@@ -125,6 +175,8 @@ pub fn render_scenario_yaml(kind: &ScenarioKind, delivery: &DeliveryAnswers) -> 
         ScenarioKind::SingleMetric(answers) => render_single_metric(answers, delivery),
         ScenarioKind::Pack(answers) => render_pack_scenario(answers, delivery),
         ScenarioKind::Logs(answers) => render_logs_scenario(answers, delivery),
+        ScenarioKind::Histogram(answers) => render_histogram_scenario(answers, delivery),
+        ScenarioKind::Summary(answers) => render_summary_scenario(answers, delivery),
     }
 }
 
@@ -140,6 +192,12 @@ pub fn suggest_filename(kind: &ScenarioKind) -> String {
             format!("{}.yaml", answers.pack_name.replace('_', "-"))
         }
         ScenarioKind::Logs(answers) => {
+            format!("{}.yaml", answers.name.replace('_', "-"))
+        }
+        ScenarioKind::Histogram(answers) => {
+            format!("{}.yaml", answers.name.replace('_', "-"))
+        }
+        ScenarioKind::Summary(answers) => {
             format!("{}.yaml", answers.name.replace('_', "-"))
         }
     }
@@ -340,6 +398,228 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
         }
     }
     out.push_str("  seed: 42\n");
+    out.push('\n');
+
+    // Labels.
+    if !answers.labels.is_empty() {
+        out.push_str("labels:\n");
+        for (key, value) in &answers.labels {
+            if needs_quoting(value) {
+                out.push_str(&format!(
+                    "  {key}: \"{}\"\n",
+                    escape_yaml_double_quoted(value)
+                ));
+            } else {
+                out.push_str(&format!("  {key}: {value}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Encoder.
+    out.push_str("encoder:\n");
+    out.push_str(&format!("  type: {}\n", delivery.encoder));
+    out.push('\n');
+
+    // Sink.
+    render_sink(&mut out, delivery, 0);
+
+    out
+}
+
+/// Default Prometheus histogram bucket boundaries.
+///
+/// Shown as a comment when the user selects Prometheus defaults instead
+/// of providing custom bucket boundaries.
+const PROMETHEUS_DEFAULT_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// Default summary quantile targets.
+///
+/// Shown as a comment when the user selects standard quantiles instead
+/// of providing custom values.
+const DEFAULT_QUANTILES: &[f64] = &[0.5, 0.9, 0.95, 0.99];
+
+/// Render a histogram scenario YAML with comments.
+fn render_histogram_scenario(answers: &HistogramAnswers, delivery: &DeliveryAnswers) -> String {
+    let mut out = String::with_capacity(1024);
+
+    // Header comment.
+    out.push_str(&format!(
+        "# {}: {} histogram scenario.\n",
+        answers.name, delivery.domain
+    ));
+    out.push_str("#\n");
+    out.push_str("# Generated by `sonda init`. Run with:\n");
+    out.push_str("#   sonda histogram --scenario <this-file>\n");
+    out.push_str("#   sonda run --scenario <this-file>\n");
+    out.push('\n');
+
+    // Scenario metadata.
+    out.push_str("# Scenario metadata for `sonda scenarios list`.\n");
+    out.push_str(&format!(
+        "scenario_name: {}\n",
+        answers.name.replace('_', "-")
+    ));
+    out.push_str(&format!("category: {}\n", delivery.domain));
+    out.push_str("signal_type: histogram\n");
+    out.push_str(&format!(
+        "description: \"{} histogram scenario\"\n",
+        escape_yaml_double_quoted(&capitalize_first(&delivery.domain))
+    ));
+    out.push('\n');
+
+    // Core schedule fields.
+    out.push_str(&format!("name: {}\n", answers.name));
+    out.push_str(&format!("rate: {}\n", format_rate(delivery.rate)));
+    out.push_str(&format!("duration: {}\n", delivery.duration));
+    out.push('\n');
+
+    // Distribution.
+    out.push_str("distribution:\n");
+    out.push_str(&format!("  type: {}\n", answers.distribution_type));
+    for (key, value) in &answers.distribution_params {
+        match value {
+            ParamValue::Float(v) => {
+                out.push_str(&format!("  {key}: {}\n", format_float(*v)));
+            }
+            ParamValue::String(s) => {
+                out.push_str(&format!("  {key}: \"{}\"\n", escape_yaml_double_quoted(s)));
+            }
+        }
+    }
+    out.push('\n');
+
+    // Observations per tick.
+    out.push_str(&format!(
+        "observations_per_tick: {}\n",
+        answers.observations_per_tick
+    ));
+    out.push_str(&format!("seed: {}\n", answers.seed));
+    out.push('\n');
+
+    // Buckets.
+    match &answers.buckets {
+        Some(custom) => {
+            let formatted: Vec<String> = custom.iter().map(|v| format_float(*v)).collect();
+            out.push_str(&format!("buckets: [{}]\n", formatted.join(", ")));
+        }
+        None => {
+            // Emit as a comment showing the Prometheus defaults.
+            let formatted: Vec<String> = PROMETHEUS_DEFAULT_BUCKETS
+                .iter()
+                .map(|v| format_float(*v))
+                .collect();
+            out.push_str(&format!(
+                "# buckets: [{}]  # (Prometheus defaults, omit to use built-in)\n",
+                formatted.join(", ")
+            ));
+        }
+    }
+    out.push('\n');
+
+    // Labels.
+    if !answers.labels.is_empty() {
+        out.push_str("labels:\n");
+        for (key, value) in &answers.labels {
+            if needs_quoting(value) {
+                out.push_str(&format!(
+                    "  {key}: \"{}\"\n",
+                    escape_yaml_double_quoted(value)
+                ));
+            } else {
+                out.push_str(&format!("  {key}: {value}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
+    // Encoder.
+    out.push_str("encoder:\n");
+    out.push_str(&format!("  type: {}\n", delivery.encoder));
+    out.push('\n');
+
+    // Sink.
+    render_sink(&mut out, delivery, 0);
+
+    out
+}
+
+/// Render a summary scenario YAML with comments.
+fn render_summary_scenario(answers: &SummaryAnswers, delivery: &DeliveryAnswers) -> String {
+    let mut out = String::with_capacity(1024);
+
+    // Header comment.
+    out.push_str(&format!(
+        "# {}: {} summary scenario.\n",
+        answers.name, delivery.domain
+    ));
+    out.push_str("#\n");
+    out.push_str("# Generated by `sonda init`. Run with:\n");
+    out.push_str("#   sonda summary --scenario <this-file>\n");
+    out.push_str("#   sonda run --scenario <this-file>\n");
+    out.push('\n');
+
+    // Scenario metadata.
+    out.push_str("# Scenario metadata for `sonda scenarios list`.\n");
+    out.push_str(&format!(
+        "scenario_name: {}\n",
+        answers.name.replace('_', "-")
+    ));
+    out.push_str(&format!("category: {}\n", delivery.domain));
+    out.push_str("signal_type: summary\n");
+    out.push_str(&format!(
+        "description: \"{} summary scenario\"\n",
+        escape_yaml_double_quoted(&capitalize_first(&delivery.domain))
+    ));
+    out.push('\n');
+
+    // Core schedule fields.
+    out.push_str(&format!("name: {}\n", answers.name));
+    out.push_str(&format!("rate: {}\n", format_rate(delivery.rate)));
+    out.push_str(&format!("duration: {}\n", delivery.duration));
+    out.push('\n');
+
+    // Distribution.
+    out.push_str("distribution:\n");
+    out.push_str(&format!("  type: {}\n", answers.distribution_type));
+    for (key, value) in &answers.distribution_params {
+        match value {
+            ParamValue::Float(v) => {
+                out.push_str(&format!("  {key}: {}\n", format_float(*v)));
+            }
+            ParamValue::String(s) => {
+                out.push_str(&format!("  {key}: \"{}\"\n", escape_yaml_double_quoted(s)));
+            }
+        }
+    }
+    out.push('\n');
+
+    // Observations per tick.
+    out.push_str(&format!(
+        "observations_per_tick: {}\n",
+        answers.observations_per_tick
+    ));
+    out.push_str(&format!("seed: {}\n", answers.seed));
+    out.push('\n');
+
+    // Quantiles.
+    match &answers.quantiles {
+        Some(custom) => {
+            let formatted: Vec<String> = custom.iter().map(|v| format_float(*v)).collect();
+            out.push_str(&format!("quantiles: [{}]\n", formatted.join(", ")));
+        }
+        None => {
+            // Emit as a comment showing the defaults.
+            let formatted: Vec<String> =
+                DEFAULT_QUANTILES.iter().map(|v| format_float(*v)).collect();
+            out.push_str(&format!(
+                "# quantiles: [{}]  # (standard defaults, omit to use built-in)\n",
+                formatted.join(", ")
+            ));
+        }
+    }
     out.push('\n');
 
     // Labels.
@@ -1584,5 +1864,410 @@ mod tests {
             Some("remote_write"),
             "pairing logic must detect the mismatch"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_scenario_yaml: histogram
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a default delivery for histogram/summary tests.
+    fn histogram_test_delivery() -> DeliveryAnswers {
+        DeliveryAnswers {
+            domain: "application".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: "stdout".to_string(),
+            endpoint: None,
+            sink_extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn render_histogram_normal_produces_valid_yaml() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "http_request_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![
+                ("mean".to_string(), ParamValue::Float(0.1)),
+                ("stddev".to_string(), ParamValue::Float(0.03)),
+            ],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::from([("instance".to_string(), "web-01".to_string())]),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("name: http_request_duration_seconds"),
+            "must contain metric name"
+        );
+        assert!(
+            yaml.contains("signal_type: histogram"),
+            "must contain histogram signal type"
+        );
+        assert!(
+            yaml.contains("type: normal"),
+            "must contain distribution type"
+        );
+        assert!(yaml.contains("mean: 0.1"), "must contain mean param");
+        assert!(yaml.contains("stddev: 0.03"), "must contain stddev param");
+        assert!(
+            yaml.contains("observations_per_tick: 100"),
+            "must contain observations_per_tick"
+        );
+        assert!(yaml.contains("seed: 42"), "must contain seed");
+        assert!(
+            yaml.contains("instance: web-01"),
+            "must contain instance label"
+        );
+        assert!(
+            yaml.contains("sonda histogram --scenario"),
+            "must contain histogram run command"
+        );
+    }
+
+    #[test]
+    fn render_histogram_exponential_produces_valid_yaml() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "api_latency_seconds".to_string(),
+            distribution_type: "exponential".to_string(),
+            distribution_params: vec![("rate".to_string(), ParamValue::Float(10.0))],
+            observations_per_tick: 50,
+            buckets: None,
+            seed: 7,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: exponential"),
+            "must contain exponential distribution"
+        );
+        assert!(yaml.contains("rate: 10.0"), "must contain rate param");
+        assert!(
+            yaml.contains("observations_per_tick: 50"),
+            "must contain observations_per_tick"
+        );
+    }
+
+    #[test]
+    fn render_histogram_with_custom_buckets() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "custom_hist".to_string(),
+            distribution_type: "uniform".to_string(),
+            distribution_params: vec![
+                ("min".to_string(), ParamValue::Float(0.0)),
+                ("max".to_string(), ParamValue::Float(1.0)),
+            ],
+            observations_per_tick: 200,
+            buckets: Some(vec![0.01, 0.05, 0.1, 0.5, 1.0]),
+            seed: 1,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("buckets: [0.01, 0.05, 0.1, 0.5, 1.0]"),
+            "must contain custom buckets as flow sequence"
+        );
+        // Must NOT be commented out.
+        assert!(
+            !yaml.contains("# buckets:"),
+            "custom buckets must not be a comment"
+        );
+    }
+
+    #[test]
+    fn render_histogram_default_buckets_as_comment() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "default_buckets".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![
+                ("mean".to_string(), ParamValue::Float(0.5)),
+                ("stddev".to_string(), ParamValue::Float(0.1)),
+            ],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("# buckets:"),
+            "default buckets must be a comment"
+        );
+        assert!(
+            yaml.contains("Prometheus defaults"),
+            "comment must mention Prometheus defaults"
+        );
+        // Must NOT have an uncommented buckets key.
+        assert!(
+            !yaml.contains("\nbuckets:"),
+            "must not have uncommented buckets key"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // render_scenario_yaml: summary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_summary_normal_produces_valid_yaml() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "rpc_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![
+                ("mean".to_string(), ParamValue::Float(0.1)),
+                ("stddev".to_string(), ParamValue::Float(0.02)),
+            ],
+            observations_per_tick: 100,
+            quantiles: None,
+            seed: 42,
+            labels: BTreeMap::from([("service".to_string(), "api".to_string())]),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("name: rpc_duration_seconds"),
+            "must contain metric name"
+        );
+        assert!(
+            yaml.contains("signal_type: summary"),
+            "must contain summary signal type"
+        );
+        assert!(
+            yaml.contains("type: normal"),
+            "must contain distribution type"
+        );
+        assert!(yaml.contains("mean: 0.1"), "must contain mean");
+        assert!(yaml.contains("stddev: 0.02"), "must contain stddev");
+        assert!(
+            yaml.contains("observations_per_tick: 100"),
+            "must contain observations_per_tick"
+        );
+        assert!(yaml.contains("service: api"), "must contain label");
+        assert!(
+            yaml.contains("sonda summary --scenario"),
+            "must contain summary run command"
+        );
+    }
+
+    #[test]
+    fn render_summary_with_custom_quantiles() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "custom_summary".to_string(),
+            distribution_type: "exponential".to_string(),
+            distribution_params: vec![("rate".to_string(), ParamValue::Float(5.0))],
+            observations_per_tick: 50,
+            quantiles: Some(vec![0.5, 0.75, 0.9, 0.99]),
+            seed: 99,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("quantiles: [0.5, 0.75, 0.9, 0.99]"),
+            "must contain custom quantiles as flow sequence"
+        );
+        assert!(
+            !yaml.contains("# quantiles:"),
+            "custom quantiles must not be a comment"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-trip: histogram and summary YAML parses as config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rendered_histogram_parses_as_histogram_config() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "http_request_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![
+                ("mean".to_string(), ParamValue::Float(0.1)),
+                ("stddev".to_string(), ParamValue::Float(0.03)),
+            ],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::from([("instance".to_string(), "web-01".to_string())]),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::HistogramScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("generated histogram YAML must parse");
+        assert_eq!(config.name, "http_request_duration_seconds");
+        assert!((config.rate - 1.0).abs() < f64::EPSILON);
+        assert!(config.buckets.is_none(), "default buckets should be None");
+        assert_eq!(
+            config.observations_per_tick,
+            Some(100),
+            "observations_per_tick must be 100"
+        );
+        assert_eq!(config.seed, Some(42), "seed must be 42");
+        match config.distribution {
+            sonda_core::config::DistributionConfig::Normal { mean, stddev } => {
+                assert!((mean - 0.1).abs() < f64::EPSILON);
+                assert!((stddev - 0.03).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Normal distribution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rendered_histogram_with_custom_buckets_parses() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "custom_hist".to_string(),
+            distribution_type: "exponential".to_string(),
+            distribution_params: vec![("rate".to_string(), ParamValue::Float(10.0))],
+            observations_per_tick: 50,
+            buckets: Some(vec![0.01, 0.05, 0.1, 0.5, 1.0, 5.0]),
+            seed: 7,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::HistogramScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("histogram with custom buckets must parse");
+        let buckets = config.buckets.expect("custom buckets must be Some");
+        assert_eq!(buckets.len(), 6);
+        assert!((buckets[0] - 0.01).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rendered_summary_parses_as_summary_config() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "rpc_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![
+                ("mean".to_string(), ParamValue::Float(0.1)),
+                ("stddev".to_string(), ParamValue::Float(0.02)),
+            ],
+            observations_per_tick: 100,
+            quantiles: None,
+            seed: 42,
+            labels: BTreeMap::from([("service".to_string(), "api".to_string())]),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::SummaryScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("generated summary YAML must parse");
+        assert_eq!(config.name, "rpc_duration_seconds");
+        assert!((config.rate - 1.0).abs() < f64::EPSILON);
+        assert!(
+            config.quantiles.is_none(),
+            "default quantiles should be None"
+        );
+        assert_eq!(config.observations_per_tick, Some(100));
+        assert_eq!(config.seed, Some(42));
+        match config.distribution {
+            sonda_core::config::DistributionConfig::Normal { mean, stddev } => {
+                assert!((mean - 0.1).abs() < f64::EPSILON);
+                assert!((stddev - 0.02).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Normal distribution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rendered_summary_with_custom_quantiles_parses() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "custom_summary".to_string(),
+            distribution_type: "exponential".to_string(),
+            distribution_params: vec![("rate".to_string(), ParamValue::Float(5.0))],
+            observations_per_tick: 50,
+            quantiles: Some(vec![0.5, 0.75, 0.9, 0.99]),
+            seed: 99,
+            labels: BTreeMap::new(),
+        });
+        let delivery = histogram_test_delivery();
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::SummaryScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("summary with custom quantiles must parse");
+        let quantiles = config.quantiles.expect("custom quantiles must be Some");
+        assert_eq!(quantiles.len(), 4);
+        assert!((quantiles[0] - 0.5).abs() < f64::EPSILON);
+        assert!((quantiles[3] - 0.99).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // suggest_filename: histogram and summary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_filename_for_histogram() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "http_request_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(
+            suggest_filename(&kind),
+            "http-request-duration-seconds.yaml"
+        );
+    }
+
+    #[test]
+    fn suggest_filename_for_summary() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "rpc_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            quantiles: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(suggest_filename(&kind), "rpc-duration-seconds.yaml");
+    }
+
+    // -----------------------------------------------------------------------
+    // InitScenarioType: histogram and summary classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scenario_type_for_histogram() {
+        let kind = ScenarioKind::Histogram(HistogramAnswers {
+            name: "test".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(kind.scenario_type(), InitScenarioType::Histogram);
+    }
+
+    #[test]
+    fn scenario_type_for_summary() {
+        let kind = ScenarioKind::Summary(SummaryAnswers {
+            name: "test".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            quantiles: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(kind.scenario_type(), InitScenarioType::Summary);
     }
 }

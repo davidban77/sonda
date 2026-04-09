@@ -560,6 +560,8 @@ fn print_success(kind: &yaml_gen::ScenarioKind, output_path: &str) {
         yaml_gen::ScenarioKind::SingleMetric(a) => (a.name.as_str(), "metrics"),
         yaml_gen::ScenarioKind::Pack(a) => (a.pack_name.as_str(), "metrics (pack)"),
         yaml_gen::ScenarioKind::Logs(a) => (a.name.as_str(), "logs"),
+        yaml_gen::ScenarioKind::Histogram(a) => (a.name.as_str(), "histogram"),
+        yaml_gen::ScenarioKind::Summary(a) => (a.name.as_str(), "summary"),
     };
 
     eprintln!("\n{}", rule.if_supports_color(Stderr, |t| t.dimmed()));
@@ -600,6 +602,14 @@ fn print_success(kind: &yaml_gen::ScenarioKind, output_path: &str) {
         }
         yaml_gen::ScenarioKind::Logs(_) => {
             eprintln!("    sonda logs --scenario {output_path}");
+            eprintln!("    sonda run --scenario {output_path}");
+        }
+        yaml_gen::ScenarioKind::Histogram(_) => {
+            eprintln!("    sonda histogram --scenario {output_path}");
+            eprintln!("    sonda run --scenario {output_path}");
+        }
+        yaml_gen::ScenarioKind::Summary(_) => {
+            eprintln!("    sonda summary --scenario {output_path}");
             eprintln!("    sonda run --scenario {output_path}");
         }
     }
@@ -720,6 +730,36 @@ mod tests {
             labels: BTreeMap::new(),
         });
         print_success(&kind, "./scenarios/app-logs.yaml");
+    }
+
+    #[test]
+    fn success_message_histogram_does_not_panic() {
+        use std::collections::BTreeMap;
+        let kind = yaml_gen::ScenarioKind::Histogram(yaml_gen::HistogramAnswers {
+            name: "http_request_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            buckets: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        print_success(&kind, "./scenarios/http-request-duration-seconds.yaml");
+    }
+
+    #[test]
+    fn success_message_summary_does_not_panic() {
+        use std::collections::BTreeMap;
+        let kind = yaml_gen::ScenarioKind::Summary(yaml_gen::SummaryAnswers {
+            name: "rpc_duration_seconds".to_string(),
+            distribution_type: "normal".to_string(),
+            distribution_params: vec![],
+            observations_per_tick: 100,
+            quantiles: None,
+            seed: 42,
+            labels: BTreeMap::new(),
+        });
+        print_success(&kind, "./scenarios/rpc-duration-seconds.yaml");
     }
 
     // -----------------------------------------------------------------------

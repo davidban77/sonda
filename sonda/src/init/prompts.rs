@@ -9,6 +9,9 @@
 //!
 //! ## Features
 //!
+//! - **Signal types**: metrics, logs, histogram, and summary. Each has its own
+//!   section 2 prompt flow. Histogram and summary prompt for distribution model,
+//!   observations per tick, and bucket/quantile configuration.
 //! - **Pack filtering**: when selecting a metric pack, the list is filtered by
 //!   the chosen domain. Falls back to all packs if none match.
 //! - **Advanced sinks**: a two-tier sink menu keeps the primary selection simple
@@ -32,8 +35,8 @@ use owo_colors::Stream::Stderr;
 use crate::packs::PackCatalog;
 
 use super::yaml_gen::{
-    required_encoder_for_sink, DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue,
-    ScenarioKind,
+    required_encoder_for_sink, DeliveryAnswers, HistogramAnswers, LogAnswers, MetricAnswers,
+    PackAnswers, ParamValue, ScenarioKind, SummaryAnswers,
 };
 
 /// Optional pre-filled values for the init prompts.
@@ -46,7 +49,7 @@ use super::yaml_gen::{
 /// prompts begin. Explicit CLI flags take precedence over `--from` values.
 #[derive(Debug, Default, Clone)]
 pub struct Prefill {
-    /// Signal type: `"metrics"` or `"logs"`.
+    /// Signal type: `"metrics"`, `"logs"`, `"histogram"`, or `"summary"`.
     pub signal_type: Option<String>,
     /// Domain category (infrastructure, network, application, custom).
     pub domain: Option<String>,
@@ -159,6 +162,16 @@ const ADVANCED_SINK_DESCRIPTIONS: &[&str] = &[
     "udp           - UDP socket (host:port)",
 ];
 
+/// Available distribution model types for histogram and summary scenarios.
+const DISTRIBUTION_MODELS: &[&str] = &["normal", "exponential", "uniform"];
+
+/// Human-readable descriptions for each distribution model.
+const DISTRIBUTION_MODEL_DESCRIPTIONS: &[&str] = &[
+    "normal       - Gaussian (mean + stddev)",
+    "exponential  - latency-style (rate parameter)",
+    "uniform      - even spread over [min, max]",
+];
+
 /// Available domain categories.
 const DOMAINS: &[&str] = &["infrastructure", "network", "application", "custom"];
 
@@ -221,15 +234,17 @@ pub fn run_prompts(
     match signal_type.as_str() {
         "metrics" => run_metrics_prompts(&theme, &domain, pack_catalog, prefill),
         "logs" => run_logs_prompts(&theme, &domain, prefill),
+        "histogram" => run_histogram_prompts(&theme, &domain, prefill),
+        "summary" => run_summary_prompts(&theme, &domain, prefill),
         _ => unreachable!("signal type is constrained by prompt"),
     }
 }
 
-/// Prompt for signal type: metrics or logs.
+/// Prompt for signal type: metrics, logs, histogram, or summary.
 ///
 /// When `prefill.signal_type` is a valid value, returns it without prompting.
 fn prompt_signal_type(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
-    let items = &["metrics", "logs"];
+    let items = &["metrics", "logs", "histogram", "summary"];
     if let Some(ref val) = prefill.signal_type {
         if items.contains(&val.as_str()) {
             return Ok(val.clone());
@@ -394,6 +409,265 @@ fn run_logs_prompts(
     };
 
     Ok((kind, delivery))
+}
+
+/// Full histogram prompt flow.
+fn run_histogram_prompts(
+    theme: &ColorfulTheme,
+    domain: &str,
+    prefill: &Prefill,
+) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
+    // Section 2: Histogram.
+    print_section(2, 4, "Histogram");
+
+    let name = if let Some(ref val) = prefill.metric {
+        val.clone()
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Metric name")
+            .default("http_request_duration_seconds".to_string())
+            .interact_text()?
+    };
+
+    // Distribution model.
+    let dist_idx = Select::with_theme(theme)
+        .with_prompt("Distribution model")
+        .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
+        .default(0)
+        .interact()?;
+    let distribution_type = DISTRIBUTION_MODELS[dist_idx].to_string();
+
+    // Distribution-specific parameters.
+    let distribution_params = prompt_distribution_params(theme, &distribution_type)?;
+
+    // Observations per tick.
+    let observations_per_tick: u64 = Input::with_theme(theme)
+        .with_prompt("Observations per tick")
+        .default(100u64)
+        .interact_text()?;
+
+    // Bucket boundaries.
+    let bucket_items = &["Prometheus defaults", "Custom"];
+    let bucket_idx = Select::with_theme(theme)
+        .with_prompt("Bucket boundaries")
+        .items(bucket_items)
+        .default(0)
+        .interact()?;
+    let buckets = if bucket_idx == 1 {
+        let raw: String = Input::with_theme(theme)
+            .with_prompt("Custom buckets (comma-separated floats)")
+            .default("0.01, 0.05, 0.1, 0.5, 1.0, 5.0".to_string())
+            .interact_text()?;
+        let parsed: Vec<f64> = raw
+            .split(',')
+            .filter_map(|s| s.trim().parse::<f64>().ok())
+            .collect();
+        if parsed.is_empty() {
+            None
+        } else {
+            Some(parsed)
+        }
+    } else {
+        None
+    };
+
+    // Seed.
+    let seed: u64 = Input::with_theme(theme)
+        .with_prompt("RNG seed")
+        .default(42u64)
+        .interact_text()?;
+
+    // Labels.
+    let labels = prompt_labels(theme, &prefill.labels)?;
+
+    // Section 3: Delivery.
+    print_section(3, 4, "Delivery");
+
+    let rate = prompt_rate(theme, prefill)?;
+    let duration = prompt_duration(theme, prefill)?;
+    let encoder = prompt_encoder(theme, METRIC_ENCODERS, prefill)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme, prefill)?;
+
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
+
+    let kind = ScenarioKind::Histogram(HistogramAnswers {
+        name,
+        distribution_type,
+        distribution_params,
+        observations_per_tick,
+        buckets,
+        seed,
+        labels,
+    });
+
+    let delivery = DeliveryAnswers {
+        domain: domain.to_string(),
+        rate,
+        duration,
+        encoder,
+        sink,
+        endpoint,
+        sink_extra,
+    };
+
+    Ok((kind, delivery))
+}
+
+/// Full summary prompt flow.
+fn run_summary_prompts(
+    theme: &ColorfulTheme,
+    domain: &str,
+    prefill: &Prefill,
+) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
+    // Section 2: Summary.
+    print_section(2, 4, "Summary");
+
+    let name = if let Some(ref val) = prefill.metric {
+        val.clone()
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Metric name")
+            .default("rpc_duration_seconds".to_string())
+            .interact_text()?
+    };
+
+    // Distribution model.
+    let dist_idx = Select::with_theme(theme)
+        .with_prompt("Distribution model")
+        .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
+        .default(0)
+        .interact()?;
+    let distribution_type = DISTRIBUTION_MODELS[dist_idx].to_string();
+
+    // Distribution-specific parameters.
+    let distribution_params = prompt_distribution_params(theme, &distribution_type)?;
+
+    // Observations per tick.
+    let observations_per_tick: u64 = Input::with_theme(theme)
+        .with_prompt("Observations per tick")
+        .default(100u64)
+        .interact_text()?;
+
+    // Quantile targets.
+    let quantile_items = &["Standard quantiles", "Custom"];
+    let quantile_idx = Select::with_theme(theme)
+        .with_prompt("Quantile targets")
+        .items(quantile_items)
+        .default(0)
+        .interact()?;
+    let quantiles = if quantile_idx == 1 {
+        let raw: String = Input::with_theme(theme)
+            .with_prompt("Custom quantiles (comma-separated, values in (0,1))")
+            .default("0.5, 0.9, 0.95, 0.99".to_string())
+            .interact_text()?;
+        let parsed: Vec<f64> = raw
+            .split(',')
+            .filter_map(|s| {
+                let v = s.trim().parse::<f64>().ok()?;
+                if v > 0.0 && v < 1.0 {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if parsed.is_empty() {
+            None
+        } else {
+            Some(parsed)
+        }
+    } else {
+        None
+    };
+
+    // Seed.
+    let seed: u64 = Input::with_theme(theme)
+        .with_prompt("RNG seed")
+        .default(42u64)
+        .interact_text()?;
+
+    // Labels.
+    let labels = prompt_labels(theme, &prefill.labels)?;
+
+    // Section 3: Delivery.
+    print_section(3, 4, "Delivery");
+
+    let rate = prompt_rate(theme, prefill)?;
+    let duration = prompt_duration(theme, prefill)?;
+    let encoder = prompt_encoder(theme, METRIC_ENCODERS, prefill)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme, prefill)?;
+
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
+
+    let kind = ScenarioKind::Summary(SummaryAnswers {
+        name,
+        distribution_type,
+        distribution_params,
+        observations_per_tick,
+        quantiles,
+        seed,
+        labels,
+    });
+
+    let delivery = DeliveryAnswers {
+        domain: domain.to_string(),
+        rate,
+        duration,
+        encoder,
+        sink,
+        endpoint,
+        sink_extra,
+    };
+
+    Ok((kind, delivery))
+}
+
+/// Prompt for distribution-specific parameters.
+///
+/// Each distribution model has its own set of numeric parameters.
+fn prompt_distribution_params(
+    theme: &ColorfulTheme,
+    distribution_type: &str,
+) -> Result<Vec<(String, ParamValue)>, io::Error> {
+    let params = match distribution_type {
+        "normal" => {
+            let mean: f64 = Input::with_theme(theme)
+                .with_prompt("Mean")
+                .default(0.1)
+                .interact_text()?;
+            let stddev: f64 = Input::with_theme(theme)
+                .with_prompt("Standard deviation")
+                .default(0.03)
+                .interact_text()?;
+            vec![
+                ("mean".to_string(), ParamValue::Float(mean)),
+                ("stddev".to_string(), ParamValue::Float(stddev)),
+            ]
+        }
+        "exponential" => {
+            let rate: f64 = Input::with_theme(theme)
+                .with_prompt("Rate (lambda)")
+                .default(10.0)
+                .interact_text()?;
+            vec![("rate".to_string(), ParamValue::Float(rate))]
+        }
+        "uniform" => {
+            let min: f64 = Input::with_theme(theme)
+                .with_prompt("Min value")
+                .default(0.0)
+                .interact_text()?;
+            let max: f64 = Input::with_theme(theme)
+                .with_prompt("Max value")
+                .default(1.0)
+                .interact_text()?;
+            vec![
+                ("min".to_string(), ParamValue::Float(min)),
+                ("max".to_string(), ParamValue::Float(max)),
+            ]
+        }
+        _ => vec![],
+    };
+    Ok(params)
 }
 
 /// Prompt for a single metric: name, situation, parameters, labels.
@@ -1708,5 +1982,35 @@ mod tests {
                 "non-TTY stdin with no prefilled labels must return empty map"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Distribution model constants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn distribution_models_and_descriptions_have_same_length() {
+        assert_eq!(
+            DISTRIBUTION_MODELS.len(),
+            DISTRIBUTION_MODEL_DESCRIPTIONS.len(),
+            "each distribution model must have a description"
+        );
+    }
+
+    #[test]
+    fn distribution_model_descriptions_contain_their_name() {
+        for (i, &model) in DISTRIBUTION_MODELS.iter().enumerate() {
+            assert!(
+                DISTRIBUTION_MODEL_DESCRIPTIONS[i].contains(model),
+                "description for '{model}' must contain the model name"
+            );
+        }
+    }
+
+    #[test]
+    fn distribution_models_include_expected_entries() {
+        assert!(DISTRIBUTION_MODELS.contains(&"normal"));
+        assert!(DISTRIBUTION_MODELS.contains(&"exponential"));
+        assert!(DISTRIBUTION_MODELS.contains(&"uniform"));
     }
 }
