@@ -117,7 +117,7 @@ fn generate_yaml(data: &CsvData, rate: f64, duration: &str) -> String {
         .zip(data.values.iter())
         .map(|(col, vals)| {
             let pattern = detect_pattern(vals);
-            pattern_to_spec(&pattern, col, rate)
+            pattern_to_spec(&pattern, col, rate, duration)
         })
         .collect();
 

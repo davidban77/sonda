@@ -1473,4 +1473,163 @@ mod tests {
             _ => panic!("expected Packs command"),
         }
     }
+
+    // ---- Import subcommand parsing -----------------------------------------------
+
+    #[test]
+    fn cli_import_analyze_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "import", "foo.csv", "--analyze"])
+            .expect("import --analyze should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert_eq!(args.file, PathBuf::from("foo.csv"));
+                assert!(args.analyze);
+                assert!(args.output.is_none());
+                assert!(!args.run);
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_default_rate_and_duration() {
+        let cli = Cli::try_parse_from(["sonda", "import", "data.csv", "--analyze"])
+            .expect("import with defaults should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert_eq!(args.rate, 1.0, "default rate must be 1.0");
+                assert_eq!(args.duration, "60s", "default duration must be 60s");
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_columns_flag_is_parsed() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "import",
+            "data.csv",
+            "--analyze",
+            "--columns",
+            "1,3,5",
+        ])
+        .expect("import --columns should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert_eq!(args.columns.as_deref(), Some("1,3,5"));
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_output_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "import", "data.csv", "-o", "out.yaml"])
+            .expect("import -o should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert_eq!(args.output, Some(PathBuf::from("out.yaml")));
+                assert!(!args.analyze);
+                assert!(!args.run);
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_run_flag_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "import", "data.csv", "--run"])
+            .expect("import --run should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert!(args.run);
+                assert!(!args.analyze);
+                assert!(args.output.is_none());
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_rate_and_duration_overrides() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "import",
+            "data.csv",
+            "--run",
+            "--rate",
+            "5",
+            "--duration",
+            "2m",
+        ])
+        .expect("import with rate and duration overrides should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert_eq!(args.rate, 5.0);
+                assert_eq!(args.duration, "2m");
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_analyze_conflicts_with_output() {
+        let result =
+            Cli::try_parse_from(["sonda", "import", "data.csv", "--analyze", "-o", "out.yaml"]);
+        assert!(result.is_err(), "--analyze and -o must conflict");
+    }
+
+    #[test]
+    fn cli_import_analyze_conflicts_with_run() {
+        let result = Cli::try_parse_from(["sonda", "import", "data.csv", "--analyze", "--run"]);
+        assert!(result.is_err(), "--analyze and --run must conflict");
+    }
+
+    #[test]
+    fn cli_import_output_conflicts_with_run() {
+        let result =
+            Cli::try_parse_from(["sonda", "import", "data.csv", "-o", "out.yaml", "--run"]);
+        assert!(result.is_err(), "-o and --run must conflict");
+    }
+
+    #[test]
+    fn cli_import_requires_file_argument() {
+        let result = Cli::try_parse_from(["sonda", "import", "--analyze"]);
+        assert!(result.is_err(), "import without file must fail");
+    }
+
+    #[test]
+    fn cli_import_run_with_columns() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "import",
+            "data.csv",
+            "--run",
+            "--columns",
+            "2,4",
+            "--rate",
+            "10",
+            "--duration",
+            "5m",
+        ])
+        .expect("import --run with all options should parse");
+        match cli.command {
+            Commands::Import(ref args) => {
+                assert!(args.run);
+                assert_eq!(args.columns.as_deref(), Some("2,4"));
+                assert_eq!(args.rate, 10.0);
+                assert_eq!(args.duration, "5m");
+            }
+            _ => panic!("expected Import command"),
+        }
+    }
+
+    #[test]
+    fn cli_import_verbose_flag_with_run() {
+        let cli = Cli::try_parse_from(["sonda", "--verbose", "import", "data.csv", "--run"])
+            .expect("import with --verbose should parse");
+        assert!(cli.verbose);
+        assert!(matches!(cli.command, Commands::Import(_)));
+    }
 }

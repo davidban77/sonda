@@ -135,6 +135,9 @@ pub fn read_csv(path: &Path, selected_columns: Option<&[usize]>) -> Result<CsvDa
     let mut values: Vec<Vec<f64>> = vec![Vec::new(); target_indices.len()];
 
     for line in &lines[data_start..] {
+        // Simple comma split is sufficient for data rows: numeric values and
+        // epoch timestamps never contain commas or quotes, so RFC 4180-aware
+        // parsing (used for headers via split_csv_header_fields) is unnecessary.
         let fields: Vec<&str> = line.split(',').collect();
         for (col_pos, &col_idx) in target_indices.iter().enumerate() {
             if let Some(field) = fields.get(col_idx) {

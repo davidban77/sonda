@@ -54,8 +54,10 @@ src/
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
 ```
 
-This crate should stay small. Five to seven files is the target. If it grows beyond seven, something
-is in the wrong crate.
+This crate should stay small. Seven files plus subdirectory modules for complex features is the
+target. Subdirectories (e.g., `import/`) are an accepted extension when a feature requires
+multiple tightly-coupled files. If top-level file count grows beyond seven or a subdirectory
+exceeds four files, something may belong in sonda-core.
 
 ## CLI Surface
 

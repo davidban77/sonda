@@ -37,8 +37,16 @@ pub enum ParamValue {
 /// Convert a pattern and column metadata into a scenario specification.
 ///
 /// The `rate` parameter is needed to convert point-based durations into
-/// time-based durations for generator parameters.
-pub fn pattern_to_spec(pattern: &Pattern, meta: &ColumnMeta, rate: f64) -> ScenarioSpec {
+/// time-based durations for generator parameters. The `duration` string
+/// (e.g., `"60s"`, `"5m"`) is forwarded to patterns like `Climb` that
+/// map to the `leak` alias, where `time_to_ceiling` must be >= the
+/// scenario duration to pass sonda-core validation.
+pub fn pattern_to_spec(
+    pattern: &Pattern,
+    meta: &ColumnMeta,
+    rate: f64,
+    duration: &str,
+) -> ScenarioSpec {
     let name = meta
         .metric_name
         .clone()
@@ -48,7 +56,12 @@ pub fn pattern_to_spec(pattern: &Pattern, meta: &ColumnMeta, rate: f64) -> Scena
 
     let (generator_type, generator_params) = match pattern {
         Pattern::Steady { center, amplitude } => {
-            let period = format!("{}s", 60); // default 60s period
+            // 60s is a reasonable default period for steady oscillation:
+            // it matches common scrape intervals (Prometheus default 15-60s)
+            // and produces visually smooth waves at typical emission rates.
+            // The pattern detector does not estimate period from the data
+            // because a steady signal's frequency is not its defining trait.
+            let period = "60s".to_string();
             let params = vec![
                 ("center".to_string(), ParamValue::Float(*center)),
                 ("amplitude".to_string(), ParamValue::Float(*amplitude)),
@@ -79,10 +92,17 @@ pub fn pattern_to_spec(pattern: &Pattern, meta: &ColumnMeta, rate: f64) -> Scena
             ("spike_event".to_string(), params)
         }
         Pattern::Climb { baseline, ceiling } => {
-            // Use "leak" alias: one-way ramp, default 10m to ceiling.
+            // Use "leak" alias: one-way ramp to ceiling. The leak alias
+            // desugaring in sonda-core validates that time_to_ceiling >=
+            // scenario duration, so we set it to match the scenario
+            // duration exactly (the ramp fills the entire run).
             let params = vec![
                 ("baseline".to_string(), ParamValue::Float(*baseline)),
                 ("ceiling".to_string(), ParamValue::Float(*ceiling)),
+                (
+                    "time_to_ceiling".to_string(),
+                    ParamValue::String(duration.to_string()),
+                ),
             ];
             ("leak".to_string(), params)
         }
@@ -392,7 +412,7 @@ mod tests {
             metric_name: Some("cpu_usage".to_string()),
             labels: HashMap::new(),
         };
-        let spec = pattern_to_spec(&pattern, &meta, 1.0);
+        let spec = pattern_to_spec(&pattern, &meta, 1.0, "60s");
         assert_eq!(spec.name, "cpu_usage");
         assert_eq!(spec.generator_type, "steady");
     }
@@ -410,7 +430,7 @@ mod tests {
             metric_name: Some("error_rate".to_string()),
             labels: HashMap::new(),
         };
-        let spec = pattern_to_spec(&pattern, &meta, 1.0);
+        let spec = pattern_to_spec(&pattern, &meta, 1.0, "60s");
         assert_eq!(spec.generator_type, "spike_event");
     }
 
@@ -425,8 +445,31 @@ mod tests {
             metric_name: Some("mem_usage".to_string()),
             labels: HashMap::new(),
         };
-        let spec = pattern_to_spec(&pattern, &meta, 1.0);
+        let spec = pattern_to_spec(&pattern, &meta, 1.0, "60s");
         assert_eq!(spec.generator_type, "leak");
+    }
+
+    #[test]
+    fn climb_pattern_sets_time_to_ceiling_from_duration() {
+        let pattern = Pattern::Climb {
+            baseline: 10.0,
+            ceiling: 90.0,
+        };
+        let meta = ColumnMeta {
+            index: 1,
+            metric_name: Some("mem_leak".to_string()),
+            labels: HashMap::new(),
+        };
+        let spec = pattern_to_spec(&pattern, &meta, 1.0, "5m");
+        let ttc = spec
+            .generator_params
+            .iter()
+            .find(|(k, _)| k == "time_to_ceiling");
+        assert!(ttc.is_some(), "must include time_to_ceiling param");
+        match &ttc.unwrap().1 {
+            ParamValue::String(s) => assert_eq!(s, "5m"),
+            other => panic!("expected String, got {other:?}"),
+        }
     }
 
     #[test]
@@ -442,7 +485,7 @@ mod tests {
             metric_name: Some("link_state".to_string()),
             labels: HashMap::new(),
         };
-        let spec = pattern_to_spec(&pattern, &meta, 1.0);
+        let spec = pattern_to_spec(&pattern, &meta, 1.0, "60s");
         assert_eq!(spec.generator_type, "flap");
     }
 

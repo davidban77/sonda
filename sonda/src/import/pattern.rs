@@ -192,16 +192,9 @@ pub fn detect_pattern(values: &[f64]) -> Pattern {
 #[derive(Debug)]
 struct BasicStats {
     mean: f64,
-    #[allow(dead_code)]
-    variance: f64,
-    #[allow(dead_code)]
-    stddev: f64,
     min: f64,
     max: f64,
     range: f64,
-    /// Coefficient of variation: stddev / |mean|. NaN when mean is zero.
-    #[allow(dead_code)]
-    cv: f64,
     /// Slope from linear regression (value per point index).
     slope: f64,
     /// R-squared from linear regression.
@@ -213,28 +206,18 @@ impl BasicStats {
     fn compute(values: &[f64]) -> Self {
         let n = values.len() as f64;
         let mean = values.iter().sum::<f64>() / n;
-        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
-        let stddev = variance.sqrt();
         let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let range = max - min;
-        let cv = if mean.abs() < 1e-12 {
-            f64::NAN
-        } else {
-            stddev / mean.abs()
-        };
 
         // Linear regression: y = slope * x + intercept
         let (slope, r_squared) = linear_regression(values);
 
         BasicStats {
             mean,
-            variance,
-            stddev,
             min,
             max,
             range,
-            cv,
             slope,
             r_squared,
             count: values.len(),
