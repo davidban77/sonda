@@ -12,6 +12,7 @@ mod packs;
 mod progress;
 mod scenarios;
 mod status;
+mod yaml_helpers;
 
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};

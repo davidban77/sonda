@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use super::csv_reader::ColumnMeta;
 use super::pattern::Pattern;
+use crate::yaml_helpers::{format_float, format_rate, needs_quoting, ParamValue};
 
 /// A single scenario derived from one CSV column.
 #[derive(Debug)]
@@ -23,15 +24,6 @@ pub struct ScenarioSpec {
     pub generator_params: Vec<(String, ParamValue)>,
     /// Static labels for this scenario.
     pub labels: HashMap<String, String>,
-}
-
-/// A parameter value that formats appropriately in YAML.
-#[derive(Debug, Clone)]
-pub enum ParamValue {
-    /// A floating-point number.
-    Float(f64),
-    /// A quoted string (e.g., duration like "10s").
-    String(String),
 }
 
 /// Convert a pattern and column metadata into a scenario specification.
@@ -296,43 +288,6 @@ fn render_labels(out: &mut String, labels: &HashMap<String, String>, indent: usi
     }
 }
 
-/// Check if a YAML value needs quoting to be parsed correctly.
-fn needs_quoting(value: &str) -> bool {
-    // Quote if: empty, looks numeric, contains special chars, or is a YAML keyword.
-    if value.is_empty() {
-        return true;
-    }
-    if value.parse::<f64>().is_ok() {
-        return true;
-    }
-    let lower = value.to_lowercase();
-    if lower == "true" || lower == "false" || lower == "null" || lower == "yes" || lower == "no" {
-        return true;
-    }
-    if value.contains(':') || value.contains('#') || value.contains('{') || value.contains('}') {
-        return true;
-    }
-    false
-}
-
-/// Format a float nicely: avoid unnecessary trailing zeros.
-fn format_float(v: f64) -> String {
-    if v == v.trunc() && v.abs() < 1e15 {
-        format!("{:.1}", v) // e.g., 50.0
-    } else {
-        format!("{}", v) // full precision
-    }
-}
-
-/// Format a rate value, using integer form for whole numbers.
-fn format_rate(rate: f64) -> String {
-    if rate == rate.trunc() && rate >= 1.0 {
-        format!("{}", rate as u64)
-    } else {
-        format!("{}", rate)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,42 +314,6 @@ mod tests {
     #[test]
     fn format_duration_zero_returns_one_second() {
         assert_eq!(format_duration(0.0), "1s");
-    }
-
-    // -----------------------------------------------------------------------
-    // format_float
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn format_float_integer() {
-        assert_eq!(format_float(50.0), "50.0");
-    }
-
-    #[test]
-    fn format_float_fractional() {
-        assert_eq!(format_float(3.14159), "3.14159");
-    }
-
-    // -----------------------------------------------------------------------
-    // needs_quoting
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn needs_quoting_for_numbers() {
-        assert!(needs_quoting("42"));
-        assert!(needs_quoting("3.14"));
-    }
-
-    #[test]
-    fn needs_quoting_for_booleans() {
-        assert!(needs_quoting("true"));
-        assert!(needs_quoting("false"));
-    }
-
-    #[test]
-    fn no_quoting_for_plain_strings() {
-        assert!(!needs_quoting("web-01"));
-        assert!(!needs_quoting("node_exporter"));
     }
 
     // -----------------------------------------------------------------------

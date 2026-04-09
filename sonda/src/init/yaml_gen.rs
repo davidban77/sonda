@@ -7,6 +7,9 @@
 
 use std::collections::BTreeMap;
 
+pub use crate::yaml_helpers::ParamValue;
+use crate::yaml_helpers::{escape_yaml_double_quoted, format_float, format_rate, needs_quoting};
+
 /// Collected answers for a single-metric scenario.
 #[derive(Debug, Clone)]
 pub struct MetricAnswers {
@@ -68,15 +71,6 @@ pub enum ScenarioKind {
     Pack(PackAnswers),
     /// A logs scenario.
     Logs(LogAnswers),
-}
-
-/// A YAML parameter value that formats appropriately.
-#[derive(Debug, Clone)]
-pub enum ParamValue {
-    /// A floating-point number.
-    Float(f64),
-    /// A quoted string (e.g., a duration like `"10s"`).
-    String(String),
 }
 
 /// Render a complete, commented scenario YAML from the collected answers.
@@ -238,15 +232,15 @@ fn render_pack_scenario(answers: &PackAnswers, delivery: &DeliveryAnswers) -> St
         out.push('\n');
     }
 
-    // Sink.
-    out.push_str("# Delivery destination.\n");
-    render_sink(&mut out, &delivery.sink, &delivery.endpoint, 0);
-    out.push('\n');
-
     // Encoder.
     out.push_str("# Output encoding format.\n");
     out.push_str("encoder:\n");
     out.push_str(&format!("  type: {}\n", delivery.encoder));
+    out.push('\n');
+
+    // Sink.
+    out.push_str("# Delivery destination.\n");
+    render_sink(&mut out, &delivery.sink, &delivery.endpoint, 0);
 
     out
 }
@@ -347,56 +341,13 @@ fn render_sink(out: &mut String, sink: &str, endpoint: &Option<String>, indent: 
                 ));
             }
             "file" => {
-                out.push_str(&format!("{pad}  path: {ep}\n"));
+                out.push_str(&format!(
+                    "{pad}  path: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
             }
             _ => {}
         }
-    }
-}
-
-/// Escape a string for use inside a double-quoted YAML value.
-///
-/// Replaces backslashes with `\\` and double quotes with `\"`, which are the
-/// two characters that must be escaped inside YAML double-quoted scalars to
-/// produce syntactically valid output.
-fn escape_yaml_double_quoted(s: &str) -> String {
-    // Backslash first, so we don't double-escape the backslashes we insert for quotes.
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Check if a YAML value needs quoting.
-fn needs_quoting(value: &str) -> bool {
-    if value.is_empty() {
-        return true;
-    }
-    if value.parse::<f64>().is_ok() {
-        return true;
-    }
-    let lower = value.to_lowercase();
-    if lower == "true" || lower == "false" || lower == "null" || lower == "yes" || lower == "no" {
-        return true;
-    }
-    if value.contains(':') || value.contains('#') || value.contains('{') || value.contains('}') {
-        return true;
-    }
-    false
-}
-
-/// Format a float nicely: avoid unnecessary trailing zeros.
-fn format_float(v: f64) -> String {
-    if v == v.trunc() && v.abs() < 1e15 {
-        format!("{:.1}", v)
-    } else {
-        format!("{}", v)
-    }
-}
-
-/// Format a rate value, using integer form for whole numbers.
-fn format_rate(rate: f64) -> String {
-    if rate == rate.trunc() && rate >= 1.0 {
-        format!("{}", rate as u64)
-    } else {
-        format!("{}", rate)
     }
 }
 
@@ -412,62 +363,6 @@ fn capitalize_first(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // format_rate
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn format_rate_whole_number() {
-        assert_eq!(format_rate(1.0), "1");
-        assert_eq!(format_rate(10.0), "10");
-    }
-
-    #[test]
-    fn format_rate_fractional() {
-        assert_eq!(format_rate(0.5), "0.5");
-    }
-
-    // -----------------------------------------------------------------------
-    // format_float
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn format_float_integer_value() {
-        assert_eq!(format_float(50.0), "50.0");
-    }
-
-    #[test]
-    fn format_float_fractional_value() {
-        assert_eq!(format_float(3.14), "3.14");
-    }
-
-    // -----------------------------------------------------------------------
-    // needs_quoting
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn needs_quoting_empty_string() {
-        assert!(needs_quoting(""));
-    }
-
-    #[test]
-    fn needs_quoting_numeric_string() {
-        assert!(needs_quoting("42"));
-        assert!(needs_quoting("3.14"));
-    }
-
-    #[test]
-    fn needs_quoting_boolean() {
-        assert!(needs_quoting("true"));
-        assert!(needs_quoting("false"));
-    }
-
-    #[test]
-    fn no_quoting_for_identifiers() {
-        assert!(!needs_quoting("web-01"));
-        assert!(!needs_quoting("node_exporter"));
-    }
 
     // -----------------------------------------------------------------------
     // capitalize_first
@@ -732,9 +627,42 @@ mod tests {
 
         assert!(yaml.contains("type: file"), "must contain file sink");
         assert!(
-            yaml.contains("path: /tmp/output.txt"),
-            "must contain file path"
+            yaml.contains(r#"path: "/tmp/output.txt""#),
+            "must contain quoted file path"
         );
+    }
+
+    #[test]
+    fn render_file_sink_with_spaces_produces_valid_yaml() {
+        let kind = ScenarioKind::SingleMetric(MetricAnswers {
+            name: "m".to_string(),
+            situation: "steady".to_string(),
+            situation_params: vec![],
+            labels: BTreeMap::new(),
+        });
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: "file".to_string(),
+            endpoint: Some("/tmp/my output dir/sonda.txt".to_string()),
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains(r#"path: "/tmp/my output dir/sonda.txt""#),
+            "file path with spaces must be quoted"
+        );
+        // The generated YAML must still be parseable.
+        let config: sonda_core::config::ScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("YAML with spaced file path must parse");
+        match &config.base.sink {
+            sonda_core::sink::SinkConfig::File { path, .. } => {
+                assert_eq!(path, "/tmp/my output dir/sonda.txt");
+            }
+            other => panic!("expected File sink, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1044,36 +972,6 @@ mod tests {
             labels.get("url").map(String::as_str),
             Some("http://example.com")
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // escape_yaml_double_quoted
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn escape_yaml_double_quoted_no_special_chars() {
-        assert_eq!(escape_yaml_double_quoted("hello world"), "hello world");
-    }
-
-    #[test]
-    fn escape_yaml_double_quoted_with_double_quotes() {
-        assert_eq!(
-            escape_yaml_double_quoted(r#"say "hello""#),
-            r#"say \"hello\""#
-        );
-    }
-
-    #[test]
-    fn escape_yaml_double_quoted_with_backslash() {
-        assert_eq!(
-            escape_yaml_double_quoted(r"path\to\file"),
-            r"path\\to\\file"
-        );
-    }
-
-    #[test]
-    fn escape_yaml_double_quoted_with_both() {
-        assert_eq!(escape_yaml_double_quoted(r#"a\"b"#), r#"a\\\"b"#);
     }
 
     // -----------------------------------------------------------------------

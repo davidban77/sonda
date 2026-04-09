@@ -59,6 +59,9 @@ src/
 │   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
 │                          PackAnswers, LogAnswers, DeliveryAnswers. Generates commented YAML
 │                          with scenario metadata, immediately runnable by sonda.
+├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),
+│                          escape_yaml_double_quoted(), format_float(), format_rate().
+│                          Used by both init/yaml_gen and import/yaml_gen.
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr

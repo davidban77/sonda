@@ -43,7 +43,12 @@ const METRIC_ENCODERS: &[&str] = &["prometheus_text", "influx_lp", "json_lines"]
 /// Available log encoder formats.
 const LOG_ENCODERS: &[&str] = &["json_lines", "syslog"];
 
-/// Available sink types.
+/// Available sink types for the scaffolding wizard.
+///
+/// This list is intentionally limited to the three most common sinks so the
+/// `sonda init` wizard stays simple for new users. Advanced sinks like `tcp`,
+/// `udp`, `remote_write`, `loki`, `kafka`, and `otlp_grpc` can be configured
+/// by editing the generated YAML file directly.
 const SINKS: &[&str] = &["stdout", "http_push", "file"];
 
 /// Available domain categories.
