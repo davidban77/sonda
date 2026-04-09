@@ -27,7 +27,7 @@ kubectl get pods -l app.kubernetes.io/name=sonda -w
 ```
 
 You should see `1/1 Running` within 15--20 seconds. The chart defaults to
-`ghcr.io/davidban77/sonda:<!--x-release-please-version-->0.12.0<!--x-release-please-end-->` (the chart's `appVersion`). Pin a different version with
+`ghcr.io/davidban77/sonda:<!--x-release-please-version-->0.13.0<!--x-release-please-end-->` (the chart's `appVersion`). Pin a different version with
 `--set image.tag=<version>`.
 
 !!! tip "Deploy to a dedicated namespace"
@@ -51,7 +51,7 @@ The chart ships with sensible defaults. Override any value with `--set` flags or
 | Value | Default | Description |
 |-------|---------|-------------|
 | `image.repository` | `ghcr.io/davidban77/sonda` | Container image registry and name |
-| `image.tag` | `""` (uses `appVersion`: <!--x-release-please-version-->`0.12.0`<!--x-release-please-end-->) | Image tag to pull |
+| `image.tag` | `""` (uses `appVersion`: <!--x-release-please-version-->`0.13.0`<!--x-release-please-end-->) | Image tag to pull |
 | `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy |
 | `imagePullSecrets` | `[]` | Secrets for private registries |
 
@@ -468,7 +468,7 @@ Update your release after changing values or pulling a new chart version:
 helm upgrade sonda ./helm/sonda -f my-values.yaml
 
 # Upgrade to a new image version
-helm upgrade sonda ./helm/sonda --set image.tag=<!--x-release-please-version-->0.12.0<!--x-release-please-end-->
+helm upgrade sonda ./helm/sonda --set image.tag=<!--x-release-please-version-->0.13.0<!--x-release-please-end-->
 ```
 
 If your values file includes `scenarios`, the ConfigMap checksum annotation triggers an

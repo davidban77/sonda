@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.13.0](https://github.com/davidban77/sonda/compare/v0.12.0...v0.13.0) (2026-04-09)
+
+
+### Features
+
+* `sonda init` — guided scenario scaffolding ([#190](https://github.com/davidban77/sonda/issues/190)) ([cef1284](https://github.com/davidban77/sonda/commit/cef128459633b4156c0fec0c7a7c1cb5652014a6))
+* **init:** UX polish — pack filtering, advanced sinks, immediate execution ([#191](https://github.com/davidban77/sonda/issues/191)) ([99f7dd3](https://github.com/davidban77/sonda/commit/99f7dd34844bfd0b73dd9cde7ef5d053c08fd48a))
+* metric packs — domain-specific label and name bundles ([#185](https://github.com/davidban77/sonda/issues/185)) ([247c04a](https://github.com/davidban77/sonda/commit/247c04a0c07aaa7eee0b444392fee64d37da9373))
+* operational vocabulary layer for generators ([#183](https://github.com/davidban77/sonda/issues/183)) ([b944fc6](https://github.com/davidban77/sonda/commit/b944fc6429f40ff6f2261cc23ccd64166b424303))
+* sonda import — convert CSV to parameterized scenario ([#188](https://github.com/davidban77/sonda/issues/188)) ([05b218c](https://github.com/davidban77/sonda/commit/05b218c9aa30f12b402b19cbb4571903a0b94f9f))
+
+
+### Refactoring
+
+* externalize built-in scenarios from sonda-core binary ([#187](https://github.com/davidban77/sonda/issues/187)) ([83cf787](https://github.com/davidban77/sonda/commit/83cf787539ce16d1db26f836e65ce141237291db))
+
 ## [0.12.0](https://github.com/davidban77/sonda/compare/v0.11.0...v0.12.0) (2026-04-08)
 
 
