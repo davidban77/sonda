@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.0](https://github.com/davidban77/sonda/compare/v0.13.0...v0.14.0) (2026-04-09)
+
+
+### Features
+
+* **init:** histogram and summary signal types ([#194](https://github.com/davidban77/sonda/issues/194)) ([4f49a64](https://github.com/davidban77/sonda/commit/4f49a64dc2b5d8e6c193983de3441cebd36c7a42))
+* **init:** non-interactive mode and --from prefill ([#192](https://github.com/davidban77/sonda/issues/192)) ([0693564](https://github.com/davidban77/sonda/commit/0693564d7d32523b8dc05d3b8088d35ce1775ce5))
+
 ## [0.13.0](https://github.com/davidban77/sonda/compare/v0.12.0...v0.13.0) (2026-04-09)
 
 
