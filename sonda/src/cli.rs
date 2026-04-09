@@ -927,7 +927,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub from: Option<String>,
 
-    /// Signal type: metrics or logs.
+    /// Signal type: metrics, logs, histogram, or summary.
     #[arg(long)]
     pub signal_type: Option<String>,
 

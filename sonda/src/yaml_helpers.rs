@@ -9,7 +9,7 @@
 ///
 /// Used by both the `init` and `import` YAML generators to carry typed
 /// parameter values through to the rendering stage.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
     /// A floating-point number.
     Float(f64),

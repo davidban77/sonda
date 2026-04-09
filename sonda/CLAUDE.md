@@ -64,6 +64,13 @@ src/
 │   │                      situation-specific parameters (bypassed with defaults when
 │   │                      situation is prefilled), labels, rate (validated > 0), duration
 │   │                      (validated via parse_duration), encoder, sink.
+│   │                      Histogram and summary prompt flows: distribution model selection,
+│   │                      distribution-specific parameters, observations per tick,
+│   │                      bucket/quantile boundaries, and seed. All distribution-related
+│   │                      prompts are bypassed with sensible defaults when signal_type
+│   │                      is prefilled (non-interactive mode).
+│   │                      default_distribution_params() returns defaults matching the
+│   │                      interactive prompts for each distribution model.
 │   │                      Prefill struct carries optional pre-filled values for each prompt
 │   │                      including log-specific (message_template, severity) and
 │   │                      sink-specific (kafka_brokers, kafka_topic, otlp_signal_type).
@@ -76,8 +83,10 @@ src/
 │   │                      enforce_encoder_for_sink() auto-overrides encoder for protocol sinks.
 │   │                      prompt_run_now() offers immediate execution after file write.
 │   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
-│                          PackAnswers, LogAnswers, DeliveryAnswers. InitScenarioType enum
-│                          (SingleMetric/Pack/Logs) for typed dispatch in run-now path.
+│                          PackAnswers, LogAnswers, HistogramAnswers, SummaryAnswers,
+│                          DeliveryAnswers. InitScenarioType enum
+│                          (SingleMetric/Pack/Logs/Histogram/Summary) for typed dispatch
+│                          in run-now path.
 │                          required_encoder_for_sink() maps sink→encoder constraints.
 │                          render_sink() handles all sink types incl. advanced YAML fields.
 ├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),
@@ -111,7 +120,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
+sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs|histogram|summary>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves

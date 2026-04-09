@@ -951,7 +951,7 @@ sonda init [OPTIONS]
 | Flag | Short | Type | Description |
 |------|-------|------|-------------|
 | `--from <SOURCE>` | -- | string | Pre-fill values from a built-in scenario (`@name`) or CSV file (`path.csv`). See [Pre-filling with --from](#pre-filling-with-from). |
-| `--signal-type <TYPE>` | -- | string | Signal type: `metrics` or `logs`. |
+| `--signal-type <TYPE>` | -- | string | Signal type: `metrics`, `logs`, `histogram`, or `summary`. |
 | `--domain <DOMAIN>` | -- | string | Domain category: `infrastructure`, `network`, `application`, `custom`. |
 | `--situation <ALIAS>` | -- | string | Operational situation: `steady`, `spike_event`, `flap`, `leak`, `saturation`, `degradation`. |
 | `--metric <NAME>` | -- | string | Metric name. |
@@ -1082,12 +1082,14 @@ prompts so you can see what was loaded:
 
 | Step | Prompt | Options |
 |------|--------|---------|
-| 1 | Signal type | `metrics`, `logs` |
+| 1 | Signal type | `metrics`, `logs`, `histogram`, `summary` |
 | 2 | Domain | `infrastructure`, `network`, `application`, `custom` |
 | 3 | Approach (metrics only) | Single metric, or use a [metric pack](../guides/metric-packs.md) |
 | 4a | Metric details (single) | Name, situation, situation parameters, labels |
 | 4b | Pack details | Pack selection (filtered by domain), fill in required shared labels, extra labels |
 | 4c | Log details | Name, message template, severity distribution, labels |
+| 4d | Histogram details | Name, distribution model, distribution parameters, observations per tick, bucket boundaries, seed, labels |
+| 4e | Summary details | Name, distribution model, distribution parameters, observations per tick, quantile targets, seed, labels |
 | 5 | Delivery | Rate, duration, encoder, sink (primary or [advanced](#advanced-sinks)), endpoint |
 | 6 | Output path | Defaults to `./scenarios/<name>.yaml` |
 | 7 | Run now | Execute the scenario immediately, or exit with instructions |

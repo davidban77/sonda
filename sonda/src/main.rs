@@ -566,6 +566,17 @@ fn run_init_scenario(
                 .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
             vec![sonda_core::ScenarioEntry::Metrics(config)]
         }
+        InitScenarioType::Histogram => {
+            let config: sonda_core::config::HistogramScenarioConfig =
+                serde_yaml_ng::from_str(&yaml)
+                    .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
+            vec![sonda_core::ScenarioEntry::Histogram(config)]
+        }
+        InitScenarioType::Summary => {
+            let config: sonda_core::config::SummaryScenarioConfig = serde_yaml_ng::from_str(&yaml)
+                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
+            vec![sonda_core::ScenarioEntry::Summary(config)]
+        }
     };
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
