@@ -372,11 +372,14 @@ fn build_sink_config(
 /// - Both `--gap-every` and `--gap-for` are not provided together.
 /// - `--value` is provided with a non-constant mode.
 /// - `--offset` is provided with a non-sine mode.
-pub fn load_config(args: &MetricsArgs) -> Result<ScenarioConfig> {
+pub fn load_config(
+    args: &MetricsArgs,
+    catalog: &crate::scenarios::ScenarioCatalog,
+) -> Result<ScenarioConfig> {
     validate_cli_flags(args)?;
 
     let mut config = if let Some(ref path) = args.scenario {
-        let contents = resolve_scenario_source(path)?;
+        let contents = resolve_scenario_source(path, catalog)?;
         serde_yaml_ng::from_str::<ScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
@@ -911,11 +914,14 @@ fn parse_log_encoder_config(encoder: &str, precision: Option<u8>) -> Result<Enco
 /// - Both `--gap-every` and `--gap-for` are not provided together.
 /// - `--burst-every`, `--burst-for`, and `--burst-multiplier` are not all
 ///   provided together.
-pub fn load_log_config(args: &LogsArgs) -> Result<LogScenarioConfig> {
+pub fn load_log_config(
+    args: &LogsArgs,
+    catalog: &crate::scenarios::ScenarioCatalog,
+) -> Result<LogScenarioConfig> {
     validate_log_cli_flags(args)?;
 
     let mut config = if let Some(ref path) = args.scenario {
-        let contents = resolve_scenario_source(path)?;
+        let contents = resolve_scenario_source(path, catalog)?;
         serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
             .with_context(|| format!("failed to parse scenario file {}", path.display()))?
     } else {
@@ -1249,9 +1255,12 @@ fn build_log_spike_config(args: &LogsArgs) -> Result<Option<Vec<CardinalitySpike
 /// - The scenario file cannot be read.
 /// - The file is not valid YAML.
 /// - The YAML does not match the `MultiScenarioConfig` structure.
-pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
+pub fn load_multi_config(
+    args: &RunArgs,
+    catalog: &crate::scenarios::ScenarioCatalog,
+) -> Result<MultiScenarioConfig> {
     let path = &args.scenario;
-    let contents = resolve_scenario_source(path)?;
+    let contents = resolve_scenario_source(path, catalog)?;
     serde_yaml_ng::from_str::<MultiScenarioConfig>(&contents)
         .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
 }
@@ -1263,9 +1272,10 @@ pub fn load_multi_config(args: &RunArgs) -> Result<MultiScenarioConfig> {
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_histogram_config(
     args: &crate::cli::HistogramArgs,
+    catalog: &crate::scenarios::ScenarioCatalog,
 ) -> Result<sonda_core::config::HistogramScenarioConfig> {
     let path = &args.scenario;
-    let contents = resolve_scenario_source(path)?;
+    let contents = resolve_scenario_source(path, catalog)?;
     serde_yaml_ng::from_str(&contents)
         .with_context(|| format!("failed to parse histogram scenario file {}", path.display()))
 }
@@ -1277,28 +1287,31 @@ pub fn load_histogram_config(
 /// Returns an error if the file cannot be read or parsed.
 pub fn load_summary_config(
     args: &crate::cli::SummaryArgs,
+    catalog: &crate::scenarios::ScenarioCatalog,
 ) -> Result<sonda_core::config::SummaryScenarioConfig> {
     let path = &args.scenario;
-    let contents = resolve_scenario_source(path)?;
+    let contents = resolve_scenario_source(path, catalog)?;
     serde_yaml_ng::from_str(&contents)
         .with_context(|| format!("failed to parse summary scenario file {}", path.display()))
 }
 
-/// Parse a built-in scenario into one or more [`ScenarioEntry`] values.
+/// Parse a cataloged scenario into one or more [`ScenarioEntry`] values.
 ///
-/// Dispatches based on `signal_type`:
-/// - `"metrics"` → parse as [`ScenarioConfig`], return one entry.
-/// - `"logs"` → parse as [`LogScenarioConfig`], return one entry.
-/// - `"histogram"` → parse as [`HistogramScenarioConfig`], return one entry.
-/// - `"summary"` → parse as [`SummaryScenarioConfig`], return one entry.
-/// - `"multi"` → parse as [`MultiScenarioConfig`], return all entries.
+/// Reads the scenario YAML from disk via `source_path`, then dispatches
+/// based on `signal_type`:
+/// - `"metrics"` -> parse as [`ScenarioConfig`], return one entry.
+/// - `"logs"` -> parse as [`LogScenarioConfig`], return one entry.
+/// - `"histogram"` -> parse as [`HistogramScenarioConfig`], return one entry.
+/// - `"summary"` -> parse as [`SummaryScenarioConfig`], return one entry.
+/// - `"multi"` -> parse as [`MultiScenarioConfig`], return all entries.
 ///
 /// Applies CLI overrides from [`ScenariosRunArgs`] (duration, rate, sink,
 /// endpoint, encoder) to each entry before returning.
 ///
 /// # Errors
 ///
-/// Returns an error if the YAML fails to parse or if override values are invalid.
+/// Returns an error if the file cannot be read, the YAML fails to parse,
+/// or if override values are invalid.
 pub fn parse_builtin_scenario(
     scenario: &sonda_core::BuiltinScenario,
     args: &ScenariosRunArgs,
@@ -1308,59 +1321,66 @@ pub fn parse_builtin_scenario(
         SummaryScenarioConfig,
     };
 
-    let mut entries = match scenario.signal_type {
+    let yaml = fs::read_to_string(&scenario.source_path).with_context(|| {
+        format!(
+            "failed to read scenario file {:?} for {:?}",
+            scenario.source_path.display(),
+            scenario.name
+        )
+    })?;
+
+    let mut entries = match scenario.signal_type.as_str() {
         "metrics" => {
-            let config =
-                serde_yaml_ng::from_str::<ScenarioConfig>(scenario.yaml).with_context(|| {
-                    format!(
-                        "failed to parse built-in scenario {:?} as metrics config",
-                        scenario.name
-                    )
-                })?;
+            let config = serde_yaml_ng::from_str::<ScenarioConfig>(&yaml).with_context(|| {
+                format!(
+                    "failed to parse scenario {:?} as metrics config",
+                    scenario.name
+                )
+            })?;
             vec![sonda_core::ScenarioEntry::Metrics(config)]
         }
         "logs" => {
             let config =
-                serde_yaml_ng::from_str::<LogScenarioConfig>(scenario.yaml).with_context(|| {
+                serde_yaml_ng::from_str::<LogScenarioConfig>(&yaml).with_context(|| {
                     format!(
-                        "failed to parse built-in scenario {:?} as logs config",
+                        "failed to parse scenario {:?} as logs config",
                         scenario.name
                     )
                 })?;
             vec![sonda_core::ScenarioEntry::Logs(config)]
         }
         "histogram" => {
-            let config = serde_yaml_ng::from_str::<HistogramScenarioConfig>(scenario.yaml)
-                .with_context(|| {
+            let config =
+                serde_yaml_ng::from_str::<HistogramScenarioConfig>(&yaml).with_context(|| {
                     format!(
-                        "failed to parse built-in scenario {:?} as histogram config",
+                        "failed to parse scenario {:?} as histogram config",
                         scenario.name
                     )
                 })?;
             vec![sonda_core::ScenarioEntry::Histogram(config)]
         }
         "summary" => {
-            let config = serde_yaml_ng::from_str::<SummaryScenarioConfig>(scenario.yaml)
-                .with_context(|| {
+            let config =
+                serde_yaml_ng::from_str::<SummaryScenarioConfig>(&yaml).with_context(|| {
                     format!(
-                        "failed to parse built-in scenario {:?} as summary config",
+                        "failed to parse scenario {:?} as summary config",
                         scenario.name
                     )
                 })?;
             vec![sonda_core::ScenarioEntry::Summary(config)]
         }
         "multi" => {
-            let config = serde_yaml_ng::from_str::<MultiScenarioConfig>(scenario.yaml)
-                .with_context(|| {
+            let config =
+                serde_yaml_ng::from_str::<MultiScenarioConfig>(&yaml).with_context(|| {
                     format!(
-                        "failed to parse built-in scenario {:?} as multi config",
+                        "failed to parse scenario {:?} as multi config",
                         scenario.name
                     )
                 })?;
             config.scenarios
         }
         other => bail!(
-            "built-in scenario {:?} has unsupported signal_type {:?}",
+            "scenario {:?} has unsupported signal_type {:?}",
             scenario.name,
             other
         ),
@@ -1542,28 +1562,37 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
     }
 }
 
-/// Resolve a scenario path that may be a `@name` shorthand for a built-in scenario.
+/// Resolve a scenario path that may be a `@name` shorthand for a cataloged scenario.
 ///
-/// If the path starts with `@`, the remainder is treated as a built-in scenario
-/// name and the embedded YAML is returned. Otherwise, the file is read from disk.
+/// If the path starts with `@`, the remainder is treated as a scenario name
+/// and looked up in the [`ScenarioCatalog`]. The YAML is read from the
+/// discovered file on disk. Otherwise, the file path is read directly.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The path starts with `@` but no built-in scenario matches the name.
+/// - The path starts with `@` but no scenario matches the name in the catalog.
 /// - The file path cannot be read from disk.
-pub fn resolve_scenario_source(path: &std::path::Path) -> Result<String> {
+///
+/// [`ScenarioCatalog`]: crate::scenarios::ScenarioCatalog
+pub fn resolve_scenario_source(
+    path: &std::path::Path,
+    catalog: &crate::scenarios::ScenarioCatalog,
+) -> Result<String> {
     let path_str = path.to_string_lossy();
     if let Some(name) = path_str.strip_prefix('@') {
-        let yaml = sonda_core::scenarios::get_yaml(name).ok_or_else(|| {
-            let names = sonda_core::scenarios::available_names();
-            anyhow::anyhow!(
-                "unknown built-in scenario {:?}; available scenarios: {}",
-                name,
-                names.join(", ")
-            )
-        })?;
-        Ok(yaml.to_string())
+        let yaml = catalog
+            .read_yaml(name)
+            .ok_or_else(|| {
+                let names = catalog.available_names();
+                anyhow::anyhow!(
+                    "unknown scenario {:?}; available scenarios: {}",
+                    name,
+                    names.join(", ")
+                )
+            })?
+            .map_err(|e| anyhow::anyhow!("failed to read scenario file for {:?}: {}", name, e))?;
+        Ok(yaml)
     } else {
         fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1758,6 +1787,12 @@ mod tests {
     use super::*;
     use crate::cli::MetricsArgs;
 
+    /// Build an empty scenario catalog for tests that don't need scenario
+    /// discovery (i.e. all tests that construct configs from CLI flags).
+    fn empty_catalog() -> crate::scenarios::ScenarioCatalog {
+        crate::scenarios::ScenarioCatalog::discover(&[])
+    }
+
     /// Construct a minimal `MetricsArgs` with no flags set, suitable for
     /// customising field-by-field in individual tests.
     fn default_args() -> MetricsArgs {
@@ -1818,7 +1853,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should build config from flags");
+        let config = load_config(&args, &empty_catalog()).expect("should build config from flags");
         assert_eq!(config.name, "up");
         assert_eq!(config.rate, 10.0);
         assert_eq!(config.duration.as_deref(), Some("5s"));
@@ -1840,7 +1875,8 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should build sine config from flags");
+        let config =
+            load_config(&args, &empty_catalog()).expect("should build sine config from flags");
         match config.generator {
             GeneratorConfig::Sine {
                 amplitude,
@@ -1867,7 +1903,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should build uniform config");
+        let config = load_config(&args, &empty_catalog()).expect("should build uniform config");
         match config.generator {
             GeneratorConfig::Uniform { min, max, seed } => {
                 assert_eq!(min, 2.0);
@@ -1890,7 +1926,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should build sawtooth config");
+        let config = load_config(&args, &empty_catalog()).expect("should build sawtooth config");
         match config.generator {
             GeneratorConfig::Sawtooth {
                 min,
@@ -1915,7 +1951,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should load YAML scenario");
+        let config = load_config(&args, &empty_catalog()).expect("should load YAML scenario");
         assert_eq!(config.name, "test_metric");
         assert_eq!(config.rate, 100.0);
         assert_eq!(config.duration.as_deref(), Some("10s"));
@@ -1931,7 +1967,8 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("should load YAML with labels and gaps");
+        let config =
+            load_config(&args, &empty_catalog()).expect("should load YAML with labels and gaps");
         assert_eq!(config.name, "interface_oper_state");
         let labels = config.labels.as_ref().expect("labels should be present");
         assert_eq!(labels.get("hostname").map(|s| s.as_str()), Some("t0-a1"));
@@ -1945,7 +1982,7 @@ mod tests {
             scenario: Some(PathBuf::from("/nonexistent/path/scenario.yaml")),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("missing file should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("missing file should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("scenario") || msg.contains("nonexistent"),
@@ -1965,7 +2002,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("override should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("override should succeed");
         assert_eq!(config.rate, 500.0, "CLI rate must override YAML rate");
     }
 
@@ -1978,7 +2015,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("name override should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("name override should succeed");
         assert_eq!(config.name, "overridden");
     }
 
@@ -1991,7 +2028,8 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("duration override should succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("duration override should succeed");
         assert_eq!(config.duration.as_deref(), Some("99s"));
     }
 
@@ -2006,7 +2044,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("label merge should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("label merge should succeed");
         let labels = config.labels.as_ref().expect("labels should exist");
         // Both the original YAML labels and the CLI label must be present.
         assert_eq!(labels.get("hostname").map(|s| s.as_str()), Some("t0-a1"));
@@ -2024,7 +2062,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("label override should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("label override should succeed");
         let labels = config.labels.as_ref().expect("labels should exist");
         assert_eq!(
             labels.get("hostname").map(|s| s.as_str()),
@@ -2041,7 +2079,7 @@ mod tests {
             rate: Some(10.0),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("missing --name should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("missing --name should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("name") || msg.contains("required"),
@@ -2055,7 +2093,7 @@ mod tests {
             name: Some("up".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("missing --rate should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("missing --rate should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("rate") || msg.contains("required"),
@@ -2073,7 +2111,7 @@ mod tests {
             value_mode: Some("bogus_mode".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("unknown value mode should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("unknown value mode should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("bogus_mode"),
@@ -2089,7 +2127,7 @@ mod tests {
             encoder: Some("nope_encoder".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("unknown encoder should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("unknown encoder should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("nope_encoder"),
@@ -2107,7 +2145,7 @@ mod tests {
             gap_every: Some("2m".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--gap-every alone should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--gap-every alone should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("gap-for") || msg.contains("gap_for"),
@@ -2123,7 +2161,7 @@ mod tests {
             gap_for: Some("20s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--gap-for alone should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--gap-for alone should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("gap-every") || msg.contains("gap_every"),
@@ -2140,7 +2178,7 @@ mod tests {
             gap_for: Some("20s".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("both gap flags should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("both gap flags should succeed");
         let gaps = config.gaps.as_ref().expect("gaps should be set");
         assert_eq!(gaps.every, "2m");
         assert_eq!(gaps.r#for, "20s");
@@ -2156,7 +2194,8 @@ mod tests {
             encoder: Some("prometheus_text".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("prometheus_text encoder should parse");
+        let config =
+            load_config(&args, &empty_catalog()).expect("prometheus_text encoder should parse");
         assert!(
             matches!(config.encoder, EncoderConfig::PrometheusText { .. }),
             "encoder should be PrometheusText"
@@ -2172,7 +2211,7 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("default config should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("default config should succeed");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(value, 0.0, "default constant value should be 0.0");
@@ -2193,7 +2232,8 @@ mod tests {
             output: Some(PathBuf::from("/tmp/sonda-output-test.txt")),
             ..default_args()
         };
-        let config = load_config(&args).expect("output flag should produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("output flag should produce valid config");
         match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-output-test.txt");
@@ -2212,7 +2252,8 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config_no_output = load_config(&args_no_output).expect("default config should succeed");
+        let config_no_output =
+            load_config(&args_no_output, &empty_catalog()).expect("default config should succeed");
         assert!(
             matches!(config_no_output.sink, SinkConfig::Stdout),
             "default sink should be Stdout"
@@ -2225,8 +2266,8 @@ mod tests {
             output: Some(PathBuf::from("/tmp/sonda-override.txt")),
             ..default_args()
         };
-        let config_with_output =
-            load_config(&args_with_output).expect("output flag config should succeed");
+        let config_with_output = load_config(&args_with_output, &empty_catalog())
+            .expect("output flag config should succeed");
         assert!(
             matches!(config_with_output.sink, SinkConfig::File { .. }),
             "sink should be File when --output is given"
@@ -2244,7 +2285,8 @@ mod tests {
             output: Some(PathBuf::from("/tmp/sonda-yaml-override.txt")),
             ..default_args()
         };
-        let config = load_config(&args).expect("output override on YAML should succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("output override on YAML should succeed");
         match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-yaml-override.txt");
@@ -2263,7 +2305,8 @@ mod tests {
             output: Some(PathBuf::from("/tmp/sonda/nested/dir/test.txt")),
             ..default_args()
         };
-        let config = load_config(&args).expect("nested output path should succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("nested output path should succeed");
         match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda/nested/dir/test.txt");
@@ -2282,7 +2325,8 @@ mod tests {
             burst_every: Some("10s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--burst-every alone should fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--burst-every alone should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("burst"),
@@ -2298,7 +2342,7 @@ mod tests {
             burst_for: Some("2s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--burst-for alone should fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--burst-for alone should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("burst"),
@@ -2314,7 +2358,8 @@ mod tests {
             burst_multiplier: Some(5.0),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--burst-multiplier alone should fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--burst-multiplier alone should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("burst"),
@@ -2331,7 +2376,7 @@ mod tests {
             burst_for: Some("2s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args)
+        let err = load_config(&args, &empty_catalog())
             .expect_err("--burst-every + --burst-for without --burst-multiplier should fail");
         let msg = err.to_string();
         assert!(
@@ -2350,7 +2395,8 @@ mod tests {
             burst_multiplier: Some(5.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("all three burst flags should succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("all three burst flags should succeed");
         let bursts = config.bursts.as_ref().expect("bursts must be set");
         assert_eq!(bursts.every, "10s");
         assert_eq!(bursts.r#for, "2s");
@@ -2364,7 +2410,7 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("no burst flags should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("no burst flags should succeed");
         assert!(
             config.bursts.is_none(),
             "bursts must be None when no burst flags are provided"
@@ -2381,7 +2427,8 @@ mod tests {
             burst_multiplier: Some(10.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("burst flags should override YAML");
+        let config =
+            load_config(&args, &empty_catalog()).expect("burst flags should override YAML");
         let bursts = config.bursts.as_ref().expect("bursts must be set");
         assert_eq!(bursts.every, "5s");
         assert_eq!(bursts.r#for, "1s");
@@ -2407,7 +2454,7 @@ mod tests {
             ..default_args()
         };
 
-        let config = load_config(&args).expect("round-trip config should load");
+        let config = load_config(&args, &empty_catalog()).expect("round-trip config should load");
         validate_config(&config).expect("round-trip config should validate");
         let _gen = create_generator(&config.generator, config.rate).expect("generator factory");
         let _enc = create_encoder(&config.encoder).expect("encoder factory");
@@ -2425,7 +2472,8 @@ mod tests {
             jitter_seed: Some(42),
             ..default_args()
         };
-        let config = load_config(&args).expect("jitter flags should produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("jitter flags should produce valid config");
         assert_eq!(config.base.jitter, Some(3.5));
         assert_eq!(config.base.jitter_seed, Some(42));
     }
@@ -2439,7 +2487,7 @@ mod tests {
             jitter_seed: Some(99),
             ..default_args()
         };
-        let config = load_config(&args).expect("jitter override should succeed");
+        let config = load_config(&args, &empty_catalog()).expect("jitter override should succeed");
         assert_eq!(config.base.jitter, Some(7.0));
         assert_eq!(config.base.jitter_seed, Some(99));
     }
@@ -2451,7 +2499,8 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("config without jitter should succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("config without jitter should succeed");
         assert_eq!(config.base.jitter, None);
         assert_eq!(config.base.jitter_seed, None);
     }
@@ -2515,7 +2564,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("template mode flags must produce config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("template mode flags must produce config");
         assert_eq!(config.rate, 10.0);
         assert_eq!(config.duration.as_deref(), Some("5s"));
         assert!(
@@ -2542,7 +2592,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("replay mode with file must produce config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("replay mode with file must produce config");
         match config.generator {
             LogGeneratorConfig::Replay { file } => {
                 assert!(!file.is_empty(), "replay file path must be set");
@@ -2559,7 +2610,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let err = load_log_config(&args).expect_err("replay without --file must fail");
+        let err =
+            load_log_config(&args, &empty_catalog()).expect_err("replay without --file must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("file") || msg.contains("--file"),
@@ -2573,7 +2625,7 @@ mod tests {
             mode: None,
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("missing --mode must fail");
+        let err = load_log_config(&args, &empty_catalog()).expect_err("missing --mode must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("mode") || msg.contains("required"),
@@ -2587,7 +2639,7 @@ mod tests {
             mode: Some("livestream".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("unknown mode must fail");
+        let err = load_log_config(&args, &empty_catalog()).expect_err("unknown mode must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("livestream"),
@@ -2606,7 +2658,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("json_lines encoder must be accepted");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("json_lines encoder must be accepted");
         assert!(
             matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "encoder must be JsonLines"
@@ -2624,7 +2677,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("syslog encoder must be accepted for logs");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("syslog encoder must be accepted for logs");
         assert!(
             matches!(config.encoder, EncoderConfig::Syslog { .. }),
             "encoder must be Syslog, got {:?}",
@@ -2641,7 +2695,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let err = load_log_config(&args).expect_err("prometheus_text is not a valid log encoder");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("prometheus_text is not a valid log encoder");
         let msg = err.to_string();
         assert!(
             msg.contains("prometheus_text") || msg.contains("json_lines"),
@@ -2657,7 +2712,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("default rate config must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("default rate config must succeed");
         assert_eq!(
             config.rate, 10.0,
             "default rate must be 10.0 when --rate is omitted"
@@ -2675,7 +2731,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("default encoder config must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("default encoder config must succeed");
         assert!(
             matches!(config.encoder, EncoderConfig::JsonLines { .. }),
             "default encoder for logs must be json_lines, got {:?}",
@@ -2695,7 +2752,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let err = load_log_config(&args).expect_err("gap-every without gap-for must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("gap-every without gap-for must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("gap-for") || msg.contains("gap_for"),
@@ -2713,7 +2771,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let err = load_log_config(&args).expect_err("gap-for without gap-every must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("gap-for without gap-every must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("gap-every") || msg.contains("gap_every"),
@@ -2731,7 +2790,7 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("both gap flags must succeed");
+        let config = load_log_config(&args, &empty_catalog()).expect("both gap flags must succeed");
         let gaps = config.gaps.as_ref().expect("gaps must be set");
         assert_eq!(gaps.every, "2m");
         assert_eq!(gaps.r#for, "20s");
@@ -2750,7 +2809,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let err = load_log_config(&args).expect_err("partial burst flags must fail");
+        let err =
+            load_log_config(&args, &empty_catalog()).expect_err("partial burst flags must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("burst") || msg.contains("multiplier"),
@@ -2769,7 +2829,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("all burst flags must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("all burst flags must succeed");
         let bursts = config.bursts.as_ref().expect("bursts must be set");
         assert_eq!(bursts.every, "5s");
         assert_eq!(bursts.r#for, "1s");
@@ -2789,7 +2850,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("output flag must produce valid config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("output flag must produce valid config");
         match &config.sink {
             SinkConfig::File { path } => {
                 assert_eq!(path, "/tmp/sonda-logs-test.json");
@@ -2809,7 +2871,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("log-template fixture must load");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("log-template fixture must load");
         assert_eq!(config.name, "test_log_template");
         assert_eq!(config.rate, 10.0);
     }
@@ -2820,7 +2883,7 @@ mod tests {
             scenario: Some(PathBuf::from("/nonexistent/path/log-scenario.yaml")),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("missing file must fail");
+        let err = load_log_config(&args, &empty_catalog()).expect_err("missing file must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("scenario") || msg.contains("nonexistent"),
@@ -2841,7 +2904,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("CLI rate override must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("CLI rate override must succeed");
         assert_eq!(config.rate, 999.0, "CLI --rate must override YAML rate");
     }
 
@@ -2855,7 +2919,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("CLI duration override must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("CLI duration override must succeed");
         assert_eq!(
             config.duration.as_deref(),
             Some("42s"),
@@ -2876,7 +2941,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("CLI encoder override must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("CLI encoder override must succeed");
         assert!(
             matches!(config.encoder, EncoderConfig::Syslog { .. }),
             "CLI --encoder must override YAML encoder to syslog"
@@ -2898,7 +2964,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("config with labels must build");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("config with labels must build");
         let labels = config.labels.as_ref().expect("labels must be Some");
         assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
         assert_eq!(
@@ -2917,7 +2984,8 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("config without labels must build");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("config without labels must build");
         assert!(
             config.labels.is_none(),
             "labels must be None when no --label flags are provided"
@@ -2933,7 +3001,7 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("YAML with labels must load");
+        let config = load_log_config(&args, &empty_catalog()).expect("YAML with labels must load");
         assert_eq!(config.name, "test_log_template_labels");
         let labels = config
             .labels
@@ -2957,7 +3025,7 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("label merge must succeed");
+        let config = load_log_config(&args, &empty_catalog()).expect("label merge must succeed");
         let labels = config.labels.as_ref().expect("labels must exist");
         // Original YAML labels must be preserved
         assert_eq!(labels.get("device").map(String::as_str), Some("wlan0"));
@@ -2981,7 +3049,7 @@ mod tests {
             ..default_logs_args()
         };
 
-        let config = load_log_config(&args).expect("label override must succeed");
+        let config = load_log_config(&args, &empty_catalog()).expect("label override must succeed");
         let labels = config.labels.as_ref().expect("labels must exist");
         assert_eq!(
             labels.get("device").map(String::as_str),
@@ -3004,7 +3072,8 @@ mod tests {
             .unwrap()
             .join("examples/multi-scenario.yaml");
         let args = default_run_args(path);
-        let config = load_multi_config(&args).expect("example multi-scenario.yaml must load");
+        let config = load_multi_config(&args, &empty_catalog())
+            .expect("example multi-scenario.yaml must load");
         assert_eq!(config.scenarios.len(), 2, "example must have 2 scenarios");
     }
 
@@ -3015,7 +3084,7 @@ mod tests {
             .unwrap()
             .join("examples/multi-scenario.yaml");
         let args = default_run_args(path);
-        let config = load_multi_config(&args).unwrap();
+        let config = load_multi_config(&args, &empty_catalog()).unwrap();
         assert!(
             matches!(
                 config.scenarios[0],
@@ -3032,7 +3101,7 @@ mod tests {
             .unwrap()
             .join("examples/multi-scenario.yaml");
         let args = default_run_args(path);
-        let config = load_multi_config(&args).unwrap();
+        let config = load_multi_config(&args, &empty_catalog()).unwrap();
         assert!(
             matches!(
                 config.scenarios[1],
@@ -3045,7 +3114,7 @@ mod tests {
     #[test]
     fn load_multi_config_from_missing_file_returns_error() {
         let args = default_run_args(PathBuf::from("/nonexistent/multi.yaml"));
-        let err = load_multi_config(&args).expect_err("missing file must fail");
+        let err = load_multi_config(&args, &empty_catalog()).expect_err("missing file must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("scenario") || msg.contains("nonexistent"),
@@ -3060,7 +3129,7 @@ mod tests {
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile must be created");
         writeln!(tmp, "not_scenarios_key: true").unwrap();
         let args = default_run_args(tmp.path().to_path_buf());
-        let result = load_multi_config(&args);
+        let result = load_multi_config(&args, &empty_catalog());
         assert!(
             result.is_err(),
             "invalid multi-scenario YAML should return error"
@@ -3079,7 +3148,8 @@ mod tests {
             precision: Some(2),
             ..default_args()
         };
-        let config = load_config(&args).expect("precision flag must produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("precision flag must produce valid config");
         match config.encoder {
             EncoderConfig::PrometheusText { precision } => {
                 assert_eq!(precision, Some(2), "precision must be Some(2)");
@@ -3097,7 +3167,7 @@ mod tests {
             precision: Some(3),
             ..default_args()
         };
-        let config = load_config(&args).expect("precision override must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("precision override must succeed");
         match config.encoder {
             EncoderConfig::PrometheusText { precision } => {
                 assert_eq!(
@@ -3120,7 +3190,8 @@ mod tests {
             // no --encoder flag
             ..default_args()
         };
-        let config = load_config(&args).expect("precision-only override must succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("precision-only override must succeed");
         match config.encoder {
             EncoderConfig::PrometheusText { precision } => {
                 assert_eq!(
@@ -3143,7 +3214,8 @@ mod tests {
             precision: Some(1),
             ..default_args()
         };
-        let config = load_config(&args).expect("encoder + precision must produce valid config");
+        let config = load_config(&args, &empty_catalog())
+            .expect("encoder + precision must produce valid config");
         match config.encoder {
             EncoderConfig::InfluxLineProtocol {
                 precision,
@@ -3163,7 +3235,7 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("no precision must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("no precision must succeed");
         match config.encoder {
             EncoderConfig::PrometheusText { precision } => {
                 assert_eq!(precision, None, "precision must be None when not specified");
@@ -3180,7 +3252,7 @@ mod tests {
             precision: Some(0),
             ..default_args()
         };
-        let config = load_config(&args).expect("precision=0 must be valid");
+        let config = load_config(&args, &empty_catalog()).expect("precision=0 must be valid");
         match config.encoder {
             EncoderConfig::PrometheusText { precision } => {
                 assert_eq!(precision, Some(0), "precision=0 must be accepted");
@@ -3198,7 +3270,8 @@ mod tests {
             precision: Some(5),
             ..default_args()
         };
-        let config = load_config(&args).expect("json_lines + precision must succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("json_lines + precision must succeed");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(precision, Some(5), "precision must be Some(5)");
@@ -3219,7 +3292,8 @@ mod tests {
             precision: Some(2),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log precision flag must produce valid config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log precision flag must produce valid config");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(precision, Some(2), "precision must be Some(2)");
@@ -3237,7 +3311,8 @@ mod tests {
             precision: Some(4),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log precision override must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("log precision override must succeed");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(
@@ -3260,7 +3335,8 @@ mod tests {
             // no --encoder flag
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log precision-only override must succeed");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log precision-only override must succeed");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(
@@ -3282,8 +3358,8 @@ mod tests {
             precision: Some(1),
             ..default_logs_args()
         };
-        let config =
-            load_log_config(&args).expect("log encoder + precision must produce valid config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log encoder + precision must produce valid config");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(precision, Some(1), "precision must be Some(1)");
@@ -3299,7 +3375,8 @@ mod tests {
             rate: Some(10.0),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log no precision must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("log no precision must succeed");
         match config.encoder {
             EncoderConfig::JsonLines { precision } => {
                 assert_eq!(precision, None, "precision must be None when not specified");
@@ -3319,7 +3396,8 @@ mod tests {
             precision: Some(5),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("syslog + precision must not error");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("syslog + precision must not error");
         assert!(
             matches!(config.encoder, EncoderConfig::Syslog { .. }),
             "encoder must still be Syslog, got {:?}",
@@ -3342,7 +3420,7 @@ mod tests {
             spike_cardinality: Some(500),
             ..default_args()
         };
-        let config = load_config(&args).expect("all spike flags must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("all spike flags must succeed");
         let spikes = config
             .cardinality_spikes
             .as_ref()
@@ -3361,7 +3439,7 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("no spike flags must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("no spike flags must succeed");
         assert!(
             config.cardinality_spikes.is_none(),
             "cardinality_spikes must be None when no spike flags are provided"
@@ -3376,7 +3454,7 @@ mod tests {
             spike_label: Some("pod_name".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--spike-label alone must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--spike-label alone must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3392,7 +3470,7 @@ mod tests {
             spike_every: Some("2m".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--spike-every alone must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--spike-every alone must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3408,7 +3486,7 @@ mod tests {
             spike_for: Some("30s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--spike-for alone must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--spike-for alone must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3424,7 +3502,8 @@ mod tests {
             spike_cardinality: Some(100),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--spike-cardinality alone must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--spike-cardinality alone must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3441,7 +3520,7 @@ mod tests {
             spike_every: Some("2m".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("partial spike flags must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("partial spike flags must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3461,7 +3540,7 @@ mod tests {
             spike_strategy: Some("fibonacci".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("unknown strategy must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("unknown strategy must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("fibonacci"),
@@ -3481,7 +3560,7 @@ mod tests {
             // spike_strategy: None -> defaults to counter
             ..default_args()
         };
-        let config = load_config(&args).expect("default strategy must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("default strategy must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(
             spikes[0].strategy,
@@ -3502,7 +3581,8 @@ mod tests {
             spike_strategy: Some("counter".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("explicit counter strategy must succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("explicit counter strategy must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(spikes[0].strategy, SpikeStrategy::Counter);
     }
@@ -3520,7 +3600,7 @@ mod tests {
             spike_seed: Some(42),
             ..default_args()
         };
-        let config = load_config(&args).expect("random strategy must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("random strategy must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(spikes[0].strategy, SpikeStrategy::Random);
         assert_eq!(spikes[0].seed, Some(42));
@@ -3538,7 +3618,7 @@ mod tests {
             spike_prefix: Some("node-".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("spike prefix must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("spike prefix must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(
             spikes[0].prefix.as_deref(),
@@ -3558,7 +3638,7 @@ mod tests {
             spike_cardinality: Some(500),
             ..default_args()
         };
-        let config = load_config(&args).expect("no prefix must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("no prefix must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert!(
             spikes[0].prefix.is_none(),
@@ -3581,7 +3661,8 @@ mod tests {
             spike_cardinality: Some(500),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("all log spike flags must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("all log spike flags must succeed");
         let spikes = config
             .cardinality_spikes
             .as_ref()
@@ -3600,7 +3681,8 @@ mod tests {
             rate: Some(5.0),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("no log spike flags must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("no log spike flags must succeed");
         assert!(
             config.cardinality_spikes.is_none(),
             "cardinality_spikes must be None when no spike flags are provided"
@@ -3617,7 +3699,8 @@ mod tests {
             // missing spike_for and spike_cardinality
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("partial log spike flags must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("partial log spike flags must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("spike"),
@@ -3637,7 +3720,8 @@ mod tests {
             spike_strategy: Some("unknown_strat".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("unknown log spike strategy must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("unknown log spike strategy must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("unknown_strat"),
@@ -3656,7 +3740,8 @@ mod tests {
             spike_cardinality: Some(500),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log spike default strategy must succeed");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log spike default strategy must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(
             spikes[0].strategy,
@@ -3678,7 +3763,8 @@ mod tests {
             spike_seed: Some(99),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log spike random strategy must succeed");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log spike random strategy must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(spikes[0].strategy, SpikeStrategy::Random);
         assert_eq!(spikes[0].seed, Some(99));
@@ -3697,7 +3783,8 @@ mod tests {
             spike_prefix: Some("node-".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log spike prefix must succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("log spike prefix must succeed");
         let spikes = config.cardinality_spikes.as_ref().unwrap();
         assert_eq!(
             spikes[0].prefix.as_deref(),
@@ -3717,7 +3804,8 @@ mod tests {
             jitter_seed: Some(77),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log jitter flags should produce valid config");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log jitter flags should produce valid config");
         assert_eq!(config.base.jitter, Some(2.5));
         assert_eq!(config.base.jitter_seed, Some(77));
     }
@@ -3732,7 +3820,8 @@ mod tests {
             jitter_seed: Some(123),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log jitter override should succeed");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("log jitter override should succeed");
         assert_eq!(config.base.jitter, Some(4.0));
         assert_eq!(config.base.jitter_seed, Some(123));
     }
@@ -3744,7 +3833,8 @@ mod tests {
             rate: Some(5.0),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("log config without jitter should succeed");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("log config without jitter should succeed");
         assert_eq!(config.base.jitter, None);
         assert_eq!(config.base.jitter_seed, None);
     }
@@ -3761,7 +3851,8 @@ mod tests {
             value: Some(42.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("--value must produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("--value must produce valid config");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(value, 42.0, "--value must set constant generator value");
@@ -3779,7 +3870,8 @@ mod tests {
             value_mode: Some("constant".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("--value with --value-mode constant must succeed");
+        let config = load_config(&args, &empty_catalog())
+            .expect("--value with --value-mode constant must succeed");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(value, 99.0);
@@ -3797,7 +3889,8 @@ mod tests {
             value: Some(7.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("--value without --offset must succeed");
+        let config =
+            load_config(&args, &empty_catalog()).expect("--value without --offset must succeed");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(value, 7.0);
@@ -3815,7 +3908,7 @@ mod tests {
             value_mode: Some("sine".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--value with sine must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--value with sine must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--value") && msg.contains("constant"),
@@ -3832,7 +3925,7 @@ mod tests {
             value_mode: Some("uniform".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--value with uniform must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("--value with uniform must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--value") && msg.contains("constant"),
@@ -3849,7 +3942,8 @@ mod tests {
             value_mode: Some("sawtooth".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--value with sawtooth must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--value with sawtooth must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--value") && msg.contains("constant"),
@@ -3866,7 +3960,8 @@ mod tests {
             value_mode: Some("constant".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--offset with constant must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--offset with constant must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--offset") && msg.contains("sine"),
@@ -3882,7 +3977,8 @@ mod tests {
             value: Some(55.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("--value must override YAML generator");
+        let config =
+            load_config(&args, &empty_catalog()).expect("--value must override YAML generator");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(
@@ -3905,7 +4001,8 @@ mod tests {
             // value_mode: None — implicit constant default
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--offset without --value-mode must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("--offset without --value-mode must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--offset") && msg.contains("sine"),
@@ -3925,8 +4022,8 @@ mod tests {
             // value_mode: None — not explicitly set; --value triggers the override
             ..default_args()
         };
-        let config =
-            load_config(&args).expect("--value must override sine YAML generator to constant");
+        let config = load_config(&args, &empty_catalog())
+            .expect("--value must override sine YAML generator to constant");
         match config.generator {
             GeneratorConfig::Constant { value } => {
                 assert_eq!(
@@ -3949,7 +4046,7 @@ mod tests {
             value_mode: Some("sine".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("--offset with sine must succeed");
+        let config = load_config(&args, &empty_catalog()).expect("--offset with sine must succeed");
         match config.generator {
             GeneratorConfig::Sine { offset, .. } => {
                 assert!(
@@ -3970,7 +4067,8 @@ mod tests {
             value_mode: Some("uniform".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--offset with uniform must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--offset with uniform must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--offset") && msg.contains("sine"),
@@ -3987,7 +4085,8 @@ mod tests {
             value_mode: Some("sawtooth".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--offset with sawtooth must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--offset with sawtooth must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--offset") && msg.contains("sine"),
@@ -4011,7 +4110,8 @@ mod tests {
             endpoint: Some("http://localhost:9090/api/v1/write".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("http_push sink should produce valid config");
+        let config = load_config(&args, &empty_catalog())
+            .expect("http_push sink should produce valid config");
         match &config.sink {
             SinkConfig::HttpPush { url, .. } => {
                 assert_eq!(url, "http://localhost:9090/api/v1/write");
@@ -4031,7 +4131,8 @@ mod tests {
             batch_size: Some(200),
             ..default_args()
         };
-        let config = load_config(&args).expect("http_push with batch_size should work");
+        let config =
+            load_config(&args, &empty_catalog()).expect("http_push with batch_size should work");
         match &config.sink {
             SinkConfig::HttpPush { batch_size, .. } => {
                 assert_eq!(*batch_size, Some(200));
@@ -4051,7 +4152,8 @@ mod tests {
             content_type: Some("application/json".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("http_push with content_type should work");
+        let config =
+            load_config(&args, &empty_catalog()).expect("http_push with content_type should work");
         match &config.sink {
             SinkConfig::HttpPush { content_type, .. } => {
                 assert_eq!(content_type.as_deref(), Some("application/json"));
@@ -4068,7 +4170,8 @@ mod tests {
             sink: Some("http_push".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("http_push without endpoint must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("http_push without endpoint must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--endpoint"),
@@ -4088,7 +4191,8 @@ mod tests {
             endpoint: Some("http://localhost:3100".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("loki sink should produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("loki sink should produce valid config");
         match &config.sink {
             SinkConfig::Loki { url, .. } => {
                 assert_eq!(url, "http://localhost:3100");
@@ -4105,7 +4209,8 @@ mod tests {
             sink: Some("loki".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("loki without endpoint must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("loki without endpoint must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--endpoint"),
@@ -4125,7 +4230,8 @@ mod tests {
             endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("remote_write sink should produce valid config");
+        let config = load_config(&args, &empty_catalog())
+            .expect("remote_write sink should produce valid config");
         match &config.sink {
             SinkConfig::RemoteWrite { url, .. } => {
                 assert_eq!(url, "http://localhost:8428/api/v1/write");
@@ -4142,7 +4248,8 @@ mod tests {
             sink: Some("remote_write".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("remote_write without endpoint must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("remote_write without endpoint must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--endpoint"),
@@ -4163,7 +4270,8 @@ mod tests {
             signal_type: Some("metrics".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("otlp_grpc sink should produce valid config");
+        let config = load_config(&args, &empty_catalog())
+            .expect("otlp_grpc sink should produce valid config");
         match &config.sink {
             SinkConfig::OtlpGrpc {
                 endpoint,
@@ -4189,7 +4297,8 @@ mod tests {
             signal_type: Some("metrics".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("otlp_grpc without endpoint must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("otlp_grpc without endpoint must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--endpoint"),
@@ -4206,8 +4315,8 @@ mod tests {
             endpoint: Some("http://localhost:4317".to_string()),
             ..default_args()
         };
-        let err =
-            load_config(&args).expect_err("otlp_grpc for metrics without --signal-type must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("otlp_grpc for metrics without --signal-type must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--signal-type"),
@@ -4228,7 +4337,8 @@ mod tests {
             topic: Some("telemetry".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("kafka sink should produce valid config");
+        let config =
+            load_config(&args, &empty_catalog()).expect("kafka sink should produce valid config");
         match &config.sink {
             SinkConfig::Kafka { brokers, topic, .. } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
@@ -4247,7 +4357,8 @@ mod tests {
             topic: Some("telemetry".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("kafka without --brokers must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("kafka without --brokers must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--brokers"),
@@ -4264,7 +4375,8 @@ mod tests {
             brokers: Some("127.0.0.1:9092".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("kafka without --topic must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("kafka without --topic must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--topic"),
@@ -4282,7 +4394,8 @@ mod tests {
             endpoint: Some("http://localhost:9090".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--endpoint without --sink must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--endpoint without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4298,7 +4411,8 @@ mod tests {
             brokers: Some("127.0.0.1:9092".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--brokers without --sink must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--brokers without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4314,7 +4428,8 @@ mod tests {
             topic: Some("telemetry".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--topic without --sink must fail");
+        let err =
+            load_config(&args, &empty_catalog()).expect_err("--topic without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4332,7 +4447,7 @@ mod tests {
             sink: Some("mystical_sink".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("unknown sink type must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("unknown sink type must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("mystical_sink"),
@@ -4351,7 +4466,8 @@ mod tests {
             encoder: Some("remote_write".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("remote_write encoder should parse");
+        let config =
+            load_config(&args, &empty_catalog()).expect("remote_write encoder should parse");
         assert!(
             matches!(config.encoder, EncoderConfig::RemoteWrite),
             "encoder should be RemoteWrite, got {:?}",
@@ -4368,7 +4484,7 @@ mod tests {
             encoder: Some("otlp".to_string()),
             ..default_args()
         };
-        let config = load_config(&args).expect("otlp encoder should parse");
+        let config = load_config(&args, &empty_catalog()).expect("otlp encoder should parse");
         assert!(
             matches!(config.encoder, EncoderConfig::Otlp),
             "encoder should be Otlp, got {:?}",
@@ -4388,7 +4504,7 @@ mod tests {
             endpoint: Some("http://localhost:3100".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("logs loki sink should work");
+        let config = load_log_config(&args, &empty_catalog()).expect("logs loki sink should work");
         match &config.sink {
             SinkConfig::Loki { url, .. } => {
                 assert_eq!(url, "http://localhost:3100");
@@ -4408,8 +4524,8 @@ mod tests {
             // signal_type intentionally omitted — should default to "logs"
             ..default_logs_args()
         };
-        let config =
-            load_log_config(&args).expect("logs otlp_grpc should default signal_type to logs");
+        let config = load_log_config(&args, &empty_catalog())
+            .expect("logs otlp_grpc should default signal_type to logs");
         match &config.sink {
             SinkConfig::OtlpGrpc { signal_type, .. } => {
                 assert_eq!(
@@ -4430,7 +4546,8 @@ mod tests {
             endpoint: Some("http://localhost:9090".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs --endpoint without --sink must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs --endpoint without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4448,7 +4565,8 @@ mod tests {
             endpoint: Some("http://localhost:9090/push".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("logs http_push sink should work");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("logs http_push sink should work");
         match &config.sink {
             SinkConfig::HttpPush { url, .. } => {
                 assert_eq!(url, "http://localhost:9090/push");
@@ -4468,7 +4586,8 @@ mod tests {
             encoder: Some("otlp".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("logs otlp encoder should parse");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("logs otlp encoder should parse");
         assert!(
             matches!(config.encoder, EncoderConfig::Otlp),
             "encoder should be Otlp, got {:?}",
@@ -4488,7 +4607,8 @@ mod tests {
             content_type: Some("application/json".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--content-type without --sink must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("--content-type without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4504,7 +4624,8 @@ mod tests {
             signal_type: Some("metrics".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--signal-type without --sink must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("--signal-type without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4520,7 +4641,8 @@ mod tests {
             batch_size: Some(100),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("--batch-size without --sink must fail");
+        let err = load_config(&args, &empty_catalog())
+            .expect_err("--batch-size without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4540,7 +4662,8 @@ mod tests {
             content_type: Some("application/json".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs --content-type without --sink must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs --content-type without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4556,7 +4679,8 @@ mod tests {
             signal_type: Some("logs".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs --signal-type without --sink must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs --signal-type without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4572,7 +4696,8 @@ mod tests {
             batch_size: Some(100),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs --batch-size without --sink must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs --batch-size without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--sink"),
@@ -4594,7 +4719,8 @@ mod tests {
             endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("logs remote_write sink should work");
+        let config =
+            load_log_config(&args, &empty_catalog()).expect("logs remote_write sink should work");
         match &config.sink {
             SinkConfig::RemoteWrite { url, .. } => {
                 assert_eq!(url, "http://localhost:8428/api/v1/write");
@@ -4614,7 +4740,7 @@ mod tests {
             topic: Some("test".to_string()),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("logs kafka sink should work");
+        let config = load_log_config(&args, &empty_catalog()).expect("logs kafka sink should work");
         match &config.sink {
             SinkConfig::Kafka { brokers, topic, .. } => {
                 assert_eq!(brokers, "127.0.0.1:9092");
@@ -4637,7 +4763,8 @@ mod tests {
             topic: Some("test".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs kafka without --brokers must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs kafka without --brokers must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--brokers"),
@@ -4654,7 +4781,8 @@ mod tests {
             brokers: Some("127.0.0.1:9092".to_string()),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("logs kafka without --topic must fail");
+        let err = load_log_config(&args, &empty_catalog())
+            .expect_err("logs kafka without --topic must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--topic"),
@@ -4678,7 +4806,7 @@ mod tests {
             retry_max_backoff: Some("5s".to_string()),
             ..default_args()
         };
-        let result = load_config(&args);
+        let result = load_config(&args, &empty_catalog());
         assert!(
             result.is_ok(),
             "all three retry flags together should succeed: {:?}",
@@ -4696,7 +4824,7 @@ mod tests {
             retry_max_attempts: Some(3),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("partial retry flags must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("partial retry flags must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--retry-max-attempts") && msg.contains("together"),
@@ -4714,7 +4842,7 @@ mod tests {
             retry_backoff: Some("100ms".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("partial retry flags must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("partial retry flags must fail");
         assert!(err.to_string().contains("together"));
     }
 
@@ -4728,7 +4856,7 @@ mod tests {
             retry_max_backoff: Some("5s".to_string()),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("retry without --sink must fail");
+        let err = load_config(&args, &empty_catalog()).expect_err("retry without --sink must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("--retry-") && msg.contains("--sink"),
@@ -4743,7 +4871,8 @@ mod tests {
             rate: Some(1.0),
             ..default_args()
         };
-        let config = load_config(&args).expect("should succeed without retry flags");
+        let config =
+            load_config(&args, &empty_catalog()).expect("should succeed without retry flags");
         // Default sink is stdout, which has no retry field — just verify it compiled.
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
@@ -4806,7 +4935,7 @@ mod tests {
             retry_max_backoff: Some("5s".to_string()),
             ..default_logs_args()
         };
-        let result = load_log_config(&args);
+        let result = load_log_config(&args, &empty_catalog());
         assert!(
             result.is_ok(),
             "all three retry flags together should succeed: {:?}",
@@ -4824,16 +4953,26 @@ mod tests {
             retry_max_attempts: Some(3),
             ..default_logs_args()
         };
-        let err = load_log_config(&args).expect_err("partial retry flags must fail");
+        let err =
+            load_log_config(&args, &empty_catalog()).expect_err("partial retry flags must fail");
         assert!(err.to_string().contains("together"));
     }
 
     // ---- resolve_scenario_source tests ------------------------------------------
 
+    /// Build a scenario catalog from the repo's `scenarios/` directory.
+    fn repo_scenario_catalog() -> crate::scenarios::ScenarioCatalog {
+        let scenarios_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scenarios");
+        crate::scenarios::ScenarioCatalog::discover(&[scenarios_dir])
+    }
+
     #[test]
-    fn resolve_at_name_returns_builtin_yaml() {
+    fn resolve_at_name_returns_yaml_from_catalog() {
+        let catalog = repo_scenario_catalog();
         let path = PathBuf::from("@cpu-spike");
-        let yaml = resolve_scenario_source(&path).expect("@cpu-spike must resolve");
+        let yaml = resolve_scenario_source(&path, &catalog).expect("@cpu-spike must resolve");
         assert!(
             yaml.contains("node_cpu_usage_percent"),
             "resolved YAML must contain the metric name from cpu-spike"
@@ -4842,12 +4981,13 @@ mod tests {
 
     #[test]
     fn resolve_at_unknown_name_returns_error_with_hint() {
+        let catalog = repo_scenario_catalog();
         let path = PathBuf::from("@nonexistent");
-        let err = resolve_scenario_source(&path).expect_err("@nonexistent must fail");
+        let err = resolve_scenario_source(&path, &catalog).expect_err("@nonexistent must fail");
         let msg = err.to_string();
         assert!(
-            msg.contains("unknown built-in scenario"),
-            "error must mention 'unknown built-in scenario', got: {msg}"
+            msg.contains("unknown scenario"),
+            "error must mention 'unknown scenario', got: {msg}"
         );
         assert!(
             msg.contains("cpu-spike"),
@@ -4858,11 +4998,12 @@ mod tests {
     #[test]
     fn resolve_file_path_reads_from_disk() {
         // Use an existing example file to confirm disk path still works.
+        let catalog = empty_catalog();
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("examples")
             .join("basic-metrics.yaml");
-        let yaml = resolve_scenario_source(&path).expect("example file must be readable");
+        let yaml = resolve_scenario_source(&path, &catalog).expect("example file must be readable");
         assert!(
             yaml.contains("interface_oper_state"),
             "example YAML must contain the metric name"
@@ -4871,8 +5012,9 @@ mod tests {
 
     #[test]
     fn resolve_missing_file_path_returns_io_error() {
+        let catalog = empty_catalog();
         let path = PathBuf::from("/nonexistent/path/scenario.yaml");
-        let err = resolve_scenario_source(&path).expect_err("missing file must fail");
+        let err = resolve_scenario_source(&path, &catalog).expect_err("missing file must fail");
         assert!(
             err.to_string().contains("failed to read"),
             "error must mention file reading failure"
@@ -4881,40 +5023,45 @@ mod tests {
 
     #[test]
     fn load_config_with_at_name_shorthand() {
+        let catalog = repo_scenario_catalog();
         let args = MetricsArgs {
             scenario: Some(PathBuf::from("@cpu-spike")),
             ..default_args()
         };
-        let config = load_config(&args).expect("@cpu-spike must load as metrics config");
+        let config = load_config(&args, &catalog).expect("@cpu-spike must load as metrics config");
         assert_eq!(config.name, "node_cpu_usage_percent");
     }
 
     #[test]
     fn load_config_with_at_unknown_returns_error() {
+        let catalog = repo_scenario_catalog();
         let args = MetricsArgs {
             scenario: Some(PathBuf::from("@does-not-exist")),
             ..default_args()
         };
-        let err = load_config(&args).expect_err("@does-not-exist must fail");
-        assert!(err.to_string().contains("unknown built-in scenario"));
+        let err = load_config(&args, &catalog).expect_err("@does-not-exist must fail");
+        assert!(err.to_string().contains("unknown scenario"));
     }
 
     #[test]
     fn load_log_config_with_at_name_shorthand() {
+        let catalog = repo_scenario_catalog();
         let args = crate::cli::LogsArgs {
             scenario: Some(PathBuf::from("@log-storm")),
             ..default_logs_args()
         };
-        let config = load_log_config(&args).expect("@log-storm must load as logs config");
+        let config = load_log_config(&args, &catalog).expect("@log-storm must load as logs config");
         assert_eq!(config.name, "app_error_storm");
     }
 
     #[test]
     fn load_multi_config_with_at_name_shorthand() {
+        let catalog = repo_scenario_catalog();
         let args = crate::cli::RunArgs {
             scenario: PathBuf::from("@interface-flap"),
         };
-        let config = load_multi_config(&args).expect("@interface-flap must load as multi config");
+        let config =
+            load_multi_config(&args, &catalog).expect("@interface-flap must load as multi config");
         assert!(
             !config.scenarios.is_empty(),
             "interface-flap must have at least one scenario entry"
@@ -4923,11 +5070,12 @@ mod tests {
 
     #[test]
     fn load_histogram_config_with_at_name_shorthand() {
+        let catalog = repo_scenario_catalog();
         let args = crate::cli::HistogramArgs {
             scenario: PathBuf::from("@histogram-latency"),
         };
-        let config =
-            load_histogram_config(&args).expect("@histogram-latency must load as histogram config");
+        let config = load_histogram_config(&args, &catalog)
+            .expect("@histogram-latency must load as histogram config");
         assert_eq!(config.name, "http_request_duration_seconds");
     }
 
@@ -4935,7 +5083,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_metrics_scenario() {
-        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("cpu-spike").expect("must exist");
         let args = ScenariosRunArgs {
             name: "cpu-spike".to_string(),
             duration: None,
@@ -4951,7 +5100,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_logs_scenario() {
-        let scenario = sonda_core::scenarios::get("log-storm").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("log-storm").expect("must exist");
         let args = ScenariosRunArgs {
             name: "log-storm".to_string(),
             duration: None,
@@ -4967,7 +5117,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_multi_scenario() {
-        let scenario = sonda_core::scenarios::get("interface-flap").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("interface-flap").expect("must exist");
         let args = ScenariosRunArgs {
             name: "interface-flap".to_string(),
             duration: None,
@@ -4985,7 +5136,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_histogram_scenario() {
-        let scenario = sonda_core::scenarios::get("histogram-latency").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("histogram-latency").expect("must exist");
         let args = ScenariosRunArgs {
             name: "histogram-latency".to_string(),
             duration: None,
@@ -5004,7 +5156,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_with_duration_override() {
-        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("cpu-spike").expect("must exist");
         let args = ScenariosRunArgs {
             name: "cpu-spike".to_string(),
             duration: Some("5s".to_string()),
@@ -5020,7 +5173,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_with_rate_override() {
-        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("cpu-spike").expect("must exist");
         let args = ScenariosRunArgs {
             name: "cpu-spike".to_string(),
             duration: None,
@@ -5035,7 +5189,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_with_sink_override() {
-        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("cpu-spike").expect("must exist");
         let args = ScenariosRunArgs {
             name: "cpu-spike".to_string(),
             duration: None,
@@ -5054,7 +5209,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_with_encoder_override() {
-        let scenario = sonda_core::scenarios::get("cpu-spike").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("cpu-spike").expect("must exist");
         let args = ScenariosRunArgs {
             name: "cpu-spike".to_string(),
             duration: None,
@@ -5074,7 +5230,8 @@ mod tests {
 
     #[test]
     fn parse_builtin_multi_applies_overrides_to_all_entries() {
-        let scenario = sonda_core::scenarios::get("interface-flap").expect("must exist");
+        let catalog = repo_scenario_catalog();
+        let scenario = catalog.find("interface-flap").expect("must exist");
         let args = ScenariosRunArgs {
             name: "interface-flap".to_string(),
             duration: Some("10s".to_string()),
@@ -5219,10 +5376,14 @@ mod tests {
 
     // ---- parse_builtin_scenario: summary signal type --------------------------------
 
-    #[test]
-    fn parse_builtin_summary_scenario() {
-        // No summary scenario exists in the catalog yet, so construct a synthetic one.
-        let yaml = r#"
+    /// Write a summary scenario YAML to a temp file and return a BuiltinScenario
+    /// pointing at it. Each call gets a unique directory keyed by `suffix`.
+    fn temp_summary_scenario(suffix: &str) -> (sonda_core::BuiltinScenario, std::path::PathBuf) {
+        let yaml = r#"scenario_name: test-summary
+category: test
+signal_type: summary
+description: Test summary scenario
+
 name: rpc_duration_seconds
 rate: 1
 duration: 10s
@@ -5242,13 +5403,27 @@ encoder:
 sink:
   type: stdout
 "#;
+        let dir = std::env::temp_dir().join(format!(
+            "sonda-summary-test-{suffix}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test-summary.yaml");
+        std::fs::write(&path, yaml).expect("must write temp file");
         let scenario = sonda_core::BuiltinScenario {
-            name: "test-summary",
-            category: "test",
-            signal_type: "summary",
-            description: "Test summary scenario",
-            yaml,
+            name: "test-summary".to_string(),
+            category: "test".to_string(),
+            signal_type: "summary".to_string(),
+            description: "Test summary scenario".to_string(),
+            source_path: path.clone(),
         };
+        (scenario, dir)
+    }
+
+    #[test]
+    fn parse_builtin_summary_scenario() {
+        let (scenario, dir) = temp_summary_scenario("parse");
         let args = ScenariosRunArgs {
             name: "test-summary".to_string(),
             duration: None,
@@ -5264,37 +5439,12 @@ sink:
             "expected Summary entry, got {:?}",
             std::mem::discriminant(&entries[0])
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn parse_builtin_summary_applies_overrides() {
-        let yaml = r#"
-name: rpc_duration_seconds
-rate: 1
-duration: 10s
-generator:
-  type: uniform
-  min: 0.01
-  max: 2.0
-quantiles: [0.5, 0.9, 0.99]
-observations_per_tick: 50
-seed: 42
-distribution:
-  type: uniform
-  min: 0.01
-  max: 2.0
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
-"#;
-        let scenario = sonda_core::BuiltinScenario {
-            name: "test-summary",
-            category: "test",
-            signal_type: "summary",
-            description: "Test summary scenario",
-            yaml,
-        };
+        let (scenario, dir) = temp_summary_scenario("overrides");
         let args = ScenariosRunArgs {
             name: "test-summary".to_string(),
             duration: Some("30s".to_string()),
@@ -5307,6 +5457,7 @@ sink:
         let base = entries[0].base();
         assert_eq!(base.duration.as_deref(), Some("30s"));
         assert_eq!(base.rate, 5.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- Pack loading tests -----------------------------------------------------

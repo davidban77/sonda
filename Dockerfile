@@ -94,6 +94,11 @@ COPY --from=builder /out/sonda-server /sonda-server
 COPY packs/ /packs/
 ENV SONDA_PACK_PATH=/packs
 
+# Include built-in scenario YAML files so `sonda scenarios list/show/run`
+# and `sonda metrics --scenario @name` work out of the box.
+COPY scenarios/ /scenarios/
+ENV SONDA_SCENARIO_PATH=/scenarios
+
 EXPOSE 8080
 
 ENTRYPOINT ["/sonda-server"]

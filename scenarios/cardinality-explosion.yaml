@@ -6,6 +6,11 @@
 # every 60 seconds for 20 seconds. Useful for testing TSDB cardinality
 # limits and cost alerting.
 
+scenario_name: cardinality-explosion
+category: observability
+signal_type: metrics
+description: "Pod label cardinality explosion with spike windows"
+
 name: container_cpu_usage_seconds_total
 rate: 5
 duration: 120s

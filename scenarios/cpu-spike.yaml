@@ -6,6 +6,11 @@
 #
 # Pattern: baseline ~35% with periodic spikes to ~95%.
 
+scenario_name: cpu-spike
+category: infrastructure
+signal_type: metrics
+description: "Periodic CPU usage spikes above threshold"
+
 name: node_cpu_usage_percent
 rate: 1
 duration: 60s

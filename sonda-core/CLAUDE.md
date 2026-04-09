@@ -16,9 +16,9 @@ src/
 │                          Pack YAML files live outside this crate, in `packs/` at repo root,
 │                          discovered by the CLI via a search path.
 ├── scenarios/
-│   └── mod.rs          ← pre-built scenario catalog: BuiltinScenario struct, static CATALOG array,
-│                          list(), get(), get_yaml(), list_by_category(), available_names().
-│                          YAML files live in sonda-core/scenarios/*.yaml (embedded via include_str!).
+│   └── mod.rs          ← scenario metadata type: BuiltinScenario struct (owned fields + source_path).
+│                          Scenario YAML files live outside this crate, in `scenarios/` at repo root,
+│                          discovered by the CLI via a search path.
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),

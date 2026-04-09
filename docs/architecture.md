@@ -205,7 +205,27 @@ Packs like `node_exporter_cpu` contain multiple specs with the same metric name 
 
 > **Design note:** Packs deliberately do not carry rate, duration, sink, or encoder — those are delivery concerns supplied by the user at run time. This separation means the same pack definition works unchanged across stdout testing, remote-write to production, and Kafka ingest.
 
-> **Scenarios asymmetry:** Built-in scenarios still use the `include_str!()` embedded pattern. Externalizing scenarios to the filesystem is tracked as follow-up #186.
+### 5.6.1 Scenarios
+
+Built-in scenarios are pre-authored YAML files that model common failure and baseline patterns (CPU spike, memory leak, interface flap, etc.). Like packs, scenarios follow the **engine / data / discovery** separation:
+
+- **sonda-core `scenarios/` module** — contains only the `BuiltinScenario` metadata struct (name, category, signal_type, description, source_path). No scenario YAML is embedded in the library.
+- **`scenarios/` directory at repo root** — contains the scenario YAML files as standalone data. Each file includes metadata fields (`scenario_name`, `category`, `signal_type`, `description`) in its header alongside the full scenario config.
+- **CLI `scenarios` module** — discovers scenario YAML files from the filesystem via a search path, probes the metadata header, and caches the results in a `ScenarioCatalog` for the CLI invocation. Full YAML content is loaded lazily when a scenario is actually run.
+
+Key types (in `sonda-core`):
+
+- **BuiltinScenario** — lightweight metadata: name, category, signal_type, description, and the absolute filesystem path to the YAML file.
+
+Key types (in the CLI crate):
+
+- **ScenarioCatalog** — cached directory scan results. Built once per CLI invocation from the search path.
+
+**Scenario discovery search path** (priority order): `--scenario-path` CLI flag > `SONDA_SCENARIO_PATH` env var (colon-separated) > `./scenarios/` relative to CWD > `~/.sonda/scenarios/`. Name collisions are resolved by first-match-wins.
+
+All built-in scenarios use `stdout` as their sink and have a finite `duration`, so they work out of the box with zero configuration. The `scenarios run` subcommand supports rate, duration, sink, encoder, and endpoint overrides.
+
+> **Design note:** Scenarios deliberately live outside the binary so that users can add custom scenarios by dropping YAML files into the search path without recompiling. The same discovery mechanism works for both built-in and user-authored scenarios.
 
 ### 5.7 Cargo Features
 

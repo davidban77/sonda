@@ -6,7 +6,7 @@ multi-scenario files, and browsing a library of built-in scenario patterns.
 ## Global options
 
 ```
-sonda [--quiet | --verbose] [--dry-run] <COMMAND>
+sonda [--quiet | --verbose] [--dry-run] [--scenario-path <DIR>] [--pack-path <DIR>] <COMMAND>
 ```
 
 | Flag | Short | Description |
@@ -14,6 +14,8 @@ sonda [--quiet | --verbose] [--dry-run] <COMMAND>
 | `--quiet` | `-q` | Suppress start/stop banners and live progress. Errors still print to stderr. |
 | `--verbose` | `-v` | Print resolved scenario config at startup, then run normally. Mutually exclusive with `--quiet`. |
 | `--dry-run` | -- | Parse and validate the scenario config, print it, then exit without emitting events. |
+| `--scenario-path <DIR>` | -- | Directory containing scenario YAML files. Overrides `SONDA_SCENARIO_PATH` and default paths. |
+| `--pack-path <DIR>` | -- | Directory containing metric pack YAML files. Overrides `SONDA_PACK_PATH` and default paths. |
 | `--help` | `-h` | Print help information. |
 | `--version` | `-V` | Print version. |
 
@@ -720,8 +722,8 @@ banner in launch order before the aggregate line appears.
 
 ## sonda scenarios
 
-Browse, inspect, and run [built-in scenario patterns](../guides/scenarios.md) embedded in the
-binary. No YAML files or network access needed.
+Browse, inspect, and run [built-in scenario patterns](../guides/scenarios.md) discovered from
+the filesystem. No network access needed.
 
 ```bash
 sonda scenarios <COMMAND>
@@ -765,7 +767,7 @@ sonda scenarios show memory-leak > my-memory-leak.yaml
 
 ### scenarios run
 
-Execute a built-in scenario with optional overrides. Equivalent to running the embedded YAML
+Execute a built-in scenario with optional overrides. Equivalent to running the scenario YAML
 directly, but with a focused set of override flags.
 
 ```bash

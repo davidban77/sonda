@@ -1,8 +1,13 @@
 # Memory leak: monotonically growing memory usage.
 #
-# Models a process with a memory leak using the `leak` alias — a
+# Models a process with a memory leak using the `leak` alias -- a
 # one-way ramp from 40% to 95% over 120 seconds. Useful for testing
 # alert rules on memory growth rate or threshold breaches.
+
+scenario_name: memory-leak
+category: infrastructure
+signal_type: metrics
+description: "Monotonically growing memory usage (sawtooth)"
 
 name: process_memory_usage_percent
 rate: 1
