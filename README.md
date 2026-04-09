@@ -17,6 +17,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics (gauge, histogram, summary), logs (template and replay modes) |
+| **CSV import** | Analyze CSV files, detect time-series patterns (steady, spike, leak, flap, sawtooth, step), generate portable scenario YAML |
 | **Built-in scenarios** | 11 curated patterns (cpu-spike, memory-leak, interface-flap, log-storm, and more) |
 | **Metric packs** | 3 reusable metric bundles (telegraf-snmp-interface, node-exporter-cpu, node-exporter-memory) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
@@ -126,6 +127,24 @@ overrides:
       spike_duration: 5
       spike_interval: 30
 ```
+
+## CSV import
+
+Turn any CSV file into a parameterized scenario. `sonda import` analyzes time-series data,
+detects dominant patterns, and generates portable YAML using generators instead of raw CSV replay:
+
+```bash
+sonda import data.csv --analyze                    # see detected patterns
+sonda import data.csv -o scenario.yaml             # generate a scenario file
+sonda import data.csv --run --duration 30s         # generate and run immediately
+```
+
+Works with Grafana "Series joined by time" exports -- metric names and labels are extracted
+from headers automatically. Six patterns are detected: steady, spike, climb/leak, sawtooth,
+flap, and step.
+
+See the [CSV Import](https://davidban77.github.io/sonda/guides/csv-import/) guide for the
+full walkthrough.
 
 ## Documentation
 

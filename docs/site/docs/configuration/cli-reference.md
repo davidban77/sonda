@@ -1,7 +1,8 @@
 # CLI Reference
 
 Sonda provides subcommands for generating metrics, logs, histograms, and summaries, running
-multi-scenario files, and browsing a library of built-in scenario patterns.
+multi-scenario files, browsing a library of built-in scenario patterns, and importing CSV data
+into parameterized scenarios.
 
 ## Global options
 
@@ -880,6 +881,57 @@ sonda --dry-run packs run node_exporter_memory \
     For per-metric generator overrides, use a [pack scenario YAML file](../guides/metric-packs.md#per-metric-overrides)
     instead of `packs run`. The CLI does not support overrides directly -- those require the
     `overrides:` block in YAML.
+
+## sonda import
+
+Analyze a CSV file, detect time-series patterns, and generate a portable scenario YAML that uses
+generators instead of `csv_replay`. For a detailed walkthrough with examples, see the
+[CSV Import](../guides/csv-import.md) guide.
+
+```bash
+sonda import <FILE> [OPTIONS]
+```
+
+| Argument / Flag | Type | Default | Description |
+|-----------------|------|---------|-------------|
+| `<FILE>` | path | -- | CSV file to import. Supports Grafana "Series joined by time" exports and plain CSV with a header row. |
+| `--analyze` | flag | -- | Print a read-only analysis of detected patterns. No file output. Conflicts with `-o` and `--run`. |
+| `-o, --output <FILE>` | path | -- | Write the generated scenario YAML to this path. Conflicts with `--analyze` and `--run`. |
+| `--run` | flag | -- | Generate the scenario and immediately execute it. No file output. Conflicts with `--analyze` and `-o`. |
+| `--columns <INDICES>` | string | all non-timestamp | Comma-separated column indices (e.g., `1,3,5`). Column 0 is the timestamp. |
+| `--rate <RATE>` | float | `1.0` | Events per second in the generated scenario. |
+| `--duration <DURATION>` | string | `60s` | Duration of the generated scenario (e.g., `60s`, `5m`). |
+
+Exactly one of `--analyze`, `-o`, or `--run` must be specified.
+
+Analyze patterns in a CSV file:
+
+```bash
+sonda import data.csv --analyze
+```
+
+Generate a scenario YAML:
+
+```bash
+sonda import data.csv -o scenario.yaml --rate 10 --duration 5m
+```
+
+Generate and run immediately:
+
+```bash
+sonda import data.csv --run --duration 30s
+```
+
+Import only specific columns:
+
+```bash
+sonda import data.csv --columns 1,3,5 -o scenario.yaml
+```
+
+!!! tip
+    `--run` integrates with global flags. Use `sonda --dry-run import data.csv --run` to
+    validate the generated scenario without emitting events, or `sonda --verbose import data.csv --run`
+    to see the resolved config at startup.
 
 ## Precedence rules
 
