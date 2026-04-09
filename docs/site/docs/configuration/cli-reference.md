@@ -954,10 +954,11 @@ defaults for every question -- press Enter to accept the default and move on.
 | 2 | Domain | `infrastructure`, `network`, `application`, `custom` |
 | 3 | Approach (metrics only) | Single metric, or use a [metric pack](../guides/metric-packs.md) |
 | 4a | Metric details (single) | Name, situation, situation parameters, labels |
-| 4b | Pack details | Pack selection, fill in required shared labels, extra labels |
+| 4b | Pack details | Pack selection (filtered by domain), fill in required shared labels, extra labels |
 | 4c | Log details | Name, message template, severity distribution, labels |
-| 5 | Delivery | Rate, duration, encoder, sink (and endpoint if applicable) |
+| 5 | Delivery | Rate, duration, encoder, sink (primary or [advanced](#advanced-sinks)), endpoint |
 | 6 | Output path | Defaults to `./scenarios/<name>.yaml` |
+| 7 | Run now | Execute the scenario immediately, or exit with instructions |
 
 ### Situations (operational vocabulary)
 
@@ -973,45 +974,184 @@ that map to generator configurations under the hood:
 | `saturation` | Repeating fill-and-reset cycles | baseline, ceiling, time to saturate |
 | `degradation` | Slow ramp with increasing noise | baseline, ceiling, time to degrade, noise |
 
-### Example session
+### Pack filtering by domain
+
+When you choose "Use a metric pack" at step 3, the pack list is filtered to show only packs
+whose category matches your selected domain. For example, choosing the `network` domain shows
+only network packs (like `telegraf_snmp_interface`), while `infrastructure` shows packs like
+`node_exporter_cpu` and `node_exporter_memory`.
+
+If no packs match the selected domain, Sonda falls back to showing all available packs so you
+are never stuck with an empty list.
+
+!!! tip
+    Packs are loaded from the [pack search path](#sonda-packs). Use `sonda packs list` to see
+    what is available, or `--pack-path` to point at a custom directory.
+
+### Advanced sinks
+
+The sink prompt shows three common options first -- `stdout`, `http_push`, and `file`. To
+access protocol-specific sinks, select **Advanced...** to open a second menu with six
+additional sinks:
+
+| Sink | Protocol | Prompted fields |
+|------|----------|-----------------|
+| `remote_write` | Prometheus remote write (protobuf + snappy) | Endpoint URL |
+| `loki` | Grafana Loki HTTP push | Loki base URL |
+| `otlp_grpc` | OpenTelemetry Collector gRPC | Endpoint URL, signal type (`metrics` or `logs`) |
+| `kafka` | Apache Kafka producer | Broker address(es), topic name |
+| `tcp` | Raw TCP socket | Address (`host:port`) |
+| `udp` | Raw UDP socket | Address (`host:port`) |
+
+Each advanced sink prompts for the connection details specific to its protocol.
+
+!!! warning "Encoder auto-override"
+    Some sinks require a specific wire format. When you select one of these sinks, Sonda
+    automatically overrides your encoder choice and prints a note explaining the change:
+
+    | Sink | Required encoder |
+    |------|-----------------|
+    | `remote_write` | `remote_write` |
+    | `otlp_grpc` | `otlp` |
+
+    For example, if you chose `prometheus_text` as your encoder but then selected the
+    `remote_write` sink, the encoder is silently switched to `remote_write`:
+
+    ```text
+    ? Output encoding format prometheus_text
+    ? Where should output be sent? Advanced...
+    ? Which advanced sink? remote_write - Prometheus remote write (protobuf + snappy)
+    ? Remote write endpoint URL http://localhost:8428/api/v1/write
+      Encoder overridden to 'remote_write' (required by the remote_write sink).
+    ```
+
+    All other sinks work with any encoder you choose.
+
+!!! warning "Feature-gated sinks"
+    The `remote_write` and `otlp_grpc` sinks require Cargo feature flags when building from
+    source. Pre-built binaries include `remote_write` by default. See
+    [Sinks](sinks.md#remote_write) for build details.
+
+### Immediate execution
+
+After writing the YAML file, `sonda init` offers to run the scenario immediately:
 
 ```text
-sonda init — guided scenario scaffolding
-
-Answer the questions below to generate a runnable scenario YAML.
-Every prompt has a default — press Enter to accept it.
-
-? What type of signal? metrics
-? What domain? infrastructure
-? How would you like to define metrics? Single metric
-? Metric name node_cpu_usage_percent
-? What situation should this metric simulate? spike_event - baseline with periodic spikes
-? Baseline value (between spikes) 35
-? Spike height (amount added during spike) 60
-? Spike duration 10s
-? Spike interval (time between spikes) 30s
-? Add a label (key=value, empty to finish) instance=web-01
-? Add a label (key=value, empty to finish)
-? Events per second (rate) 1
-? Duration (e.g., 30s, 5m, 1h) 60s
-? Output encoding format prometheus_text
-? Where should output be sent? stdout
-? Output file path ./scenarios/node-cpu-usage-percent.yaml
-
-done: Scenario written to ./scenarios/node-cpu-usage-percent.yaml
-
-  Run it with:
-    sonda metrics --scenario ./scenarios/node-cpu-usage-percent.yaml
-    sonda run --scenario ./scenarios/node-cpu-usage-percent.yaml
+? Run it now? [Y/n]
 ```
+
+Pressing Enter (or typing `Y`) executes the scenario using the same pipeline as
+`sonda run --scenario`. Typing `n` exits with the file path and run command printed
+so you can execute it later.
+
+This lets you go from zero to running telemetry in a single `sonda init` invocation --
+no need to copy-paste a follow-up command.
+
+### Example session
+
+=== "Single metric with advanced sink"
+
+    ```text
+    sonda init — guided scenario scaffolding
+    Answer the prompts to generate a runnable scenario YAML.
+    Every prompt has a default — press Enter to accept it.
+
+    ── [1/4] Signal ─────────────────────────────
+
+    ? What type of signal? metrics
+    ? What domain? infrastructure
+
+    ── [2/4] Metric ─────────────────────────────
+
+    ? How would you like to define metrics? Single metric
+    ? Metric name node_cpu_usage_percent
+    ? What situation should this metric simulate? spike_event - baseline with periodic spikes
+    ? Baseline value (between spikes) 35
+    ? Spike height (amount added during spike) 60
+    ? Spike duration 10s
+    ? Spike interval (time between spikes) 30s
+    ? Add a label (key=value, empty to finish) instance=web-01
+    ? Add a label (key=value, empty to finish)
+
+    ── [3/4] Delivery ───────────────────────────
+
+    ? Events per second (rate) 1
+    ? Duration (e.g., 30s, 5m, 1h) 60s
+    ? Output encoding format prometheus_text
+    ? Where should output be sent? Advanced...
+      Advanced sinks may require feature flags at compile time.
+    ? Which advanced sink? remote_write - Prometheus remote write (protobuf + snappy)
+    ? Remote write endpoint URL http://localhost:8428/api/v1/write
+      Encoder overridden to 'remote_write' (required by the remote_write sink).
+
+    ── Preview ──────────────────────────────────
+
+      # ...YAML preview...
+
+    ── [4/4] Output ─────────────────────────────
+
+    ? Output file path ./scenarios/node-cpu-usage-percent.yaml
+
+    ✔ Scenario created
+
+      name:  node_cpu_usage_percent
+      type:  metrics
+      file:  ./scenarios/node-cpu-usage-percent.yaml
+
+      Run it with:
+        sonda metrics --scenario ./scenarios/node-cpu-usage-percent.yaml
+        sonda run --scenario ./scenarios/node-cpu-usage-percent.yaml
+
+    ? Run it now? Yes
+      Running scenario...
+    ▶ node_cpu_usage_percent  signal_type: metrics | rate: 1/s | ...
+    ```
+
+=== "Metric pack (domain-filtered)"
+
+    ```text
+    sonda init — guided scenario scaffolding
+    Answer the prompts to generate a runnable scenario YAML.
+    Every prompt has a default — press Enter to accept it.
+
+    ── [1/4] Signal ─────────────────────────────
+
+    ? What type of signal? metrics
+    ? What domain? network
+
+    ── [2/4] Metric ─────────────────────────────
+
+    ? How would you like to define metrics? Use a metric pack
+      Showing packs for domain: network
+    ? Which metric pack? telegraf_snmp_interface - SNMP interface metrics (5 metrics)
+    ? Value for label 'agent_host' my-agent-host
+    ? Add a label (key=value, empty to finish)
+
+    ── [3/4] Delivery ───────────────────────────
+
+    ? Events per second (rate) 10
+    ? Duration (e.g., 30s, 5m, 1h) 5m
+    ? Output encoding format prometheus_text
+    ? Where should output be sent? stdout
+
+    ── [4/4] Output ─────────────────────────────
+
+    ? Output file path ./scenarios/telegraf-snmp-interface.yaml
+
+    ✔ Scenario created
+
+      name:  telegraf_snmp_interface
+      type:  metrics (pack)
+      file:  ./scenarios/telegraf-snmp-interface.yaml
+
+      Run it with:
+        sonda run --scenario ./scenarios/telegraf-snmp-interface.yaml
+
+    ? Run it now? No
+    ```
 
 The generated YAML includes inline comments and scenario metadata, so it appears in
 `sonda scenarios list` automatically.
-
-!!! tip
-    When metric packs are available on the [pack search path](#sonda-packs), `sonda init` offers
-    a "Use a metric pack" option that expands a pack into a multi-metric scenario. It prompts
-    you to fill in any required shared labels defined by the pack.
 
 ## Precedence rules
 

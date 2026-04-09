@@ -6,18 +6,29 @@
 //!
 //! Prompt groups are visually separated by styled section headers with step
 //! indicators so the user knows where they are in the flow.
+//!
+//! ## Features
+//!
+//! - **Pack filtering**: when selecting a metric pack, the list is filtered by
+//!   the chosen domain. Falls back to all packs if none match.
+//! - **Advanced sinks**: a two-tier sink menu keeps the primary selection simple
+//!   (stdout, http_push, file) while offering advanced sinks (remote_write,
+//!   loki, otlp_grpc, kafka, tcp, udp) behind an "Advanced..." option.
+//! - **Run-now prompt**: after writing the scenario file, asks the user whether
+//!   to execute the scenario immediately.
 
 use std::collections::BTreeMap;
 use std::io;
 
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stderr;
 
 use crate::packs::PackCatalog;
 
 use super::yaml_gen::{
-    DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue, ScenarioKind,
+    required_encoder_for_sink, DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue,
+    ScenarioKind,
 };
 
 /// Available operational vocabulary aliases for metric scenarios.
@@ -54,16 +65,37 @@ const METRIC_ENCODERS: &[&str] = &["prometheus_text", "influx_lp", "json_lines"]
 /// Available log encoder formats.
 const LOG_ENCODERS: &[&str] = &["json_lines", "syslog"];
 
-/// Available sink types for the scaffolding wizard.
+/// Primary sink types shown in the first-tier selection menu.
 ///
-/// This list is intentionally limited to the three most common sinks so the
-/// `sonda init` wizard stays simple for new users. Advanced sinks like `tcp`,
-/// `udp`, `remote_write`, `loki`, `kafka`, and `otlp_grpc` can be configured
-/// by editing the generated YAML file directly.
-const SINKS: &[&str] = &["stdout", "http_push", "file"];
+/// These are the three most common sinks, keeping the initial prompt simple
+/// for new users. The "Advanced..." option opens a second-tier menu with
+/// protocol-specific sinks.
+const SINKS: &[&str] = &["stdout", "http_push", "file", "Advanced..."];
+
+/// Advanced sink types shown in the second-tier selection menu.
+///
+/// Each has protocol-specific prompts for endpoint details.
+const ADVANCED_SINKS: &[&str] = &["remote_write", "loki", "otlp_grpc", "kafka", "tcp", "udp"];
+
+/// Human-readable descriptions for each advanced sink.
+const ADVANCED_SINK_DESCRIPTIONS: &[&str] = &[
+    "remote_write  - Prometheus remote write (protobuf + snappy)",
+    "loki          - Grafana Loki log push (HTTP)",
+    "otlp_grpc     - OpenTelemetry Collector (gRPC)",
+    "kafka         - Apache Kafka producer",
+    "tcp           - TCP socket (host:port)",
+    "udp           - UDP socket (host:port)",
+];
 
 /// Available domain categories.
 const DOMAINS: &[&str] = &["infrastructure", "network", "application", "custom"];
+
+/// Result of a sink prompt: `(sink_type, endpoint, extra_fields)`.
+///
+/// The extra fields map carries additional sink-specific configuration for
+/// advanced sinks that need more than one endpoint parameter (e.g., kafka
+/// brokers + topic).
+type SinkPromptResult = (String, Option<String>, BTreeMap<String, String>);
 
 /// Print a styled section header with a step indicator to stderr.
 ///
@@ -158,7 +190,7 @@ fn run_metrics_prompts(
 
         match approach {
             0 => prompt_single_metric(theme)?,
-            1 => prompt_pack(theme, pack_catalog)?,
+            1 => prompt_pack(theme, pack_catalog, domain)?,
             _ => unreachable!(),
         }
     } else {
@@ -171,7 +203,10 @@ fn run_metrics_prompts(
     let rate = prompt_rate(theme)?;
     let duration = prompt_duration(theme)?;
     let encoder = prompt_encoder(theme, METRIC_ENCODERS)?;
-    let (sink, endpoint) = prompt_sink(theme)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
+
+    // Enforce encoder/sink pairing: some sinks require a specific encoder.
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
 
     let delivery = DeliveryAnswers {
         domain: domain.to_string(),
@@ -180,6 +215,7 @@ fn run_metrics_prompts(
         encoder,
         sink,
         endpoint,
+        sink_extra,
     };
 
     Ok((kind, delivery))
@@ -244,7 +280,10 @@ fn run_logs_prompts(
     let rate = prompt_rate(theme)?;
     let duration = prompt_duration(theme)?;
     let encoder = prompt_encoder(theme, LOG_ENCODERS)?;
-    let (sink, endpoint) = prompt_sink(theme)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
+
+    // Enforce encoder/sink pairing: some sinks require a specific encoder.
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
 
     let kind = ScenarioKind::Logs(LogAnswers {
         name,
@@ -260,6 +299,7 @@ fn run_logs_prompts(
         encoder,
         sink,
         endpoint,
+        sink_extra,
     };
 
     Ok((kind, delivery))
@@ -296,9 +336,34 @@ fn prompt_single_metric(theme: &ColorfulTheme) -> Result<ScenarioKind, io::Error
 }
 
 /// Prompt for pack selection and pack-specific labels.
-fn prompt_pack(theme: &ColorfulTheme, catalog: &PackCatalog) -> Result<ScenarioKind, io::Error> {
-    let packs = catalog.list();
-    let pack_names: Vec<String> = packs
+///
+/// Filters the pack list to show only packs whose `category` matches the
+/// selected domain. If no packs match the domain, falls back to showing all
+/// packs so the user is never dead-ended.
+fn prompt_pack(
+    theme: &ColorfulTheme,
+    catalog: &PackCatalog,
+    domain: &str,
+) -> Result<ScenarioKind, io::Error> {
+    let domain_packs = catalog.list_by_category(domain);
+
+    let packs_to_show = if domain_packs.is_empty() {
+        // Fallback: show all packs when none match the domain.
+        eprintln!(
+            "  {}",
+            format!("No packs found for domain \"{domain}\", showing all packs.")
+                .if_supports_color(Stderr, |t| t.dimmed()),
+        );
+        catalog.list().iter().collect()
+    } else {
+        eprintln!(
+            "  {}",
+            format!("Showing packs for domain: {domain}").if_supports_color(Stderr, |t| t.dimmed()),
+        );
+        domain_packs
+    };
+
+    let pack_names: Vec<String> = packs_to_show
         .iter()
         .map(|p| {
             format!(
@@ -314,7 +379,7 @@ fn prompt_pack(theme: &ColorfulTheme, catalog: &PackCatalog) -> Result<ScenarioK
         .default(0)
         .interact()?;
 
-    let selected_pack = &packs[pack_idx];
+    let selected_pack = packs_to_show[pack_idx];
     let pack_name = selected_pack.name.clone();
 
     // Read the pack YAML to find shared_labels with empty values.
@@ -585,13 +650,25 @@ fn prompt_encoder(theme: &ColorfulTheme, options: &[&str]) -> Result<String, io:
 }
 
 /// Prompt for sink type and any sink-specific fields.
-fn prompt_sink(theme: &ColorfulTheme) -> Result<(String, Option<String>), io::Error> {
+///
+/// Returns `(sink_type, endpoint, extra_fields)` where `extra_fields` carries
+/// additional sink-specific configuration (e.g., kafka topic).
+fn prompt_sink(theme: &ColorfulTheme) -> Result<SinkPromptResult, io::Error> {
     let sink_idx = Select::with_theme(theme)
         .with_prompt("Where should output be sent?")
         .items(SINKS)
         .default(0)
         .interact()?;
-    let sink = SINKS[sink_idx].to_string();
+
+    let selected = SINKS[sink_idx];
+
+    // If user chose "Advanced...", show the second-tier menu.
+    if selected == "Advanced..." {
+        return prompt_advanced_sink(theme);
+    }
+
+    let sink = selected.to_string();
+    let extra = BTreeMap::new();
 
     let endpoint = match sink.as_str() {
         "http_push" => {
@@ -611,7 +688,123 @@ fn prompt_sink(theme: &ColorfulTheme) -> Result<(String, Option<String>), io::Er
         _ => None,
     };
 
-    Ok((sink, endpoint))
+    Ok((sink, endpoint, extra))
+}
+
+/// Prompt for an advanced sink from the second-tier menu.
+///
+/// Each advanced sink has its own endpoint/connection prompts appropriate
+/// to the protocol.
+fn prompt_advanced_sink(theme: &ColorfulTheme) -> Result<SinkPromptResult, io::Error> {
+    eprintln!(
+        "  {}",
+        "Advanced sinks may require feature flags at compile time."
+            .if_supports_color(Stderr, |t| t.dimmed()),
+    );
+
+    let adv_idx = Select::with_theme(theme)
+        .with_prompt("Which advanced sink?")
+        .items(ADVANCED_SINK_DESCRIPTIONS)
+        .default(0)
+        .interact()?;
+
+    let sink = ADVANCED_SINKS[adv_idx].to_string();
+    let mut extra = BTreeMap::new();
+
+    let endpoint = match sink.as_str() {
+        "remote_write" => {
+            let url: String = Input::with_theme(theme)
+                .with_prompt("Remote write endpoint URL")
+                .default("http://localhost:8428/api/v1/write".to_string())
+                .interact_text()?;
+            Some(url)
+        }
+        "loki" => {
+            let url: String = Input::with_theme(theme)
+                .with_prompt("Loki base URL")
+                .default("http://localhost:3100".to_string())
+                .interact_text()?;
+            Some(url)
+        }
+        "otlp_grpc" => {
+            let endpoint_url: String = Input::with_theme(theme)
+                .with_prompt("OTLP gRPC endpoint")
+                .default("http://localhost:4317".to_string())
+                .interact_text()?;
+            let signal_items = &["metrics", "logs"];
+            let signal_idx = Select::with_theme(theme)
+                .with_prompt("OTLP signal type")
+                .items(signal_items)
+                .default(0)
+                .interact()?;
+            extra.insert(
+                "signal_type".to_string(),
+                signal_items[signal_idx].to_string(),
+            );
+            Some(endpoint_url)
+        }
+        "kafka" => {
+            let brokers: String = Input::with_theme(theme)
+                .with_prompt("Kafka broker(s) (host:port)")
+                .default("localhost:9092".to_string())
+                .interact_text()?;
+            let topic: String = Input::with_theme(theme)
+                .with_prompt("Kafka topic")
+                .default("sonda-events".to_string())
+                .interact_text()?;
+            extra.insert("brokers".to_string(), brokers);
+            extra.insert("topic".to_string(), topic);
+            None
+        }
+        "tcp" => {
+            let address: String = Input::with_theme(theme)
+                .with_prompt("TCP address (host:port)")
+                .default("127.0.0.1:9999".to_string())
+                .interact_text()?;
+            Some(address)
+        }
+        "udp" => {
+            let address: String = Input::with_theme(theme)
+                .with_prompt("UDP address (host:port)")
+                .default("127.0.0.1:9999".to_string())
+                .interact_text()?;
+            Some(address)
+        }
+        _ => None,
+    };
+
+    Ok((sink, endpoint, extra))
+}
+
+/// Enforce encoder/sink pairing constraints.
+///
+/// Some sinks require a specific encoder (e.g., `remote_write` sink requires
+/// the `remote_write` encoder, `otlp_grpc` requires `otlp`). When the user's
+/// chosen encoder does not match the requirement, this function overrides it
+/// and prints a dimmed note explaining the change.
+///
+/// Returns the (possibly overridden) encoder name.
+fn enforce_encoder_for_sink(user_encoder: String, sink: &str) -> String {
+    if let Some(required) = required_encoder_for_sink(sink) {
+        if user_encoder != required {
+            let note =
+                format!("Encoder overridden to '{required}' (required by the {sink} sink).",);
+            eprintln!("  {}", note.if_supports_color(Stderr, |t| t.dimmed()));
+            return required.to_string();
+        }
+    }
+    user_encoder
+}
+
+/// Prompt the user to run the scenario immediately after writing.
+///
+/// Returns `true` if the user wants to execute the scenario now.
+pub fn prompt_run_now(theme: &ColorfulTheme) -> Result<bool, io::Error> {
+    let run_now = Confirm::with_theme(theme)
+        .with_prompt("Run it now?")
+        .default(true)
+        .interact()?;
+    Ok(run_now)
 }
 
 /// Prompt for the output file path for the generated YAML.
@@ -725,5 +918,128 @@ mod tests {
             SECTION_WIDTH >= 30,
             "section width must be wide enough for readable headers"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Constants: advanced sinks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn advanced_sinks_list_has_expected_entries() {
+        assert!(ADVANCED_SINKS.contains(&"remote_write"));
+        assert!(ADVANCED_SINKS.contains(&"loki"));
+        assert!(ADVANCED_SINKS.contains(&"otlp_grpc"));
+        assert!(ADVANCED_SINKS.contains(&"kafka"));
+        assert!(ADVANCED_SINKS.contains(&"tcp"));
+        assert!(ADVANCED_SINKS.contains(&"udp"));
+    }
+
+    #[test]
+    fn advanced_sinks_and_descriptions_have_same_length() {
+        assert_eq!(
+            ADVANCED_SINKS.len(),
+            ADVANCED_SINK_DESCRIPTIONS.len(),
+            "each advanced sink must have a description"
+        );
+    }
+
+    #[test]
+    fn advanced_sink_descriptions_contain_their_name() {
+        for (i, &sink) in ADVANCED_SINKS.iter().enumerate() {
+            assert!(
+                ADVANCED_SINK_DESCRIPTIONS[i].contains(sink),
+                "description for '{sink}' must contain the sink name"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_sinks_include_advanced_option() {
+        assert!(
+            SINKS.contains(&"Advanced..."),
+            "primary sink menu must include 'Advanced...' option"
+        );
+    }
+
+    #[test]
+    fn primary_sinks_preserve_original_entries() {
+        assert!(SINKS.contains(&"stdout"));
+        assert!(SINKS.contains(&"http_push"));
+        assert!(SINKS.contains(&"file"));
+    }
+
+    #[test]
+    fn advanced_sinks_do_not_overlap_with_primary() {
+        let primary: Vec<&&str> = SINKS.iter().filter(|s| **s != "Advanced...").collect();
+        for &adv in ADVANCED_SINKS {
+            assert!(
+                !primary.contains(&&adv),
+                "advanced sink '{adv}' must not appear in primary menu"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoder/sink pairing enforcement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enforce_encoder_overrides_for_remote_write_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "remote_write");
+        assert_eq!(result, "remote_write");
+    }
+
+    #[test]
+    fn enforce_encoder_overrides_for_otlp_grpc_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "otlp_grpc");
+        assert_eq!(result, "otlp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_when_already_correct_remote_write() {
+        let result = enforce_encoder_for_sink("remote_write".to_string(), "remote_write");
+        assert_eq!(result, "remote_write");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_when_already_correct_otlp() {
+        let result = enforce_encoder_for_sink("otlp".to_string(), "otlp_grpc");
+        assert_eq!(result, "otlp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_stdout_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "stdout");
+        assert_eq!(result, "prometheus_text");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_http_push_sink() {
+        let result = enforce_encoder_for_sink("influx_lp".to_string(), "http_push");
+        assert_eq!(result, "influx_lp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_file_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "file");
+        assert_eq!(result, "json_lines");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_tcp_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "tcp");
+        assert_eq!(result, "prometheus_text");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_loki_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "loki");
+        assert_eq!(result, "json_lines");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_kafka_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "kafka");
+        assert_eq!(result, "json_lines");
     }
 }

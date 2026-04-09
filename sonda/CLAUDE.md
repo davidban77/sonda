@@ -51,14 +51,21 @@ src/
 │                          (steady, spike_event, leak, flap) or base generators (sawtooth, step).
 ├── init/
 │   ├── mod.rs          ← `sonda init` subcommand: top-level orchestration (run_init),
-│   │                      interactive flow → YAML file output
+│   │                      InitResult (yaml + run_now flag + InitScenarioType for dispatch),
+│   │                      welcome banner, YAML preview, success summary, run-now prompt
 │   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type, domain,
 │   │                      approach (single metric vs pack), situation selection,
 │   │                      situation-specific parameters, labels, rate, duration, encoder, sink.
-│   │                      Uses operational vocabulary aliases from sonda-core.
+│   │                      Two-tier sink menu (primary: stdout/http_push/file; advanced:
+│   │                      remote_write/loki/otlp_grpc/kafka/tcp/udp behind "Advanced...").
+│   │                      Pack domain filtering (list_by_category, fallback to all).
+│   │                      enforce_encoder_for_sink() auto-overrides encoder for protocol sinks.
+│   │                      prompt_run_now() offers immediate execution after file write.
 │   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
-│                          PackAnswers, LogAnswers, DeliveryAnswers. Generates commented YAML
-│                          with scenario metadata, immediately runnable by sonda.
+│                          PackAnswers, LogAnswers, DeliveryAnswers. InitScenarioType enum
+│                          (SingleMetric/Pack/Logs) for typed dispatch in run-now path.
+│                          required_encoder_for_sink() maps sink→encoder constraints.
+│                          render_sink() handles all sink types incl. advanced YAML fields.
 ├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),
 │                          escape_yaml_double_quoted(), format_float(), format_rate().
 │                          Used by both init/yaml_gen and import/yaml_gen.
@@ -125,7 +132,10 @@ overrides. `import` analyzes a CSV file, detects time-series patterns (steady, s
 flap, sawtooth, step), and generates a portable scenario YAML using generators instead of
 csv_replay. Three modes: `--analyze` (read-only), `-o` (write YAML), `--run` (generate + execute).
 `init` walks through an interactive prompt flow and generates a commented, runnable scenario YAML.
-Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and supports metric packs.
+Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and supports metric packs
+with domain-filtered selection. Two-tier sink menu (primary + advanced behind "Advanced...") with
+automatic encoder override for protocol sinks (remote_write, otlp_grpc). After writing the file,
+offers immediate execution via the run-now prompt (dispatched by InitScenarioType).
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
@@ -133,29 +143,11 @@ All subcommands go through the unified `sonda_core::prepare_entries` +
 The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total
 scenarios, events, bytes, errors, and elapsed time.
 
-### Pack Discovery Search Path
+### Discovery Search Paths
 
-Metric packs are standalone YAML files discovered from the filesystem. The search path is:
-
-1. `--pack-path` CLI flag (sole path when present)
-2. `SONDA_PACK_PATH` env var (colon-separated directories)
-3. `./packs/` relative to CWD
-4. `~/.sonda/packs/`
-
-Non-existent directories are silently skipped. Name collisions are resolved by first-match-wins.
-
-### Scenario Discovery Search Path
-
-Scenarios are standalone YAML files discovered from the filesystem. Each file contains
-metadata fields (`scenario_name`, `category`, `signal_type`, `description`) alongside
-the scenario config. The search path is:
-
-1. `--scenario-path` CLI flag (sole path when present)
-2. `SONDA_SCENARIO_PATH` env var (colon-separated directories)
-3. `./scenarios/` relative to CWD
-4. `~/.sonda/scenarios/`
-
-Non-existent directories are silently skipped. Name collisions are resolved by first-match-wins.
+Both packs and scenarios use the same priority: CLI flag (sole path) > env var (colon-separated) >
+`./packs/` or `./scenarios/` > `~/.sonda/packs/` or `~/.sonda/scenarios/`. Non-existent dirs
+silently skipped. First-match-wins on name collisions. See `packs.rs` and `scenarios.rs` for details.
 
 ## Adding a New Subcommand
 

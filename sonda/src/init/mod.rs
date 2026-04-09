@@ -8,6 +8,10 @@
 //! generator internals ("sawtooth period"), leveraging the operational
 //! vocabulary aliases from `sonda-core/src/config/aliases.rs`.
 //!
+//! After writing the file, the user is offered the option to run the scenario
+//! immediately. If accepted, the generated YAML is parsed and executed using
+//! the same pipeline as `sonda run --scenario`.
+//!
 //! # Module structure
 //!
 //! - [`prompts`] — interactive prompt logic using `dialoguer`.
@@ -25,27 +29,47 @@ use owo_colors::Stream::Stderr;
 
 use crate::packs::PackCatalog;
 
-use yaml_gen::{render_scenario_yaml, suggest_filename};
+use yaml_gen::{render_scenario_yaml, suggest_filename, InitScenarioType};
 
 /// Width used for horizontal rules in the init flow.
 const RULE_WIDTH: usize = 45;
 
+/// Result of a successful `sonda init` interactive flow.
+///
+/// Contains the generated YAML and a typed scenario indicator so the
+/// caller can execute the scenario immediately without content sniffing.
+pub struct InitResult {
+    /// The generated YAML content.
+    pub yaml: String,
+    /// Whether the user chose to run the scenario immediately.
+    pub run_now: bool,
+    /// The type of scenario that was generated, used for dispatch.
+    pub scenario_type: InitScenarioType,
+}
+
 /// Run the `sonda init` interactive scaffolding flow.
 ///
 /// Walks the user through building a scenario, generates the YAML, and
-/// writes it to the chosen output path.
+/// writes it to the chosen output path. After writing, offers to run the
+/// scenario immediately.
+///
+/// Returns an [`InitResult`] containing the generated YAML, output path,
+/// and whether the user chose immediate execution.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - Terminal interaction fails (stdin is not a TTY).
 /// - The output file cannot be written.
-pub fn run_init(pack_catalog: &PackCatalog) -> Result<()> {
+pub fn run_init(pack_catalog: &PackCatalog) -> Result<InitResult> {
     print_welcome_banner();
 
     // Run the interactive prompts.
     let (kind, delivery) =
         prompts::run_prompts(pack_catalog).context("interactive prompt failed")?;
+
+    // Remember the scenario type before rendering.
+    let scenario_type = kind.scenario_type();
 
     // Render the YAML.
     let yaml = render_scenario_yaml(&kind, &delivery);
@@ -78,7 +102,14 @@ pub fn run_init(pack_catalog: &PackCatalog) -> Result<()> {
     // Print styled success summary.
     print_success(&kind, &output_path);
 
-    Ok(())
+    // Offer to run immediately.
+    let run_now = prompts::prompt_run_now(&theme).context("run-now prompt failed")?;
+
+    Ok(InitResult {
+        yaml,
+        run_now,
+        scenario_type,
+    })
 }
 
 /// Print a styled welcome banner for the init flow.
