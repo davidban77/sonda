@@ -52,12 +52,26 @@ src/
 ├── init/
 │   ├── mod.rs          ← `sonda init` subcommand: top-level orchestration (run_init),
 │   │                      InitResult (yaml + run_now flag + InitScenarioType for dispatch),
+│   │                      build_prefill() merges --from data with CLI flags into Prefill,
+│   │                      prefill_from_scenario() extracts fields from @name scenario YAML
+│   │                      (including labels), prefill_from_csv() detects pattern from CSV
+│   │                      and maps to alias (gracefully handles no-numeric-columns),
 │   │                      welcome banner, YAML preview, success summary, run-now prompt
+│   │                      (bypassed by --run-now flag or non-TTY stdin),
+│   │                      print_prefill_summary() shows pre-filled values before prompts
 │   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type, domain,
 │   │                      approach (single metric vs pack), situation selection,
-│   │                      situation-specific parameters, labels, rate, duration, encoder, sink.
+│   │                      situation-specific parameters (bypassed with defaults when
+│   │                      situation is prefilled), labels, rate (validated > 0), duration
+│   │                      (validated via parse_duration), encoder, sink.
+│   │                      Prefill struct carries optional pre-filled values for each prompt
+│   │                      including log-specific (message_template, severity) and
+│   │                      sink-specific (kafka_brokers, kafka_topic, otlp_signal_type).
+│   │                      Each prompt fn checks prefill — valid value skips the prompt,
+│   │                      invalid value warns and falls through to interactive.
 │   │                      Two-tier sink menu (primary: stdout/http_push/file; advanced:
 │   │                      remote_write/loki/otlp_grpc/kafka/tcp/udp behind "Advanced...").
+│   │                      Prefilled advanced sinks populate extra fields from prefill.
 │   │                      Pack domain filtering (list_by_category, fallback to all).
 │   │                      enforce_encoder_for_sink() auto-overrides encoder for protocol sinks.
 │   │                      prompt_run_now() offers immediate execution after file write.
@@ -97,7 +111,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda init
+sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
@@ -136,6 +150,14 @@ Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and suppor
 with domain-filtered selection. Two-tier sink menu (primary + advanced behind "Advanced...") with
 automatic encoder override for protocol sinks (remote_write, otlp_grpc). After writing the file,
 offers immediate execution via the run-now prompt (dispatched by InitScenarioType).
+Supports fully non-interactive mode via CLI flags (`--signal-type`, `--domain`, `--situation`,
+`--metric`, `--rate`, `--duration`, `--encoder`, `--sink`, `-o`, `--run-now`, etc.) and
+pre-filling from built-in scenarios (`--from @name`) or CSV files (`--from path.csv`).
+CLI flags override `--from` values. Pre-filled values skip their interactive prompts; missing
+values prompt as usual (partial non-interactive mode). Situation-specific parameters use
+defaults when the situation is prefilled. Log-specific prompts (message template, severity)
+and sink-specific extra fields (kafka brokers/topic, OTLP signal type) are also prefillable.
+Rate and duration are validated; invalid values warn and fall through.
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.

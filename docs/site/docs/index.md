@@ -15,7 +15,8 @@ micro-bursts, cardinality spikes, and shaped value sequences.
 - **Import CSV data** -- analyze Grafana exports or plain CSVs, detect time-series patterns, and
   generate portable scenario YAML using generators instead of raw replay.
 - **Scaffold scenarios interactively** -- `sonda init` walks you through building a scenario with
-  guided prompts using operational language, no YAML knowledge required.
+  guided prompts, or run fully non-interactively with flags. Pre-fill from built-in scenarios
+  (`--from @cpu-spike`) or CSV files (`--from data.csv`).
 - **Test recording rules** -- push known constant values and verify computed outputs.
 - **Load-test backends** -- generate thousands of events per second in a static binary with zero
   runtime dependencies.
@@ -67,7 +68,7 @@ Define reusable scenarios in YAML for anything beyond quick one-offs --
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
 | **Signals** | metrics, logs (template and replay modes) |
 | **CSV import** | Analyze CSVs, detect patterns, generate portable scenario YAML |
-| **Interactive scaffolding** | `sonda init` -- guided wizard with operational vocabulary |
+| **Interactive scaffolding** | `sonda init` -- guided wizard, non-interactive mode, `--from` prefill |
 | **Built-in scenarios** | 11 curated patterns you can run instantly -- no YAML needed |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
@@ -77,7 +78,7 @@ Ready to dive in? **[Get started in 5 minutes -->](getting-started.md)**
 
 Or jump straight to what you need:
 
-- [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- interactively scaffold a scenario YAML without writing any config by hand
+- [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- scaffold a scenario YAML interactively, non-interactively with flags, or pre-filled from a built-in or CSV
 - [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
 - [**CSV Import**](guides/csv-import.md) -- turn Grafana exports into portable, parameterized scenarios
 - [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference

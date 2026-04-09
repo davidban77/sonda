@@ -156,8 +156,8 @@ fn run() -> anyhow::Result<()> {
         Commands::Import(ref args) => {
             run_import_command(args, &cli, verbosity, &running)?;
         }
-        Commands::Init(ref _args) => {
-            let result = init::run_init(&pack_catalog)?;
+        Commands::Init(ref args) => {
+            let result = init::run_init(args, &pack_catalog, &scenario_catalog)?;
             if result.run_now {
                 run_init_scenario(
                     result.yaml,
