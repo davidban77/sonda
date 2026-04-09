@@ -129,6 +129,15 @@ pub enum Commands {
     /// `~/.sonda/packs/`). Use `list` to discover available packs, `show`
     /// to view the raw YAML, and `run` to execute one with overrides.
     Packs(PacksArgs),
+    /// Import a CSV file: detect time-series patterns and generate a scenario.
+    ///
+    /// Analyzes numeric columns in a CSV file, detects dominant patterns
+    /// (steady, spike, climb, flap, sawtooth, step), and generates a portable
+    /// scenario YAML that uses sonda generators instead of `csv_replay`.
+    ///
+    /// Use `--analyze` for read-only pattern analysis, `-o` to write a
+    /// scenario file, or `--run` to generate and immediately execute.
+    Import(ImportArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -832,6 +841,61 @@ pub struct PacksRunArgs {
     /// multiple times to set multiple labels.
     #[arg(long = "label", value_parser = parse_label)]
     pub labels: Vec<(String, String)>,
+}
+
+/// Arguments for the `import` subcommand.
+///
+/// Analyzes a CSV file, detects time-series patterns, and generates a
+/// portable scenario YAML. Exactly one of `--analyze`, `-o`, or `--run`
+/// must be specified (enforced at runtime).
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Path to the CSV file to import.
+    ///
+    /// Supports Grafana "Series joined by time" CSV exports and plain CSV
+    /// files with a header row. Column 0 is treated as the timestamp.
+    pub file: PathBuf,
+
+    /// Print a read-only analysis of detected patterns (no file output).
+    ///
+    /// For each numeric column, shows the metric name, detected pattern,
+    /// and key parameters. Does not generate any YAML.
+    #[arg(long, conflicts_with_all = &["output", "run"])]
+    pub analyze: bool,
+
+    /// Write the generated scenario YAML to this path.
+    ///
+    /// Produces a valid, runnable scenario YAML using generators instead of
+    /// csv_replay. Use `sonda run --scenario <output>` to execute it.
+    #[arg(short, long, conflicts_with_all = &["analyze", "run"])]
+    pub output: Option<PathBuf>,
+
+    /// Generate the scenario and immediately execute it (no file output).
+    ///
+    /// Equivalent to generating with `-o` and then running with
+    /// `sonda run --scenario`, but without writing a file.
+    #[arg(long, conflicts_with_all = &["analyze", "output"])]
+    pub run: bool,
+
+    /// Select specific columns by index (e.g., `1,3,5`).
+    ///
+    /// Column indices are zero-based. Column 0 is typically the timestamp
+    /// and is excluded by default. Without this flag, all non-timestamp
+    /// columns are processed.
+    #[arg(long)]
+    pub columns: Option<String>,
+
+    /// Target event rate in events per second for the generated scenario.
+    ///
+    /// Used when generating YAML (`-o` or `--run`). Defaults to 1.0.
+    #[arg(long, default_value = "1.0")]
+    pub rate: f64,
+
+    /// Scenario duration for the generated scenario (e.g., `"60s"`, `"5m"`).
+    ///
+    /// Used when generating YAML (`-o` or `--run`). Defaults to `"60s"`.
+    #[arg(long, default_value = "60s")]
+    pub duration: String,
 }
 
 /// Build clap help styling for the CLI.

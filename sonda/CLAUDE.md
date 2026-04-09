@@ -38,6 +38,17 @@ src/
 │                          with metadata (scenario_name, category, signal_type, description).
 │                          Search path (priority): --scenario-path > SONDA_SCENARIO_PATH >
 │                          ./scenarios/ > ~/.sonda/scenarios/
+├── import/
+│   ├── mod.rs          ← `sonda import` subcommand: top-level orchestration (analyze, generate,
+│   │                      run modes), parse_column_list()
+│   ├── csv_reader.rs   ← CSV file reading: header detection via sonda-core csv_header,
+│   │                      numeric data extraction, column selection, ColumnMeta, CsvData
+│   ├── pattern.rs      ← time-series pattern detection (statistical analysis):
+│   │                      detect_pattern() → Pattern enum (Steady, Spike, Climb, Sawtooth,
+│   │                      Flap, Step). All heuristics are in the CLI crate, not sonda-core.
+│   └── yaml_gen.rs     ← YAML scenario generation from detected patterns: pattern_to_spec(),
+│                          render_yaml(). Maps patterns to operational vocabulary aliases
+│                          (steady, spike_event, leak, flap) or base generators (sawtooth, step).
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
@@ -61,6 +72,9 @@ sonda [--quiet | --verbose] [--dry-run] scenarios run <name> [--duration <d>] [-
 sonda [--pack-path <dir>] packs list [--category <cat>] [--json]
 sonda [--pack-path <dir>] packs show <name>
 sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>] [--label k=v]...
+sonda import <file.csv> --analyze
+sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
+sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
@@ -91,7 +105,9 @@ multiple scenarios concurrently from a single YAML file whose `scenarios:` list 
 search path (`--scenario-path`, `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`):
 `list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to metric pack
 files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duration/sink/encoder
-overrides.
+overrides. `import` analyzes a CSV file, detects time-series patterns (steady, spike, climb,
+flap, sawtooth, step), and generates a portable scenario YAML using generators instead of
+csv_replay. Three modes: `--analyze` (read-only), `-o` (write YAML), `--run` (generate + execute).
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.

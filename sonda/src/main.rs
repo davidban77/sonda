@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod import;
 mod packs;
 mod progress;
 mod scenarios;
@@ -149,6 +150,9 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Packs(ref args) => {
             run_packs_command(args, &cli, verbosity, &running, &pack_catalog)?;
+        }
+        Commands::Import(ref args) => {
+            run_import_command(args, &cli, verbosity, &running)?;
         }
     }
 
@@ -452,6 +456,62 @@ fn run_pack(
         run_single_scenario(format!("pack-{}", args.name), p, running, verbosity)?;
     } else {
         launch_and_join_prepared(&format!("pack-{}", args.name), prepared, running, verbosity)?;
+    }
+
+    Ok(())
+}
+
+/// Handle the `import` subcommand: analyze, generate, or run from CSV.
+fn run_import_command(
+    args: &cli::ImportArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let columns = import::parse_column_list(args.columns.as_deref())?;
+    let column_slice = columns.as_deref();
+
+    if args.analyze {
+        // Read-only analysis: print detected patterns, no side effects.
+        import::run_analyze(&args.file, column_slice)?;
+    } else if let Some(ref output) = args.output {
+        // Generate scenario YAML and write to file.
+        import::run_generate(&args.file, output, column_slice, args.rate, &args.duration)?;
+    } else if args.run {
+        // Generate scenario YAML and immediately execute it.
+        let yaml =
+            import::run_generate_and_execute(&args.file, column_slice, args.rate, &args.duration)?;
+
+        // Parse the generated YAML as a scenario and run it.
+        let entries: Vec<sonda_core::ScenarioEntry> = if yaml.contains("scenarios:") {
+            let multi: sonda_core::MultiScenarioConfig = serde_yaml_ng::from_str(&yaml)
+                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
+            multi.scenarios
+        } else {
+            let config: sonda_core::config::ScenarioConfig = serde_yaml_ng::from_str(&yaml)
+                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
+            vec![sonda_core::ScenarioEntry::Metrics(config)]
+        };
+
+        let prepared =
+            sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
+            return Ok(());
+        }
+
+        if prepared.len() == 1 {
+            let p = prepared.into_iter().next().expect("len checked above");
+            run_single_scenario("csv-import".to_string(), p, running, verbosity)?;
+        } else {
+            launch_and_join_prepared("csv-import", prepared, running, verbosity)?;
+        }
+    } else {
+        // No mode specified — this is a user error.
+        anyhow::bail!(
+            "specify one of --analyze, -o <output.yaml>, or --run.\n\
+             Use `sonda import --help` for usage."
+        );
     }
 
     Ok(())

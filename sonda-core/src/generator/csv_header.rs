@@ -247,7 +247,7 @@ fn parse_unquoted_value(input: &str) -> Result<(String, &str), SondaError> {
 /// non-numeric header is itself non-numeric, so the heuristic still
 /// correctly identifies headers. A false positive would require a quoted
 /// numeric value like `"1000"` — extremely unlikely in practice.
-pub(crate) fn is_header_line(line: &str) -> bool {
+pub fn is_header_line(line: &str) -> bool {
     let fields: Vec<&str> = line.split(',').collect();
     if fields.len() <= 1 {
         // Single-column: header if the field is non-numeric.
@@ -268,7 +268,7 @@ pub(crate) fn is_header_line(line: &str) -> bool {
 /// Strips outer quotes from each field and replaces `""` (RFC 4180 escaped
 /// quotes) with `"`. This function is used only for header parsing at load
 /// time and is not on the hot path.
-pub(crate) fn split_csv_header_fields(line: &str) -> Vec<String> {
+pub fn split_csv_header_fields(line: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut in_quotes = false;
