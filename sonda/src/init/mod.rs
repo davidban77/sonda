@@ -10,7 +10,7 @@
 //!
 //! After writing the file, the user is offered the option to run the scenario
 //! immediately. If accepted, the generated YAML is parsed and executed using
-//! the same pipeline as `sonda run --scenario`.
+//! the same pipeline as the signal-specific subcommand.
 //!
 //! ## Non-interactive mode
 //!
@@ -595,22 +595,18 @@ fn print_success(kind: &yaml_gen::ScenarioKind, output_path: &str) {
     match kind {
         yaml_gen::ScenarioKind::SingleMetric(_) => {
             eprintln!("    sonda metrics --scenario {output_path}");
-            eprintln!("    sonda run --scenario {output_path}");
         }
         yaml_gen::ScenarioKind::Pack(_) => {
             eprintln!("    sonda run --scenario {output_path}");
         }
         yaml_gen::ScenarioKind::Logs(_) => {
             eprintln!("    sonda logs --scenario {output_path}");
-            eprintln!("    sonda run --scenario {output_path}");
         }
         yaml_gen::ScenarioKind::Histogram(_) => {
             eprintln!("    sonda histogram --scenario {output_path}");
-            eprintln!("    sonda run --scenario {output_path}");
         }
         yaml_gen::ScenarioKind::Summary(_) => {
             eprintln!("    sonda summary --scenario {output_path}");
-            eprintln!("    sonda run --scenario {output_path}");
         }
     }
 
