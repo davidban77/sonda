@@ -138,6 +138,15 @@ pub enum Commands {
     /// Use `--analyze` for read-only pattern analysis, `-o` to write a
     /// scenario file, or `--run` to generate and immediately execute.
     Import(ImportArgs),
+    /// Interactively create a new scenario YAML file.
+    ///
+    /// Walks through a guided prompt flow asking domain-relevant questions
+    /// (signal type, situation, rate, etc.) and generates a valid, runnable
+    /// scenario YAML. Uses operational language — "What situation?" not
+    /// "Which generator type?".
+    ///
+    /// The generated YAML can be immediately run with `sonda run --scenario`.
+    Init(InitArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -898,6 +907,21 @@ pub struct ImportArgs {
     pub duration: String,
 }
 
+/// Arguments for the `init` subcommand.
+///
+/// Currently all arguments are reserved for future non-interactive mode.
+/// The struct is intentionally designed with optional fields so that
+/// `--domain`, `--situation`, etc. can be added later without restructuring.
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    // No flags for now. The interactive flow drives everything.
+    // Future non-interactive flags will go here:
+    //   --domain <domain>
+    //   --situation <alias>
+    //   --signal-type <metrics|logs>
+    //   --output <path>
+}
+
 /// Build clap help styling for the CLI.
 ///
 /// Returns a [`clap::builder::styling::Styles`] with colored headers, usage
@@ -1631,5 +1655,32 @@ mod tests {
             .expect("import with --verbose should parse");
         assert!(cli.verbose);
         assert!(matches!(cli.command, Commands::Import(_)));
+    }
+
+    // ---- Init subcommand parsing -----------------------------------------------
+
+    #[test]
+    fn cli_init_is_parsed() {
+        let cli = Cli::try_parse_from(["sonda", "init"]).expect("init should parse");
+        assert!(matches!(cli.command, Commands::Init(_)));
+    }
+
+    #[test]
+    fn cli_init_with_quiet_flag() {
+        let cli = Cli::try_parse_from(["sonda", "--quiet", "init"])
+            .expect("init with --quiet should parse");
+        assert!(cli.quiet);
+        assert!(matches!(cli.command, Commands::Init(_)));
+    }
+
+    #[test]
+    fn cli_init_with_pack_path() {
+        let cli = Cli::try_parse_from(["sonda", "--pack-path", "/custom/packs", "init"])
+            .expect("init with --pack-path should parse");
+        assert_eq!(
+            cli.pack_path,
+            Some(std::path::PathBuf::from("/custom/packs"))
+        );
+        assert!(matches!(cli.command, Commands::Init(_)));
     }
 }

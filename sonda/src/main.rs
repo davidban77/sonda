@@ -7,6 +7,7 @@
 mod cli;
 mod config;
 mod import;
+mod init;
 mod packs;
 mod progress;
 mod scenarios;
@@ -153,6 +154,9 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Import(ref args) => {
             run_import_command(args, &cli, verbosity, &running)?;
+        }
+        Commands::Init(ref _args) => {
+            init::run_init(&pack_catalog)?;
         }
     }
 

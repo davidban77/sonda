@@ -49,6 +49,16 @@ src/
 │   └── yaml_gen.rs     ← YAML scenario generation from detected patterns: pattern_to_spec(),
 │                          render_yaml(). Maps patterns to operational vocabulary aliases
 │                          (steady, spike_event, leak, flap) or base generators (sawtooth, step).
+├── init/
+│   ├── mod.rs          ← `sonda init` subcommand: top-level orchestration (run_init),
+│   │                      interactive flow → YAML file output
+│   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type, domain,
+│   │                      approach (single metric vs pack), situation selection,
+│   │                      situation-specific parameters, labels, rate, duration, encoder, sink.
+│   │                      Uses operational vocabulary aliases from sonda-core.
+│   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
+│                          PackAnswers, LogAnswers, DeliveryAnswers. Generates commented YAML
+│                          with scenario metadata, immediately runnable by sonda.
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
@@ -77,6 +87,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
+sonda init
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
@@ -110,6 +121,8 @@ files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duratio
 overrides. `import` analyzes a CSV file, detects time-series patterns (steady, spike, climb,
 flap, sawtooth, step), and generates a portable scenario YAML using generators instead of
 csv_replay. Three modes: `--analyze` (read-only), `-o` (write YAML), `--run` (generate + execute).
+`init` walks through an interactive prompt flow and generates a commented, runnable scenario YAML.
+Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and supports metric packs.
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
@@ -175,5 +188,6 @@ This crate depends on:
 - `serde_json` for JSON output in `scenarios list`
 - `anyhow` for error handling
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
+- `dialoguer` for interactive terminal prompts in `sonda init` (pure Rust, musl-compatible)
 
 It should NOT depend on: `axum`, `tokio`, `hyper`, or any server-related crate.
