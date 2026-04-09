@@ -134,8 +134,8 @@ fn render_single_metric(answers: &MetricAnswers, delivery: &DeliveryAnswers) -> 
     out.push_str("signal_type: metrics\n");
     out.push_str(&format!(
         "description: \"{} scenario with {} pattern\"\n",
-        capitalize_first(&delivery.domain),
-        answers.situation
+        escape_yaml_double_quoted(&capitalize_first(&delivery.domain)),
+        escape_yaml_double_quoted(&answers.situation)
     ));
     out.push('\n');
 
@@ -159,7 +159,7 @@ fn render_single_metric(answers: &MetricAnswers, delivery: &DeliveryAnswers) -> 
                 out.push_str(&format!("  {key}: {}\n", format_float(*v)));
             }
             ParamValue::String(s) => {
-                out.push_str(&format!("  {key}: \"{s}\"\n"));
+                out.push_str(&format!("  {key}: \"{}\"\n", escape_yaml_double_quoted(s)));
             }
         }
     }
@@ -171,7 +171,10 @@ fn render_single_metric(answers: &MetricAnswers, delivery: &DeliveryAnswers) -> 
         out.push_str("labels:\n");
         for (key, value) in &answers.labels {
             if needs_quoting(value) {
-                out.push_str(&format!("  {key}: \"{value}\"\n"));
+                out.push_str(&format!(
+                    "  {key}: \"{}\"\n",
+                    escape_yaml_double_quoted(value)
+                ));
             } else {
                 out.push_str(&format!("  {key}: {value}\n"));
             }
@@ -224,7 +227,10 @@ fn render_pack_scenario(answers: &PackAnswers, delivery: &DeliveryAnswers) -> St
         out.push_str("labels:\n");
         for (key, value) in &answers.labels {
             if needs_quoting(value) {
-                out.push_str(&format!("  {key}: \"{value}\"\n"));
+                out.push_str(&format!(
+                    "  {key}: \"{}\"\n",
+                    escape_yaml_double_quoted(value)
+                ));
             } else {
                 out.push_str(&format!("  {key}: {value}\n"));
             }
@@ -269,7 +275,7 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
     out.push_str("signal_type: logs\n");
     out.push_str(&format!(
         "description: \"Log scenario: {}\"\n",
-        answers.name.replace('_', " ")
+        escape_yaml_double_quoted(&answers.name.replace('_', " "))
     ));
     out.push('\n');
 
@@ -286,7 +292,7 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
     out.push_str("  templates:\n");
     out.push_str(&format!(
         "    - message: \"{}\"\n",
-        answers.message_template
+        escape_yaml_double_quoted(&answers.message_template)
     ));
     out.push_str("      field_pools: {}\n");
 
@@ -305,7 +311,10 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
         out.push_str("labels:\n");
         for (key, value) in &answers.labels {
             if needs_quoting(value) {
-                out.push_str(&format!("  {key}: \"{value}\"\n"));
+                out.push_str(&format!(
+                    "  {key}: \"{}\"\n",
+                    escape_yaml_double_quoted(value)
+                ));
             } else {
                 out.push_str(&format!("  {key}: {value}\n"));
             }
@@ -332,7 +341,10 @@ fn render_sink(out: &mut String, sink: &str, endpoint: &Option<String>, indent: 
     if let Some(ref ep) = endpoint {
         match sink {
             "http_push" => {
-                out.push_str(&format!("{pad}  endpoint: {ep}\n"));
+                out.push_str(&format!(
+                    "{pad}  url: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
             }
             "file" => {
                 out.push_str(&format!("{pad}  path: {ep}\n"));
@@ -340,6 +352,16 @@ fn render_sink(out: &mut String, sink: &str, endpoint: &Option<String>, indent: 
             _ => {}
         }
     }
+}
+
+/// Escape a string for use inside a double-quoted YAML value.
+///
+/// Replaces backslashes with `\\` and double quotes with `\"`, which are the
+/// two characters that must be escaped inside YAML double-quoted scalars to
+/// produce syntactically valid output.
+fn escape_yaml_double_quoted(s: &str) -> String {
+    // Backslash first, so we don't double-escape the backslashes we insert for quotes.
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Check if a YAML value needs quoting.
@@ -666,7 +688,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn render_http_push_sink_includes_endpoint() {
+    fn render_http_push_sink_includes_url() {
         let kind = ScenarioKind::SingleMetric(MetricAnswers {
             name: "m".to_string(),
             situation: "steady".to_string(),
@@ -685,8 +707,8 @@ mod tests {
 
         assert!(yaml.contains("type: http_push"), "must contain http_push");
         assert!(
-            yaml.contains("endpoint: http://localhost:9090/api/v1/write"),
-            "must contain endpoint"
+            yaml.contains("url: \"http://localhost:9090/api/v1/write\""),
+            "must contain url field with quoted value"
         );
     }
 
@@ -1021,6 +1043,152 @@ mod tests {
         assert_eq!(
             labels.get("url").map(String::as_str),
             Some("http://example.com")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // escape_yaml_double_quoted
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn escape_yaml_double_quoted_no_special_chars() {
+        assert_eq!(escape_yaml_double_quoted("hello world"), "hello world");
+    }
+
+    #[test]
+    fn escape_yaml_double_quoted_with_double_quotes() {
+        assert_eq!(
+            escape_yaml_double_quoted(r#"say "hello""#),
+            r#"say \"hello\""#
+        );
+    }
+
+    #[test]
+    fn escape_yaml_double_quoted_with_backslash() {
+        assert_eq!(
+            escape_yaml_double_quoted(r"path\to\file"),
+            r"path\\to\\file"
+        );
+    }
+
+    #[test]
+    fn escape_yaml_double_quoted_with_both() {
+        assert_eq!(escape_yaml_double_quoted(r#"a\"b"#), r#"a\\\"b"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // Blocker 1 regression: http_push sink uses `url:` field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rendered_http_push_sink_parses_as_scenario_config() {
+        let kind = ScenarioKind::SingleMetric(MetricAnswers {
+            name: "cpu_usage".to_string(),
+            situation: "steady".to_string(),
+            situation_params: vec![
+                ("center".to_string(), ParamValue::Float(50.0)),
+                ("amplitude".to_string(), ParamValue::Float(10.0)),
+                ("period".to_string(), ParamValue::String("60s".to_string())),
+            ],
+            labels: BTreeMap::new(),
+        });
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: "http_push".to_string(),
+            endpoint: Some("http://localhost:9090/api/v1/write".to_string()),
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        // Must round-trip through ScenarioConfig deserialization.
+        let config: sonda_core::config::ScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("http_push scenario YAML must parse");
+        assert_eq!(config.name, "cpu_usage");
+        match &config.base.sink {
+            sonda_core::sink::SinkConfig::HttpPush { url, .. } => {
+                assert_eq!(url, "http://localhost:9090/api/v1/write");
+            }
+            other => panic!("expected HttpPush sink, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Blocker 2 regression: user strings with special chars produce valid YAML
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rendered_log_template_with_double_quotes_parses() {
+        let kind = ScenarioKind::Logs(LogAnswers {
+            name: "api_logs".to_string(),
+            message_template: r#"Request "GET /api" completed"#.to_string(),
+            severity_weights: vec![("info".to_string(), 1.0)],
+            labels: BTreeMap::new(),
+        });
+        let delivery = DeliveryAnswers {
+            domain: "application".to_string(),
+            rate: 1.0,
+            duration: "30s".to_string(),
+            encoder: "json_lines".to_string(),
+            sink: "stdout".to_string(),
+            endpoint: None,
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        // The generated YAML must be syntactically valid.
+        let config: sonda_core::config::LogScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("log YAML with embedded quotes must parse");
+        assert_eq!(config.name, "api_logs");
+    }
+
+    #[test]
+    fn rendered_log_template_with_backslash_parses() {
+        let kind = ScenarioKind::Logs(LogAnswers {
+            name: "win_logs".to_string(),
+            message_template: r"File not found: C:\Users\admin\log.txt".to_string(),
+            severity_weights: vec![("error".to_string(), 1.0)],
+            labels: BTreeMap::new(),
+        });
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "30s".to_string(),
+            encoder: "json_lines".to_string(),
+            sink: "stdout".to_string(),
+            endpoint: None,
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::LogScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("log YAML with backslashes must parse");
+        assert_eq!(config.name, "win_logs");
+    }
+
+    #[test]
+    fn rendered_label_value_with_quotes_parses() {
+        let kind = ScenarioKind::SingleMetric(MetricAnswers {
+            name: "test_metric".to_string(),
+            situation: "steady".to_string(),
+            situation_params: vec![],
+            labels: BTreeMap::from([("desc".to_string(), r#"host "primary""#.to_string())]),
+        });
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "30s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: "stdout".to_string(),
+            endpoint: None,
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        let config: sonda_core::config::ScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("YAML with quoted label value must parse");
+        let labels = config.base.labels.as_ref().expect("must have labels");
+        assert_eq!(
+            labels.get("desc").map(String::as_str),
+            Some(r#"host "primary""#)
         );
     }
 }
