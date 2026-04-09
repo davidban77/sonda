@@ -935,16 +935,123 @@ sonda import data.csv --columns 1,3,5 -o scenario.yaml
 
 ## sonda init
 
-Interactively create a new scenario YAML file. `sonda init` walks you through a guided
+Create a new scenario YAML file. By default, `sonda init` walks you through an interactive
 prompt flow -- signal type, domain, situation, parameters, labels, encoding, and sink -- and
 writes a commented, immediately-runnable YAML file.
 
+You can also supply CLI flags to skip prompts, pre-fill values from a built-in scenario or
+CSV file, or run fully non-interactively.
+
 ```bash
-sonda init
+sonda init [OPTIONS]
 ```
 
-The command has no required flags. It uses interactive terminal prompts with sensible
-defaults for every question -- press Enter to accept the default and move on.
+### Flags
+
+| Flag | Short | Type | Description |
+|------|-------|------|-------------|
+| `--from <SOURCE>` | -- | string | Pre-fill values from a built-in scenario (`@name`) or CSV file (`path.csv`). See [Pre-filling with --from](#pre-filling-with-from). |
+| `--signal-type <TYPE>` | -- | string | Signal type: `metrics` or `logs`. |
+| `--domain <DOMAIN>` | -- | string | Domain category: `infrastructure`, `network`, `application`, `custom`. |
+| `--situation <ALIAS>` | -- | string | Operational situation: `steady`, `spike_event`, `flap`, `leak`, `saturation`, `degradation`. |
+| `--metric <NAME>` | -- | string | Metric name. |
+| `--pack <NAME>` | -- | string | Use a metric pack instead of a single metric. Mutually exclusive with `--metric` and `--situation`. |
+| `--rate <RATE>` | -- | float | Events per second. |
+| `--duration <DURATION>` | -- | string | Run duration (e.g. `60s`, `5m`). |
+| `--encoder <FORMAT>` | -- | string | Encoder: `prometheus_text`, `influx_lp`, `json_lines`, `syslog`. |
+| `--sink <TYPE>` | -- | string | Sink: `stdout`, `http_push`, `file`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, `udp`. |
+| `--endpoint <URL>` | -- | string | Sink endpoint (URL, file path, or `host:port`). |
+| `--output <PATH>` | `-o` | path | Output file path for the generated YAML. |
+| `--label <KEY=VALUE>` | -- | string | Static label (repeatable). |
+
+All flags are optional. When a flag is provided, its corresponding interactive prompt is
+skipped. When **all** required fields are supplied via flags, `sonda init` runs fully
+non-interactively -- no terminal interaction needed.
+
+### Non-interactive mode
+
+Supply enough flags to skip every prompt and `sonda init` generates the YAML without asking
+any questions. This is useful in scripts, CI pipelines, or when you already know what you want.
+
+```bash
+sonda init \
+  --signal-type metrics \
+  --domain infrastructure \
+  --metric node_cpu_seconds \
+  --situation steady \
+  --rate 1 --duration 60s \
+  --encoder prometheus_text \
+  --sink stdout \
+  -o ./scenarios/node-cpu.yaml
+```
+
+Partial flags work too -- Sonda prompts only for the missing values. For example, if you
+supply `--signal-type` and `--domain` but nothing else, the wizard starts at step 3:
+
+```bash
+sonda init --signal-type metrics --domain network
+```
+
+### Pre-filling with --from
+
+The `--from` flag loads default values from an existing source and uses them as prompt
+defaults. You can override any pre-filled value with an explicit flag.
+
+=== "--from @builtin"
+
+    Load a built-in scenario by name. Sonda extracts the signal type, domain, metric name,
+    generator type, rate, duration, encoder, and sink from the scenario YAML and uses them
+    as defaults:
+
+    ```bash
+    sonda init --from @cpu-spike
+    ```
+
+    This pre-fills the prompts with the `cpu-spike` scenario's configuration. You can
+    override individual fields:
+
+    ```bash
+    sonda init --from @cpu-spike --rate 5 --duration 2m --sink http_push \
+      --endpoint http://localhost:9090/api/v1/write
+    ```
+
+    !!! tip
+        Use `sonda scenarios list` to see available built-in scenario names.
+
+=== "--from CSV"
+
+    Point at a CSV file to detect the dominant time-series pattern and use it as the
+    situation default. Sonda reads the first numeric column, runs pattern detection
+    (the same engine as `sonda import`), and maps the result to an operational situation:
+
+    ```bash
+    sonda init --from metrics.csv
+    ```
+
+    Detected patterns map to situations: Steady becomes `steady`, Spike becomes
+    `spike_event`, Climb becomes `leak`, Sawtooth becomes `saturation`, and Flap becomes
+    `flap`. The first column name is used as the default metric name.
+
+    Combine with flags to override:
+
+    ```bash
+    sonda init --from metrics.csv --metric custom_name --rate 10
+    ```
+
+When `--from` is active, Sonda prints a summary of pre-filled values before starting the
+prompts so you can see what was loaded:
+
+```text
+  Starting from: @cpu-spike
+    signal_type: metrics
+    domain:      infrastructure
+    metric:      cpu_spike
+    situation:   spike_event
+    rate:        1
+    duration:    60s
+    encoder:     prometheus_text
+    sink:        stdout
+```
 
 ### Interactive flow
 
@@ -1149,6 +1256,48 @@ no need to copy-paste a follow-up command.
 
     ? Run it now? No
     ```
+
+=== "Non-interactive (full)"
+
+    All prompts skipped -- no terminal interaction:
+
+    ```bash
+    sonda init \
+      --signal-type metrics \
+      --domain infrastructure \
+      --metric node_memory_used_bytes \
+      --situation leak \
+      --rate 1 --duration 5m \
+      --encoder prometheus_text \
+      --sink stdout \
+      --label instance=db-01 \
+      -o ./scenarios/memory-leak.yaml
+    ```
+
+=== "--from @builtin with overrides"
+
+    Start from the built-in `cpu-spike` scenario, override the sink and rate:
+
+    ```bash
+    sonda init --from @cpu-spike \
+      --rate 5 \
+      --sink http_push --endpoint http://localhost:9090/api/v1/write \
+      -o ./scenarios/cpu-spike-fast.yaml
+    ```
+
+    Pre-filled values from the built-in are shown before prompts begin. Only
+    fields not covered by `--from` or explicit flags are prompted interactively.
+
+=== "--from CSV"
+
+    Detect patterns from a Grafana CSV export and use them as defaults:
+
+    ```bash
+    sonda init --from metrics.csv --rate 10 --duration 2m
+    ```
+
+    Sonda reads the first numeric column, detects the dominant pattern (e.g. spike,
+    steady), and maps it to a situation. The column name becomes the default metric name.
 
 The generated YAML includes inline comments and scenario metadata, so it appears in
 `sonda scenarios list` automatically.
