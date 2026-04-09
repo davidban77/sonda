@@ -27,7 +27,8 @@ use owo_colors::Stream::Stderr;
 use crate::packs::PackCatalog;
 
 use super::yaml_gen::{
-    DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue, ScenarioKind,
+    required_encoder_for_sink, DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue,
+    ScenarioKind,
 };
 
 /// Available operational vocabulary aliases for metric scenarios.
@@ -204,6 +205,9 @@ fn run_metrics_prompts(
     let encoder = prompt_encoder(theme, METRIC_ENCODERS)?;
     let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
 
+    // Enforce encoder/sink pairing: some sinks require a specific encoder.
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
+
     let delivery = DeliveryAnswers {
         domain: domain.to_string(),
         rate,
@@ -277,6 +281,9 @@ fn run_logs_prompts(
     let duration = prompt_duration(theme)?;
     let encoder = prompt_encoder(theme, LOG_ENCODERS)?;
     let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
+
+    // Enforce encoder/sink pairing: some sinks require a specific encoder.
+    let encoder = enforce_encoder_for_sink(encoder, &sink);
 
     let kind = ScenarioKind::Logs(LogAnswers {
         name,
@@ -769,6 +776,26 @@ fn prompt_advanced_sink(theme: &ColorfulTheme) -> Result<SinkPromptResult, io::E
     Ok((sink, endpoint, extra))
 }
 
+/// Enforce encoder/sink pairing constraints.
+///
+/// Some sinks require a specific encoder (e.g., `remote_write` sink requires
+/// the `remote_write` encoder, `otlp_grpc` requires `otlp`). When the user's
+/// chosen encoder does not match the requirement, this function overrides it
+/// and prints a dimmed note explaining the change.
+///
+/// Returns the (possibly overridden) encoder name.
+fn enforce_encoder_for_sink(user_encoder: String, sink: &str) -> String {
+    if let Some(required) = required_encoder_for_sink(sink) {
+        if user_encoder != required {
+            let note =
+                format!("Encoder overridden to '{required}' (required by the {sink} sink).",);
+            eprintln!("  {}", note.if_supports_color(Stderr, |t| t.dimmed()));
+            return required.to_string();
+        }
+    }
+    user_encoder
+}
+
 /// Prompt the user to run the scenario immediately after writing.
 ///
 /// Returns `true` if the user wants to execute the scenario now.
@@ -950,5 +977,69 @@ mod tests {
                 "advanced sink '{adv}' must not appear in primary menu"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoder/sink pairing enforcement
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enforce_encoder_overrides_for_remote_write_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "remote_write");
+        assert_eq!(result, "remote_write");
+    }
+
+    #[test]
+    fn enforce_encoder_overrides_for_otlp_grpc_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "otlp_grpc");
+        assert_eq!(result, "otlp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_when_already_correct_remote_write() {
+        let result = enforce_encoder_for_sink("remote_write".to_string(), "remote_write");
+        assert_eq!(result, "remote_write");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_when_already_correct_otlp() {
+        let result = enforce_encoder_for_sink("otlp".to_string(), "otlp_grpc");
+        assert_eq!(result, "otlp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_stdout_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "stdout");
+        assert_eq!(result, "prometheus_text");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_http_push_sink() {
+        let result = enforce_encoder_for_sink("influx_lp".to_string(), "http_push");
+        assert_eq!(result, "influx_lp");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_file_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "file");
+        assert_eq!(result, "json_lines");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_tcp_sink() {
+        let result = enforce_encoder_for_sink("prometheus_text".to_string(), "tcp");
+        assert_eq!(result, "prometheus_text");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_loki_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "loki");
+        assert_eq!(result, "json_lines");
+    }
+
+    #[test]
+    fn enforce_encoder_no_op_for_kafka_sink() {
+        let result = enforce_encoder_for_sink("json_lines".to_string(), "kafka");
+        assert_eq!(result, "json_lines");
     }
 }

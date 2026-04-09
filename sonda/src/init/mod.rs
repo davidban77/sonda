@@ -29,20 +29,22 @@ use owo_colors::Stream::Stderr;
 
 use crate::packs::PackCatalog;
 
-use yaml_gen::{render_scenario_yaml, suggest_filename};
+use yaml_gen::{render_scenario_yaml, suggest_filename, InitScenarioType};
 
 /// Width used for horizontal rules in the init flow.
 const RULE_WIDTH: usize = 45;
 
 /// Result of a successful `sonda init` interactive flow.
 ///
-/// Contains the generated YAML so the caller can optionally execute the
-/// scenario immediately.
+/// Contains the generated YAML and a typed scenario indicator so the
+/// caller can execute the scenario immediately without content sniffing.
 pub struct InitResult {
     /// The generated YAML content.
     pub yaml: String,
     /// Whether the user chose to run the scenario immediately.
     pub run_now: bool,
+    /// The type of scenario that was generated, used for dispatch.
+    pub scenario_type: InitScenarioType,
 }
 
 /// Run the `sonda init` interactive scaffolding flow.
@@ -65,6 +67,9 @@ pub fn run_init(pack_catalog: &PackCatalog) -> Result<InitResult> {
     // Run the interactive prompts.
     let (kind, delivery) =
         prompts::run_prompts(pack_catalog).context("interactive prompt failed")?;
+
+    // Remember the scenario type before rendering.
+    let scenario_type = kind.scenario_type();
 
     // Render the YAML.
     let yaml = render_scenario_yaml(&kind, &delivery);
@@ -100,7 +105,11 @@ pub fn run_init(pack_catalog: &PackCatalog) -> Result<InitResult> {
     // Offer to run immediately.
     let run_now = prompts::prompt_run_now(&theme).context("run-now prompt failed")?;
 
-    Ok(InitResult { yaml, run_now })
+    Ok(InitResult {
+        yaml,
+        run_now,
+        scenario_type,
+    })
 }
 
 /// Print a styled welcome banner for the init flow.

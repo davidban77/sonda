@@ -78,6 +78,43 @@ pub enum ScenarioKind {
     Logs(LogAnswers),
 }
 
+/// Classifies the generated YAML so the run-now path can dispatch to the
+/// correct parser without content sniffing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitScenarioType {
+    /// Single metric scenario — parse as `ScenarioConfig`.
+    SingleMetric,
+    /// Pack-based scenario — expand via `PackCatalog`.
+    Pack,
+    /// Logs scenario — parse as `LogScenarioConfig`.
+    Logs,
+}
+
+impl ScenarioKind {
+    /// Return the corresponding [`InitScenarioType`] for this scenario kind.
+    pub fn scenario_type(&self) -> InitScenarioType {
+        match self {
+            ScenarioKind::SingleMetric(_) => InitScenarioType::SingleMetric,
+            ScenarioKind::Pack(_) => InitScenarioType::Pack,
+            ScenarioKind::Logs(_) => InitScenarioType::Logs,
+        }
+    }
+}
+
+/// Return the required encoder for a given sink, if the sink mandates a
+/// specific encoder.
+///
+/// - `remote_write` sink requires the `remote_write` encoder.
+/// - `otlp_grpc` sink requires the `otlp` encoder.
+/// - All other sinks work with any user-chosen encoder.
+pub fn required_encoder_for_sink(sink: &str) -> Option<&'static str> {
+    match sink {
+        "remote_write" => Some("remote_write"),
+        "otlp_grpc" => Some("otlp"),
+        _ => None,
+    }
+}
+
 /// Render a complete, commented scenario YAML from the collected answers.
 ///
 /// The output includes inline comments explaining each section and is
@@ -346,46 +383,27 @@ fn render_sink(out: &mut String, delivery: &DeliveryAnswers, indent: usize) {
     out.push_str(&format!("{pad}sink:\n"));
     out.push_str(&format!("{pad}  type: {sink}\n"));
 
+    // Map the sink to its YAML field name for the endpoint value. Sinks
+    // that use `url:`, `path:`, `address:`, or `endpoint:` are grouped so
+    // each pattern appears once.
+    let endpoint_field = match sink.as_str() {
+        "http_push" | "remote_write" | "loki" => Some("url"),
+        "file" => Some("path"),
+        "otlp_grpc" => Some("endpoint"),
+        "tcp" | "udp" => Some("address"),
+        _ => None,
+    };
+
+    if let (Some(field), Some(ref ep)) = (endpoint_field, endpoint) {
+        out.push_str(&format!(
+            "{pad}  {field}: \"{}\"\n",
+            escape_yaml_double_quoted(ep)
+        ));
+    }
+
+    // Sink-specific extra fields from the advanced prompts.
     match sink.as_str() {
-        "http_push" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  url: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
-        }
-        "file" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  path: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
-        }
-        "remote_write" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  url: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
-        }
-        "loki" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  url: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
-        }
         "otlp_grpc" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  endpoint: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
             if let Some(signal_type) = extra.get("signal_type") {
                 out.push_str(&format!("{pad}  signal_type: {signal_type}\n"));
             }
@@ -401,22 +419,6 @@ fn render_sink(out: &mut String, delivery: &DeliveryAnswers, indent: usize) {
                 out.push_str(&format!(
                     "{pad}  topic: \"{}\"\n",
                     escape_yaml_double_quoted(topic)
-                ));
-            }
-        }
-        "tcp" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  address: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
-                ));
-            }
-        }
-        "udp" => {
-            if let Some(ref ep) = endpoint {
-                out.push_str(&format!(
-                    "{pad}  address: \"{}\"\n",
-                    escape_yaml_double_quoted(ep)
                 ));
             }
         }
@@ -1407,6 +1409,180 @@ mod tests {
         assert!(
             yaml.contains("signal_type: logs"),
             "must contain log signal type"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // required_encoder_for_sink
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn required_encoder_for_remote_write_sink() {
+        assert_eq!(
+            required_encoder_for_sink("remote_write"),
+            Some("remote_write")
+        );
+    }
+
+    #[test]
+    fn required_encoder_for_otlp_grpc_sink() {
+        assert_eq!(required_encoder_for_sink("otlp_grpc"), Some("otlp"));
+    }
+
+    #[test]
+    fn required_encoder_for_stdout_is_none() {
+        assert_eq!(required_encoder_for_sink("stdout"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_http_push_is_none() {
+        assert_eq!(required_encoder_for_sink("http_push"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_file_is_none() {
+        assert_eq!(required_encoder_for_sink("file"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_loki_is_none() {
+        assert_eq!(required_encoder_for_sink("loki"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_kafka_is_none() {
+        assert_eq!(required_encoder_for_sink("kafka"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_tcp_is_none() {
+        assert_eq!(required_encoder_for_sink("tcp"), None);
+    }
+
+    #[test]
+    fn required_encoder_for_udp_is_none() {
+        assert_eq!(required_encoder_for_sink("udp"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // InitScenarioType: classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn scenario_type_for_single_metric() {
+        let kind = ScenarioKind::SingleMetric(MetricAnswers {
+            name: "test".to_string(),
+            situation: "steady".to_string(),
+            situation_params: vec![],
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(kind.scenario_type(), InitScenarioType::SingleMetric);
+    }
+
+    #[test]
+    fn scenario_type_for_pack() {
+        let kind = ScenarioKind::Pack(PackAnswers {
+            pack_name: "test_pack".to_string(),
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(kind.scenario_type(), InitScenarioType::Pack);
+    }
+
+    #[test]
+    fn scenario_type_for_logs() {
+        let kind = ScenarioKind::Logs(LogAnswers {
+            name: "test".to_string(),
+            message_template: "msg".to_string(),
+            severity_weights: vec![],
+            labels: BTreeMap::new(),
+        });
+        assert_eq!(kind.scenario_type(), InitScenarioType::Logs);
+    }
+
+    // -----------------------------------------------------------------------
+    // Encoder/sink pairing: remote_write sink uses remote_write encoder
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_remote_write_sink_with_correct_encoder_produces_valid_yaml() {
+        let kind = sink_test_kind();
+        // Simulate the enforced pairing: remote_write sink with remote_write encoder.
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "remote_write".to_string(),
+            sink: "remote_write".to_string(),
+            endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
+            sink_extra: BTreeMap::new(),
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: remote_write"),
+            "encoder must be remote_write"
+        );
+        // Count occurrences — encoder type and sink type should both be remote_write.
+        let rw_count = yaml.matches("type: remote_write").count();
+        assert_eq!(rw_count, 2, "both encoder and sink must be remote_write");
+    }
+
+    #[test]
+    fn render_otlp_grpc_sink_with_correct_encoder_produces_valid_yaml() {
+        let kind = sink_test_kind();
+        let mut extra = BTreeMap::new();
+        extra.insert("signal_type".to_string(), "metrics".to_string());
+        // Simulate the enforced pairing: otlp_grpc sink with otlp encoder.
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "otlp".to_string(),
+            sink: "otlp_grpc".to_string(),
+            endpoint: Some("http://localhost:4317".to_string()),
+            sink_extra: extra,
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(yaml.contains("type: otlp\n"), "encoder must be otlp");
+        assert!(yaml.contains("type: otlp_grpc"), "sink must be otlp_grpc");
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-trip: encoder/sink pairing mismatches caught
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn remote_write_sink_with_mismatched_encoder_has_wrong_encoder_type() {
+        // This documents why the encoder override is necessary:
+        // a prometheus_text encoder paired with remote_write sink produces
+        // YAML that cannot work at runtime because the sink expects protobuf
+        // data from the remote_write encoder.
+        let kind = sink_test_kind();
+        let delivery = DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: "remote_write".to_string(),
+            endpoint: Some("http://localhost:8428/api/v1/write".to_string()),
+            sink_extra: BTreeMap::new(),
+        };
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        // The YAML itself is syntactically valid and parses...
+        let _config: sonda_core::config::ScenarioConfig =
+            serde_yaml_ng::from_str(&yaml).expect("YAML must parse");
+        // ...but the encoder is prometheus_text, not remote_write.
+        assert!(
+            yaml.contains("type: prometheus_text"),
+            "mismatched encoder is prometheus_text, not remote_write"
+        );
+        // The required_encoder_for_sink function catches this at prompt time.
+        assert_eq!(
+            required_encoder_for_sink("remote_write"),
+            Some("remote_write"),
+            "pairing logic must detect the mismatch"
         );
     }
 }
