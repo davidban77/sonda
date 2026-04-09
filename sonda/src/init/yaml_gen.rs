@@ -4,6 +4,9 @@
 //! valid, commented scenario YAML that is immediately runnable by
 //! `sonda metrics --scenario <file>`, `sonda logs --scenario <file>`,
 //! or `sonda run --scenario <file>`.
+//!
+//! Supports all sink types including advanced sinks (remote_write, loki,
+//! otlp_grpc, kafka, tcp, udp) with their protocol-specific YAML fields.
 
 use std::collections::BTreeMap;
 
@@ -58,8 +61,10 @@ pub struct DeliveryAnswers {
     pub encoder: String,
     /// Sink type (e.g., `"stdout"`).
     pub sink: String,
-    /// Sink-specific endpoint (URL, file path).
+    /// Sink-specific endpoint (URL, file path, host:port).
     pub endpoint: Option<String>,
+    /// Additional sink-specific fields for advanced sinks.
+    pub sink_extra: BTreeMap<String, String>,
 }
 
 /// The kind of scenario the user chose to build.
@@ -184,7 +189,7 @@ fn render_single_metric(answers: &MetricAnswers, delivery: &DeliveryAnswers) -> 
 
     // Sink.
     out.push_str("# Delivery destination.\n");
-    render_sink(&mut out, &delivery.sink, &delivery.endpoint, 0);
+    render_sink(&mut out, delivery, 0);
 
     out
 }
@@ -240,7 +245,7 @@ fn render_pack_scenario(answers: &PackAnswers, delivery: &DeliveryAnswers) -> St
 
     // Sink.
     out.push_str("# Delivery destination.\n");
-    render_sink(&mut out, &delivery.sink, &delivery.endpoint, 0);
+    render_sink(&mut out, delivery, 0);
 
     out
 }
@@ -322,32 +327,100 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
     out.push('\n');
 
     // Sink.
-    render_sink(&mut out, &delivery.sink, &delivery.endpoint, 0);
+    render_sink(&mut out, delivery, 0);
 
     out
 }
 
 /// Render the sink block.
-fn render_sink(out: &mut String, sink: &str, endpoint: &Option<String>, indent: usize) {
+///
+/// Handles all supported sink types including advanced sinks. The `extra`
+/// map carries additional fields for sinks that need more than one
+/// endpoint-style parameter (e.g., kafka brokers + topic).
+fn render_sink(out: &mut String, delivery: &DeliveryAnswers, indent: usize) {
     let pad = " ".repeat(indent);
+    let sink = &delivery.sink;
+    let endpoint = &delivery.endpoint;
+    let extra = &delivery.sink_extra;
+
     out.push_str(&format!("{pad}sink:\n"));
     out.push_str(&format!("{pad}  type: {sink}\n"));
-    if let Some(ref ep) = endpoint {
-        match sink {
-            "http_push" => {
+
+    match sink.as_str() {
+        "http_push" => {
+            if let Some(ref ep) = endpoint {
                 out.push_str(&format!(
                     "{pad}  url: \"{}\"\n",
                     escape_yaml_double_quoted(ep)
                 ));
             }
-            "file" => {
+        }
+        "file" => {
+            if let Some(ref ep) = endpoint {
                 out.push_str(&format!(
                     "{pad}  path: \"{}\"\n",
                     escape_yaml_double_quoted(ep)
                 ));
             }
-            _ => {}
         }
+        "remote_write" => {
+            if let Some(ref ep) = endpoint {
+                out.push_str(&format!(
+                    "{pad}  url: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
+            }
+        }
+        "loki" => {
+            if let Some(ref ep) = endpoint {
+                out.push_str(&format!(
+                    "{pad}  url: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
+            }
+        }
+        "otlp_grpc" => {
+            if let Some(ref ep) = endpoint {
+                out.push_str(&format!(
+                    "{pad}  endpoint: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
+            }
+            if let Some(signal_type) = extra.get("signal_type") {
+                out.push_str(&format!("{pad}  signal_type: {signal_type}\n"));
+            }
+        }
+        "kafka" => {
+            if let Some(brokers) = extra.get("brokers") {
+                out.push_str(&format!(
+                    "{pad}  brokers: \"{}\"\n",
+                    escape_yaml_double_quoted(brokers)
+                ));
+            }
+            if let Some(topic) = extra.get("topic") {
+                out.push_str(&format!(
+                    "{pad}  topic: \"{}\"\n",
+                    escape_yaml_double_quoted(topic)
+                ));
+            }
+        }
+        "tcp" => {
+            if let Some(ref ep) = endpoint {
+                out.push_str(&format!(
+                    "{pad}  address: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
+            }
+        }
+        "udp" => {
+            if let Some(ref ep) = endpoint {
+                out.push_str(&format!(
+                    "{pad}  address: \"{}\"\n",
+                    escape_yaml_double_quoted(ep)
+                ));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -439,6 +512,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -490,6 +564,7 @@ mod tests {
             encoder: "json_lines".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -521,6 +596,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -556,6 +632,7 @@ mod tests {
             encoder: "json_lines".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -597,6 +674,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "http_push".to_string(),
             endpoint: Some("http://localhost:9090/api/v1/write".to_string()),
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -622,6 +700,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "file".to_string(),
             endpoint: Some("/tmp/output.txt".to_string()),
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -647,6 +726,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "file".to_string(),
             endpoint: Some("/tmp/my output dir/sonda.txt".to_string()),
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -684,6 +764,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let a = render_scenario_yaml(&kind, &delivery);
         let b = render_scenario_yaml(&kind, &delivery);
@@ -713,6 +794,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -749,6 +831,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -784,6 +867,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -814,6 +898,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -844,6 +929,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -875,6 +961,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -902,6 +989,7 @@ mod tests {
             encoder: "json_lines".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -927,6 +1015,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -957,6 +1046,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -997,6 +1087,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "http_push".to_string(),
             endpoint: Some("http://localhost:9090/api/v1/write".to_string()),
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -1031,6 +1122,7 @@ mod tests {
             encoder: "json_lines".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -1055,6 +1147,7 @@ mod tests {
             encoder: "json_lines".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -1078,6 +1171,7 @@ mod tests {
             encoder: "prometheus_text".to_string(),
             sink: "stdout".to_string(),
             endpoint: None,
+            sink_extra: BTreeMap::new(),
         };
         let yaml = render_scenario_yaml(&kind, &delivery);
 
@@ -1087,6 +1181,232 @@ mod tests {
         assert_eq!(
             labels.get("desc").map(String::as_str),
             Some(r#"host "primary""#)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Advanced sinks: YAML generation
+    // -----------------------------------------------------------------------
+
+    /// Helper to build a minimal single-metric kind for sink tests.
+    fn sink_test_kind() -> ScenarioKind {
+        ScenarioKind::SingleMetric(MetricAnswers {
+            name: "m".to_string(),
+            situation: "steady".to_string(),
+            situation_params: vec![],
+            labels: BTreeMap::new(),
+        })
+    }
+
+    /// Helper to build a delivery with a specific sink configuration.
+    fn sink_test_delivery(
+        sink: &str,
+        endpoint: Option<String>,
+        extra: BTreeMap<String, String>,
+    ) -> DeliveryAnswers {
+        DeliveryAnswers {
+            domain: "infrastructure".to_string(),
+            rate: 1.0,
+            duration: "60s".to_string(),
+            encoder: "prometheus_text".to_string(),
+            sink: sink.to_string(),
+            endpoint,
+            sink_extra: extra,
+        }
+    }
+
+    #[test]
+    fn render_remote_write_sink_includes_url() {
+        let kind = sink_test_kind();
+        let delivery = sink_test_delivery(
+            "remote_write",
+            Some("http://localhost:8428/api/v1/write".to_string()),
+            BTreeMap::new(),
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: remote_write"),
+            "must contain remote_write sink type"
+        );
+        assert!(
+            yaml.contains("url: \"http://localhost:8428/api/v1/write\""),
+            "must contain remote write URL"
+        );
+    }
+
+    #[test]
+    fn render_loki_sink_includes_url() {
+        let kind = sink_test_kind();
+        let delivery = sink_test_delivery(
+            "loki",
+            Some("http://localhost:3100".to_string()),
+            BTreeMap::new(),
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(yaml.contains("type: loki"), "must contain loki sink type");
+        assert!(
+            yaml.contains("url: \"http://localhost:3100\""),
+            "must contain loki URL"
+        );
+    }
+
+    #[test]
+    fn render_otlp_grpc_sink_includes_endpoint_and_signal_type() {
+        let kind = sink_test_kind();
+        let mut extra = BTreeMap::new();
+        extra.insert("signal_type".to_string(), "metrics".to_string());
+        let delivery = sink_test_delivery(
+            "otlp_grpc",
+            Some("http://localhost:4317".to_string()),
+            extra,
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: otlp_grpc"),
+            "must contain otlp_grpc sink type"
+        );
+        assert!(
+            yaml.contains("endpoint: \"http://localhost:4317\""),
+            "must contain OTLP endpoint"
+        );
+        assert!(
+            yaml.contains("signal_type: metrics"),
+            "must contain OTLP signal type"
+        );
+    }
+
+    #[test]
+    fn render_otlp_grpc_sink_with_logs_signal_type() {
+        let kind = sink_test_kind();
+        let mut extra = BTreeMap::new();
+        extra.insert("signal_type".to_string(), "logs".to_string());
+        let delivery = sink_test_delivery(
+            "otlp_grpc",
+            Some("http://localhost:4317".to_string()),
+            extra,
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("signal_type: logs"),
+            "must contain logs signal type"
+        );
+    }
+
+    #[test]
+    fn render_kafka_sink_includes_brokers_and_topic() {
+        let kind = sink_test_kind();
+        let mut extra = BTreeMap::new();
+        extra.insert("brokers".to_string(), "localhost:9092".to_string());
+        extra.insert("topic".to_string(), "sonda-events".to_string());
+        let delivery = sink_test_delivery("kafka", None, extra);
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(yaml.contains("type: kafka"), "must contain kafka sink type");
+        assert!(
+            yaml.contains("brokers: \"localhost:9092\""),
+            "must contain kafka brokers"
+        );
+        assert!(
+            yaml.contains("topic: \"sonda-events\""),
+            "must contain kafka topic"
+        );
+    }
+
+    #[test]
+    fn render_tcp_sink_includes_address() {
+        let kind = sink_test_kind();
+        let delivery =
+            sink_test_delivery("tcp", Some("127.0.0.1:9999".to_string()), BTreeMap::new());
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(yaml.contains("type: tcp"), "must contain tcp sink type");
+        assert!(
+            yaml.contains("address: \"127.0.0.1:9999\""),
+            "must contain tcp address"
+        );
+    }
+
+    #[test]
+    fn render_udp_sink_includes_address() {
+        let kind = sink_test_kind();
+        let delivery =
+            sink_test_delivery("udp", Some("127.0.0.1:9999".to_string()), BTreeMap::new());
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(yaml.contains("type: udp"), "must contain udp sink type");
+        assert!(
+            yaml.contains("address: \"127.0.0.1:9999\""),
+            "must contain udp address"
+        );
+    }
+
+    #[test]
+    fn render_kafka_sink_with_multiple_brokers() {
+        let kind = sink_test_kind();
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "brokers".to_string(),
+            "broker1:9092,broker2:9092".to_string(),
+        );
+        extra.insert("topic".to_string(), "metrics".to_string());
+        let delivery = sink_test_delivery("kafka", None, extra);
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("brokers: \"broker1:9092,broker2:9092\""),
+            "must contain multiple kafka brokers"
+        );
+    }
+
+    #[test]
+    fn render_advanced_sink_in_pack_scenario() {
+        let kind = ScenarioKind::Pack(PackAnswers {
+            pack_name: "telegraf_snmp_interface".to_string(),
+            labels: BTreeMap::from([("device".to_string(), "rtr-01".to_string())]),
+        });
+        let delivery = sink_test_delivery(
+            "remote_write",
+            Some("http://localhost:8428/api/v1/write".to_string()),
+            BTreeMap::new(),
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: remote_write"),
+            "pack scenario must support remote_write sink"
+        );
+        assert!(
+            yaml.contains("pack: telegraf_snmp_interface"),
+            "must still contain pack reference"
+        );
+    }
+
+    #[test]
+    fn render_advanced_sink_in_logs_scenario() {
+        let kind = ScenarioKind::Logs(LogAnswers {
+            name: "app_logs".to_string(),
+            message_template: "test message".to_string(),
+            severity_weights: vec![("info".to_string(), 1.0)],
+            labels: BTreeMap::new(),
+        });
+        let delivery = sink_test_delivery(
+            "loki",
+            Some("http://localhost:3100".to_string()),
+            BTreeMap::new(),
+        );
+        let yaml = render_scenario_yaml(&kind, &delivery);
+
+        assert!(
+            yaml.contains("type: loki"),
+            "logs scenario must support loki sink"
+        );
+        assert!(
+            yaml.contains("signal_type: logs"),
+            "must contain log signal type"
         );
     }
 }
