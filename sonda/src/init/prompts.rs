@@ -3,11 +3,16 @@
 //! Uses `dialoguer` for terminal prompts. Every prompt has a sensible default.
 //! Questions use operational language ("What situation?"), not generator
 //! internals ("sawtooth period").
+//!
+//! Prompt groups are visually separated by styled section headers with step
+//! indicators so the user knows where they are in the flow.
 
 use std::collections::BTreeMap;
 use std::io;
 
 use dialoguer::{theme::ColorfulTheme, Input, Select};
+use owo_colors::OwoColorize;
+use owo_colors::Stream::Stderr;
 
 use crate::packs::PackCatalog;
 
@@ -37,6 +42,12 @@ const SITUATION_DESCRIPTIONS: &[&str] = &[
     "degradation  - slow ramp with increasing noise",
 ];
 
+/// Section header width for the styled horizontal rule.
+///
+/// Shared with `mod.rs` so the welcome banner and section headers use
+/// consistent widths.
+pub const SECTION_WIDTH: usize = 45;
+
 /// Available metric encoder formats.
 const METRIC_ENCODERS: &[&str] = &["prometheus_text", "influx_lp", "json_lines"];
 
@@ -54,6 +65,34 @@ const SINKS: &[&str] = &["stdout", "http_push", "file"];
 /// Available domain categories.
 const DOMAINS: &[&str] = &["infrastructure", "network", "application", "custom"];
 
+/// Print a styled section header with a step indicator to stderr.
+///
+/// Renders a dimmed horizontal rule with a bold section title and a step
+/// counter (e.g., `[1/4]`). The total width is [`SECTION_WIDTH`] characters.
+///
+/// # Example output
+///
+/// ```text
+/// ── [1/4] Signal ─────────────────────────────
+/// ```
+pub fn print_section(step: usize, total: usize, title: &str) {
+    let prefix = "\u{2500}\u{2500}";
+    let tag = format!("[{step}/{total}]");
+    // Display width: "── " (3) + tag + " " + title + " " + tail.
+    let prefix_display = 2; // Two box-drawing chars, each 1 column wide.
+    let used = prefix_display + 1 + tag.len() + 1 + title.len() + 1;
+    let remaining = if SECTION_WIDTH > used {
+        SECTION_WIDTH - used
+    } else {
+        3
+    };
+    let tail: String = "\u{2500}".repeat(remaining);
+
+    let rule = format!("{prefix} {tag} {title} {tail}");
+    eprintln!("\n{}", rule.if_supports_color(Stderr, |t| t.dimmed()));
+    eprintln!();
+}
+
 /// Run the full interactive prompt flow and return the collected answers.
 ///
 /// # Errors
@@ -64,10 +103,10 @@ pub fn run_prompts(
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
     let theme = ColorfulTheme::default();
 
-    // 1. Signal type.
-    let signal_type = prompt_signal_type(&theme)?;
+    // Section 1: Signal.
+    print_section(1, 4, "Signal");
 
-    // 2. Domain.
+    let signal_type = prompt_signal_type(&theme)?;
     let domain = prompt_domain(&theme)?;
 
     match signal_type.as_str() {
@@ -106,7 +145,9 @@ fn run_metrics_prompts(
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
     let available_packs = pack_catalog.list();
 
-    // 3. Approach: single metric or pack.
+    // Section 2: Metric.
+    print_section(2, 4, "Metric");
+
     let kind = if !available_packs.is_empty() {
         let approach_items = &["Single metric", "Use a metric pack"];
         let approach = Select::with_theme(theme)
@@ -124,14 +165,12 @@ fn run_metrics_prompts(
         prompt_single_metric(theme)?
     };
 
-    // 6. Rate and duration.
+    // Section 3: Delivery.
+    print_section(3, 4, "Delivery");
+
     let rate = prompt_rate(theme)?;
     let duration = prompt_duration(theme)?;
-
-    // 7. Encoder.
     let encoder = prompt_encoder(theme, METRIC_ENCODERS)?;
-
-    // 8. Sink.
     let (sink, endpoint) = prompt_sink(theme)?;
 
     let delivery = DeliveryAnswers {
@@ -151,7 +190,9 @@ fn run_logs_prompts(
     theme: &ColorfulTheme,
     domain: &str,
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
-    // Log name.
+    // Section 2: Log.
+    print_section(2, 4, "Log");
+
     let name: String = Input::with_theme(theme)
         .with_prompt("Log scenario name")
         .default("app_logs".to_string())
@@ -163,11 +204,11 @@ fn run_logs_prompts(
         .default("Request to {endpoint} completed with status {status}".to_string())
         .interact_text()?;
 
-    // Severity distribution.
+    // Severity distribution — aligned columns for readability.
     let severity_items = &[
-        "Mostly info (info=0.7, warn=0.2, error=0.1)",
-        "Balanced (info=0.4, warn=0.3, error=0.2, debug=0.1)",
-        "Error-heavy (error=0.6, warn=0.3, info=0.1)",
+        "Mostly info   info 70%  warn 20%  error 10%",
+        "Balanced      info 40%  warn 30%  error 20%  debug 10%",
+        "Error-heavy   error 60%  warn 30%  info 10%",
     ];
     let severity_idx = Select::with_theme(theme)
         .with_prompt("Severity distribution")
@@ -197,14 +238,12 @@ fn run_logs_prompts(
     // Labels.
     let labels = prompt_labels(theme)?;
 
-    // Rate and duration.
+    // Section 3: Delivery.
+    print_section(3, 4, "Delivery");
+
     let rate = prompt_rate(theme)?;
     let duration = prompt_duration(theme)?;
-
-    // Encoder (log-specific defaults).
     let encoder = prompt_encoder(theme, LOG_ENCODERS)?;
-
-    // Sink.
     let (sink, endpoint) = prompt_sink(theme)?;
 
     let kind = ScenarioKind::Logs(LogAnswers {
@@ -478,7 +517,8 @@ fn prompt_situation_params(
 /// Prompt for key=value labels, one at a time.
 ///
 /// The user enters labels as `key=value` strings. An empty input ends the
-/// label collection.
+/// label collection. After each successful addition, the accumulated labels
+/// are shown in dimmed text so the user can see what has been collected.
 fn prompt_labels(theme: &ColorfulTheme) -> Result<BTreeMap<String, String>, io::Error> {
     let mut labels = BTreeMap::new();
 
@@ -498,6 +538,9 @@ fn prompt_labels(theme: &ColorfulTheme) -> Result<BTreeMap<String, String>, io::
             let value = input[pos + 1..].trim().to_string();
             if !key.is_empty() {
                 labels.insert(key, value);
+                // Show accumulated labels as feedback.
+                let summary = format_label_summary(&labels);
+                eprintln!("  {}", summary.if_supports_color(Stderr, |t| t.dimmed()));
             }
         } else {
             eprintln!("  Labels must be in key=value format. Try again.");
@@ -505,6 +548,12 @@ fn prompt_labels(theme: &ColorfulTheme) -> Result<BTreeMap<String, String>, io::
     }
 
     Ok(labels)
+}
+
+/// Format a label map as a compact `key=value, key=value` summary string.
+fn format_label_summary(labels: &BTreeMap<String, String>) -> String {
+    let pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    format!("Labels: {}", pairs.join(", "))
 }
 
 /// Prompt for events-per-second rate.
@@ -635,5 +684,46 @@ mod tests {
     #[test]
     fn domains_include_infrastructure() {
         assert!(DOMAINS.contains(&"infrastructure"));
+    }
+
+    // -----------------------------------------------------------------------
+    // format_label_summary: accumulated label display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_label_summary_single_label() {
+        let mut labels = BTreeMap::new();
+        labels.insert("instance".to_string(), "web-01".to_string());
+        assert_eq!(format_label_summary(&labels), "Labels: instance=web-01");
+    }
+
+    #[test]
+    fn format_label_summary_multiple_labels_sorted() {
+        let mut labels = BTreeMap::new();
+        labels.insert("job".to_string(), "node_exporter".to_string());
+        labels.insert("instance".to_string(), "web-01".to_string());
+        // BTreeMap sorts by key, so instance comes before job.
+        assert_eq!(
+            format_label_summary(&labels),
+            "Labels: instance=web-01, job=node_exporter"
+        );
+    }
+
+    #[test]
+    fn format_label_summary_empty() {
+        let labels = BTreeMap::new();
+        assert_eq!(format_label_summary(&labels), "Labels: ");
+    }
+
+    // -----------------------------------------------------------------------
+    // Section header width constant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn section_width_is_reasonable() {
+        assert!(
+            SECTION_WIDTH >= 30,
+            "section width must be wide enough for readable headers"
+        );
     }
 }
