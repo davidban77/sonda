@@ -164,6 +164,7 @@ fn run() -> anyhow::Result<()> {
                     result.scenario_type,
                     &pack_catalog,
                     verbosity,
+                    cli.dry_run,
                     &running,
                 )?;
             }
@@ -543,6 +544,7 @@ fn run_init_scenario(
     scenario_type: init::yaml_gen::InitScenarioType,
     pack_catalog: &packs::PackCatalog,
     verbosity: Verbosity,
+    dry_run: bool,
     running: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     use init::yaml_gen::InitScenarioType;
@@ -568,7 +570,7 @@ fn run_init_scenario(
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    if handle_pre_launch(&prepared, verbosity, false) {
+    if handle_pre_launch(&prepared, verbosity, dry_run) {
         return Ok(());
     }
 

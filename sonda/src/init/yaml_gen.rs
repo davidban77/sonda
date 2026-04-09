@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn render_advanced_sink_in_logs_scenario() {
+    fn render_loki_sink_in_logs_scenario() {
         let kind = ScenarioKind::Logs(LogAnswers {
             name: "app_logs".to_string(),
             message_template: "test message".to_string(),
