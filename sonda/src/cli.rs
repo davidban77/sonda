@@ -115,10 +115,11 @@ pub enum Commands {
     Run(RunArgs),
     /// Browse, inspect, and run pre-built scenario patterns.
     ///
-    /// The `scenarios` subcommand provides access to a curated library of
-    /// built-in YAML patterns embedded in the binary. Use `list` to discover
-    /// available scenarios, `show` to view the raw YAML, and `run` to
-    /// execute one directly.
+    /// The `scenarios` subcommand provides access to scenario YAML files
+    /// discovered from the search path (`--scenario-path`,
+    /// `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`).
+    /// Use `list` to discover available scenarios, `show` to view the raw
+    /// YAML, and `run` to execute one directly.
     Scenarios(ScenariosArgs),
     /// Browse, inspect, and run metric packs from the filesystem.
     ///
@@ -671,7 +672,7 @@ pub struct RunArgs {
 
 /// Arguments for the `scenarios` subcommand.
 ///
-/// Provides access to the built-in scenario library embedded in the binary.
+/// Provides access to scenario files discovered from the filesystem.
 #[derive(Debug, Args)]
 pub struct ScenariosArgs {
     /// The scenarios action to perform.
@@ -682,20 +683,20 @@ pub struct ScenariosArgs {
 /// Actions available under `sonda scenarios`.
 #[derive(Debug, Subcommand)]
 pub enum ScenariosAction {
-    /// List all available built-in scenarios.
+    /// List all available scenarios.
     ///
     /// Prints a formatted table with NAME, CATEGORY, SIGNAL, and DESCRIPTION
     /// columns. Use `--category` to filter by category.
     List(ScenariosListArgs),
-    /// Show the raw YAML for a built-in scenario.
+    /// Show the raw YAML for a scenario.
     ///
     /// Prints the full YAML content to stdout, suitable for piping to a file
     /// for customization.
     Show(ScenariosShowArgs),
-    /// Run a built-in scenario with optional overrides.
+    /// Run a scenario with optional overrides.
     ///
     /// Executes the scenario directly. Use `--duration`, `--rate`, `--sink`,
-    /// `--endpoint`, and `--encoder` to override values in the embedded YAML.
+    /// `--endpoint`, and `--encoder` to override values in the scenario YAML.
     Run(ScenariosRunArgs),
 }
 
@@ -709,8 +710,8 @@ pub struct ScenariosListArgs {
 
     /// Output the scenario list as a JSON array instead of a table.
     ///
-    /// Each element contains `name`, `category`, `signal_type`, and
-    /// `description` fields.
+    /// Each element contains `name`, `category`, `signal_type`,
+    /// `description`, and `source` fields.
     #[arg(long)]
     pub json: bool,
 }
@@ -718,14 +719,14 @@ pub struct ScenariosListArgs {
 /// Arguments for `sonda scenarios show`.
 #[derive(Debug, Args)]
 pub struct ScenariosShowArgs {
-    /// The kebab-case name of the built-in scenario (e.g. `cpu-spike`).
+    /// The kebab-case name of the scenario (e.g. `cpu-spike`).
     pub name: String,
 }
 
 /// Arguments for `sonda scenarios run`.
 #[derive(Debug, Args)]
 pub struct ScenariosRunArgs {
-    /// The kebab-case name of the built-in scenario (e.g. `cpu-spike`).
+    /// The kebab-case name of the scenario (e.g. `cpu-spike`).
     pub name: String,
 
     /// Override the scenario duration (e.g. `"10s"`, `"2m"`).
