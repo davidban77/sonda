@@ -66,7 +66,7 @@ Define reusable scenarios in YAML for anything beyond quick one-offs --
 | **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write, OTLP |
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
-| **Signals** | metrics, logs (template and replay modes) |
+| **Signals** | metrics, logs (template and replay modes), histograms, summaries |
 | **CSV import** | Analyze CSVs, detect patterns, generate portable scenario YAML |
 | **Interactive scaffolding** | `sonda init` -- guided wizard, non-interactive mode, `--from` prefill |
 | **Built-in scenarios** | 11 curated patterns you can run instantly -- no YAML needed |

@@ -111,7 +111,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
+sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs|histogram|summary>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
