@@ -32,6 +32,7 @@ anyhow = { workspace = true }
 ctrlc = "3"
 owo-colors = { version = "4", features = ["supports-colors"] }
 serde_json = { workspace = true }
+dialoguer = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

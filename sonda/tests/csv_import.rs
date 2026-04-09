@@ -42,7 +42,7 @@ fn import_analyze_plain_csv_exits_zero() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Detected pattern:"),
+        stdout.contains("detected:"),
         "expected pattern output, got: {stdout}"
     );
     assert!(

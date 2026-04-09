@@ -72,6 +72,24 @@ pub enum Pattern {
     },
 }
 
+impl Pattern {
+    /// Returns the short, lowercase name of the pattern variant.
+    ///
+    /// This is the human-readable pattern identifier used in styled CLI output
+    /// (e.g., `"steady"`, `"spike"`, `"flap"`). It does NOT include the
+    /// parameter details that [`Display`] provides.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Pattern::Steady { .. } => "steady",
+            Pattern::Spike { .. } => "spike",
+            Pattern::Climb { .. } => "climb",
+            Pattern::Sawtooth { .. } => "sawtooth",
+            Pattern::Flap { .. } => "flap",
+            Pattern::Step { .. } => "step",
+        }
+    }
+}
+
 impl fmt::Display for Pattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -726,6 +744,69 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pattern::name() — short variant identifiers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn name_returns_steady_for_steady_variant() {
+        let p = Pattern::Steady {
+            center: 50.0,
+            amplitude: 5.0,
+        };
+        assert_eq!(p.name(), "steady");
+    }
+
+    #[test]
+    fn name_returns_spike_for_spike_variant() {
+        let p = Pattern::Spike {
+            baseline: 0.0,
+            spike_height: 100.0,
+            spike_duration_points: 3,
+            spike_interval_points: 10,
+        };
+        assert_eq!(p.name(), "spike");
+    }
+
+    #[test]
+    fn name_returns_climb_for_climb_variant() {
+        let p = Pattern::Climb {
+            baseline: 0.0,
+            ceiling: 100.0,
+        };
+        assert_eq!(p.name(), "climb");
+    }
+
+    #[test]
+    fn name_returns_sawtooth_for_sawtooth_variant() {
+        let p = Pattern::Sawtooth {
+            min: 0.0,
+            max: 100.0,
+            period_points: 20,
+        };
+        assert_eq!(p.name(), "sawtooth");
+    }
+
+    #[test]
+    fn name_returns_flap_for_flap_variant() {
+        let p = Pattern::Flap {
+            up_value: 1.0,
+            down_value: 0.0,
+            up_duration_points: 5,
+            down_duration_points: 5,
+        };
+        assert_eq!(p.name(), "flap");
+    }
+
+    #[test]
+    fn name_returns_step_for_step_variant() {
+        let p = Pattern::Step {
+            start: 0.0,
+            step_size: 10.0,
+        };
+        assert_eq!(p.name(), "step");
+    }
 
     // -----------------------------------------------------------------------
     // Steady pattern detection
