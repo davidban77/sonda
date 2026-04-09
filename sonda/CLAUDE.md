@@ -64,6 +64,13 @@ src/
 │   │                      situation-specific parameters (bypassed with defaults when
 │   │                      situation is prefilled), labels, rate (validated > 0), duration
 │   │                      (validated via parse_duration), encoder, sink.
+│   │                      Histogram and summary prompt flows: distribution model selection,
+│   │                      distribution-specific parameters, observations per tick,
+│   │                      bucket/quantile boundaries, and seed. All distribution-related
+│   │                      prompts are bypassed with sensible defaults when signal_type
+│   │                      is prefilled (non-interactive mode).
+│   │                      default_distribution_params() returns defaults matching the
+│   │                      interactive prompts for each distribution model.
 │   │                      Prefill struct carries optional pre-filled values for each prompt
 │   │                      including log-specific (message_template, severity) and
 │   │                      sink-specific (kafka_brokers, kafka_topic, otlp_signal_type).
@@ -76,8 +83,10 @@ src/
 │   │                      enforce_encoder_for_sink() auto-overrides encoder for protocol sinks.
 │   │                      prompt_run_now() offers immediate execution after file write.
 │   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
-│                          PackAnswers, LogAnswers, DeliveryAnswers. InitScenarioType enum
-│                          (SingleMetric/Pack/Logs) for typed dispatch in run-now path.
+│                          PackAnswers, LogAnswers, HistogramAnswers, SummaryAnswers,
+│                          DeliveryAnswers. InitScenarioType enum
+│                          (SingleMetric/Pack/Logs/Histogram/Summary) for typed dispatch
+│                          in run-now path.
 │                          required_encoder_for_sink() maps sink→encoder constraints.
 │                          render_sink() handles all sink types incl. advanced YAML fields.
 ├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),

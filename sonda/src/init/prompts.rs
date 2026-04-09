@@ -429,53 +429,77 @@ fn run_histogram_prompts(
             .interact_text()?
     };
 
+    // When the signal type was prefilled, use sensible defaults for all
+    // distribution-related prompts so we never touch the terminal.
+    let use_defaults = prefill.signal_type.is_some();
+
     // Distribution model.
-    let dist_idx = Select::with_theme(theme)
-        .with_prompt("Distribution model")
-        .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
-        .default(0)
-        .interact()?;
-    let distribution_type = DISTRIBUTION_MODELS[dist_idx].to_string();
+    let distribution_type = if use_defaults {
+        "normal".to_string()
+    } else {
+        let dist_idx = Select::with_theme(theme)
+            .with_prompt("Distribution model")
+            .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
+            .default(0)
+            .interact()?;
+        DISTRIBUTION_MODELS[dist_idx].to_string()
+    };
 
     // Distribution-specific parameters.
-    let distribution_params = prompt_distribution_params(theme, &distribution_type)?;
+    let distribution_params = if use_defaults {
+        default_distribution_params(&distribution_type)
+    } else {
+        prompt_distribution_params(theme, &distribution_type)?
+    };
 
     // Observations per tick.
-    let observations_per_tick: u64 = Input::with_theme(theme)
-        .with_prompt("Observations per tick")
-        .default(100u64)
-        .interact_text()?;
+    let observations_per_tick: u64 = if use_defaults {
+        100
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Observations per tick")
+            .default(100u64)
+            .interact_text()?
+    };
 
     // Bucket boundaries.
-    let bucket_items = &["Prometheus defaults", "Custom"];
-    let bucket_idx = Select::with_theme(theme)
-        .with_prompt("Bucket boundaries")
-        .items(bucket_items)
-        .default(0)
-        .interact()?;
-    let buckets = if bucket_idx == 1 {
-        let raw: String = Input::with_theme(theme)
-            .with_prompt("Custom buckets (comma-separated floats)")
-            .default("0.01, 0.05, 0.1, 0.5, 1.0, 5.0".to_string())
-            .interact_text()?;
-        let parsed: Vec<f64> = raw
-            .split(',')
-            .filter_map(|s| s.trim().parse::<f64>().ok())
-            .collect();
-        if parsed.is_empty() {
-            None
-        } else {
-            Some(parsed)
-        }
-    } else {
+    let buckets: Option<Vec<f64>> = if use_defaults {
         None
+    } else {
+        let bucket_items = &["Prometheus defaults", "Custom"];
+        let bucket_idx = Select::with_theme(theme)
+            .with_prompt("Bucket boundaries")
+            .items(bucket_items)
+            .default(0)
+            .interact()?;
+        if bucket_idx == 1 {
+            let raw: String = Input::with_theme(theme)
+                .with_prompt("Custom buckets (comma-separated floats)")
+                .default("0.01, 0.05, 0.1, 0.5, 1.0, 5.0".to_string())
+                .interact_text()?;
+            let parsed: Vec<f64> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse::<f64>().ok())
+                .collect();
+            if parsed.is_empty() {
+                None
+            } else {
+                Some(parsed)
+            }
+        } else {
+            None
+        }
     };
 
     // Seed.
-    let seed: u64 = Input::with_theme(theme)
-        .with_prompt("RNG seed")
-        .default(42u64)
-        .interact_text()?;
+    let seed: u64 = if use_defaults {
+        42
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("RNG seed")
+            .default(42u64)
+            .interact_text()?
+    };
 
     // Labels.
     let labels = prompt_labels(theme, &prefill.labels)?;
@@ -531,60 +555,84 @@ fn run_summary_prompts(
             .interact_text()?
     };
 
+    // When the signal type was prefilled, use sensible defaults for all
+    // distribution-related prompts so we never touch the terminal.
+    let use_defaults = prefill.signal_type.is_some();
+
     // Distribution model.
-    let dist_idx = Select::with_theme(theme)
-        .with_prompt("Distribution model")
-        .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
-        .default(0)
-        .interact()?;
-    let distribution_type = DISTRIBUTION_MODELS[dist_idx].to_string();
+    let distribution_type = if use_defaults {
+        "normal".to_string()
+    } else {
+        let dist_idx = Select::with_theme(theme)
+            .with_prompt("Distribution model")
+            .items(DISTRIBUTION_MODEL_DESCRIPTIONS)
+            .default(0)
+            .interact()?;
+        DISTRIBUTION_MODELS[dist_idx].to_string()
+    };
 
     // Distribution-specific parameters.
-    let distribution_params = prompt_distribution_params(theme, &distribution_type)?;
+    let distribution_params = if use_defaults {
+        default_distribution_params(&distribution_type)
+    } else {
+        prompt_distribution_params(theme, &distribution_type)?
+    };
 
     // Observations per tick.
-    let observations_per_tick: u64 = Input::with_theme(theme)
-        .with_prompt("Observations per tick")
-        .default(100u64)
-        .interact_text()?;
+    let observations_per_tick: u64 = if use_defaults {
+        100
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Observations per tick")
+            .default(100u64)
+            .interact_text()?
+    };
 
     // Quantile targets.
-    let quantile_items = &["Standard quantiles", "Custom"];
-    let quantile_idx = Select::with_theme(theme)
-        .with_prompt("Quantile targets")
-        .items(quantile_items)
-        .default(0)
-        .interact()?;
-    let quantiles = if quantile_idx == 1 {
-        let raw: String = Input::with_theme(theme)
-            .with_prompt("Custom quantiles (comma-separated, values in (0,1))")
-            .default("0.5, 0.9, 0.95, 0.99".to_string())
-            .interact_text()?;
-        let parsed: Vec<f64> = raw
-            .split(',')
-            .filter_map(|s| {
-                let v = s.trim().parse::<f64>().ok()?;
-                if v > 0.0 && v < 1.0 {
-                    Some(v)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if parsed.is_empty() {
-            None
-        } else {
-            Some(parsed)
-        }
-    } else {
+    let quantiles: Option<Vec<f64>> = if use_defaults {
         None
+    } else {
+        let quantile_items = &["Standard quantiles", "Custom"];
+        let quantile_idx = Select::with_theme(theme)
+            .with_prompt("Quantile targets")
+            .items(quantile_items)
+            .default(0)
+            .interact()?;
+        if quantile_idx == 1 {
+            let raw: String = Input::with_theme(theme)
+                .with_prompt("Custom quantiles (comma-separated, values in (0,1))")
+                .default("0.5, 0.9, 0.95, 0.99".to_string())
+                .interact_text()?;
+            let parsed: Vec<f64> = raw
+                .split(',')
+                .filter_map(|s| {
+                    let v = s.trim().parse::<f64>().ok()?;
+                    if v > 0.0 && v < 1.0 {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if parsed.is_empty() {
+                None
+            } else {
+                Some(parsed)
+            }
+        } else {
+            None
+        }
     };
 
     // Seed.
-    let seed: u64 = Input::with_theme(theme)
-        .with_prompt("RNG seed")
-        .default(42u64)
-        .interact_text()?;
+    let seed: u64 = if use_defaults {
+        42
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("RNG seed")
+            .default(42u64)
+            .interact_text()?
+    };
 
     // Labels.
     let labels = prompt_labels(theme, &prefill.labels)?;
@@ -668,6 +716,26 @@ fn prompt_distribution_params(
         _ => vec![],
     };
     Ok(params)
+}
+
+/// Return sensible default parameters for a distribution model.
+///
+/// Used when the signal type was prefilled (via CLI flags or `--from`) so that
+/// all distribution-related prompts can be skipped without touching the terminal.
+/// The defaults match the interactive prompt defaults exactly.
+fn default_distribution_params(distribution_type: &str) -> Vec<(String, ParamValue)> {
+    match distribution_type {
+        "normal" => vec![
+            ("mean".to_string(), ParamValue::Float(0.1)),
+            ("stddev".to_string(), ParamValue::Float(0.03)),
+        ],
+        "exponential" => vec![("rate".to_string(), ParamValue::Float(10.0))],
+        "uniform" => vec![
+            ("min".to_string(), ParamValue::Float(0.0)),
+            ("max".to_string(), ParamValue::Float(1.0)),
+        ],
+        _ => vec![],
+    }
 }
 
 /// Prompt for a single metric: name, situation, parameters, labels.
@@ -2012,5 +2080,61 @@ mod tests {
         assert!(DISTRIBUTION_MODELS.contains(&"normal"));
         assert!(DISTRIBUTION_MODELS.contains(&"exponential"));
         assert!(DISTRIBUTION_MODELS.contains(&"uniform"));
+    }
+
+    // -----------------------------------------------------------------------
+    // default_distribution_params
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_distribution_params_normal_has_mean_and_stddev() {
+        let params = default_distribution_params("normal");
+        assert_eq!(params.len(), 2, "normal distribution has two parameters");
+        assert_eq!(params[0].0, "mean");
+        assert_eq!(params[0].1, ParamValue::Float(0.1));
+        assert_eq!(params[1].0, "stddev");
+        assert_eq!(params[1].1, ParamValue::Float(0.03));
+    }
+
+    #[test]
+    fn default_distribution_params_exponential_has_rate() {
+        let params = default_distribution_params("exponential");
+        assert_eq!(
+            params.len(),
+            1,
+            "exponential distribution has one parameter"
+        );
+        assert_eq!(params[0].0, "rate");
+        assert_eq!(params[0].1, ParamValue::Float(10.0));
+    }
+
+    #[test]
+    fn default_distribution_params_uniform_has_min_and_max() {
+        let params = default_distribution_params("uniform");
+        assert_eq!(params.len(), 2, "uniform distribution has two parameters");
+        assert_eq!(params[0].0, "min");
+        assert_eq!(params[0].1, ParamValue::Float(0.0));
+        assert_eq!(params[1].0, "max");
+        assert_eq!(params[1].1, ParamValue::Float(1.0));
+    }
+
+    #[test]
+    fn default_distribution_params_unknown_returns_empty() {
+        let params = default_distribution_params("unknown_model");
+        assert!(
+            params.is_empty(),
+            "unknown distribution model returns no parameters"
+        );
+    }
+
+    #[test]
+    fn default_distribution_params_covers_all_models() {
+        for &model in DISTRIBUTION_MODELS {
+            let params = default_distribution_params(model);
+            assert!(
+                !params.is_empty(),
+                "distribution model '{model}' must have default parameters"
+            );
+        }
     }
 }
