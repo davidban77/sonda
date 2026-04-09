@@ -157,6 +157,15 @@ of raw generator types, and supports metric packs for multi-metric scenarios:
 sonda init
 ```
 
+Pre-fill from a built-in scenario or CSV file, or run fully non-interactively with flags:
+
+```bash
+sonda init --from @cpu-spike --rate 5 --duration 2m -o scenario.yaml
+sonda init --signal-type metrics --domain infrastructure --situation steady \
+  --metric cpu_usage --rate 1 --duration 60s --encoder prometheus_text \
+  --sink stdout -o cpu.yaml --run-now
+```
+
 ```text
 ? What type of signal? metrics
 ? What domain? infrastructure

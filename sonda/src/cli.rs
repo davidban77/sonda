@@ -910,11 +910,17 @@ pub struct ImportArgs {
 /// Arguments for the `init` subcommand.
 ///
 /// All flags are optional. When a flag is provided its value is used directly,
-/// skipping the corresponding interactive prompt. When ALL required flags are
-/// supplied, `sonda init` runs fully non-interactively.
+/// skipping the corresponding interactive prompt. When ALL required fields are
+/// supplied via flags (signal type, domain, metric/pack, situation, rate,
+/// duration, encoder, sink, and output path), `sonda init` runs fully
+/// non-interactively — no terminal interaction needed.
 ///
 /// The `--from` flag pre-fills values from a built-in scenario (`@name`) or a
 /// CSV file (`path.csv`). Explicit flags override `--from` values.
+///
+/// For advanced sinks in non-interactive mode, supply the sink-specific flags
+/// (`--kafka-brokers`, `--kafka-topic`, `--otlp-signal-type`) alongside
+/// `--sink`.
 #[derive(Debug, Args)]
 pub struct InitArgs {
     /// Start from a built-in scenario (@name) or CSV file (path.csv).
@@ -968,6 +974,38 @@ pub struct InitArgs {
     /// Static labels (key=value), can be repeated.
     #[arg(long = "label", value_name = "KEY=VALUE")]
     pub labels: Vec<String>,
+
+    /// Run the generated scenario immediately after writing (skip the prompt).
+    ///
+    /// When absent and stdin is a TTY, prompts the user. When absent and stdin
+    /// is not a TTY, defaults to `false`.
+    #[arg(long)]
+    pub run_now: bool,
+
+    /// Log message template (for `--signal-type logs`).
+    ///
+    /// Uses `{field}` placeholders. Example:
+    /// `"Request to {endpoint} completed with status {status}"`.
+    #[arg(long, help_heading = "Logs")]
+    pub message_template: Option<String>,
+
+    /// Severity distribution preset (for `--signal-type logs`).
+    ///
+    /// Accepted values: `mostly_info`, `balanced`, `error_heavy`.
+    #[arg(long, help_heading = "Logs")]
+    pub severity: Option<String>,
+
+    /// Kafka broker(s) for `--sink kafka` (e.g. `localhost:9092`).
+    #[arg(long, help_heading = "Sink")]
+    pub kafka_brokers: Option<String>,
+
+    /// Kafka topic for `--sink kafka`.
+    #[arg(long, help_heading = "Sink")]
+    pub kafka_topic: Option<String>,
+
+    /// OTLP signal type for `--sink otlp_grpc`: `metrics` or `logs`.
+    #[arg(long, help_heading = "Sink")]
+    pub otlp_signal_type: Option<String>,
 }
 
 /// Build clap help styling for the CLI.
@@ -1830,6 +1868,12 @@ mod tests {
             assert!(args.endpoint.is_none());
             assert!(args.output.is_none());
             assert!(args.labels.is_empty());
+            assert!(!args.run_now);
+            assert!(args.message_template.is_none());
+            assert!(args.severity.is_none());
+            assert!(args.kafka_brokers.is_none());
+            assert!(args.kafka_topic.is_none());
+            assert!(args.otlp_signal_type.is_none());
         } else {
             panic!("expected Init command");
         }
@@ -1841,6 +1885,90 @@ mod tests {
             Cli::try_parse_from(["sonda", "init", "-o", "my-scenario.yaml"]).expect("should parse");
         if let Commands::Init(ref args) = cli.command {
             assert_eq!(args.output.as_deref(), Some("my-scenario.yaml"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_run_now_flag() {
+        let cli = Cli::try_parse_from(["sonda", "init", "--run-now"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert!(args.run_now);
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_message_template_flag() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "init",
+            "--message-template",
+            "Connection from {ip} failed",
+        ])
+        .expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(
+                args.message_template.as_deref(),
+                Some("Connection from {ip} failed")
+            );
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_severity_flag() {
+        let cli =
+            Cli::try_parse_from(["sonda", "init", "--severity", "balanced"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.severity.as_deref(), Some("balanced"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_kafka_flags() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "init",
+            "--sink",
+            "kafka",
+            "--kafka-brokers",
+            "broker1:9092,broker2:9092",
+            "--kafka-topic",
+            "my-topic",
+        ])
+        .expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.sink.as_deref(), Some("kafka"));
+            assert_eq!(
+                args.kafka_brokers.as_deref(),
+                Some("broker1:9092,broker2:9092")
+            );
+            assert_eq!(args.kafka_topic.as_deref(), Some("my-topic"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_otlp_signal_type_flag() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "init",
+            "--sink",
+            "otlp_grpc",
+            "--otlp-signal-type",
+            "metrics",
+        ])
+        .expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.sink.as_deref(), Some("otlp_grpc"));
+            assert_eq!(args.otlp_signal_type.as_deref(), Some("metrics"));
         } else {
             panic!("expected Init command");
         }

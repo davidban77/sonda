@@ -26,6 +26,7 @@
 pub mod prompts;
 pub mod yaml_gen;
 
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -126,8 +127,16 @@ pub fn run_init(
     print_success(&kind, &output_path);
 
     // Offer to run immediately.
-    let theme = ColorfulTheme::default();
-    let run_now = prompts::prompt_run_now(&theme).context("run-now prompt failed")?;
+    // --run-now flag: use it directly. Otherwise, prompt if stdin is a TTY;
+    // default to false when non-interactive.
+    let run_now = if args.run_now {
+        true
+    } else if std::io::stdin().is_terminal() {
+        let theme = ColorfulTheme::default();
+        prompts::prompt_run_now(&theme).context("run-now prompt failed")?
+    } else {
+        false
+    };
 
     Ok(InitResult {
         yaml,
@@ -185,6 +194,25 @@ pub fn build_prefill(args: &InitArgs, scenario_catalog: &ScenarioCatalog) -> Res
     }
     if let Some(ref v) = args.endpoint {
         prefill.endpoint = Some(v.clone());
+    }
+
+    // Log-specific fields.
+    if let Some(ref v) = args.message_template {
+        prefill.message_template = Some(v.clone());
+    }
+    if let Some(ref v) = args.severity {
+        prefill.severity = Some(v.clone());
+    }
+
+    // Sink-specific extra fields.
+    if let Some(ref v) = args.kafka_brokers {
+        prefill.kafka_brokers = Some(v.clone());
+    }
+    if let Some(ref v) = args.kafka_topic {
+        prefill.kafka_topic = Some(v.clone());
+    }
+    if let Some(ref v) = args.otlp_signal_type {
+        prefill.otlp_signal_type = Some(v.clone());
     }
 
     // Parse --label key=value flags into the labels map.
@@ -259,6 +287,11 @@ fn prefill_from_scenario(name: &str, catalog: &ScenarioCatalog) -> Result<Prefil
             if let Some(ref p) = probe.pack {
                 prefill.pack = Some(p.clone());
             }
+            if let Some(ref l) = probe.labels {
+                for (k, v) in l {
+                    prefill.labels.insert(k.clone(), v.clone());
+                }
+            }
         }
     }
 
@@ -268,15 +301,31 @@ fn prefill_from_scenario(name: &str, catalog: &ScenarioCatalog) -> Result<Prefil
 /// Build a [`Prefill`] from a CSV file by analyzing time-series patterns.
 ///
 /// Reads the first numeric column from the CSV, detects its dominant pattern,
-/// and maps it to an operational vocabulary alias.
+/// and maps it to an operational vocabulary alias. When the CSV has no numeric
+/// columns, returns a minimal prefill with `signal_type: "metrics"` and no
+/// situation or metric name.
 ///
 /// # Errors
 ///
-/// Returns an error if the CSV file cannot be read or has no numeric columns.
+/// Returns an error if the CSV file cannot be opened or parsed.
 fn prefill_from_csv(path: &str) -> Result<Prefill> {
     let csv_path = Path::new(path);
-    let data = import::csv_reader::read_csv(csv_path, None)
-        .with_context(|| format!("failed to read CSV file: {path}"))?;
+    let data = match import::csv_reader::read_csv(csv_path, None) {
+        Ok(d) => d,
+        Err(e) => {
+            // When the CSV has no numeric columns, read_csv returns an error.
+            // We still want to produce a valid (albeit minimal) Prefill so the
+            // init flow can continue with interactive prompts.
+            let msg = e.to_string();
+            if msg.contains("no numeric data found") {
+                return Ok(Prefill {
+                    signal_type: Some("metrics".to_string()),
+                    ..Prefill::default()
+                });
+            }
+            return Err(e).with_context(|| format!("failed to read CSV file: {path}"));
+        }
+    };
 
     let mut prefill = Prefill {
         signal_type: Some("metrics".to_string()),
@@ -323,6 +372,8 @@ struct ScenarioProbe {
     encoder: Option<EncoderProbe>,
     sink: Option<SinkProbe>,
     pack: Option<String>,
+    /// Static labels from the scenario YAML.
+    labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// Generator section of a scenario YAML (just the type field).
@@ -354,37 +405,42 @@ fn print_prefill_summary(args: &InitArgs, prefill: &Prefill) {
     let dimmed = owo_colors::Style::new().dimmed();
     let bold_cyan = owo_colors::Style::new().bold().cyan();
 
-    // Collect fields that have values.
-    let mut fields: Vec<(&str, String)> = Vec::new();
+    // We need an owned String for the rate (formatted from f64); all other
+    // values are borrowed as &str to avoid unnecessary clones.
+    let rate_str;
+
+    // Collect fields that have values — borrows wherever possible.
+    let mut fields: Vec<(&str, &str)> = Vec::new();
     if let Some(ref v) = prefill.signal_type {
-        fields.push(("signal_type", v.clone()));
+        fields.push(("signal_type", v.as_str()));
     }
     if let Some(ref v) = prefill.domain {
-        fields.push(("domain", v.clone()));
+        fields.push(("domain", v.as_str()));
     }
     if let Some(ref v) = prefill.situation {
-        fields.push(("situation", v.clone()));
+        fields.push(("situation", v.as_str()));
     }
     if let Some(ref v) = prefill.metric {
-        fields.push(("metric", v.clone()));
+        fields.push(("metric", v.as_str()));
     }
     if let Some(ref v) = prefill.pack {
-        fields.push(("pack", v.clone()));
+        fields.push(("pack", v.as_str()));
     }
     if let Some(v) = prefill.rate {
-        fields.push(("rate", v.to_string()));
+        rate_str = v.to_string();
+        fields.push(("rate", &rate_str));
     }
     if let Some(ref v) = prefill.duration {
-        fields.push(("duration", v.clone()));
+        fields.push(("duration", v.as_str()));
     }
     if let Some(ref v) = prefill.encoder {
-        fields.push(("encoder", v.clone()));
+        fields.push(("encoder", v.as_str()));
     }
     if let Some(ref v) = prefill.sink {
-        fields.push(("sink", v.clone()));
+        fields.push(("sink", v.as_str()));
     }
     if let Some(ref v) = prefill.endpoint {
-        fields.push(("endpoint", v.clone()));
+        fields.push(("endpoint", v.as_str()));
     }
 
     if fields.is_empty() {
@@ -554,6 +610,33 @@ fn print_success(kind: &yaml_gen::ScenarioKind, output_path: &str) {
 mod tests {
     use super::*;
 
+    /// Build a default [`InitArgs`] with all fields set to their zero/None values.
+    ///
+    /// Tests override individual fields as needed.
+    fn default_init_args() -> InitArgs {
+        InitArgs {
+            from: None,
+            signal_type: None,
+            domain: None,
+            situation: None,
+            metric: None,
+            pack: None,
+            rate: None,
+            duration: None,
+            encoder: None,
+            sink: None,
+            endpoint: None,
+            output: None,
+            labels: vec![],
+            run_now: false,
+            message_template: None,
+            severity: None,
+            kafka_brokers: None,
+            kafka_topic: None,
+            otlp_signal_type: None,
+        }
+    }
+
     // -----------------------------------------------------------------------
     // YAML preview: truncation behavior
     // -----------------------------------------------------------------------
@@ -706,21 +789,7 @@ mod tests {
 
     #[test]
     fn build_prefill_no_args_produces_default() {
-        let args = InitArgs {
-            from: None,
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
-        };
+        let args = default_init_args();
         let catalog = ScenarioCatalog::discover(&[]);
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
         assert!(prefill.signal_type.is_none());
@@ -731,19 +800,16 @@ mod tests {
     #[test]
     fn build_prefill_cli_flags_populate_fields() {
         let args = InitArgs {
-            from: None,
             signal_type: Some("metrics".to_string()),
             domain: Some("network".to_string()),
             situation: Some("flap".to_string()),
             metric: Some("bgp_state".to_string()),
-            pack: None,
             rate: Some(2.0),
             duration: Some("5m".to_string()),
             encoder: Some("prometheus_text".to_string()),
             sink: Some("stdout".to_string()),
-            endpoint: None,
-            output: None,
             labels: vec!["env=prod".to_string(), "region=us-east".to_string()],
+            ..default_init_args()
         };
         let catalog = ScenarioCatalog::discover(&[]);
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -765,19 +831,8 @@ mod tests {
     #[test]
     fn build_prefill_labels_parse_key_value() {
         let args = InitArgs {
-            from: None,
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
             labels: vec!["host=web-01".to_string(), "dc=us-west-2".to_string()],
+            ..default_init_args()
         };
         let catalog = ScenarioCatalog::discover(&[]);
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -795,19 +850,8 @@ mod tests {
     #[test]
     fn build_prefill_labels_skip_malformed() {
         let args = InitArgs {
-            from: None,
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
             labels: vec!["no_equals_sign".to_string(), "good=value".to_string()],
+            ..default_init_args()
         };
         let catalog = ScenarioCatalog::discover(&[]);
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -858,18 +902,7 @@ sink:
         let catalog = ScenarioCatalog::discover(&[dir.clone()]);
         let args = InitArgs {
             from: Some("@cpu-spike".to_string()),
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
 
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -890,18 +923,7 @@ sink:
         let catalog = ScenarioCatalog::discover(&[]);
         let args = InitArgs {
             from: Some("@nonexistent-scenario".to_string()),
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
 
         let result = build_prefill(&args, &catalog);
@@ -945,18 +967,10 @@ sink:
         let catalog = ScenarioCatalog::discover(&[dir.clone()]);
         let args = InitArgs {
             from: Some("@cpu-spike".to_string()),
-            signal_type: None,
             domain: Some("network".to_string()),
             situation: Some("flap".to_string()),
-            metric: None,
-            pack: None,
             rate: Some(10.0),
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
 
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -1012,18 +1026,7 @@ sink:
         let catalog = ScenarioCatalog::discover(&[]);
         let args = InitArgs {
             from: Some(csv_path.to_str().unwrap().to_string()),
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
 
         let prefill = build_prefill(&args, &catalog).expect("should succeed");
@@ -1048,18 +1051,7 @@ sink:
         let catalog = ScenarioCatalog::discover(&[]);
         let args = InitArgs {
             from: Some("/nonexistent/path/data.csv".to_string()),
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
 
         let result = build_prefill(&args, &catalog);
@@ -1072,21 +1064,7 @@ sink:
 
     #[test]
     fn print_prefill_summary_does_not_panic_with_empty_prefill() {
-        let args = InitArgs {
-            from: None,
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
-        };
+        let args = default_init_args();
         let prefill = Prefill::default();
         print_prefill_summary(&args, &prefill);
     }
@@ -1095,18 +1073,7 @@ sink:
     fn print_prefill_summary_does_not_panic_with_from() {
         let args = InitArgs {
             from: Some("@cpu-spike".to_string()),
-            signal_type: None,
-            domain: None,
-            situation: None,
-            metric: None,
-            pack: None,
-            rate: None,
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
         let prefill = Prefill {
             signal_type: Some("metrics".to_string()),
@@ -1119,19 +1086,10 @@ sink:
     #[test]
     fn print_prefill_summary_does_not_panic_with_flags() {
         let args = InitArgs {
-            from: None,
             signal_type: Some("metrics".to_string()),
             domain: Some("network".to_string()),
-            situation: None,
-            metric: None,
-            pack: None,
             rate: Some(5.0),
-            duration: None,
-            encoder: None,
-            sink: None,
-            endpoint: None,
-            output: None,
-            labels: vec![],
+            ..default_init_args()
         };
         let prefill = Prefill {
             signal_type: Some("metrics".to_string()),
@@ -1140,5 +1098,151 @@ sink:
             ..Prefill::default()
         };
         print_prefill_summary(&args, &prefill);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_prefill: CSV with no numeric columns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_prefill_from_csv_no_numeric_columns() {
+        use std::fs;
+
+        let dir =
+            std::env::temp_dir().join(format!("sonda-init-csv-no-numeric-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        // CSV with only a timestamp column and a non-numeric column.
+        let csv_content = "timestamp,status\n\
+            1000,ok\n\
+            1001,ok\n\
+            1002,error\n";
+        let csv_path = dir.join("no-numeric.csv");
+        fs::write(&csv_path, csv_content).expect("write CSV");
+
+        let catalog = ScenarioCatalog::discover(&[]);
+        let args = InitArgs {
+            from: Some(csv_path.to_str().unwrap().to_string()),
+            ..default_init_args()
+        };
+
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        // Signal type is always set to "metrics" for CSV-based prefill.
+        assert_eq!(prefill.signal_type.as_deref(), Some("metrics"));
+        // No numeric columns means no pattern detection and no metric name.
+        assert!(
+            prefill.situation.is_none(),
+            "situation should be None when no numeric columns exist"
+        );
+        assert!(
+            prefill.metric.is_none(),
+            "metric should be None when no numeric columns exist"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_prefill: new fields from CLI flags
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_prefill_log_fields_from_flags() {
+        let args = InitArgs {
+            message_template: Some("Error at {line}".to_string()),
+            severity: Some("balanced".to_string()),
+            ..default_init_args()
+        };
+        let catalog = ScenarioCatalog::discover(&[]);
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(prefill.message_template.as_deref(), Some("Error at {line}"));
+        assert_eq!(prefill.severity.as_deref(), Some("balanced"));
+    }
+
+    #[test]
+    fn build_prefill_kafka_fields_from_flags() {
+        let args = InitArgs {
+            sink: Some("kafka".to_string()),
+            kafka_brokers: Some("broker:9092".to_string()),
+            kafka_topic: Some("events".to_string()),
+            ..default_init_args()
+        };
+        let catalog = ScenarioCatalog::discover(&[]);
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(prefill.sink.as_deref(), Some("kafka"));
+        assert_eq!(prefill.kafka_brokers.as_deref(), Some("broker:9092"));
+        assert_eq!(prefill.kafka_topic.as_deref(), Some("events"));
+    }
+
+    #[test]
+    fn build_prefill_otlp_signal_type_from_flags() {
+        let args = InitArgs {
+            sink: Some("otlp_grpc".to_string()),
+            otlp_signal_type: Some("logs".to_string()),
+            ..default_init_args()
+        };
+        let catalog = ScenarioCatalog::discover(&[]);
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(prefill.otlp_signal_type.as_deref(), Some("logs"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_prefill: scenario with labels
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_prefill_from_scenario_extracts_labels() {
+        use std::fs;
+
+        let dir =
+            std::env::temp_dir().join(format!("sonda-init-labels-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let scenario_yaml = r#"scenario_name: labeled-scenario
+category: network
+signal_type: metrics
+description: "Scenario with labels"
+
+name: if_traffic
+rate: 1
+duration: 30s
+
+labels:
+  device: rtr-edge-01
+  region: us-west
+
+generator:
+  type: steady
+  center: 50.0
+  amplitude: 10.0
+  period: "60s"
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout
+"#;
+        fs::write(dir.join("labeled-scenario.yaml"), scenario_yaml).expect("write scenario");
+
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        let args = InitArgs {
+            from: Some("@labeled-scenario".to_string()),
+            ..default_init_args()
+        };
+
+        let prefill = build_prefill(&args, &catalog).expect("should succeed");
+        assert_eq!(
+            prefill.labels.get("device").map(String::as_str),
+            Some("rtr-edge-01")
+        );
+        assert_eq!(
+            prefill.labels.get("region").map(String::as_str),
+            Some("us-west")
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

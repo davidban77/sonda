@@ -956,17 +956,24 @@ sonda init [OPTIONS]
 | `--situation <ALIAS>` | -- | string | Operational situation: `steady`, `spike_event`, `flap`, `leak`, `saturation`, `degradation`. |
 | `--metric <NAME>` | -- | string | Metric name. |
 | `--pack <NAME>` | -- | string | Use a metric pack instead of a single metric. Mutually exclusive with `--metric` and `--situation`. |
-| `--rate <RATE>` | -- | float | Events per second. |
-| `--duration <DURATION>` | -- | string | Run duration (e.g. `60s`, `5m`). |
+| `--rate <RATE>` | -- | float | Events per second. Must be strictly positive. |
+| `--duration <DURATION>` | -- | string | Run duration (e.g. `60s`, `5m`). Must be a valid duration with unit suffix (`ms`, `s`, `m`, `h`). |
 | `--encoder <FORMAT>` | -- | string | Encoder: `prometheus_text`, `influx_lp`, `json_lines`, `syslog`. |
 | `--sink <TYPE>` | -- | string | Sink: `stdout`, `http_push`, `file`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, `udp`. |
 | `--endpoint <URL>` | -- | string | Sink endpoint (URL, file path, or `host:port`). |
 | `--output <PATH>` | `-o` | path | Output file path for the generated YAML. |
 | `--label <KEY=VALUE>` | -- | string | Static label (repeatable). |
+| `--run-now` | -- | bool | Run the generated scenario immediately after writing (skip the prompt). Defaults to `false` when stdin is not a TTY. |
+| `--message-template <TPL>` | -- | string | Log message template (for `--signal-type logs`). Uses `{field}` placeholders. |
+| `--severity <PRESET>` | -- | string | Severity distribution preset (for `--signal-type logs`): `mostly_info`, `balanced`, `error_heavy`. |
+| `--kafka-brokers <ADDRS>` | -- | string | Kafka broker(s) for `--sink kafka` (e.g. `localhost:9092`). |
+| `--kafka-topic <TOPIC>` | -- | string | Kafka topic for `--sink kafka`. |
+| `--otlp-signal-type <TYPE>` | -- | string | OTLP signal type for `--sink otlp_grpc`: `metrics` or `logs`. |
 
 All flags are optional. When a flag is provided, its corresponding interactive prompt is
 skipped. When **all** required fields are supplied via flags, `sonda init` runs fully
-non-interactively -- no terminal interaction needed.
+non-interactively -- no terminal interaction needed. Rate and duration values are validated;
+invalid values fall through to interactive prompts or use defaults in non-interactive mode.
 
 ### Non-interactive mode
 
@@ -984,6 +991,24 @@ sonda init \
   --sink stdout \
   -o ./scenarios/node-cpu.yaml
 ```
+
+Add `--run-now` to also execute the scenario immediately after writing:
+
+```bash
+sonda init \
+  --signal-type metrics \
+  --domain infrastructure \
+  --metric node_cpu_seconds \
+  --situation steady \
+  --rate 1 --duration 60s \
+  --encoder prometheus_text \
+  --sink stdout \
+  -o ./scenarios/node-cpu.yaml \
+  --run-now
+```
+
+When `--run-now` is not provided and stdin is not a TTY (e.g. in a CI pipeline), the
+run-now prompt is skipped and defaults to `false`.
 
 Partial flags work too -- Sonda prompts only for the missing values. For example, if you
 supply `--signal-type` and `--domain` but nothing else, the wizard starts at step 3:

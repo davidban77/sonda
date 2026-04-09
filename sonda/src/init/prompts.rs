@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::io::IsTerminal;
 
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use owo_colors::OwoColorize;
@@ -67,6 +68,16 @@ pub struct Prefill {
     pub endpoint: Option<String>,
     /// Static labels to attach to every event.
     pub labels: BTreeMap<String, String>,
+    /// Log message template (for logs signal type).
+    pub message_template: Option<String>,
+    /// Severity distribution preset: `"mostly_info"`, `"balanced"`, or `"error_heavy"`.
+    pub severity: Option<String>,
+    /// Kafka broker(s) for sink-specific configuration.
+    pub kafka_brokers: Option<String>,
+    /// Kafka topic for sink-specific configuration.
+    pub kafka_topic: Option<String>,
+    /// OTLP signal type (`"metrics"` or `"logs"`) for sink-specific configuration.
+    pub otlp_signal_type: Option<String>,
 }
 
 /// All valid sink type names (primary + advanced), used for prefill validation.
@@ -329,40 +340,26 @@ fn run_logs_prompts(
     };
 
     // Message template.
-    let message_template: String = Input::with_theme(theme)
-        .with_prompt("Message template (use {field} for placeholders)")
-        .default("Request to {endpoint} completed with status {status}".to_string())
-        .interact_text()?;
+    let message_template = if let Some(ref val) = prefill.message_template {
+        val.clone()
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Message template (use {field} for placeholders)")
+            .default("Request to {endpoint} completed with status {status}".to_string())
+            .interact_text()?
+    };
 
     // Severity distribution — aligned columns for readability.
-    let severity_items = &[
-        "Mostly info   info 70%  warn 20%  error 10%",
-        "Balanced      info 40%  warn 30%  error 20%  debug 10%",
-        "Error-heavy   error 60%  warn 30%  info 10%",
-    ];
-    let severity_idx = Select::with_theme(theme)
-        .with_prompt("Severity distribution")
-        .items(severity_items)
-        .default(0)
-        .interact()?;
-    let severity_weights = match severity_idx {
-        0 => vec![
-            ("info".to_string(), 0.7),
-            ("warn".to_string(), 0.2),
-            ("error".to_string(), 0.1),
-        ],
-        1 => vec![
-            ("info".to_string(), 0.4),
-            ("warn".to_string(), 0.3),
-            ("error".to_string(), 0.2),
-            ("debug".to_string(), 0.1),
-        ],
-        2 => vec![
-            ("error".to_string(), 0.6),
-            ("warn".to_string(), 0.3),
-            ("info".to_string(), 0.1),
-        ],
-        _ => unreachable!(),
+    let severity_weights = if let Some(ref val) = prefill.severity {
+        match severity_preset_weights(val) {
+            Some(weights) => weights,
+            None => {
+                print_invalid_prefill("severity", val, &["mostly_info", "balanced", "error_heavy"]);
+                prompt_severity_interactive(theme)?
+            }
+        }
+    } else {
+        prompt_severity_interactive(theme)?
     };
 
     // Merge prefill labels with interactive labels.
@@ -421,7 +418,7 @@ fn prompt_single_metric(
     let situation = prompt_situation(theme, prefill)?;
 
     // Situation-specific parameters.
-    let situation_params = prompt_situation_params(theme, &situation)?;
+    let situation_params = prompt_situation_params(theme, &situation, prefill)?;
 
     // Merge prefill labels with interactive labels.
     let mut labels = prefill.labels.clone();
@@ -569,14 +566,90 @@ fn prompt_pack_interactive(
     Ok(selected_pack.name.clone())
 }
 
+/// Return the default situation-specific parameters for a known alias.
+///
+/// These defaults match the values used as interactive prompt defaults in
+/// [`prompt_situation_params`]. When the situation is prefilled via CLI flags,
+/// these defaults are used directly without prompting.
+fn default_situation_params(situation: &str) -> Vec<(String, ParamValue)> {
+    match situation {
+        "steady" => vec![
+            ("center".to_string(), ParamValue::Float(50.0)),
+            ("amplitude".to_string(), ParamValue::Float(10.0)),
+            ("period".to_string(), ParamValue::String("60s".to_string())),
+        ],
+        "spike_event" => vec![
+            ("baseline".to_string(), ParamValue::Float(0.0)),
+            ("spike_height".to_string(), ParamValue::Float(100.0)),
+            (
+                "spike_duration".to_string(),
+                ParamValue::String("10s".to_string()),
+            ),
+            (
+                "spike_interval".to_string(),
+                ParamValue::String("30s".to_string()),
+            ),
+        ],
+        "flap" => vec![
+            ("up_value".to_string(), ParamValue::Float(1.0)),
+            ("down_value".to_string(), ParamValue::Float(0.0)),
+            (
+                "up_duration".to_string(),
+                ParamValue::String("10s".to_string()),
+            ),
+            (
+                "down_duration".to_string(),
+                ParamValue::String("5s".to_string()),
+            ),
+        ],
+        "leak" => vec![
+            ("baseline".to_string(), ParamValue::Float(0.0)),
+            ("ceiling".to_string(), ParamValue::Float(100.0)),
+            (
+                "time_to_ceiling".to_string(),
+                ParamValue::String("10m".to_string()),
+            ),
+        ],
+        "saturation" => vec![
+            ("baseline".to_string(), ParamValue::Float(0.0)),
+            ("ceiling".to_string(), ParamValue::Float(100.0)),
+            (
+                "time_to_saturate".to_string(),
+                ParamValue::String("5m".to_string()),
+            ),
+        ],
+        "degradation" => vec![
+            ("baseline".to_string(), ParamValue::Float(0.0)),
+            ("ceiling".to_string(), ParamValue::Float(100.0)),
+            (
+                "time_to_degrade".to_string(),
+                ParamValue::String("5m".to_string()),
+            ),
+            ("noise".to_string(), ParamValue::Float(1.0)),
+        ],
+        _ => vec![],
+    }
+}
+
 /// Prompt for situation-specific parameters with sensible defaults.
 ///
 /// Each alias has its own set of parameters matching the fields in
 /// `sonda-core/src/config/aliases.rs`.
+///
+/// When the situation was prefilled (i.e., it came from CLI flags or `--from`),
+/// the defaults are used directly without prompting. This enables fully
+/// non-interactive operation when the caller already chose a situation.
 fn prompt_situation_params(
     theme: &ColorfulTheme,
     situation: &str,
+    prefill: &Prefill,
 ) -> Result<Vec<(String, ParamValue)>, io::Error> {
+    // When the situation was prefilled, use defaults silently so we never
+    // touch the terminal for situation parameters.
+    if prefill.situation.is_some() {
+        return Ok(default_situation_params(situation));
+    }
+
     let params = match situation {
         "steady" => {
             let center: f64 = Input::with_theme(theme)
@@ -731,6 +804,68 @@ fn prompt_situation_params(
     Ok(params)
 }
 
+/// Return severity weights for a named preset, or `None` if the name is invalid.
+///
+/// Supported presets:
+/// - `"mostly_info"`: info 70%, warn 20%, error 10%
+/// - `"balanced"`: info 40%, warn 30%, error 20%, debug 10%
+/// - `"error_heavy"`: error 60%, warn 30%, info 10%
+fn severity_preset_weights(preset: &str) -> Option<Vec<(String, f64)>> {
+    match preset {
+        "mostly_info" => Some(vec![
+            ("info".to_string(), 0.7),
+            ("warn".to_string(), 0.2),
+            ("error".to_string(), 0.1),
+        ]),
+        "balanced" => Some(vec![
+            ("info".to_string(), 0.4),
+            ("warn".to_string(), 0.3),
+            ("error".to_string(), 0.2),
+            ("debug".to_string(), 0.1),
+        ]),
+        "error_heavy" => Some(vec![
+            ("error".to_string(), 0.6),
+            ("warn".to_string(), 0.3),
+            ("info".to_string(), 0.1),
+        ]),
+        _ => None,
+    }
+}
+
+/// Interactive severity distribution prompt (extracted for prefill fallthrough).
+fn prompt_severity_interactive(theme: &ColorfulTheme) -> Result<Vec<(String, f64)>, io::Error> {
+    let severity_items = &[
+        "Mostly info   info 70%  warn 20%  error 10%",
+        "Balanced      info 40%  warn 30%  error 20%  debug 10%",
+        "Error-heavy   error 60%  warn 30%  info 10%",
+    ];
+    let severity_idx = Select::with_theme(theme)
+        .with_prompt("Severity distribution")
+        .items(severity_items)
+        .default(0)
+        .interact()?;
+    let weights = match severity_idx {
+        0 => vec![
+            ("info".to_string(), 0.7),
+            ("warn".to_string(), 0.2),
+            ("error".to_string(), 0.1),
+        ],
+        1 => vec![
+            ("info".to_string(), 0.4),
+            ("warn".to_string(), 0.3),
+            ("error".to_string(), 0.2),
+            ("debug".to_string(), 0.1),
+        ],
+        2 => vec![
+            ("error".to_string(), 0.6),
+            ("warn".to_string(), 0.3),
+            ("info".to_string(), 0.1),
+        ],
+        _ => unreachable!(),
+    };
+    Ok(weights)
+}
+
 /// Prompt for key=value labels, one at a time.
 ///
 /// The user enters labels as `key=value` strings. An empty input ends the
@@ -775,10 +910,25 @@ fn format_label_summary(labels: &BTreeMap<String, String>) -> String {
 
 /// Prompt for events-per-second rate.
 ///
-/// When `prefill.rate` is set, returns it without prompting.
+/// When `prefill.rate` is set and strictly positive, returns it without
+/// prompting. Invalid values (zero or negative) print a warning and fall
+/// through to the interactive prompt; in non-interactive mode the default
+/// `1.0` is used.
 fn prompt_rate(theme: &ColorfulTheme, prefill: &Prefill) -> Result<f64, io::Error> {
     if let Some(val) = prefill.rate {
-        return Ok(val);
+        if val > 0.0 {
+            return Ok(val);
+        }
+        let warning = format!(
+            "Invalid --rate value '{}': must be strictly positive. Using default 1.0.",
+            val
+        );
+        eprintln!("  {}", warning.if_supports_color(Stderr, |t| t.dimmed()));
+        // In non-interactive mode (all fields prefilled), use the default
+        // rather than trying to prompt.
+        if !std::io::stdin().is_terminal() {
+            return Ok(1.0);
+        }
     }
     let rate: f64 = Input::with_theme(theme)
         .with_prompt("Events per second (rate)")
@@ -789,10 +939,23 @@ fn prompt_rate(theme: &ColorfulTheme, prefill: &Prefill) -> Result<f64, io::Erro
 
 /// Prompt for scenario duration.
 ///
-/// When `prefill.duration` is set, returns it without prompting.
+/// When `prefill.duration` is set and passes basic validation (recognized by
+/// `sonda_core::config::validate::parse_duration`), returns it without
+/// prompting. Invalid values print a warning and fall through to the
+/// interactive prompt; in non-interactive mode the default `"60s"` is used.
 fn prompt_duration(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
     if let Some(ref val) = prefill.duration {
-        return Ok(val.clone());
+        if sonda_core::config::validate::parse_duration(val).is_ok() {
+            return Ok(val.clone());
+        }
+        let warning = format!(
+            "Invalid --duration value '{}': expected format like 30s, 5m, 1h. Using default 60s.",
+            val
+        );
+        eprintln!("  {}", warning.if_supports_color(Stderr, |t| t.dimmed()));
+        if !std::io::stdin().is_terminal() {
+            return Ok("60s".to_string());
+        }
     }
     let duration: String = Input::with_theme(theme)
         .with_prompt("Duration (e.g., 30s, 5m, 1h)")
@@ -835,12 +998,55 @@ fn prompt_encoder(
 /// When `prefill.endpoint` is set, skips the endpoint prompt for sinks that
 /// require one.
 fn prompt_sink(theme: &ColorfulTheme, prefill: &Prefill) -> Result<SinkPromptResult, io::Error> {
-    // If prefill has a valid sink, use it directly.
+    // If prefill has a valid sink, use it directly — but handle sinks that
+    // need extra fields by populating them from prefill or falling through to
+    // interactive prompts for just those fields.
     if let Some(ref val) = prefill.sink {
         if ALL_SINKS.contains(&val.as_str()) {
             let sink = val.clone();
-            let extra = BTreeMap::new();
             let endpoint = prefill.endpoint.clone();
+            let mut extra = BTreeMap::new();
+
+            match sink.as_str() {
+                "kafka" => {
+                    let brokers = if let Some(ref b) = prefill.kafka_brokers {
+                        b.clone()
+                    } else {
+                        Input::with_theme(theme)
+                            .with_prompt("Kafka broker(s) (host:port)")
+                            .default("localhost:9092".to_string())
+                            .interact_text()?
+                    };
+                    let topic = if let Some(ref t) = prefill.kafka_topic {
+                        t.clone()
+                    } else {
+                        Input::with_theme(theme)
+                            .with_prompt("Kafka topic")
+                            .default("sonda-events".to_string())
+                            .interact_text()?
+                    };
+                    extra.insert("brokers".to_string(), brokers);
+                    extra.insert("topic".to_string(), topic);
+                }
+                "otlp_grpc" => {
+                    if let Some(ref st) = prefill.otlp_signal_type {
+                        extra.insert("signal_type".to_string(), st.clone());
+                    } else {
+                        let signal_items = &["metrics", "logs"];
+                        let signal_idx = Select::with_theme(theme)
+                            .with_prompt("OTLP signal type")
+                            .items(signal_items)
+                            .default(0)
+                            .interact()?;
+                        extra.insert(
+                            "signal_type".to_string(),
+                            signal_items[signal_idx].to_string(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+
             return Ok((sink, endpoint, extra));
         }
         print_invalid_prefill("sink", val, ALL_SINKS);
@@ -1265,6 +1471,11 @@ mod tests {
         assert!(pf.sink.is_none());
         assert!(pf.endpoint.is_none());
         assert!(pf.labels.is_empty());
+        assert!(pf.message_template.is_none());
+        assert!(pf.severity.is_none());
+        assert!(pf.kafka_brokers.is_none());
+        assert!(pf.kafka_topic.is_none());
+        assert!(pf.otlp_signal_type.is_none());
     }
 
     #[test]
@@ -1324,5 +1535,127 @@ mod tests {
                 "log encoder '{e}' must be in ALL_ENCODERS"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // default_situation_params: returns correct defaults for each alias
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_situation_params_steady_has_three_params() {
+        let params = default_situation_params("steady");
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].0, "center");
+        assert_eq!(params[1].0, "amplitude");
+        assert_eq!(params[2].0, "period");
+    }
+
+    #[test]
+    fn default_situation_params_spike_event_has_four_params() {
+        let params = default_situation_params("spike_event");
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0].0, "baseline");
+        assert_eq!(params[1].0, "spike_height");
+        assert_eq!(params[2].0, "spike_duration");
+        assert_eq!(params[3].0, "spike_interval");
+    }
+
+    #[test]
+    fn default_situation_params_flap_has_four_params() {
+        let params = default_situation_params("flap");
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0].0, "up_value");
+        assert_eq!(params[1].0, "down_value");
+        assert_eq!(params[2].0, "up_duration");
+        assert_eq!(params[3].0, "down_duration");
+    }
+
+    #[test]
+    fn default_situation_params_leak_has_three_params() {
+        let params = default_situation_params("leak");
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].0, "baseline");
+        assert_eq!(params[1].0, "ceiling");
+        assert_eq!(params[2].0, "time_to_ceiling");
+    }
+
+    #[test]
+    fn default_situation_params_saturation_has_three_params() {
+        let params = default_situation_params("saturation");
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0].0, "baseline");
+        assert_eq!(params[1].0, "ceiling");
+        assert_eq!(params[2].0, "time_to_saturate");
+    }
+
+    #[test]
+    fn default_situation_params_degradation_has_four_params() {
+        let params = default_situation_params("degradation");
+        assert_eq!(params.len(), 4);
+        assert_eq!(params[0].0, "baseline");
+        assert_eq!(params[1].0, "ceiling");
+        assert_eq!(params[2].0, "time_to_degrade");
+        assert_eq!(params[3].0, "noise");
+    }
+
+    #[test]
+    fn default_situation_params_unknown_returns_empty() {
+        let params = default_situation_params("nonexistent");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn default_situation_params_covers_all_situations() {
+        // Every known situation must produce a non-empty params list.
+        for &sit in SITUATIONS {
+            let params = default_situation_params(sit);
+            assert!(
+                !params.is_empty(),
+                "default_situation_params({sit}) must return non-empty"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // severity_preset_weights: preset name → weights mapping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn severity_preset_mostly_info_returns_three_weights() {
+        let weights = severity_preset_weights("mostly_info").expect("should be valid");
+        assert_eq!(weights.len(), 3);
+        assert_eq!(weights[0].0, "info");
+    }
+
+    #[test]
+    fn severity_preset_balanced_returns_four_weights() {
+        let weights = severity_preset_weights("balanced").expect("should be valid");
+        assert_eq!(weights.len(), 4);
+    }
+
+    #[test]
+    fn severity_preset_error_heavy_returns_three_weights() {
+        let weights = severity_preset_weights("error_heavy").expect("should be valid");
+        assert_eq!(weights.len(), 3);
+        assert_eq!(weights[0].0, "error");
+    }
+
+    #[test]
+    fn severity_preset_invalid_returns_none() {
+        assert!(severity_preset_weights("unknown_preset").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Prefill: new fields default to None
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prefill_default_has_new_fields_none() {
+        let pf = Prefill::default();
+        assert!(pf.message_template.is_none());
+        assert!(pf.severity.is_none());
+        assert!(pf.kafka_brokers.is_none());
+        assert!(pf.kafka_topic.is_none());
+        assert!(pf.otlp_signal_type.is_none());
     }
 }
