@@ -18,6 +18,7 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics (gauge, histogram, summary), logs (template and replay modes) |
 | **CSV import** | Analyze CSV files, detect time-series patterns (steady, spike, leak, flap, sawtooth, step), generate portable scenario YAML |
+| **Interactive scaffolding** | `sonda init` guided wizard -- operational vocabulary, metric pack support, commented YAML output |
 | **Built-in scenarios** | 11 curated patterns (cpu-spike, memory-leak, interface-flap, log-storm, and more) |
 | **Metric packs** | 3 reusable metric bundles (telegraf-snmp-interface, node-exporter-cpu, node-exporter-memory) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
@@ -145,6 +146,38 @@ flap, and step.
 
 See the [CSV Import](https://davidban77.github.io/sonda/guides/csv-import/) guide for the
 full walkthrough.
+
+## Interactive scaffolding
+
+Don't want to write YAML by hand? `sonda init` walks you through building a scenario with
+guided prompts. It uses operational vocabulary -- "spike event", "leak", "flap" -- instead
+of raw generator types, and supports metric packs for multi-metric scenarios:
+
+```bash
+sonda init
+```
+
+```text
+? What type of signal? metrics
+? What domain? infrastructure
+? How would you like to define metrics? Single metric
+? Metric name node_cpu_usage_percent
+? What situation should this metric simulate? spike_event - baseline with periodic spikes
+? Baseline value (between spikes) 35
+? Spike height 60
+? Events per second (rate) 1
+? Duration 60s
+? Output encoding format prometheus_text
+? Where should output be sent? stdout
+? Output file path ./scenarios/node-cpu-usage-percent.yaml
+
+done: Scenario written to ./scenarios/node-cpu-usage-percent.yaml
+```
+
+The generated YAML is commented, immediately runnable, and includes scenario metadata so it
+appears in `sonda scenarios list`. See the
+[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-init) for
+the full prompt flow and available situations.
 
 ## Documentation
 

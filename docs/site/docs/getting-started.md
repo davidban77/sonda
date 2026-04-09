@@ -201,8 +201,11 @@ The [Tutorial](guides/tutorial.md#sinks) covers all sink types in detail.
 You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every generator,
 encoder, sink, and advanced feature step by step.
 
-Don't want to write YAML yet? Try the **[Built-in Scenarios](guides/scenarios.md)** -- 11
-curated patterns you can run instantly with `sonda scenarios run cpu-spike`. Or explore
+Don't want to write YAML by hand? Run **`sonda init`** -- an interactive wizard that walks
+you through building a scenario step by step and writes the YAML for you (see
+[CLI Reference](configuration/cli-reference.md#sonda-init)). Or try the
+**[Built-in Scenarios](guides/scenarios.md)** -- 11 curated patterns you can run instantly
+with `sonda scenarios run cpu-spike`. Explore
 **[Metric Packs](guides/metric-packs.md)** -- pre-built metric bundles for Telegraf SNMP
 and node_exporter that match real-world schemas. Have existing CSV data?
 **[CSV Import](guides/csv-import.md)** analyzes it, detects patterns, and generates a

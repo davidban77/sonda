@@ -1,8 +1,8 @@
 # CLI Reference
 
 Sonda provides subcommands for generating metrics, logs, histograms, and summaries, running
-multi-scenario files, browsing a library of built-in scenario patterns, and importing CSV data
-into parameterized scenarios.
+multi-scenario files, browsing a library of built-in scenario patterns, importing CSV data
+into parameterized scenarios, and interactively scaffolding new scenario files.
 
 ## Global options
 
@@ -932,6 +932,86 @@ sonda import data.csv --columns 1,3,5 -o scenario.yaml
     `--run` integrates with global flags. Use `sonda --dry-run import data.csv --run` to
     validate the generated scenario without emitting events, or `sonda --verbose import data.csv --run`
     to see the resolved config at startup.
+
+## sonda init
+
+Interactively create a new scenario YAML file. `sonda init` walks you through a guided
+prompt flow -- signal type, domain, situation, parameters, labels, encoding, and sink -- and
+writes a commented, immediately-runnable YAML file.
+
+```bash
+sonda init
+```
+
+The command has no required flags. It uses interactive terminal prompts with sensible
+defaults for every question -- press Enter to accept the default and move on.
+
+### Interactive flow
+
+| Step | Prompt | Options |
+|------|--------|---------|
+| 1 | Signal type | `metrics`, `logs` |
+| 2 | Domain | `infrastructure`, `network`, `application`, `custom` |
+| 3 | Approach (metrics only) | Single metric, or use a [metric pack](../guides/metric-packs.md) |
+| 4a | Metric details (single) | Name, situation, situation parameters, labels |
+| 4b | Pack details | Pack selection, fill in required shared labels, extra labels |
+| 4c | Log details | Name, message template, severity distribution, labels |
+| 5 | Delivery | Rate, duration, encoder, sink (and endpoint if applicable) |
+| 6 | Output path | Defaults to `./scenarios/<name>.yaml` |
+
+### Situations (operational vocabulary)
+
+Instead of asking for raw generator types, `sonda init` presents operational situations
+that map to generator configurations under the hood:
+
+| Situation | What it models | Key parameters |
+|-----------|---------------|----------------|
+| `steady` | Stable value with gentle oscillation and noise | center, amplitude, period |
+| `spike_event` | Baseline with periodic spikes (anomaly testing) | baseline, spike height, spike duration, spike interval |
+| `flap` | Value toggling between two states (up/down) | up value, down value, up duration, down duration |
+| `leak` | Gradual climb to a ceiling (memory leak) | baseline, ceiling, time to ceiling |
+| `saturation` | Repeating fill-and-reset cycles | baseline, ceiling, time to saturate |
+| `degradation` | Slow ramp with increasing noise | baseline, ceiling, time to degrade, noise |
+
+### Example session
+
+```text
+sonda init — guided scenario scaffolding
+
+Answer the questions below to generate a runnable scenario YAML.
+Every prompt has a default — press Enter to accept it.
+
+? What type of signal? metrics
+? What domain? infrastructure
+? How would you like to define metrics? Single metric
+? Metric name node_cpu_usage_percent
+? What situation should this metric simulate? spike_event - baseline with periodic spikes
+? Baseline value (between spikes) 35
+? Spike height (amount added during spike) 60
+? Spike duration 10s
+? Spike interval (time between spikes) 30s
+? Add a label (key=value, empty to finish) instance=web-01
+? Add a label (key=value, empty to finish)
+? Events per second (rate) 1
+? Duration (e.g., 30s, 5m, 1h) 60s
+? Output encoding format prometheus_text
+? Where should output be sent? stdout
+? Output file path ./scenarios/node-cpu-usage-percent.yaml
+
+done: Scenario written to ./scenarios/node-cpu-usage-percent.yaml
+
+  Run it with:
+    sonda metrics --scenario ./scenarios/node-cpu-usage-percent.yaml
+    sonda run --scenario ./scenarios/node-cpu-usage-percent.yaml
+```
+
+The generated YAML includes inline comments and scenario metadata, so it appears in
+`sonda scenarios list` automatically.
+
+!!! tip
+    When metric packs are available on the [pack search path](#sonda-packs), `sonda init` offers
+    a "Use a metric pack" option that expands a pack into a multi-metric scenario. It prompts
+    you to fill in any required shared labels defined by the pack.
 
 ## Precedence rules
 
