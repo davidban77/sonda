@@ -909,17 +909,65 @@ pub struct ImportArgs {
 
 /// Arguments for the `init` subcommand.
 ///
-/// Currently all arguments are reserved for future non-interactive mode.
-/// The struct is intentionally designed with optional fields so that
-/// `--domain`, `--situation`, etc. can be added later without restructuring.
+/// All flags are optional. When a flag is provided its value is used directly,
+/// skipping the corresponding interactive prompt. When ALL required flags are
+/// supplied, `sonda init` runs fully non-interactively.
+///
+/// The `--from` flag pre-fills values from a built-in scenario (`@name`) or a
+/// CSV file (`path.csv`). Explicit flags override `--from` values.
 #[derive(Debug, Args)]
 pub struct InitArgs {
-    // No flags for now. The interactive flow drives everything.
-    // Future non-interactive flags will go here:
-    //   --domain <domain>
-    //   --situation <alias>
-    //   --signal-type <metrics|logs>
-    //   --output <path>
+    /// Start from a built-in scenario (@name) or CSV file (path.csv).
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Signal type: metrics or logs.
+    #[arg(long)]
+    pub signal_type: Option<String>,
+
+    /// Domain category (infrastructure, network, application, custom).
+    #[arg(long)]
+    pub domain: Option<String>,
+
+    /// Operational situation/pattern (steady, spike_event, flap, leak, saturation, degradation).
+    #[arg(long)]
+    pub situation: Option<String>,
+
+    /// Metric name.
+    #[arg(long)]
+    pub metric: Option<String>,
+
+    /// Use a metric pack instead of single metric.
+    #[arg(long)]
+    pub pack: Option<String>,
+
+    /// Events per second.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Duration (e.g., 60s, 5m).
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Encoder format (prometheus_text, influx_lp, json_lines, syslog).
+    #[arg(long)]
+    pub encoder: Option<String>,
+
+    /// Sink type (stdout, http_push, file, remote_write, loki, otlp_grpc, kafka, tcp, udp).
+    #[arg(long)]
+    pub sink: Option<String>,
+
+    /// Sink endpoint (URL, file path, or host:port).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+
+    /// Output file path for the generated YAML.
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Static labels (key=value), can be repeated.
+    #[arg(long = "label", value_name = "KEY=VALUE")]
+    pub labels: Vec<String>,
 }
 
 /// Build clap help styling for the CLI.
@@ -1682,5 +1730,119 @@ mod tests {
             Some(std::path::PathBuf::from("/custom/packs"))
         );
         assert!(matches!(cli.command, Commands::Init(_)));
+    }
+
+    #[test]
+    fn cli_init_from_builtin_scenario() {
+        let cli =
+            Cli::try_parse_from(["sonda", "init", "--from", "@cpu-spike"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.from.as_deref(), Some("@cpu-spike"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_from_csv_file() {
+        let cli =
+            Cli::try_parse_from(["sonda", "init", "--from", "data.csv"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.from.as_deref(), Some("data.csv"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_all_flags() {
+        let cli = Cli::try_parse_from([
+            "sonda",
+            "init",
+            "--signal-type",
+            "metrics",
+            "--domain",
+            "network",
+            "--situation",
+            "flap",
+            "--metric",
+            "bgp_state",
+            "--rate",
+            "2.5",
+            "--duration",
+            "5m",
+            "--encoder",
+            "prometheus_text",
+            "--sink",
+            "stdout",
+            "--endpoint",
+            "http://localhost:9090",
+            "-o",
+            "output.yaml",
+            "--label",
+            "env=prod",
+            "--label",
+            "dc=us-east",
+        ])
+        .expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.signal_type.as_deref(), Some("metrics"));
+            assert_eq!(args.domain.as_deref(), Some("network"));
+            assert_eq!(args.situation.as_deref(), Some("flap"));
+            assert_eq!(args.metric.as_deref(), Some("bgp_state"));
+            assert_eq!(args.rate, Some(2.5));
+            assert_eq!(args.duration.as_deref(), Some("5m"));
+            assert_eq!(args.encoder.as_deref(), Some("prometheus_text"));
+            assert_eq!(args.sink.as_deref(), Some("stdout"));
+            assert_eq!(args.endpoint.as_deref(), Some("http://localhost:9090"));
+            assert_eq!(args.output.as_deref(), Some("output.yaml"));
+            assert_eq!(args.labels, vec!["env=prod", "dc=us-east"]);
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_pack_flag() {
+        let cli = Cli::try_parse_from(["sonda", "init", "--pack", "telegraf_snmp"])
+            .expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.pack.as_deref(), Some("telegraf_snmp"));
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_no_flags_defaults_to_none() {
+        let cli = Cli::try_parse_from(["sonda", "init"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert!(args.from.is_none());
+            assert!(args.signal_type.is_none());
+            assert!(args.domain.is_none());
+            assert!(args.situation.is_none());
+            assert!(args.metric.is_none());
+            assert!(args.pack.is_none());
+            assert!(args.rate.is_none());
+            assert!(args.duration.is_none());
+            assert!(args.encoder.is_none());
+            assert!(args.sink.is_none());
+            assert!(args.endpoint.is_none());
+            assert!(args.output.is_none());
+            assert!(args.labels.is_empty());
+        } else {
+            panic!("expected Init command");
+        }
+    }
+
+    #[test]
+    fn cli_init_output_short_flag() {
+        let cli =
+            Cli::try_parse_from(["sonda", "init", "-o", "my-scenario.yaml"]).expect("should parse");
+        if let Commands::Init(ref args) = cli.command {
+            assert_eq!(args.output.as_deref(), Some("my-scenario.yaml"));
+        } else {
+            panic!("expected Init command");
+        }
     }
 }

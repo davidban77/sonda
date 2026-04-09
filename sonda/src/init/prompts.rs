@@ -16,6 +16,10 @@
 //!   loki, otlp_grpc, kafka, tcp, udp) behind an "Advanced..." option.
 //! - **Run-now prompt**: after writing the scenario file, asks the user whether
 //!   to execute the scenario immediately.
+//! - **Prefill support**: when CLI flags or `--from` supply values, each prompt
+//!   checks its [`Prefill`] field and uses the value directly when present,
+//!   skipping the interactive prompt. Invalid prefill values fall through to
+//!   the interactive prompt with a warning.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -30,6 +34,63 @@ use super::yaml_gen::{
     required_encoder_for_sink, DeliveryAnswers, LogAnswers, MetricAnswers, PackAnswers, ParamValue,
     ScenarioKind,
 };
+
+/// Optional pre-filled values for the init prompts.
+///
+/// When a field is `Some`, it serves as the answer for the corresponding
+/// prompt, skipping the interactive question entirely. When a field is `None`,
+/// the prompt runs interactively as usual.
+///
+/// CLI flags and `--from` data are merged into a single `Prefill` before
+/// prompts begin. Explicit CLI flags take precedence over `--from` values.
+#[derive(Debug, Default, Clone)]
+pub struct Prefill {
+    /// Signal type: `"metrics"` or `"logs"`.
+    pub signal_type: Option<String>,
+    /// Domain category (infrastructure, network, application, custom).
+    pub domain: Option<String>,
+    /// Operational situation/pattern alias.
+    pub situation: Option<String>,
+    /// Metric name (or log scenario name).
+    pub metric: Option<String>,
+    /// Metric pack name (mutually exclusive with `metric` + `situation`).
+    pub pack: Option<String>,
+    /// Events per second.
+    pub rate: Option<f64>,
+    /// Scenario duration string (e.g. `"60s"`, `"5m"`).
+    pub duration: Option<String>,
+    /// Encoder format name.
+    pub encoder: Option<String>,
+    /// Sink type name.
+    pub sink: Option<String>,
+    /// Sink endpoint (URL, file path, or host:port).
+    pub endpoint: Option<String>,
+    /// Static labels to attach to every event.
+    pub labels: BTreeMap<String, String>,
+}
+
+/// All valid sink type names (primary + advanced), used for prefill validation.
+const ALL_SINKS: &[&str] = &[
+    "stdout",
+    "http_push",
+    "file",
+    "remote_write",
+    "loki",
+    "otlp_grpc",
+    "kafka",
+    "tcp",
+    "udp",
+];
+
+/// All valid encoder names (metric + log), used for prefill validation.
+const ALL_ENCODERS: &[&str] = &[
+    "prometheus_text",
+    "influx_lp",
+    "json_lines",
+    "syslog",
+    "remote_write",
+    "otlp",
+];
 
 /// Available operational vocabulary aliases for metric scenarios.
 ///
@@ -127,30 +188,43 @@ pub fn print_section(step: usize, total: usize, title: &str) {
 
 /// Run the full interactive prompt flow and return the collected answers.
 ///
+/// Pre-filled values in `prefill` skip their corresponding prompts. When a
+/// prefill value is invalid for its prompt (e.g., an unknown domain), a
+/// warning is printed and the prompt falls through to interactive mode.
+///
 /// # Errors
 ///
 /// Returns an I/O error if terminal interaction fails (e.g., stdin is not a TTY).
 pub fn run_prompts(
     pack_catalog: &PackCatalog,
+    prefill: &Prefill,
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
     let theme = ColorfulTheme::default();
 
     // Section 1: Signal.
     print_section(1, 4, "Signal");
 
-    let signal_type = prompt_signal_type(&theme)?;
-    let domain = prompt_domain(&theme)?;
+    let signal_type = prompt_signal_type(&theme, prefill)?;
+    let domain = prompt_domain(&theme, prefill)?;
 
     match signal_type.as_str() {
-        "metrics" => run_metrics_prompts(&theme, &domain, pack_catalog),
-        "logs" => run_logs_prompts(&theme, &domain),
+        "metrics" => run_metrics_prompts(&theme, &domain, pack_catalog, prefill),
+        "logs" => run_logs_prompts(&theme, &domain, prefill),
         _ => unreachable!("signal type is constrained by prompt"),
     }
 }
 
 /// Prompt for signal type: metrics or logs.
-fn prompt_signal_type(theme: &ColorfulTheme) -> Result<String, io::Error> {
+///
+/// When `prefill.signal_type` is a valid value, returns it without prompting.
+fn prompt_signal_type(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
     let items = &["metrics", "logs"];
+    if let Some(ref val) = prefill.signal_type {
+        if items.contains(&val.as_str()) {
+            return Ok(val.clone());
+        }
+        print_invalid_prefill("signal_type", val, items);
+    }
     let selection = Select::with_theme(theme)
         .with_prompt("What type of signal?")
         .items(items)
@@ -160,7 +234,15 @@ fn prompt_signal_type(theme: &ColorfulTheme) -> Result<String, io::Error> {
 }
 
 /// Prompt for domain category.
-fn prompt_domain(theme: &ColorfulTheme) -> Result<String, io::Error> {
+///
+/// When `prefill.domain` is a valid value, returns it without prompting.
+fn prompt_domain(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
+    if let Some(ref val) = prefill.domain {
+        if DOMAINS.contains(&val.as_str()) {
+            return Ok(val.clone());
+        }
+        print_invalid_prefill("domain", val, DOMAINS);
+    }
     let selection = Select::with_theme(theme)
         .with_prompt("What domain?")
         .items(DOMAINS)
@@ -174,13 +256,20 @@ fn run_metrics_prompts(
     theme: &ColorfulTheme,
     domain: &str,
     pack_catalog: &PackCatalog,
+    prefill: &Prefill,
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
     let available_packs = pack_catalog.list();
 
     // Section 2: Metric.
     print_section(2, 4, "Metric");
 
-    let kind = if !available_packs.is_empty() {
+    // If prefill has a pack name, go directly to pack flow.
+    let kind = if prefill.pack.is_some() {
+        prompt_pack(theme, pack_catalog, domain, prefill)?
+    } else if !available_packs.is_empty() && prefill.metric.is_none() && prefill.situation.is_none()
+    {
+        // Only ask the approach question when packs are available and neither
+        // metric name nor situation has been pre-filled.
         let approach_items = &["Single metric", "Use a metric pack"];
         let approach = Select::with_theme(theme)
             .with_prompt("How would you like to define metrics?")
@@ -189,21 +278,21 @@ fn run_metrics_prompts(
             .interact()?;
 
         match approach {
-            0 => prompt_single_metric(theme)?,
-            1 => prompt_pack(theme, pack_catalog, domain)?,
+            0 => prompt_single_metric(theme, prefill)?,
+            1 => prompt_pack(theme, pack_catalog, domain, prefill)?,
             _ => unreachable!(),
         }
     } else {
-        prompt_single_metric(theme)?
+        prompt_single_metric(theme, prefill)?
     };
 
     // Section 3: Delivery.
     print_section(3, 4, "Delivery");
 
-    let rate = prompt_rate(theme)?;
-    let duration = prompt_duration(theme)?;
-    let encoder = prompt_encoder(theme, METRIC_ENCODERS)?;
-    let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
+    let rate = prompt_rate(theme, prefill)?;
+    let duration = prompt_duration(theme, prefill)?;
+    let encoder = prompt_encoder(theme, METRIC_ENCODERS, prefill)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme, prefill)?;
 
     // Enforce encoder/sink pairing: some sinks require a specific encoder.
     let encoder = enforce_encoder_for_sink(encoder, &sink);
@@ -225,14 +314,19 @@ fn run_metrics_prompts(
 fn run_logs_prompts(
     theme: &ColorfulTheme,
     domain: &str,
+    prefill: &Prefill,
 ) -> Result<(ScenarioKind, DeliveryAnswers), io::Error> {
     // Section 2: Log.
     print_section(2, 4, "Log");
 
-    let name: String = Input::with_theme(theme)
-        .with_prompt("Log scenario name")
-        .default("app_logs".to_string())
-        .interact_text()?;
+    let name = if let Some(ref val) = prefill.metric {
+        val.clone()
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Log scenario name")
+            .default("app_logs".to_string())
+            .interact_text()?
+    };
 
     // Message template.
     let message_template: String = Input::with_theme(theme)
@@ -271,16 +365,19 @@ fn run_logs_prompts(
         _ => unreachable!(),
     };
 
-    // Labels.
-    let labels = prompt_labels(theme)?;
+    // Merge prefill labels with interactive labels.
+    let mut labels = prefill.labels.clone();
+    if labels.is_empty() {
+        labels = prompt_labels(theme)?;
+    }
 
     // Section 3: Delivery.
     print_section(3, 4, "Delivery");
 
-    let rate = prompt_rate(theme)?;
-    let duration = prompt_duration(theme)?;
-    let encoder = prompt_encoder(theme, LOG_ENCODERS)?;
-    let (sink, endpoint, sink_extra) = prompt_sink(theme)?;
+    let rate = prompt_rate(theme, prefill)?;
+    let duration = prompt_duration(theme, prefill)?;
+    let encoder = prompt_encoder(theme, LOG_ENCODERS, prefill)?;
+    let (sink, endpoint, sink_extra) = prompt_sink(theme, prefill)?;
 
     // Enforce encoder/sink pairing: some sinks require a specific encoder.
     let encoder = enforce_encoder_for_sink(encoder, &sink);
@@ -306,26 +403,31 @@ fn run_logs_prompts(
 }
 
 /// Prompt for a single metric: name, situation, parameters, labels.
-fn prompt_single_metric(theme: &ColorfulTheme) -> Result<ScenarioKind, io::Error> {
+fn prompt_single_metric(
+    theme: &ColorfulTheme,
+    prefill: &Prefill,
+) -> Result<ScenarioKind, io::Error> {
     // Metric name.
-    let name: String = Input::with_theme(theme)
-        .with_prompt("Metric name")
-        .default("my_metric".to_string())
-        .interact_text()?;
+    let name = if let Some(ref val) = prefill.metric {
+        val.clone()
+    } else {
+        Input::with_theme(theme)
+            .with_prompt("Metric name")
+            .default("my_metric".to_string())
+            .interact_text()?
+    };
 
     // Situation (operational vocabulary).
-    let situation_idx = Select::with_theme(theme)
-        .with_prompt("What situation should this metric simulate?")
-        .items(SITUATION_DESCRIPTIONS)
-        .default(0)
-        .interact()?;
-    let situation = SITUATIONS[situation_idx].to_string();
+    let situation = prompt_situation(theme, prefill)?;
 
     // Situation-specific parameters.
     let situation_params = prompt_situation_params(theme, &situation)?;
 
-    // Labels.
-    let labels = prompt_labels(theme)?;
+    // Merge prefill labels with interactive labels.
+    let mut labels = prefill.labels.clone();
+    if labels.is_empty() {
+        labels = prompt_labels(theme)?;
+    }
 
     Ok(ScenarioKind::SingleMetric(MetricAnswers {
         name,
@@ -335,20 +437,104 @@ fn prompt_single_metric(theme: &ColorfulTheme) -> Result<ScenarioKind, io::Error
     }))
 }
 
+/// Prompt for an operational situation alias.
+///
+/// When `prefill.situation` is a valid alias, returns it without prompting.
+fn prompt_situation(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
+    if let Some(ref val) = prefill.situation {
+        if SITUATIONS.contains(&val.as_str()) {
+            return Ok(val.clone());
+        }
+        print_invalid_prefill("situation", val, SITUATIONS);
+    }
+    let situation_idx = Select::with_theme(theme)
+        .with_prompt("What situation should this metric simulate?")
+        .items(SITUATION_DESCRIPTIONS)
+        .default(0)
+        .interact()?;
+    Ok(SITUATIONS[situation_idx].to_string())
+}
+
 /// Prompt for pack selection and pack-specific labels.
 ///
 /// Filters the pack list to show only packs whose `category` matches the
 /// selected domain. If no packs match the domain, falls back to showing all
 /// packs so the user is never dead-ended.
+///
+/// When `prefill.pack` names a pack that exists in the catalog, its
+/// interactive prompt is skipped.
 fn prompt_pack(
     theme: &ColorfulTheme,
     catalog: &PackCatalog,
     domain: &str,
+    prefill: &Prefill,
 ) -> Result<ScenarioKind, io::Error> {
+    // If prefill has a pack name, validate it exists in the catalog.
+    let pack_name = if let Some(ref prefill_pack) = prefill.pack {
+        if catalog.find(prefill_pack).is_some() {
+            prefill_pack.clone()
+        } else {
+            let warning = format!(
+                "Pack '{}' not found in catalog, falling through to prompt.",
+                prefill_pack
+            );
+            eprintln!("  {}", warning.if_supports_color(Stderr, |t| t.dimmed()));
+            prompt_pack_interactive(theme, catalog, domain)?
+        }
+    } else {
+        prompt_pack_interactive(theme, catalog, domain)?
+    };
+
+    // Read the pack YAML to find shared_labels with empty values.
+    let mut labels = prefill.labels.clone();
+
+    if let Some(Ok(yaml_content)) = catalog.read_yaml(&pack_name) {
+        // Parse shared_labels to find required values.
+        if let Ok(pack_def) =
+            serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&yaml_content)
+        {
+            if let Some(shared_labels) = &pack_def.shared_labels {
+                for (key, value) in shared_labels {
+                    // Skip keys already provided via prefill.
+                    if labels.contains_key(key) {
+                        continue;
+                    }
+                    if value.is_empty() {
+                        // Prompt the user for this label value.
+                        let label_value: String = Input::with_theme(theme)
+                            .with_prompt(format!("Value for label '{key}'"))
+                            .default(format!("my-{key}"))
+                            .interact_text()?;
+                        labels.insert(key.clone(), label_value);
+                    } else {
+                        // Carry forward the default value from the pack.
+                        labels.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Ask for any additional labels (skip if we already have prefilled labels).
+    if prefill.labels.is_empty() {
+        let extra_labels = prompt_labels(theme)?;
+        for (k, v) in extra_labels {
+            labels.insert(k, v);
+        }
+    }
+
+    Ok(ScenarioKind::Pack(PackAnswers { pack_name, labels }))
+}
+
+/// Interactive pack selection prompt (extracted for prefill fallthrough).
+fn prompt_pack_interactive(
+    theme: &ColorfulTheme,
+    catalog: &PackCatalog,
+    domain: &str,
+) -> Result<String, io::Error> {
     let domain_packs = catalog.list_by_category(domain);
 
     let packs_to_show = if domain_packs.is_empty() {
-        // Fallback: show all packs when none match the domain.
         eprintln!(
             "  {}",
             format!("No packs found for domain \"{domain}\", showing all packs.")
@@ -380,41 +566,7 @@ fn prompt_pack(
         .interact()?;
 
     let selected_pack = packs_to_show[pack_idx];
-    let pack_name = selected_pack.name.clone();
-
-    // Read the pack YAML to find shared_labels with empty values.
-    let mut labels = BTreeMap::new();
-
-    if let Some(Ok(yaml_content)) = catalog.read_yaml(&pack_name) {
-        // Parse shared_labels to find required values.
-        if let Ok(pack_def) =
-            serde_yaml_ng::from_str::<sonda_core::packs::MetricPackDef>(&yaml_content)
-        {
-            if let Some(shared_labels) = &pack_def.shared_labels {
-                for (key, value) in shared_labels {
-                    if value.is_empty() {
-                        // Prompt the user for this label value.
-                        let label_value: String = Input::with_theme(theme)
-                            .with_prompt(format!("Value for label '{key}'"))
-                            .default(format!("my-{key}"))
-                            .interact_text()?;
-                        labels.insert(key.clone(), label_value);
-                    } else {
-                        // Carry forward the default value from the pack.
-                        labels.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Ask for any additional labels.
-    let extra_labels = prompt_labels(theme)?;
-    for (k, v) in extra_labels {
-        labels.insert(k, v);
-    }
-
-    Ok(ScenarioKind::Pack(PackAnswers { pack_name, labels }))
+    Ok(selected_pack.name.clone())
 }
 
 /// Prompt for situation-specific parameters with sensible defaults.
@@ -622,7 +774,12 @@ fn format_label_summary(labels: &BTreeMap<String, String>) -> String {
 }
 
 /// Prompt for events-per-second rate.
-fn prompt_rate(theme: &ColorfulTheme) -> Result<f64, io::Error> {
+///
+/// When `prefill.rate` is set, returns it without prompting.
+fn prompt_rate(theme: &ColorfulTheme, prefill: &Prefill) -> Result<f64, io::Error> {
+    if let Some(val) = prefill.rate {
+        return Ok(val);
+    }
     let rate: f64 = Input::with_theme(theme)
         .with_prompt("Events per second (rate)")
         .default(1.0)
@@ -631,7 +788,12 @@ fn prompt_rate(theme: &ColorfulTheme) -> Result<f64, io::Error> {
 }
 
 /// Prompt for scenario duration.
-fn prompt_duration(theme: &ColorfulTheme) -> Result<String, io::Error> {
+///
+/// When `prefill.duration` is set, returns it without prompting.
+fn prompt_duration(theme: &ColorfulTheme, prefill: &Prefill) -> Result<String, io::Error> {
+    if let Some(ref val) = prefill.duration {
+        return Ok(val.clone());
+    }
     let duration: String = Input::with_theme(theme)
         .with_prompt("Duration (e.g., 30s, 5m, 1h)")
         .default("60s".to_string())
@@ -640,7 +802,22 @@ fn prompt_duration(theme: &ColorfulTheme) -> Result<String, io::Error> {
 }
 
 /// Prompt for encoder format.
-fn prompt_encoder(theme: &ColorfulTheme, options: &[&str]) -> Result<String, io::Error> {
+///
+/// When `prefill.encoder` is a valid encoder name, returns it without
+/// prompting. The value is validated against [`ALL_ENCODERS`], not just the
+/// provided `options` slice, because the encoder may be overridden later by
+/// sink constraints (e.g., `remote_write`, `otlp`).
+fn prompt_encoder(
+    theme: &ColorfulTheme,
+    options: &[&str],
+    prefill: &Prefill,
+) -> Result<String, io::Error> {
+    if let Some(ref val) = prefill.encoder {
+        if ALL_ENCODERS.contains(&val.as_str()) {
+            return Ok(val.clone());
+        }
+        print_invalid_prefill("encoder", val, ALL_ENCODERS);
+    }
     let selection = Select::with_theme(theme)
         .with_prompt("Output encoding format")
         .items(options)
@@ -653,7 +830,22 @@ fn prompt_encoder(theme: &ColorfulTheme, options: &[&str]) -> Result<String, io:
 ///
 /// Returns `(sink_type, endpoint, extra_fields)` where `extra_fields` carries
 /// additional sink-specific configuration (e.g., kafka topic).
-fn prompt_sink(theme: &ColorfulTheme) -> Result<SinkPromptResult, io::Error> {
+///
+/// When `prefill.sink` is a valid sink name, skips the sink selection prompt.
+/// When `prefill.endpoint` is set, skips the endpoint prompt for sinks that
+/// require one.
+fn prompt_sink(theme: &ColorfulTheme, prefill: &Prefill) -> Result<SinkPromptResult, io::Error> {
+    // If prefill has a valid sink, use it directly.
+    if let Some(ref val) = prefill.sink {
+        if ALL_SINKS.contains(&val.as_str()) {
+            let sink = val.clone();
+            let extra = BTreeMap::new();
+            let endpoint = prefill.endpoint.clone();
+            return Ok((sink, endpoint, extra));
+        }
+        print_invalid_prefill("sink", val, ALL_SINKS);
+    }
+
     let sink_idx = Select::with_theme(theme)
         .with_prompt("Where should output be sent?")
         .items(SINKS)
@@ -815,6 +1007,18 @@ pub fn prompt_output_path(theme: &ColorfulTheme, suggested: &str) -> Result<Stri
         .default(default_path)
         .interact_text()?;
     Ok(path)
+}
+
+/// Print a dimmed warning when a prefill value is not in the allowed set.
+///
+/// Informs the user that the provided value was ignored and the interactive
+/// prompt will be used instead. Lists the valid options for reference.
+fn print_invalid_prefill(field: &str, value: &str, valid: &[&str]) {
+    let warning = format!(
+        "Invalid --{field} value '{value}', valid options: {}. Falling through to prompt.",
+        valid.join(", ")
+    );
+    eprintln!("  {}", warning.if_supports_color(Stderr, |t| t.dimmed()));
 }
 
 #[cfg(test)]
@@ -1041,5 +1245,84 @@ mod tests {
     fn enforce_encoder_no_op_for_kafka_sink() {
         let result = enforce_encoder_for_sink("json_lines".to_string(), "kafka");
         assert_eq!(result, "json_lines");
+    }
+
+    // -----------------------------------------------------------------------
+    // Prefill struct: defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prefill_default_has_all_none_fields() {
+        let pf = Prefill::default();
+        assert!(pf.signal_type.is_none());
+        assert!(pf.domain.is_none());
+        assert!(pf.situation.is_none());
+        assert!(pf.metric.is_none());
+        assert!(pf.pack.is_none());
+        assert!(pf.rate.is_none());
+        assert!(pf.duration.is_none());
+        assert!(pf.encoder.is_none());
+        assert!(pf.sink.is_none());
+        assert!(pf.endpoint.is_none());
+        assert!(pf.labels.is_empty());
+    }
+
+    #[test]
+    fn prefill_clone_preserves_values() {
+        let mut pf = Prefill::default();
+        pf.signal_type = Some("metrics".to_string());
+        pf.rate = Some(5.0);
+        pf.labels.insert("env".to_string(), "staging".to_string());
+        let clone = pf.clone();
+        assert_eq!(clone.signal_type.as_deref(), Some("metrics"));
+        assert_eq!(clone.rate, Some(5.0));
+        assert_eq!(clone.labels.get("env").map(String::as_str), Some("staging"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Validation constants: ALL_SINKS and ALL_ENCODERS
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn all_sinks_contains_primary_sinks() {
+        for &s in SINKS {
+            if s == "Advanced..." {
+                continue;
+            }
+            assert!(
+                ALL_SINKS.contains(&s),
+                "primary sink '{s}' must be in ALL_SINKS"
+            );
+        }
+    }
+
+    #[test]
+    fn all_sinks_contains_advanced_sinks() {
+        for &s in ADVANCED_SINKS {
+            assert!(
+                ALL_SINKS.contains(&s),
+                "advanced sink '{s}' must be in ALL_SINKS"
+            );
+        }
+    }
+
+    #[test]
+    fn all_encoders_contains_metric_encoders() {
+        for &e in METRIC_ENCODERS {
+            assert!(
+                ALL_ENCODERS.contains(&e),
+                "metric encoder '{e}' must be in ALL_ENCODERS"
+            );
+        }
+    }
+
+    #[test]
+    fn all_encoders_contains_log_encoders() {
+        for &e in LOG_ENCODERS {
+            assert!(
+                ALL_ENCODERS.contains(&e),
+                "log encoder '{e}' must be in ALL_ENCODERS"
+            );
+        }
     }
 }

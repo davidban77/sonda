@@ -52,10 +52,17 @@ src/
 ├── init/
 │   ├── mod.rs          ← `sonda init` subcommand: top-level orchestration (run_init),
 │   │                      InitResult (yaml + run_now flag + InitScenarioType for dispatch),
-│   │                      welcome banner, YAML preview, success summary, run-now prompt
+│   │                      build_prefill() merges --from data with CLI flags into Prefill,
+│   │                      prefill_from_scenario() extracts fields from @name scenario YAML,
+│   │                      prefill_from_csv() detects pattern from CSV and maps to alias,
+│   │                      welcome banner, YAML preview, success summary, run-now prompt,
+│   │                      print_prefill_summary() shows pre-filled values before prompts
 │   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type, domain,
 │   │                      approach (single metric vs pack), situation selection,
 │   │                      situation-specific parameters, labels, rate, duration, encoder, sink.
+│   │                      Prefill struct carries optional pre-filled values for each prompt.
+│   │                      Each prompt fn checks prefill — valid value skips the prompt,
+│   │                      invalid value warns and falls through to interactive.
 │   │                      Two-tier sink menu (primary: stdout/http_push/file; advanced:
 │   │                      remote_write/loki/otlp_grpc/kafka/tcp/udp behind "Advanced...").
 │   │                      Pack domain filtering (list_by_category, fallback to all).
@@ -97,7 +104,7 @@ sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rat
 sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda init
+sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]...
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
@@ -136,6 +143,10 @@ Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and suppor
 with domain-filtered selection. Two-tier sink menu (primary + advanced behind "Advanced...") with
 automatic encoder override for protocol sinks (remote_write, otlp_grpc). After writing the file,
 offers immediate execution via the run-now prompt (dispatched by InitScenarioType).
+Supports non-interactive mode via CLI flags (`--signal-type`, `--domain`, `--situation`, etc.)
+and pre-filling from built-in scenarios (`--from @name`) or CSV files (`--from path.csv`).
+CLI flags override `--from` values. Pre-filled values skip their interactive prompts; missing
+values prompt as usual (partial non-interactive mode).
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
