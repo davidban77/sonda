@@ -63,6 +63,7 @@ nav:
     - Built-in Scenarios: guides/scenarios.md
     - Metric Packs: guides/metric-packs.md
     - Alert Testing: guides/alert-testing.md
+    - CSV Import: guides/csv-import.md
     - Grafana CSV Replay: guides/grafana-csv-replay.md
     - Histogram & Summary Alerts: guides/histogram-alerts.md
     - Alerting Pipeline: guides/alerting-pipeline.md

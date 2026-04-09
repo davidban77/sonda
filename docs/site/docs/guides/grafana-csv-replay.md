@@ -184,3 +184,8 @@ braces.
 
 For the full CSV replay parameter reference, see
 [Generators: csv_replay](../configuration/generators.md#csv_replay).
+
+!!! tip "Want portable scenarios instead of raw replay?"
+    `csv_replay` plays back exact values from the file. If you want to extract the *pattern*
+    from the data and generate a self-contained scenario YAML that does not depend on the
+    original file, use [sonda import](csv-import.md) instead.

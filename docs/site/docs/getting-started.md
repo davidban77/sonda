@@ -204,7 +204,9 @@ encoder, sink, and advanced feature step by step.
 Don't want to write YAML yet? Try the **[Built-in Scenarios](guides/scenarios.md)** -- 11
 curated patterns you can run instantly with `sonda scenarios run cpu-spike`. Or explore
 **[Metric Packs](guides/metric-packs.md)** -- pre-built metric bundles for Telegraf SNMP
-and node_exporter that match real-world schemas.
+and node_exporter that match real-world schemas. Have existing CSV data?
+**[CSV Import](guides/csv-import.md)** analyzes it, detects patterns, and generates a
+portable scenario YAML.
 
 When you need specific details:
 
