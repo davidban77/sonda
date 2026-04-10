@@ -12,6 +12,7 @@ mod packs;
 mod progress;
 mod scenarios;
 mod status;
+mod story;
 mod yaml_helpers;
 
 use std::process;
@@ -168,6 +169,9 @@ fn run() -> anyhow::Result<()> {
                     &running,
                 )?;
             }
+        }
+        Commands::Story(ref args) => {
+            run_story_command(args, &cli, verbosity, &running)?;
         }
     }
 
@@ -590,6 +594,45 @@ fn run_init_scenario(
         run_single_scenario("init".to_string(), p, running, verbosity)?;
     } else {
         launch_and_join_prepared("init", prepared, running, verbosity)?;
+    }
+
+    Ok(())
+}
+
+/// Execute a story file: load, compile, and run all signals.
+fn run_story_command(
+    args: &cli::StoryArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let yaml = story::load_story_yaml(&args.file)?;
+    let config = story::parse_story(&yaml)?;
+    let overrides = story::StoryOverrides {
+        duration: args.duration.clone(),
+        rate: args.rate,
+        sink: args.sink.clone(),
+        endpoint: args.endpoint.clone(),
+        encoder: args.encoder.clone(),
+    };
+    let entries = story::compile_story(&config, &overrides)?;
+
+    let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
+        return Ok(());
+    }
+
+    if prepared.len() == 1 {
+        let p = prepared.into_iter().next().expect("len checked above");
+        run_single_scenario(format!("story-{}", config.story), p, running, verbosity)?;
+    } else {
+        launch_and_join_prepared(
+            &format!("story-{}", config.story),
+            prepared,
+            running,
+            verbosity,
+        )?;
     }
 
     Ok(())

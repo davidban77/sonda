@@ -20,9 +20,10 @@ pub enum ParamValue {
 /// Check if a YAML scalar value needs double-quoting to be parsed correctly.
 ///
 /// Returns `true` for values that a YAML parser would interpret as something
-/// other than a plain string: empty strings, numbers, boolean keywords,
+/// other than a plain string: empty strings, numbers, boolean keywords
+/// (including YAML 1.1 `on`/`off`), values with leading/trailing whitespace,
 /// and values containing characters that are syntactically significant in
-/// YAML (`:`  `#`  `{`  `}`  `"`  `\`).
+/// YAML (`:`  `#`  `{`  `}`  `[`  `]`  `"`  `'`  `\`  newlines).
 pub fn needs_quoting(value: &str) -> bool {
     if value.is_empty() {
         return true;
@@ -30,16 +31,32 @@ pub fn needs_quoting(value: &str) -> bool {
     if value.parse::<f64>().is_ok() {
         return true;
     }
+    // Leading/trailing whitespace changes semantics in YAML flow scalars.
+    if value != value.trim() {
+        return true;
+    }
     let lower = value.to_lowercase();
-    if lower == "true" || lower == "false" || lower == "null" || lower == "yes" || lower == "no" {
+    // Standard YAML booleans plus YAML 1.1 `on`/`off`.
+    if lower == "true"
+        || lower == "false"
+        || lower == "null"
+        || lower == "yes"
+        || lower == "no"
+        || lower == "on"
+        || lower == "off"
+    {
         return true;
     }
     if value.contains(':')
         || value.contains('#')
         || value.contains('{')
         || value.contains('}')
+        || value.contains('[')
+        || value.contains(']')
         || value.contains('"')
+        || value.contains('\'')
         || value.contains('\\')
+        || value.contains('\n')
     {
         return true;
     }
@@ -133,6 +150,37 @@ mod tests {
     #[test]
     fn needs_quoting_backslash() {
         assert!(needs_quoting(r"C:\Users\admin"));
+    }
+
+    #[test]
+    fn needs_quoting_square_brackets() {
+        assert!(needs_quoting("[item]"));
+        assert!(needs_quoting("value]"));
+    }
+
+    #[test]
+    fn needs_quoting_single_quote() {
+        assert!(needs_quoting("it's"));
+    }
+
+    #[test]
+    fn needs_quoting_newline() {
+        assert!(needs_quoting("line1\nline2"));
+    }
+
+    #[test]
+    fn needs_quoting_leading_trailing_whitespace() {
+        assert!(needs_quoting(" leading"));
+        assert!(needs_quoting("trailing "));
+        assert!(needs_quoting("  both  "));
+    }
+
+    #[test]
+    fn needs_quoting_yaml_11_booleans() {
+        assert!(needs_quoting("on"));
+        assert!(needs_quoting("off"));
+        assert!(needs_quoting("On"));
+        assert!(needs_quoting("OFF"));
     }
 
     #[test]

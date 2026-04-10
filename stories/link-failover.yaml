@@ -1,0 +1,54 @@
+# Link Failover Story
+#
+# Models an edge router primary link failure with automatic traffic shift
+# to a backup link. The causal chain:
+#
+#   1. Primary interface flaps down (interface_oper_state < 1)
+#   2. Backup link saturates as traffic shifts (after primary drops)
+#   3. Latency degrades as backup approaches capacity (after backup > 70%)
+#
+# Run with:
+#   sonda story --file stories/link-failover.yaml
+#   sonda story --file stories/link-failover.yaml --dry-run
+#   sonda story --file stories/link-failover.yaml --duration 2m
+
+story: link_failover
+description: "Edge router link failure with traffic shift to backup"
+duration: 5m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+labels:
+  device: rtr-edge-01
+  job: network
+
+signals:
+  # Primary interface flaps: up for 60s, down for 30s, cycling.
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+    labels:
+      interface: GigabitEthernet0/0/0
+
+  # Backup link saturates after primary drops below 1.
+  # Ramps from 20% to 85% utilization over 2 minutes.
+  - metric: backup_link_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 2m
+    after: interface_oper_state < 1
+    labels:
+      interface: GigabitEthernet0/1/0
+
+  # Latency degrades after backup utilization exceeds 70%.
+  # Climbs from 5ms to 150ms over 3 minutes with noise.
+  - metric: latency_ms
+    behavior: degradation
+    baseline: 5
+    ceiling: 150
+    time_to_degrade: 3m
+    after: backup_link_utilization > 70
+    labels:
+      path: backup
