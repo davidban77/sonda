@@ -61,6 +61,7 @@ nav:
   - Guides:
     - Tutorial: guides/tutorial.md
     - Built-in Scenarios: guides/scenarios.md
+    - Stories: guides/stories.md
     - Metric Packs: guides/metric-packs.md
     - Alert Testing: guides/alert-testing.md
     - CSV Import: guides/csv-import.md

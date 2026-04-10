@@ -70,6 +70,7 @@ Define reusable scenarios in YAML for anything beyond quick one-offs --
 | **CSV import** | Analyze CSVs, detect patterns, generate portable scenario YAML |
 | **Interactive scaffolding** | `sonda init` -- guided wizard, non-interactive mode, `--from` prefill |
 | **Built-in scenarios** | 11 curated patterns you can run instantly -- no YAML needed |
+| **Stories** | Multi-signal scenarios with temporal causality (`after` clauses compile to phase offsets) |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## What next
@@ -80,6 +81,7 @@ Or jump straight to what you need:
 
 - [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- scaffold a scenario YAML interactively, non-interactively with flags, or pre-filled from a built-in or CSV
 - [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
+- [**Stories**](guides/stories.md) -- multi-signal scenarios with temporal causality (link failover, cascading failures)
 - [**CSV Import**](guides/csv-import.md) -- turn Grafana exports into portable, parameterized scenarios
 - [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference
 - [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API
