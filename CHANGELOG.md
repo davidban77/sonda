@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.15.0](https://github.com/davidban77/sonda/compare/v0.14.0...v0.15.0) (2026-04-10)
+
+
+### Features
+
+* **story:** composable multi-signal story compilation layer ([#195](https://github.com/davidban77/sonda/issues/195)) ([61a5fed](https://github.com/davidban77/sonda/commit/61a5feddf1e9a5473950ddbca4a1fb5944e49847))
+
 ## [0.14.0](https://github.com/davidban77/sonda/compare/v0.13.0...v0.14.0) (2026-04-09)
 
 
