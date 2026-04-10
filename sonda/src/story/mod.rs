@@ -257,7 +257,13 @@ pub fn compile_story(
     // When a wall-clock duration cap is set, warn about signals that will be
     // skipped or truncated, and compute the effective per-signal duration.
     if let Some(cap_secs) = total_duration_secs {
-        print_duration_cap_warnings(config, &offsets, cap_secs, effective_duration.unwrap_or(""));
+        print_duration_cap_warnings(
+            config,
+            &offsets,
+            cap_secs,
+            effective_duration.unwrap_or(""),
+            effective_duration,
+        );
     }
 
     // Expand each signal into a ScenarioEntry.
@@ -386,11 +392,16 @@ fn compute_signal_duration(
 
 /// Print warnings to stderr when the story duration cap causes signals to be
 /// skipped or truncated.
+///
+/// `effective_duration_str` is the duration as resolved after CLI overrides,
+/// so truncation detection uses the actual cap rather than the story's
+/// configured duration.
 fn print_duration_cap_warnings(
     config: &StoryConfig,
     offsets: &HashMap<String, f64>,
     cap_secs: f64,
     duration_str: &str,
+    effective_duration_str: Option<&str>,
 ) {
     let mut skipped: Vec<(&str, f64)> = Vec::new();
     let mut truncated: Vec<(&str, f64, f64)> = Vec::new();
@@ -401,11 +412,13 @@ fn print_duration_cap_warnings(
             skipped.push((&sig.metric, offset));
         } else {
             // Check if the signal's emission time would be truncated.
+            // Use the per-signal duration if set, otherwise the effective
+            // (possibly CLI-overridden) duration, not the story config duration.
             let remaining = cap_secs - offset;
             let sig_dur = sig
                 .duration
                 .as_deref()
-                .or(config.duration.as_deref())
+                .or(effective_duration_str)
                 .and_then(|d| sonda_core::config::validate::parse_duration(d).ok())
                 .map(|d| d.as_secs_f64());
             if let Some(dur_secs) = sig_dur {
@@ -498,7 +511,8 @@ fn format_yaml_value(value: &Value) -> String {
         Value::String(s) => {
             // Quote strings that might be misinterpreted by YAML.
             if needs_quoting(s) {
-                format!("{s:?}")
+                let escaped = escape_yaml_double_quoted(s);
+                format!("\"{escaped}\"")
             } else {
                 s.clone()
             }
@@ -1495,5 +1509,129 @@ signals:
         // No per-signal or story duration string, but cap is 90s, offset 30s.
         let result = compute_signal_duration(None, None, Some(90.0), 30.0);
         assert_eq!(result.as_deref(), Some("1m"));
+    }
+
+    // -----------------------------------------------------------------------
+    // NOTE 4: format_yaml_value uses escape_yaml_double_quoted consistently
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_yaml_value_quotes_duration_strings() {
+        let val = Value::String("60s".to_string());
+        let result = format_yaml_value(&val);
+        // "60s" parses as a number would NOT (it doesn't), but it is a
+        // plain string. Confirm it is not quoted.
+        assert_eq!(result, "60s");
+    }
+
+    #[test]
+    fn format_yaml_value_quotes_string_with_colon() {
+        let val = Value::String("http://example.com".to_string());
+        let result = format_yaml_value(&val);
+        // Must be double-quoted, using escape_yaml_double_quoted.
+        assert_eq!(result, "\"http://example.com\"");
+    }
+
+    #[test]
+    fn format_yaml_value_quotes_string_with_backslash_and_quote() {
+        // This is the key regression test: Rust debug formatting would
+        // produce different escaping than escape_yaml_double_quoted.
+        let val = Value::String(r#"a\b"c"#.to_string());
+        let result = format_yaml_value(&val);
+        // escape_yaml_double_quoted: backslash -> \\, quote -> \"
+        assert_eq!(result, r#""a\\b\"c""#);
+    }
+
+    #[test]
+    fn format_yaml_value_number() {
+        let val = Value::Number(serde_yaml_ng::Number::from(42));
+        assert_eq!(format_yaml_value(&val), "42");
+    }
+
+    #[test]
+    fn format_yaml_value_bool() {
+        let val = Value::Bool(true);
+        assert_eq!(format_yaml_value(&val), "true");
+    }
+
+    // -----------------------------------------------------------------------
+    // NOTE 1: all signals skipped returns an error, not empty Vec
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compile_story_all_signals_skipped_returns_error() {
+        // A sub-microsecond duration like 0.0001ms truncates to Duration::ZERO
+        // when converted via `Duration::from_micros((0.0001 * 1000.0) as u64)`.
+        // This makes cap_secs = 0.0 so every signal's offset >= 0.0 is true
+        // and all are skipped. compile_story must return Err, not Ok(vec![]).
+        let yaml = r#"
+story: all_skipped
+duration: 10m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+  - metric: backup_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 120s
+    after: interface_oper_state < 1
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("0.0001ms".to_string()),
+            ..Default::default()
+        };
+        let err = compile_story(&config, &overrides).expect_err("should fail when all skipped");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("all signals were skipped"),
+            "expected 'all signals were skipped' error, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // NOTE 2: offset exactly equals duration cap is skipped (>= boundary)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compile_story_offset_exactly_equals_cap_is_skipped() {
+        // Signal B has an after clause that resolves to offset = 60s.
+        // With --duration 60s the cap is exactly 60s, so offset >= cap
+        // holds and B is skipped (0s remaining = nothing to emit).
+        let yaml = r#"
+story: exact_boundary
+duration: 10m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+  - metric: backup_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 120s
+    after: interface_oper_state < 1
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        // Set cap to exactly 60s — matching the flap up_duration offset.
+        let overrides = StoryOverrides {
+            duration: Some("60s".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        // Only the first signal (offset=0) should be included.
+        // The second signal has offset=60s which exactly equals the cap.
+        assert_eq!(entries.len(), 1, "signal at offset==cap should be skipped");
+        assert_eq!(entries[0].base().name, "interface_oper_state");
     }
 }
