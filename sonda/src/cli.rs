@@ -147,6 +147,14 @@ pub enum Commands {
     ///
     /// The generated YAML can be immediately run with `sonda run --scenario`.
     Init(InitArgs),
+    /// Run a story — a multi-signal scenario with temporal causality.
+    ///
+    /// Stories are a concise YAML format that compiles down to the existing
+    /// multi-scenario infrastructure at parse time. Signals can use `after`
+    /// clauses to express temporal sequencing (e.g., "backup saturates after
+    /// primary link drops"). There is no runtime reactivity — `after` clauses
+    /// resolve to concrete `phase_offset` values via deterministic timing math.
+    Story(StoryArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -1006,6 +1014,49 @@ pub struct InitArgs {
     /// OTLP signal type for `--sink otlp_grpc`: `metrics` or `logs`.
     #[arg(long, help_heading = "Sink")]
     pub otlp_signal_type: Option<String>,
+}
+
+/// Arguments for the `story` subcommand.
+///
+/// Runs a story file — a concise multi-signal format with temporal causality.
+/// CLI flags override story-level shared fields (not per-signal overrides).
+#[derive(Debug, Args)]
+pub struct StoryArgs {
+    /// Path to a story YAML file.
+    ///
+    /// The file must have a top-level `story:` field and a `signals:` list.
+    /// Each signal specifies a `metric`, `behavior`, and optional `after`
+    /// clause for temporal sequencing.
+    #[arg(long)]
+    pub file: std::path::PathBuf,
+
+    /// Override the story duration (e.g. `"2m"`, `"30s"`).
+    ///
+    /// Applies to all signals that do not have a per-signal duration override.
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Override the event rate in events per second.
+    ///
+    /// Applies to all signals that do not have a per-signal rate override.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Override the sink type (e.g. `stdout`, `http_push`, `file`).
+    ///
+    /// Applies to all signals that do not have a per-signal sink override.
+    #[arg(long, help_heading = "Sink")]
+    pub sink: Option<String>,
+
+    /// Override the sink endpoint (required for network sinks).
+    #[arg(long, help_heading = "Sink")]
+    pub endpoint: Option<String>,
+
+    /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
+    ///
+    /// Applies to all signals that do not have a per-signal encoder override.
+    #[arg(long, help_heading = "Encoder")]
+    pub encoder: Option<String>,
 }
 
 /// Build clap help styling for the CLI.
