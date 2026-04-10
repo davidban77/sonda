@@ -322,9 +322,13 @@ fn get_duration_param(
 }
 
 /// Extract an f64 parameter from the signal params. Returns `default` if absent.
+///
+/// Handles both `Value::Number` and `Value::String` (e.g., `baseline: "20"`),
+/// matching the pattern used by [`get_duration_param`].
 fn get_f64_param(params: &HashMap<String, serde_yaml_ng::Value>, key: &str, default: f64) -> f64 {
     match params.get(key) {
         Some(serde_yaml_ng::Value::Number(n)) => n.as_f64().unwrap_or(default),
+        Some(serde_yaml_ng::Value::String(s)) => s.parse().unwrap_or(default),
         _ => default,
     }
 }
@@ -683,6 +687,82 @@ mod tests {
         assert!(
             err.contains("150") && (err.contains("ceiling") || err.contains("exceeds")),
             "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // get_f64_param string fallback (Fix 4)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn get_f64_param_handles_number() {
+        let params = HashMap::from([("baseline".to_string(), nv(20.0))]);
+        let val = get_f64_param(&params, "baseline", 0.0);
+        assert!((val - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn get_f64_param_handles_string() {
+        let params = HashMap::from([("baseline".to_string(), sv("20"))]);
+        let val = get_f64_param(&params, "baseline", 0.0);
+        assert!(
+            (val - 20.0).abs() < f64::EPSILON,
+            "string \"20\" should parse to 20.0, got {val}"
+        );
+    }
+
+    #[test]
+    fn get_f64_param_string_unparseable_returns_default() {
+        let params = HashMap::from([("baseline".to_string(), sv("not_a_number"))]);
+        let val = get_f64_param(&params, "baseline", 42.0);
+        assert!(
+            (val - 42.0).abs() < f64::EPSILON,
+            "unparseable string should return default 42.0, got {val}"
+        );
+    }
+
+    #[test]
+    fn get_f64_param_missing_key_returns_default() {
+        let params: HashMap<String, serde_yaml_ng::Value> = HashMap::new();
+        let val = get_f64_param(&params, "baseline", 99.0);
+        assert!((val - 99.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resolve_offsets_with_string_baseline() {
+        // Regression: baseline: "20" (YAML string) must be parsed correctly
+        // instead of silently using 0.0.
+        let signals = vec![
+            (
+                "util".to_string(),
+                None,
+                make_params(
+                    "saturation",
+                    &[
+                        ("baseline", sv("20")),
+                        ("ceiling", nv(85.0)),
+                        ("time_to_saturate", sv("120s")),
+                    ],
+                ),
+            ),
+            (
+                "dependent".to_string(),
+                Some(AfterClause {
+                    metric_ref: "util".to_string(),
+                    operator: Operator::GreaterThan,
+                    threshold: 70.0,
+                }),
+                make_params("flap", &[]),
+            ),
+        ];
+
+        let offsets = resolve_offsets(&signals).expect("should succeed");
+        // With baseline=20 (from string): (70-20)/(85-20)*120 = 92.307...s
+        let expected = (70.0 - 20.0) / (85.0 - 20.0) * 120.0;
+        assert!(
+            (offsets["dependent"] - expected).abs() < 1e-9,
+            "expected ~{expected}s with baseline=\"20\", got {}s",
+            offsets["dependent"]
         );
     }
 }

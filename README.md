@@ -193,6 +193,19 @@ appears in `sonda scenarios list`. See the
 [CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-init) for
 the full prompt flow and available situations.
 
+## Stories
+
+Stories are a concise YAML format for multi-signal scenarios with temporal causality. Define
+several signals and use `after` clauses to express when one signal starts relative to another --
+Sonda resolves the timing into concrete `phase_offset` values at compile time:
+
+```bash
+sonda story --file stories/link_failover.yaml --duration 5m --sink stdout
+```
+
+Story files live in `stories/` at the repo root. CLI flags (`--duration`, `--rate`, `--sink`,
+`--endpoint`, `--encoder`) override story-level defaults.
+
 ## Documentation
 
 Full documentation is available at **https://davidban77.github.io/sonda/**.

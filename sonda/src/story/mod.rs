@@ -55,6 +55,8 @@ use anyhow::{bail, Context, Result};
 use serde_yaml_ng::Value;
 use sonda_core::config::ScenarioEntry;
 
+use crate::yaml_helpers::{escape_yaml_double_quoted, needs_quoting};
+
 use self::after_resolve::{parse_after_clause, resolve_offsets, AfterClause, SignalParams};
 
 /// Top-level story configuration, parsed from YAML.
@@ -217,6 +219,15 @@ pub fn compile_story(
     let effective_encoder = build_effective_encoder(overrides, config);
     let effective_sink = build_effective_sink(overrides, config);
 
+    // Parse the total wall-clock cap (if any).
+    let total_duration_secs = effective_duration
+        .map(|d| {
+            sonda_core::config::validate::parse_duration(d)
+                .map(|dur| dur.as_secs_f64())
+                .map_err(|e| anyhow::anyhow!("invalid story duration {:?}: {e}", d))
+        })
+        .transpose()?;
+
     // Build the signal list for after-clause resolution.
     let signal_tuples: Vec<(String, Option<AfterClause>, SignalParams)> = config
         .signals
@@ -243,22 +254,41 @@ pub fn compile_story(
     // Resolve all offsets.
     let offsets = resolve_offsets(&signal_tuples).map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // When a wall-clock duration cap is set, warn about signals that will be
+    // skipped or truncated, and compute the effective per-signal duration.
+    if let Some(cap_secs) = total_duration_secs {
+        print_duration_cap_warnings(config, &offsets, cap_secs, effective_duration.unwrap_or(""));
+    }
+
     // Expand each signal into a ScenarioEntry.
     let mut entries = Vec::with_capacity(config.signals.len());
 
     for sig in &config.signals {
         let offset_secs = offsets[&sig.metric];
 
+        // When a wall-clock cap is active, skip signals whose phase_offset
+        // meets or exceeds the total duration.
+        if let Some(cap_secs) = total_duration_secs {
+            if offset_secs >= cap_secs {
+                continue;
+            }
+        }
+
         // Build merged labels: story-level + signal-level (signal wins on conflict).
         let merged_labels = merge_labels(config.labels.as_ref(), sig.labels.as_ref());
 
         // Determine per-signal rate, duration, encoder, sink.
         let sig_rate = sig.rate.unwrap_or(effective_rate);
-        let sig_duration = sig
-            .duration
-            .as_deref()
-            .or(effective_duration)
-            .map(|s| s.to_string());
+
+        // Compute the per-signal emission duration. When a wall-clock cap is
+        // active the effective duration is capped to (total_duration - offset).
+        let sig_duration = compute_signal_duration(
+            sig.duration.as_deref(),
+            effective_duration,
+            total_duration_secs,
+            offset_secs,
+        );
+
         let sig_encoder = sig.encoder.as_ref().unwrap_or(&effective_encoder);
         let sig_sink = sig.sink.as_ref().unwrap_or(&effective_sink);
 
@@ -295,7 +325,147 @@ pub fn compile_story(
         entries.push(entry);
     }
 
+    if entries.is_empty() {
+        bail!(
+            "all signals were skipped because their phase offsets exceed \
+             the story duration ({})",
+            effective_duration.unwrap_or("0s")
+        );
+    }
+
     Ok(entries)
+}
+
+/// Compute the effective per-signal emission duration, respecting the
+/// wall-clock duration cap when set.
+///
+/// When `total_duration_secs` is `Some`, each signal's effective duration is
+/// capped to `total_duration - offset_secs`. If the signal has its own
+/// per-signal duration, the effective value is the minimum of that duration
+/// and the remaining wall-clock budget.
+fn compute_signal_duration(
+    per_signal_duration: Option<&str>,
+    story_duration: Option<&str>,
+    total_duration_secs: Option<f64>,
+    offset_secs: f64,
+) -> Option<String> {
+    let base_duration_str = per_signal_duration.or(story_duration);
+
+    let Some(cap_secs) = total_duration_secs else {
+        // No wall-clock cap — use the signal or story duration as-is.
+        return base_duration_str.map(|s| s.to_string());
+    };
+
+    let remaining = cap_secs - offset_secs;
+    if remaining <= 0.0 {
+        // Should not happen (caller filters these out), but be defensive.
+        return Some("0s".to_string());
+    }
+
+    match base_duration_str {
+        Some(dur_str) => {
+            // Parse the per-signal duration and cap it.
+            if let Ok(dur) = sonda_core::config::validate::parse_duration(dur_str) {
+                let dur_secs = dur.as_secs_f64();
+                if dur_secs > remaining {
+                    Some(format_duration_secs(remaining))
+                } else {
+                    Some(dur_str.to_string())
+                }
+            } else {
+                // Unparseable duration — pass through and let validation catch it.
+                Some(dur_str.to_string())
+            }
+        }
+        None => {
+            // No explicit duration but there is a wall-clock cap — set one.
+            Some(format_duration_secs(remaining))
+        }
+    }
+}
+
+/// Print warnings to stderr when the story duration cap causes signals to be
+/// skipped or truncated.
+fn print_duration_cap_warnings(
+    config: &StoryConfig,
+    offsets: &HashMap<String, f64>,
+    cap_secs: f64,
+    duration_str: &str,
+) {
+    let mut skipped: Vec<(&str, f64)> = Vec::new();
+    let mut truncated: Vec<(&str, f64, f64)> = Vec::new();
+
+    for sig in &config.signals {
+        let offset = offsets[&sig.metric];
+        if offset >= cap_secs {
+            skipped.push((&sig.metric, offset));
+        } else {
+            // Check if the signal's emission time would be truncated.
+            let remaining = cap_secs - offset;
+            let sig_dur = sig
+                .duration
+                .as_deref()
+                .or(config.duration.as_deref())
+                .and_then(|d| sonda_core::config::validate::parse_duration(d).ok())
+                .map(|d| d.as_secs_f64());
+            if let Some(dur_secs) = sig_dur {
+                if dur_secs > remaining {
+                    truncated.push((&sig.metric, offset, remaining));
+                }
+            }
+        }
+    }
+
+    if skipped.is_empty() && truncated.is_empty() {
+        return;
+    }
+
+    eprintln!("warning: story duration ({duration_str}) is shorter than some phase offsets:");
+    for (name, offset) in &skipped {
+        eprintln!(
+            "  - {:?} needs {} before it starts -- skipped",
+            name,
+            format_duration_human(*offset),
+        );
+    }
+    for (name, _offset, remaining) in &truncated {
+        eprintln!(
+            "  - {:?} will run for {} instead of its full duration",
+            name,
+            format_duration_human(*remaining),
+        );
+    }
+
+    // Suggest the minimum duration needed to include all signals.
+    let max_offset = offsets.values().cloned().fold(0.0_f64, f64::max);
+    eprintln!(
+        "  hint: use --duration {} or longer to include all signals",
+        format_duration_human(max_offset + 60.0),
+    );
+}
+
+/// Format a duration in seconds as a human-readable string for warning messages.
+///
+/// Uses minutes and seconds notation (e.g., "2m32s") for values >= 60s.
+fn format_duration_human(secs: f64) -> String {
+    if secs < 0.0 {
+        return "0s".to_string();
+    }
+    let total_secs = secs.round() as u64;
+    if total_secs == 0 {
+        // Sub-second: use milliseconds.
+        let ms = (secs * 1000.0).round() as u64;
+        return format!("{ms}ms");
+    }
+    let m = total_secs / 60;
+    let s = total_secs % 60;
+    if m == 0 {
+        format!("{s}s")
+    } else if s == 0 {
+        format!("{m}m")
+    } else {
+        format!("{m}m{s}s")
+    }
 }
 
 /// Build a YAML snippet for the generator from a behavior alias and flat params.
@@ -340,25 +510,6 @@ fn format_yaml_value(value: &Value) -> String {
     }
 }
 
-/// Check if a string value needs YAML quoting.
-fn needs_quoting(s: &str) -> bool {
-    // Quote if it contains special chars, looks like a number, or is a YAML keyword.
-    s.is_empty()
-        || s.contains(':')
-        || s.contains('#')
-        || s.contains('{')
-        || s.contains('}')
-        || s.contains('[')
-        || s.contains(']')
-        || s.contains('\'')
-        || s.contains('"')
-        || s.contains('\n')
-        || s.starts_with(' ')
-        || s.ends_with(' ')
-        || matches!(s, "true" | "false" | "null" | "yes" | "no" | "on" | "off")
-        || s.parse::<f64>().is_ok()
-}
-
 /// Parameters for building a ScenarioEntry YAML string.
 struct EntryYamlParams<'a> {
     name: &'a str,
@@ -377,7 +528,12 @@ fn build_entry_yaml(p: &EntryYamlParams<'_>) -> Result<String> {
     let mut lines = Vec::new();
 
     lines.push("signal_type: metrics".to_string());
-    lines.push(format!("name: {}", p.name));
+    if needs_quoting(p.name) {
+        let escaped = escape_yaml_double_quoted(p.name);
+        lines.push(format!("name: \"{escaped}\""));
+    } else {
+        lines.push(format!("name: {}", p.name));
+    }
     lines.push(format!("rate: {}", p.rate));
 
     if let Some(dur) = p.duration {
@@ -412,7 +568,12 @@ fn build_entry_yaml(p: &EntryYamlParams<'_>) -> Result<String> {
             let mut sorted_labels: Vec<_> = lbl.iter().collect();
             sorted_labels.sort_by_key(|(k, _)| *k);
             for (k, v) in sorted_labels {
-                lines.push(format!("  {k}: {v}"));
+                if needs_quoting(v) {
+                    let escaped = escape_yaml_double_quoted(v);
+                    lines.push(format!("  {k}: \"{escaped}\""));
+                } else {
+                    lines.push(format!("  {k}: {v}"));
+                }
             }
         }
     }
@@ -480,10 +641,14 @@ fn build_effective_sink(overrides: &StoryOverrides, config: &StoryConfig) -> Val
             Value::String(sink_type.clone()),
         );
         if let Some(ref endpoint) = overrides.endpoint {
-            // Different sinks use different endpoint field names.
+            // Different sinks use different endpoint field names,
+            // matching the SinkConfig variant fields in sonda-core.
             let field = match sink_type.as_str() {
                 "http_push" | "remote_write" | "loki" => "url",
                 "tcp" | "udp" => "address",
+                "otlp_grpc" => "endpoint",
+                "file" => "path",
+                "kafka" => "brokers",
                 _ => "url",
             };
             map.insert(
@@ -984,5 +1149,351 @@ signals:
         let result = merge_labels(Some(&story), Some(&signal)).unwrap();
         assert_eq!(result.get("a").unwrap(), "override");
         assert_eq!(result.get("b").unwrap(), "2");
+    }
+
+    // -----------------------------------------------------------------------
+    // Duration cap (Fix 1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn duration_cap_skips_signals_beyond_cap() {
+        // Story has 3 signals: A at t=0, B at t=60s, C at ~152s.
+        // With --duration 30s, only A should survive.
+        let yaml = r#"
+story: cap_test
+duration: 10m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+  - metric: backup_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 120s
+    after: interface_oper_state < 1
+  - metric: latency_ms
+    behavior: degradation
+    baseline: 5
+    ceiling: 150
+    time_to_degrade: 3m
+    after: backup_utilization > 70
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("30s".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        // Only the first signal (offset=0) fits within 30s.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].base().name, "interface_oper_state");
+        // Its duration should be capped to 30s.
+        assert_eq!(entries[0].base().duration.as_deref(), Some("30s"));
+    }
+
+    #[test]
+    fn duration_cap_truncates_signal_duration() {
+        // Signal A starts at t=0 with a 5m story duration, but cap is 2m.
+        // Signal A's effective duration should be capped to 2m.
+        let yaml = r#"
+story: truncate_test
+duration: 5m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: cpu_usage
+    behavior: steady
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("2m".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].base().duration.as_deref(), Some("2m"));
+    }
+
+    #[test]
+    fn duration_cap_keeps_signals_within_budget() {
+        // Signal A at t=0, B at t=60s. Cap is 3m.
+        // Both should be included: A gets 3m, B gets 2m.
+        let yaml = r#"
+story: budget_test
+duration: 10m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+  - metric: backup_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 120s
+    after: interface_oper_state < 1
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("3m".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        assert_eq!(entries.len(), 2);
+        // A: duration = min(10m, 3m - 0) = 3m
+        assert_eq!(entries[0].base().duration.as_deref(), Some("3m"));
+        // B: duration = min(10m, 3m - 60s) = 2m
+        assert_eq!(entries[1].base().duration.as_deref(), Some("2m"));
+    }
+
+    #[test]
+    fn duration_cap_skips_dependent_signals_only() {
+        // Story: A at offset=0, B at offset=60s. Cap=30s.
+        // B should be skipped, A survives with truncated duration.
+        let yaml = r#"
+story: skip_dependent
+duration: 10m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: interface_oper_state
+    behavior: flap
+    up_duration: 60s
+    down_duration: 30s
+  - metric: backup_utilization
+    behavior: saturation
+    baseline: 20
+    ceiling: 85
+    time_to_saturate: 120s
+    after: interface_oper_state < 1
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("30s".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        // Only A (offset=0) survives.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].base().name, "interface_oper_state");
+    }
+
+    #[test]
+    fn duration_cap_no_cap_passes_duration_through() {
+        // Without a duration cap, signal gets the story duration unchanged.
+        let yaml = r#"
+story: no_cap_test
+duration: 5m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: cpu_usage
+    behavior: steady
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let entries = compile_story(&config, &StoryOverrides::default()).expect("should compile");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].base().duration.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn duration_cap_per_signal_duration_respected_if_shorter() {
+        // Signal has its own duration (10s) which is shorter than cap (2m).
+        // Per-signal duration should be kept as-is.
+        let yaml = r#"
+story: per_signal_dur
+duration: 5m
+rate: 1
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+signals:
+  - metric: cpu_usage
+    behavior: steady
+    duration: 10s
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let overrides = StoryOverrides {
+            duration: Some("2m".to_string()),
+            ..Default::default()
+        };
+        let entries = compile_story(&config, &overrides).expect("should compile");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].base().duration.as_deref(), Some("10s"));
+    }
+
+    // -----------------------------------------------------------------------
+    // YAML label quoting (Fix 5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn label_values_with_special_chars_are_quoted() {
+        let yaml = r#"
+story: quote_test
+rate: 1
+duration: 10s
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+labels:
+  url: "http://example.com:8080"
+  flag: "true"
+signals:
+  - metric: cpu_usage
+    behavior: steady
+"#;
+        let config = parse_story(yaml).expect("should parse");
+        let entries = compile_story(&config, &StoryOverrides::default()).expect("should compile");
+        assert_eq!(entries.len(), 1);
+        let base = entries[0].base();
+        let labels = base.labels.as_ref().expect("should have labels");
+        assert_eq!(labels.get("url").unwrap(), "http://example.com:8080");
+        assert_eq!(labels.get("flag").unwrap(), "true");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sink endpoint field mapping (Fix 3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_effective_sink_otlp_grpc_uses_endpoint_field() {
+        let config = StoryConfig {
+            story: "test".to_string(),
+            description: None,
+            duration: None,
+            rate: None,
+            encoder: None,
+            sink: None,
+            labels: None,
+            signals: vec![],
+        };
+        let overrides = StoryOverrides {
+            sink: Some("otlp_grpc".to_string()),
+            endpoint: Some("http://localhost:4317".to_string()),
+            ..Default::default()
+        };
+        let sink = build_effective_sink(&overrides, &config);
+        let map = sink.as_mapping().expect("should be a mapping");
+        // otlp_grpc should use "endpoint" field, not "url".
+        assert!(map.get(Value::String("endpoint".to_string())).is_some());
+        assert!(map.get(Value::String("url".to_string())).is_none());
+    }
+
+    #[test]
+    fn build_effective_sink_file_uses_path_field() {
+        let config = StoryConfig {
+            story: "test".to_string(),
+            description: None,
+            duration: None,
+            rate: None,
+            encoder: None,
+            sink: None,
+            labels: None,
+            signals: vec![],
+        };
+        let overrides = StoryOverrides {
+            sink: Some("file".to_string()),
+            endpoint: Some("/tmp/output.txt".to_string()),
+            ..Default::default()
+        };
+        let sink = build_effective_sink(&overrides, &config);
+        let map = sink.as_mapping().expect("should be a mapping");
+        assert!(map.get(Value::String("path".to_string())).is_some());
+        assert!(map.get(Value::String("url".to_string())).is_none());
+    }
+
+    #[test]
+    fn build_effective_sink_kafka_uses_brokers_field() {
+        let config = StoryConfig {
+            story: "test".to_string(),
+            description: None,
+            duration: None,
+            rate: None,
+            encoder: None,
+            sink: None,
+            labels: None,
+            signals: vec![],
+        };
+        let overrides = StoryOverrides {
+            sink: Some("kafka".to_string()),
+            endpoint: Some("localhost:9092".to_string()),
+            ..Default::default()
+        };
+        let sink = build_effective_sink(&overrides, &config);
+        let map = sink.as_mapping().expect("should be a mapping");
+        assert!(map.get(Value::String("brokers".to_string())).is_some());
+        assert!(map.get(Value::String("url".to_string())).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // format_duration_human
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_duration_human_seconds() {
+        assert_eq!(format_duration_human(30.0), "30s");
+    }
+
+    #[test]
+    fn format_duration_human_minutes_and_seconds() {
+        assert_eq!(format_duration_human(152.0), "2m32s");
+    }
+
+    #[test]
+    fn format_duration_human_exact_minutes() {
+        assert_eq!(format_duration_human(60.0), "1m");
+    }
+
+    #[test]
+    fn format_duration_human_zero() {
+        // Sub-second rounding to 0.
+        assert_eq!(format_duration_human(0.0), "0ms");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_signal_duration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compute_signal_duration_no_cap() {
+        let result = compute_signal_duration(None, Some("5m"), None, 0.0);
+        assert_eq!(result.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn compute_signal_duration_cap_truncates() {
+        // Story duration 5m, cap 2m, offset 0 -> effective = 2m.
+        let result = compute_signal_duration(Some("5m"), Some("5m"), Some(120.0), 0.0);
+        assert_eq!(result.as_deref(), Some("2m"));
+    }
+
+    #[test]
+    fn compute_signal_duration_cap_with_offset() {
+        // Cap 3m, offset 60s -> remaining = 2m.
+        let result = compute_signal_duration(Some("5m"), Some("5m"), Some(180.0), 60.0);
+        assert_eq!(result.as_deref(), Some("2m"));
+    }
+
+    #[test]
+    fn compute_signal_duration_per_signal_shorter_than_cap() {
+        // Per-signal 10s, cap 2m, offset 0 -> keep 10s.
+        let result = compute_signal_duration(Some("10s"), Some("5m"), Some(120.0), 0.0);
+        assert_eq!(result.as_deref(), Some("10s"));
+    }
+
+    #[test]
+    fn compute_signal_duration_no_explicit_uses_remaining() {
+        // No per-signal or story duration string, but cap is 90s, offset 30s.
+        let result = compute_signal_duration(None, None, Some(90.0), 30.0);
+        assert_eq!(result.as_deref(), Some("1m"));
     }
 }
