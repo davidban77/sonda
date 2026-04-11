@@ -1,0 +1,50 @@
+[
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": null,
+    "duration": "20s",
+    "dynamic_labels": null,
+    "encoder": {
+      "precision": null,
+      "type": "json_lines"
+    },
+    "gaps": null,
+    "generator": {
+      "seed": 42,
+      "severity_weights": {
+        "error": 0.1,
+        "info": 0.7,
+        "warn": 0.2
+      },
+      "templates": [
+        {
+          "field_pools": {
+            "endpoint": [
+              "/api/v1/health",
+              "/api/v1/metrics"
+            ],
+            "ip": [
+              "10.0.0.1",
+              "10.0.0.2",
+              "10.0.0.3"
+            ]
+          },
+          "message": "Request from {ip} to {endpoint} completed"
+        }
+      ],
+      "type": "template"
+    },
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": null,
+    "name": "app_logs",
+    "phase_offset": null,
+    "rate": 5.0,
+    "signal_type": "logs",
+    "sink": {
+      "type": "stdout"
+    },
+    "start_delay_ms": null
+  }
+]

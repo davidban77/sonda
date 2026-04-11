@@ -1,0 +1,87 @@
+[
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": null,
+    "duration": "60s",
+    "dynamic_labels": null,
+    "encoder": {
+      "precision": null,
+      "type": "prometheus_text"
+    },
+    "gaps": null,
+    "generator": {
+      "type": "constant",
+      "value": 95.0
+    },
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": null,
+    "name": "cpu_idle",
+    "phase_offset": null,
+    "rate": 1.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  },
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": "infra",
+    "duration": "60s",
+    "dynamic_labels": null,
+    "encoder": {
+      "precision": null,
+      "type": "prometheus_text"
+    },
+    "gaps": null,
+    "generator": {
+      "amplitude": 20.0,
+      "offset": 50.0,
+      "period_secs": 30.0,
+      "type": "sine"
+    },
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": {
+      "hostname": "web-01"
+    },
+    "name": "mem_usage",
+    "phase_offset": "5s",
+    "rate": 2.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  },
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": null,
+    "duration": "60s",
+    "dynamic_labels": null,
+    "encoder": {
+      "field_key": null,
+      "precision": null,
+      "type": "influx_lp"
+    },
+    "gaps": null,
+    "generator": {
+      "max": 100.0,
+      "min": 0.0,
+      "period_secs": 120.0,
+      "type": "sawtooth"
+    },
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": null,
+    "name": "disk_io",
+    "phase_offset": null,
+    "rate": 1.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

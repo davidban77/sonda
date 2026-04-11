@@ -1,0 +1,39 @@
+[
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": null,
+    "distribution": {
+      "rate": 10.0,
+      "type": "exponential"
+    },
+    "duration": "30s",
+    "dynamic_labels": null,
+    "encoder": {
+      "precision": null,
+      "type": "prometheus_text"
+    },
+    "gaps": null,
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": {
+      "service": "auth"
+    },
+    "mean_shift_per_sec": null,
+    "name": "rpc_duration_seconds",
+    "observations_per_tick": 100,
+    "phase_offset": null,
+    "quantiles": [
+      0.5,
+      0.9,
+      0.95,
+      0.99
+    ],
+    "rate": 1.0,
+    "seed": 7,
+    "signal_type": "summary",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

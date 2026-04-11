@@ -35,7 +35,7 @@ use crate::{ConfigError, SondaError};
 ///   max_backoff: 5s
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetryConfig {
     /// Number of retry attempts after the initial failure.
     ///

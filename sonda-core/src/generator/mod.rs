@@ -69,7 +69,7 @@ pub trait ValueGenerator: Send + Sync {
 ///     name: mem_percent
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct CsvColumnSpec {
     /// Zero-based column index in the CSV file.
     pub index: usize,
@@ -124,7 +124,7 @@ pub struct CsvColumnSpec {
 ///   down_duration: "5s"
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum GeneratorConfig {
     /// A generator that always returns the same value.
@@ -612,7 +612,7 @@ pub trait LogGenerator: Send + Sync {
 ///     - "/health"
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct TemplateConfig {
     /// The message template. Use `{field_name}` for dynamic placeholders.
     pub message: String,
@@ -653,7 +653,7 @@ pub struct TemplateConfig {
 ///   file: /var/log/app.log
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum LogGeneratorConfig {
     /// Generates events from message templates with randomized field pool values.

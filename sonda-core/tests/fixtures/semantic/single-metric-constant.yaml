@@ -1,0 +1,10 @@
+name: cpu_usage
+rate: 1
+duration: 10s
+generator:
+  type: constant
+  value: 42.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

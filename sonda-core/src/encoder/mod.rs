@@ -50,7 +50,7 @@ pub trait Encoder: Send + Sync {
 /// descriptive error from [`create_encoder`] instead of a generic
 /// "unknown variant" error from serde.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).

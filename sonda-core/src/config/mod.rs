@@ -1,8 +1,11 @@
 //! Scenario configuration types and validation.
 //!
-//! The `Deserialize` impls on all config types are available only when the
-//! `config` Cargo feature is enabled (active by default). Without the feature,
-//! configs can still be constructed in code — only YAML/JSON parsing is gated.
+//! The `Serialize` and `Deserialize` impls on all config types are available
+//! only when the `config` Cargo feature is enabled (active by default). Without
+//! the feature, configs can still be constructed in code — only YAML/JSON
+//! serialization and parsing are gated.
+
+pub mod snapshot;
 
 pub mod aliases;
 pub mod validate;
@@ -19,7 +22,7 @@ use crate::{ConfigError, SondaError};
 /// During a gap the scheduler emits no events. The gap repeats on a fixed
 /// cycle defined by `every`, and each instance lasts for `for`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct GapConfig {
     /// How often the gap recurs (e.g. `"2m"`).
     pub every: String,
@@ -32,7 +35,7 @@ pub struct GapConfig {
 /// Determines how the spike window produces distinct values for the injected
 /// label key on each tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(rename_all = "snake_case"))]
 pub enum SpikeStrategy {
     /// Sequential counter: `prefix + (tick % cardinality)`.
@@ -65,7 +68,7 @@ pub enum SpikeStrategy {
 ///     prefix: "pod-"
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct CardinalitySpikeConfig {
     /// The label key to inject during the spike window.
     ///
@@ -101,7 +104,7 @@ pub struct CardinalitySpikeConfig {
 /// Determines how a [`DynamicLabelConfig`] produces per-tick values for the
 /// label key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(untagged))]
 pub enum DynamicLabelStrategy {
     /// Cycle through an explicit list of values.
@@ -151,7 +154,7 @@ pub enum DynamicLabelStrategy {
 ///     values: [us-east-1, us-west-2, eu-west-1]
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct DynamicLabelConfig {
     /// The label key to attach to every event.
     ///
@@ -173,7 +176,7 @@ pub struct DynamicLabelConfig {
 /// If a gap and burst overlap in time, the gap takes priority and no events
 /// are emitted.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct BurstConfig {
     /// How often the burst recurs (e.g. `"10s"`).
     pub every: String,
@@ -209,7 +212,7 @@ fn default_sink() -> SinkConfig {
 /// offset) should be added here once and automatically propagate to both
 /// signal types.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct BaseScheduleConfig {
     /// Scenario name (metric name for metrics, identifier for logs).
     pub name: String,
@@ -301,7 +304,7 @@ pub struct BaseScheduleConfig {
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -340,7 +343,7 @@ impl std::ops::DerefMut for ScenarioConfig {
 ///   rate: 10.0
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum DistributionConfig {
     /// Exponential distribution with rate parameter lambda.
@@ -396,7 +399,7 @@ pub enum DistributionConfig {
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct HistogramScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -457,7 +460,7 @@ impl std::ops::DerefMut for HistogramScenarioConfig {
 /// seed: 42
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct SummaryScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -503,7 +506,7 @@ impl std::ops::DerefMut for SummaryScenarioConfig {
 /// Deserialized from a YAML multi-scenario file where each element of the
 /// `scenarios` list carries a `signal_type` key.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "signal_type"))]
 pub enum ScenarioEntry {
     /// A metrics scenario entry.
@@ -578,7 +581,7 @@ impl ScenarioEntry {
 ///       path: /tmp/logs.json
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct MultiScenarioConfig {
     /// The list of scenarios to run concurrently.
     pub scenarios: Vec<ScenarioEntry>,
@@ -845,7 +848,7 @@ pub fn expand_entry(entry: ScenarioEntry) -> Result<Vec<ScenarioEntry>, SondaErr
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]

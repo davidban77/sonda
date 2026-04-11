@@ -1,0 +1,28 @@
+[
+  {
+    "bursts": null,
+    "cardinality_spikes": null,
+    "clock_group": null,
+    "duration": "10s",
+    "dynamic_labels": null,
+    "encoder": {
+      "precision": null,
+      "type": "prometheus_text"
+    },
+    "gaps": null,
+    "generator": {
+      "type": "constant",
+      "value": 42.0
+    },
+    "jitter": null,
+    "jitter_seed": null,
+    "labels": null,
+    "name": "cpu_usage",
+    "phase_offset": null,
+    "rate": 1.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

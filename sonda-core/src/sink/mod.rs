@@ -42,7 +42,7 @@ pub trait Sink: Send + Sync {
 /// certificates are used via [`webpki_roots`].
 #[cfg(feature = "kafka")]
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct KafkaTlsConfig {
     /// Enable TLS for broker connections. Default: `false`.
     #[cfg_attr(feature = "config", serde(default))]
@@ -58,7 +58,7 @@ pub struct KafkaTlsConfig {
 /// Supported mechanisms are `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 #[cfg(feature = "kafka")]
 #[derive(Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct KafkaSaslConfig {
     /// SASL mechanism: `"PLAIN"`, `"SCRAM-SHA-256"`, or `"SCRAM-SHA-512"`.
     pub mechanism: String,
@@ -91,7 +91,7 @@ impl std::fmt::Debug for KafkaSaslConfig {
 /// deserialization succeeds with a descriptive error from [`create_sink`]
 /// instead of a generic "unknown variant" error from serde.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum SinkConfig {
     /// Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).
