@@ -85,6 +85,13 @@ src/
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
+├── v2/
+│   ├── mod.rs          ← v2 scenario format AST types: V2ScenarioFile, V2Defaults,
+│   │                      V2Entry, AfterClause. Pre-compilation representation of
+│   │                      version 2 YAML files. No runtime integration — parsing only.
+│   └── parse.rs        ← YAML parser and structural validation for v2 files.
+│                          parse_v2(), detect_version(), V2ParseError.
+│                          Single-signal shorthand support. Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,

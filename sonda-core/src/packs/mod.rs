@@ -143,7 +143,7 @@ pub struct PackScenarioConfig {
 /// Allows the user to customize the generator or add extra labels for a
 /// specific metric without modifying the pack definition.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct MetricOverride {
     /// Replacement generator for this metric.
     #[cfg_attr(feature = "config", serde(default))]
