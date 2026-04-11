@@ -41,8 +41,10 @@ pub fn snapshot_entries(entries: &[ScenarioEntry]) -> String {
     let value = serde_json::to_value(entries)
         .expect("snapshot serialization must not fail for well-formed config types");
     let sorted = sort_json_keys(value);
-    serde_json::to_string_pretty(&sorted)
-        .expect("pretty-printing a serde_json::Value must not fail")
+    let mut output = serde_json::to_string_pretty(&sorted)
+        .expect("pretty-printing a serde_json::Value must not fail");
+    output.push('\n');
+    output
 }
 
 /// Serialize prepared entries (post-validation, post-expansion) to a
@@ -68,8 +70,10 @@ pub fn snapshot_prepared_entries(entries: &[PreparedEntry]) -> String {
     let value = serde_json::to_value(&snapshots)
         .expect("snapshot serialization must not fail for well-formed config types");
     let sorted = sort_json_keys(value);
-    serde_json::to_string_pretty(&sorted)
-        .expect("pretty-printing a serde_json::Value must not fail")
+    let mut output = serde_json::to_string_pretty(&sorted)
+        .expect("pretty-printing a serde_json::Value must not fail");
+    output.push('\n');
+    output
 }
 
 /// Intermediate representation for prepared entry snapshots.
@@ -252,7 +256,10 @@ mod tests {
     #[test]
     fn snapshot_empty_entries_produces_empty_array() {
         let snap = snapshot_entries(&[]);
-        assert_eq!(snap, "[]", "empty input must produce empty JSON array");
+        assert_eq!(
+            snap, "[]\n",
+            "empty input must produce empty JSON array with trailing newline"
+        );
     }
 
     #[test]

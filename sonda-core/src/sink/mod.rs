@@ -65,6 +65,7 @@ pub struct KafkaSaslConfig {
     /// SASL username.
     pub username: String,
     /// SASL password.
+    #[cfg_attr(feature = "config", serde(skip_serializing))]
     pub password: String,
 }
 

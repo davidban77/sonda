@@ -1,3 +1,4 @@
+#![cfg(feature = "config")]
 //! Golden-file snapshot tests for the scenario compilation pipeline.
 //!
 //! Each test parses a semantic YAML fixture, runs it through the compilation
