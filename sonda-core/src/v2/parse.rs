@@ -72,15 +72,6 @@ pub enum V2ParseError {
     #[error("entry id '{0}' is invalid: must match [a-zA-Z_][a-zA-Z0-9_]*")]
     InvalidId(String),
 
-    /// An `after.op` value is not `"<"` or `">"`.
-    #[error("entry {index}: after.op must be '<' or '>', got '{op}'")]
-    InvalidAfterOp {
-        /// Zero-based index of the offending entry.
-        index: usize,
-        /// The invalid operator string.
-        op: String,
-    },
-
     /// An entry has a generator field that is incompatible with its `signal_type`.
     ///
     /// For example, a `signal_type: metrics` entry must not have `log_generator`
@@ -286,7 +277,14 @@ impl V2FlatFile {
 ///    absent.
 /// 7. Pack entries must have `signal_type: metrics`.
 /// 8. Inline (non-pack) entries must have `name`.
-/// 9. `after.op` must be `"<"` or `">"`.
+///
+/// Note: `after.ref` references are not resolved during parsing. Reference
+/// resolution, threshold validation, and timing computation happen during
+/// compilation (see the `after` compiler).
+///
+/// Note: `after.op` is deserialized as an [`AfterOp`](super::AfterOp) enum.
+/// Invalid operator values (anything other than `"<"` or `">"`) are rejected
+/// by serde during deserialization.
 ///
 /// # Errors
 ///
@@ -396,16 +394,6 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
         if !has_pack && entry.name.is_none() {
             return Err(V2ParseError::MissingName { index });
         }
-
-        // Validate after.op.
-        if let Some(ref after) = entry.after {
-            if after.op != "<" && after.op != ">" {
-                return Err(V2ParseError::InvalidAfterOp {
-                    index,
-                    op: after.op.clone(),
-                });
-            }
-        }
     }
 
     Ok(())
@@ -478,7 +466,7 @@ fn is_valid_id(id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AfterClause, V2Defaults};
+    use super::super::{AfterClause, AfterOp, V2Defaults};
     use super::*;
 
     // ======================================================================
@@ -614,7 +602,7 @@ scenarios:
             .as_ref()
             .expect("second entry must have after clause");
         assert_eq!(after.ref_id, "cpu_signal");
-        assert_eq!(after.op, ">");
+        assert_eq!(after.op, AfterOp::GreaterThan);
         assert!((after.value - 90.0).abs() < f64::EPSILON);
         assert!(after.delay.is_none());
     }
@@ -650,7 +638,7 @@ scenarios:
             .after
             .as_ref()
             .expect("must have after clause");
-        assert_eq!(after.op, "<");
+        assert_eq!(after.op, AfterOp::LessThan);
         assert_eq!(after.delay.as_deref(), Some("5s"));
     }
 
@@ -1018,7 +1006,7 @@ scenarios:
     }
 
     #[test]
-    fn invalid_after_op_returns_error() {
+    fn invalid_after_op_returns_yaml_error() {
         let yaml = r#"
 version: 2
 scenarios:
@@ -1042,8 +1030,13 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("invalid after op must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidAfterOp { index: 1, ref op } if op == "=="),
-            "expected InvalidAfterOp at index 1 with op '==', got: {err}"
+            matches!(err, V2ParseError::Yaml(_)),
+            "expected Yaml error for invalid op, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("=="),
+            "error message should mention the invalid op '==', got: {msg}"
         );
     }
 
@@ -1124,12 +1117,6 @@ scenarios:
 
         let err = V2ParseError::InvalidId("bad.id".to_string());
         assert!(err.to_string().contains("bad.id"));
-
-        let err = V2ParseError::InvalidAfterOp {
-            index: 1,
-            op: "==".to_string(),
-        };
-        assert!(err.to_string().contains("=="));
     }
 
     // ======================================================================
@@ -1469,6 +1456,97 @@ scenarios:
         assert_eq!(
             err.to_string(),
             "entry 1: signal_type 'metrics' must not have 'log_generator' field"
+        );
+    }
+
+    // ======================================================================
+    // Edge cases (NOTE 2)
+    // ======================================================================
+
+    #[test]
+    fn version_zero_returns_invalid_version() {
+        let yaml = r#"
+version: 0
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse_v2(yaml).expect_err("version 0 must fail");
+        assert!(
+            matches!(err, V2ParseError::InvalidVersion(0)),
+            "expected InvalidVersion(0), got: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_scenarios_list_parses_successfully() {
+        // An empty scenarios array is syntactically valid at the parse level.
+        // Semantic rejection (no runnable entries) is deferred to compilation.
+        let yaml = r#"
+version: 2
+scenarios: []
+"#;
+
+        let file = parse_v2(yaml).expect("empty scenarios list should parse");
+        assert_eq!(file.version, 2);
+        assert!(file.scenarios.is_empty());
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_typo() {
+        // A misspelling of `signal_type` as `signal_typ` must produce a YAML
+        // parse error (via deny_unknown_fields), not silently default to None.
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_typ: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse_v2(yaml).expect_err("typo in field name must fail");
+        assert!(
+            matches!(err, V2ParseError::Yaml(_)),
+            "expected Yaml error for unknown field, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("signal_typ"),
+            "error should mention the typo 'signal_typ', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn shorthand_with_defaults_key_is_rejected() {
+        // The flat (shorthand) format does not have a `defaults` field.
+        // Since V2FlatFile uses deny_unknown_fields, including `defaults:`
+        // in a flat file must produce a YAML parse error.
+        let yaml = r#"
+version: 2
+name: cpu_usage
+signal_type: metrics
+generator:
+  type: constant
+  value: 1.0
+defaults:
+  rate: 10
+"#;
+
+        let err = parse_v2(yaml).expect_err("defaults in shorthand must fail");
+        assert!(
+            matches!(err, V2ParseError::Yaml(_)),
+            "expected Yaml error for defaults in shorthand, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("defaults"),
+            "error should mention 'defaults', got: {msg}"
         );
     }
 }

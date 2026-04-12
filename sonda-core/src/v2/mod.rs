@@ -5,6 +5,10 @@
 //! evaluation). The [`V2ScenarioFile`] is a direct, faithful representation of
 //! the YAML on disk.
 //!
+//! All types use `deny_unknown_fields` to reject YAML typos at parse time.
+//! This is a deliberate strictness choice — adding new schema fields requires
+//! updating these types.
+//!
 //! # Submodules
 //!
 //! - [`parse`] — YAML deserialization, schema validation, and version detection.
@@ -181,6 +185,22 @@ pub struct V2Entry {
     pub seed: Option<u64>,
 }
 
+/// Comparison operator for an [`AfterClause`] threshold check.
+///
+/// Serde maps `"<"` to [`LessThan`](AfterOp::LessThan) and `">"` to
+/// [`GreaterThan`](AfterOp::GreaterThan). Any other value is rejected at
+/// deserialization time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+pub enum AfterOp {
+    /// The referenced signal's value must be less than the threshold.
+    #[cfg_attr(feature = "config", serde(rename = "<"))]
+    LessThan,
+    /// The referenced signal's value must be greater than the threshold.
+    #[cfg_attr(feature = "config", serde(rename = ">"))]
+    GreaterThan,
+}
+
 /// Structured after-clause expressing a causal dependency on another signal.
 ///
 /// When present on a [`V2Entry`], the entry will not start emitting until the
@@ -209,7 +229,7 @@ pub struct AfterClause {
     #[cfg_attr(feature = "config", serde(rename = "ref"))]
     pub ref_id: String,
     /// Comparison operator: `"<"` or `">"`.
-    pub op: String,
+    pub op: AfterOp,
     /// Threshold value for the comparison.
     pub value: f64,
     /// Optional additional delay after the condition is met.

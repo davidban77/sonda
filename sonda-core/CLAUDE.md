@@ -87,7 +87,7 @@ src/
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── v2/
 │   ├── mod.rs          ← v2 scenario format AST types: V2ScenarioFile, V2Defaults,
-│   │                      V2Entry, AfterClause. Pre-compilation representation of
+│   │                      V2Entry, AfterClause, AfterOp. Pre-compilation representation of
 │   │                      version 2 YAML files. No runtime integration — parsing only.
 │   └── parse.rs        ← YAML parser and structural validation for v2 files.
 │                          parse_v2(), detect_version(), V2ParseError.

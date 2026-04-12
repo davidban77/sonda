@@ -16,7 +16,7 @@
 //! files on the filesystem, discovered by the CLI via a search path. See the
 //! `sonda` CLI crate for catalog/discovery logic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::EncoderConfig;
@@ -149,8 +149,11 @@ pub struct MetricOverride {
     #[cfg_attr(feature = "config", serde(default))]
     pub generator: Option<GeneratorConfig>,
     /// Additional labels merged on top of all other label sources.
+    ///
+    /// Uses `BTreeMap` for deterministic serialization order, consistent with
+    /// the v2 AST label types.
     #[cfg_attr(feature = "config", serde(default))]
-    pub labels: Option<HashMap<String, String>>,
+    pub labels: Option<BTreeMap<String, String>>,
 }
 
 #[cfg(feature = "config")]
@@ -654,7 +657,7 @@ mod tests {
             }],
         };
 
-        let mut override_labels = HashMap::new();
+        let mut override_labels = BTreeMap::new();
         override_labels.insert("extra".to_string(), "value".to_string());
         override_labels.insert("job".to_string(), "overridden".to_string());
 
