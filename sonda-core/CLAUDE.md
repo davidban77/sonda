@@ -86,10 +86,11 @@ src/
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
 ├── compiler/
-│   ├── mod.rs          ← v2 scenario format AST types: ScenarioFile, Defaults,
-│   │                      Entry, AfterClause, AfterOp. Pre-compilation representation of
-│   │                      version 2 YAML files. No runtime integration — parsing only.
-│   └── parse.rs        ← YAML parser and structural validation for v2 files.
+│   ├── mod.rs          ← Scenario format AST types, parser, and validation:
+│   │                      ScenarioFile, Defaults, Entry, AfterClause, AfterOp.
+│   │                      Pre-compilation representation of scenario YAML files.
+│   │                      No runtime integration — parsing only.
+│   └── parse.rs        ← YAML parser and structural validation.
 │                          parse_v2(), detect_version(), ParseError.
 │                          Single-signal shorthand support. Feature-gated (config).
 └── config/

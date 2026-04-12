@@ -1,3 +1,4 @@
+#![cfg(feature = "config")]
 //! Integration tests that parse the YAML fixtures in `tests/fixtures/v2-examples/`.
 //!
 //! Each fixture file serves dual duty: human-readable documentation of what the

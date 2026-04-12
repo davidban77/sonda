@@ -1059,6 +1059,13 @@ scenarios:
         assert_eq!(detect_version(yaml), None);
     }
 
+    #[test]
+    fn detect_version_unparseable_yaml_returns_none() {
+        // Malformed YAML must surface as `None` rather than panicking — callers
+        // rely on `detect_version` as a lightweight pre-flight probe.
+        assert_eq!(detect_version("not valid yaml {"), None);
+    }
+
     // ======================================================================
     // ID validation unit tests
     // ======================================================================
@@ -1517,6 +1524,96 @@ scenarios:
             msg.contains("signal_typ"),
             "error should mention the typo 'signal_typ', got: {msg}"
         );
+    }
+
+    // ======================================================================
+    // Shorthand signal_type inference tests
+    //
+    // When `signal_type` is omitted from a flat (single-signal) file,
+    // `FlatFile::into_scenario_file` infers it from which generator-family
+    // field is present:
+    //   - `distribution` + `quantiles`   → "summary"
+    //   - `distribution` (no quantiles)  → "histogram"
+    //   - `log_generator`                → "logs"
+    //   - else                           → "metrics"
+    // ======================================================================
+
+    #[test]
+    fn shorthand_infers_histogram_from_distribution_and_buckets() {
+        // No explicit `signal_type` — presence of `distribution` without
+        // `quantiles` must infer `histogram`.
+        let yaml = r#"
+version: 2
+name: http_request_duration_seconds
+rate: 1
+distribution:
+  type: exponential
+  rate: 10.0
+buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
+observations_per_tick: 100
+seed: 42
+"#;
+
+        let file = parse_v2(yaml).expect("must parse histogram shorthand");
+        assert_eq!(file.scenarios.len(), 1);
+        let entry = &file.scenarios[0];
+        assert_eq!(entry.signal_type, "histogram");
+        assert_eq!(entry.name.as_deref(), Some("http_request_duration_seconds"));
+        assert!(entry.distribution.is_some());
+        assert!(entry.buckets.is_some());
+        assert!(entry.quantiles.is_none());
+    }
+
+    #[test]
+    fn shorthand_infers_summary_from_distribution_and_quantiles() {
+        // No explicit `signal_type` — presence of `distribution` with
+        // `quantiles` must infer `summary`.
+        let yaml = r#"
+version: 2
+name: rpc_duration_seconds
+rate: 1
+distribution:
+  type: normal
+  mean: 0.1
+  stddev: 0.02
+quantiles: [0.5, 0.9, 0.99]
+observations_per_tick: 200
+seed: 99
+"#;
+
+        let file = parse_v2(yaml).expect("must parse summary shorthand");
+        assert_eq!(file.scenarios.len(), 1);
+        let entry = &file.scenarios[0];
+        assert_eq!(entry.signal_type, "summary");
+        assert!(entry.distribution.is_some());
+        assert!(entry.quantiles.is_some());
+    }
+
+    #[test]
+    fn shorthand_infers_logs_from_log_generator() {
+        // No explicit `signal_type` — presence of `log_generator` must
+        // infer `logs`.
+        let yaml = r#"
+version: 2
+name: syslog
+rate: 5
+log_generator:
+  type: template
+  templates:
+    - message: "host={hostname} value={value}"
+      field_pools:
+        hostname: ["rtr-01", "rtr-02"]
+        value: ["50", "90"]
+  seed: 42
+"#;
+
+        let file = parse_v2(yaml).expect("must parse logs shorthand");
+        assert_eq!(file.scenarios.len(), 1);
+        let entry = &file.scenarios[0];
+        assert_eq!(entry.signal_type, "logs");
+        assert_eq!(entry.name.as_deref(), Some("syslog"));
+        assert!(entry.log_generator.is_some());
+        assert!(entry.generator.is_none());
     }
 
     #[test]
