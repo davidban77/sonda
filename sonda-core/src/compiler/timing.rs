@@ -100,6 +100,23 @@ pub enum TimingError {
         /// Human-readable description of the problem.
         message: String,
     },
+    /// A duration parameter on an operational alias (e.g. `flap.up_duration`
+    /// or `saturation.time_to_saturate`) failed to parse.
+    ///
+    /// Surfaced as a distinct variant — rather than folded into
+    /// [`TimingError::OutOfRange`] — so the compiler can map it to
+    /// [`super::compile_after::CompileAfterError::InvalidDuration`] with the
+    /// offending field name preserved, matching how top-level duration
+    /// fields like `after.delay` and `phase_offset` are reported.
+    InvalidDuration {
+        /// Which alias parameter carried the bad value
+        /// (e.g. `"flap.up_duration"`).
+        field: &'static str,
+        /// The offending string as written.
+        input: String,
+        /// The underlying parse error message.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TimingError {
@@ -108,6 +125,11 @@ impl fmt::Display for TimingError {
             TimingError::OutOfRange { message }
             | TimingError::Ambiguous { message }
             | TimingError::Unsupported { message } => write!(f, "{message}"),
+            TimingError::InvalidDuration {
+                field,
+                input,
+                reason,
+            } => write!(f, "invalid duration '{input}' in {field}: {reason}"),
         }
     }
 }
@@ -437,9 +459,12 @@ pub fn steady_crossing_secs() -> Result<f64, TimingError> {
 /// - `threshold`: threshold value from the after clause.
 /// - `start`: generator `start` parameter (defaults to `0.0` when absent).
 /// - `step_size`: generator `step_size` parameter.
-/// - `max`: optional wrap-around ceiling. When set and the crossing would
-///   occur at or after the wrap, the signal never reaches the threshold
-///   without wrapping — reported as [`TimingError::OutOfRange`].
+/// - `max`: optional wrap-around ceiling. The runtime only wraps when
+///   `max > start`; a `max` value at or below `start` is inactive and
+///   growth is unbounded, so this function mirrors that behaviour. When
+///   `max > start` and the crossing would occur at or after the wrap, the
+///   signal never reaches the threshold without wrapping — reported as
+///   [`TimingError::OutOfRange`].
 /// - `rate`: scenario rate (events per second) — used to convert tick
 ///   count to seconds.
 ///
@@ -506,22 +531,28 @@ pub fn step_crossing_secs(
             };
 
             if let Some(max_val) = max {
-                // Wrap-around lives below the threshold.
-                if max_val <= threshold {
-                    return Err(TimingError::OutOfRange {
-                        message: format!(
-                            "step wraps at {max_val} which is at or below threshold {threshold}; \
-                             the signal never exceeds it"
-                        ),
-                    });
-                }
-                let crossing_value = start + ticks * step_size;
-                if crossing_value >= max_val {
-                    return Err(TimingError::OutOfRange {
-                        message: format!(
-                            "step wraps at {max_val} before reaching threshold {threshold}"
-                        ),
-                    });
+                // The runtime (see StepGenerator::value) only wraps when
+                // `max_val > start`. If `max_val <= start` the configured
+                // max is inactive — growth is unbounded and the normal
+                // step math below applies unchanged.
+                if max_val > start {
+                    // Wrap-around lives below the threshold.
+                    if max_val <= threshold {
+                        return Err(TimingError::OutOfRange {
+                            message: format!(
+                                "step wraps at {max_val} which is at or below threshold \
+                                 {threshold}; the signal never exceeds it"
+                            ),
+                        });
+                    }
+                    let crossing_value = start + ticks * step_size;
+                    if crossing_value >= max_val {
+                        return Err(TimingError::OutOfRange {
+                            message: format!(
+                                "step wraps at {max_val} before reaching threshold {threshold}"
+                            ),
+                        });
+                    }
                 }
             }
 
@@ -536,17 +567,36 @@ pub fn step_crossing_secs(
 
 /// Compute the crossing time for a **sequence** generator.
 ///
-/// Scans `values` in order and returns the tick index (multiplied by the
-/// tick interval `1.0 / rate`) of the first element that satisfies the
-/// comparison. When `repeat` is `false` and no element satisfies the
-/// condition, the generator holds its last value forever — if that last
-/// value satisfies the condition, the crossing happens at the tick of the
-/// last element; otherwise the threshold is never crossed.
+/// Scans `values` in order once and returns the tick index (multiplied by
+/// the tick interval `1.0 / rate`) of the first element that satisfies
+/// the comparison. If no element matches, returns
+/// [`TimingError::OutOfRange`].
+///
+/// # Why `repeat` is ignored
+///
+/// The `repeat` flag is part of the generator's runtime contract — it
+/// controls what the generator emits *after* the sequence is exhausted —
+/// but it does not change which values are scanned for a crossing:
+///
+/// - If `repeat == true`, the sequence cycles forever. The same set of
+///   values is re-emitted on every cycle, so if none of them crosses the
+///   threshold in one pass, none ever will.
+/// - If `repeat == false`, the runtime holds the last value indefinitely
+///   after the sequence ends. "Holding" the tail is not a *crossing* — it
+///   is at most a steady-state satisfaction — so the crossing-time math
+///   still considers only the explicit values listed in `values`.
+///
+/// Either way the compiler's answer is determined by the first matching
+/// element inside `values`. A parameter name is retained on the signature
+/// to keep the call sites in `compile_after::crossing_secs` uniform with
+/// the [`GeneratorConfig::Sequence`] layout.
 ///
 /// # Errors
 ///
-/// - [`TimingError::OutOfRange`] when `values` is empty or no value
-///   satisfies the condition (and the tail value also fails).
+/// - [`TimingError::OutOfRange`] when `values` is empty or no element
+///   satisfies the comparison.
+/// - [`TimingError::Ambiguous`] when `values[0]` already satisfies the
+///   comparison (the crossing happens at `t=0`).
 pub fn sequence_crossing_secs(
     op: Operator,
     threshold: f64,
@@ -954,6 +1004,18 @@ mod tests {
         let t = step_crossing_secs(Operator::GreaterThan, 25.0, 0.0, 10.0, Some(100.0), 1.0)
             .expect("should succeed");
         assert!((t - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn step_greater_than_with_inactive_max() {
+        // max <= start means wrap is inactive at runtime (StepGenerator only
+        // wraps when max > start); threshold 50 must still be reachable via
+        // unbounded step growth: ceil((50 - 0) / 10) = 5 ticks, but the
+        // crossing value (5*10=50) is not strictly > 50, so the math bumps
+        // one more tick -> 6 ticks at rate=1 -> 6.0s.
+        let t = step_crossing_secs(Operator::GreaterThan, 50.0, 0.0, 10.0, Some(-5.0), 1.0)
+            .expect("inactive max should not reject the crossing");
+        assert!((t - 6.0).abs() < f64::EPSILON);
     }
 
     // -----------------------------------------------------------------------

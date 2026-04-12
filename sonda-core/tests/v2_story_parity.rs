@@ -6,7 +6,8 @@
 //! input must produce identical `phase_offset` values on equivalent
 //! signals. This test encodes the expected offsets for the built-in
 //! `stories/link-failover.yaml` story and asserts the v2 compile produces
-//! them bit-identically.
+//! them to millisecond precision — the common precision to which both v1
+//! and v2 round-trip their offsets through `format_duration_secs`.
 //!
 //! Runtime parity (identical stdout output for the whole story) is PR 6
 //! scope; this file asserts compile-time equivalence only.

@@ -1,11 +1,11 @@
 # Sonda v2 Validation Matrix — Status
 
-Tracks all 162 validation checks for the v2 refactor.
+Tracks all 178 validation checks for the v2 refactor.
 **Every row must pass before the integration branch merges to `main`. No exceptions.**
 
-Sections 1-15 come from the original v2 feature parity matrix (148 rows).
+Sections 1-15 come from the original v2 feature parity matrix (163 rows).
 Sections 16-17 are parity bridge tests added to guarantee that every built-in
-scenario and pack produces identical output in v2 format (14 rows).
+scenario and pack produces identical output in v2 format (15 rows).
 
 **Legend:** Pass | Fail | Not Tested | N/A
 
@@ -113,7 +113,7 @@ scenario and pack produces identical output in v2 format (14 rows).
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
 | 8.1 | phase_offset | Not Tested | PR 6 | |
-| 8.2 | clock_group | Not Tested | PR 5/6 | |
+| 8.2 | clock_group | Pass | PR 5 | Compile-time clock-group assignment validated (auto-naming, explicit value propagation, conflict detection); runtime observability (per-entry runtime log line / scheduler coordination) lands in PR 6 |
 | 8.3 | Concurrent execution | Not Tested | PR 6 | |
 | 8.4 | Independent completion | Not Tested | PR 6 | |
 | 8.5 | --dry-run on multi-scenario | Not Tested | PR 7 | Enhanced for v2 |

@@ -81,9 +81,11 @@
 //!
 //! A Kahn topological sort on the directed dependency graph yields the
 //! resolution order. When the sort's output covers fewer entries than the
-//! graph, a DFS with gray/black coloring reconstructs the cycle path
-//! (e.g. `["A", "B", "C", "A"]`) and surfaces it via
-//! [`CompileAfterError::CircularDependency`].
+//! graph, a recursive DFS with white/gray/black coloring reconstructs the
+//! cycle path (e.g. `["A", "B", "C", "A"]`) and surfaces it via
+//! [`CompileAfterError::CircularDependency`]. Back-edge detection is
+//! driven by `color[dep] == Gray`; the path-reconstruction vector records
+//! the current ancestor chain so the cycle can be sliced out directly.
 //!
 //! # Cross-signal-type support (§3.5, matrix row 11.11)
 //!
@@ -93,6 +95,30 @@
 //! analytical form, which the non-metric signal types do not have; the
 //! pass rejects such targets with
 //! [`CompileAfterError::NonMetricsTarget`].
+//!
+//! # Pack references
+//!
+//! Pack entries are not themselves referenceable — the expand pass does
+//! not emit an [`ExpandedEntry`] whose `id` matches the bare pack entry
+//! id (e.g. `B`). Only the individual sub-signals materialize as
+//! addressable entries, using the dotted form `{entry}.{metric}` (and
+//! `{entry}.{metric}#{spec_index}` for duplicate-name packs). Writing
+//! `after.ref: B` against a pack entry therefore fails with
+//! [`CompileAfterError::UnknownRef`]; the `available` list in the
+//! diagnostic shows the valid dotted ids. To attach `after:` to the whole
+//! pack, set it on the pack entry itself — the expand pass propagates it
+//! to every sub-signal — or use a specific dotted metric path.
+//!
+//! # Clock-group string equality
+//!
+//! Clock-group comparisons use exact string equality after filtering out
+//! empty strings: `Some("")` is treated as "no explicit value" and
+//! participates in auto-naming, while `Some("x")` and `Some("x ")` are
+//! considered distinct (trailing whitespace is significant). Mixing a
+//! blank and a concrete value inside one component resolves to the
+//! concrete value without error; mixing two different non-empty values
+//! (including whitespace variants) triggers
+//! [`CompileAfterError::ConflictingClockGroup`].
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -262,20 +288,6 @@ pub enum CompileAfterError {
         ref_id: String,
         /// The target's actual signal type.
         signal_type: String,
-    },
-
-    /// The target of an `after.ref` has no generator (e.g. a metrics entry
-    /// without a generator field, which the parser allows for future
-    /// extensibility).
-    #[error(
-        "entry '{source_id}': after.ref '{ref_id}' has no generator configured; \
-         cannot compute crossing time"
-    )]
-    MissingGenerator {
-        /// The dependent entry.
-        source_id: String,
-        /// The referenced target.
-        ref_id: String,
     },
 
     /// A duration string on `after.delay`, the entry's `phase_offset`, or
@@ -507,14 +519,19 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             });
         }
 
-        let generator =
-            target
-                .generator
-                .as_ref()
-                .ok_or_else(|| CompileAfterError::MissingGenerator {
-                    source_id: source_id.clone(),
-                    ref_id: clause.ref_id.clone(),
-                })?;
+        // Metrics non-pack inline entries are required to carry a `generator`
+        // by the parser (`ParseError::MissingGeneratorOrPack`), and pack
+        // expansion always materializes a generator on every sub-signal
+        // (falling back to `constant(0)` when the pack spec has none).
+        // Combined with the §3.5 metrics-target check above, a metrics
+        // target with `generator: None` cannot occur at this point.
+        let generator = target.generator.as_ref().unwrap_or_else(|| {
+            unreachable!(
+                "metrics target '{ref_id}' has no generator — parser and expand \
+                 pass both guarantee metrics entries always carry one",
+                ref_id = clause.ref_id
+            )
+        });
 
         let op = operator_from(&clause.op);
         let crossing = crossing_secs(generator, op, clause.value, target.rate).map_err(|err| {
@@ -707,8 +724,9 @@ fn crossing_secs(
             up_value,
             down_value,
         } => {
-            let up_secs = duration_or_default(up_duration.as_deref(), 10.0)?;
-            let down_secs = duration_or_default(down_duration.as_deref(), 5.0)?;
+            let up_secs = duration_or_default(up_duration.as_deref(), 10.0, "flap.up_duration")?;
+            let down_secs =
+                duration_or_default(down_duration.as_deref(), 5.0, "flap.down_duration")?;
             let up_val = up_value.unwrap_or(1.0);
             let down_val = down_value.unwrap_or(0.0);
             timing::flap_crossing_secs(op, threshold, up_secs, down_secs, up_val, down_val)
@@ -720,7 +738,11 @@ fn crossing_secs(
         } => {
             let bl = baseline.unwrap_or(0.0);
             let cl = ceiling.unwrap_or(100.0);
-            let period = duration_or_default(time_to_saturate.as_deref(), 5.0 * 60.0)?;
+            let period = duration_or_default(
+                time_to_saturate.as_deref(),
+                5.0 * 60.0,
+                "saturation.time_to_saturate",
+            )?;
             sawtooth_crossing_secs(op, threshold, bl, cl, period)
         }
         GeneratorConfig::Leak {
@@ -730,7 +752,11 @@ fn crossing_secs(
         } => {
             let bl = baseline.unwrap_or(0.0);
             let cl = ceiling.unwrap_or(100.0);
-            let period = duration_or_default(time_to_ceiling.as_deref(), 10.0 * 60.0)?;
+            let period = duration_or_default(
+                time_to_ceiling.as_deref(),
+                10.0 * 60.0,
+                "leak.time_to_ceiling",
+            )?;
             sawtooth_crossing_secs(op, threshold, bl, cl, period)
         }
         GeneratorConfig::Degradation {
@@ -741,7 +767,11 @@ fn crossing_secs(
         } => {
             let bl = baseline.unwrap_or(0.0);
             let cl = ceiling.unwrap_or(100.0);
-            let period = duration_or_default(time_to_degrade.as_deref(), 5.0 * 60.0)?;
+            let period = duration_or_default(
+                time_to_degrade.as_deref(),
+                5.0 * 60.0,
+                "degradation.time_to_degrade",
+            )?;
             sawtooth_crossing_secs(op, threshold, bl, cl, period)
         }
         GeneratorConfig::Steady { .. } => timing::steady_crossing_secs(),
@@ -753,7 +783,11 @@ fn crossing_secs(
         } => {
             let bl = baseline.unwrap_or(0.0);
             let height = spike_height.unwrap_or(100.0);
-            let dur = duration_or_default(spike_duration.as_deref(), 10.0)?;
+            let dur = duration_or_default(
+                spike_duration.as_deref(),
+                10.0,
+                "spike_event.spike_duration",
+            )?;
             spike_crossing_secs(op, threshold, bl, height, dur)
         }
     }
@@ -811,6 +845,16 @@ fn timing_to_error(
             op,
             value,
             reason: message,
+        },
+        TimingError::InvalidDuration {
+            field,
+            input,
+            reason,
+        } => CompileAfterError::InvalidDuration {
+            source_id: source_id.to_string(),
+            field,
+            input,
+            reason,
         },
     }
 }
@@ -923,24 +967,24 @@ fn assign_clock_groups(
 /// Build a deterministic `chain_{lowest_lex_id}` name from a component's
 /// member indices.
 ///
-/// Prefers ids over `<anonymous>` labels: if any member has `Some(id)`
-/// the auto-name uses the lex-smallest id among them. If the entire
-/// component is anonymous (shouldn't happen since they can't be
-/// `after`-referenced, but we guard it), fall back to a synthesized
-/// name built from the smallest entry index so the output stays
-/// deterministic.
+/// Every multi-member component reaches this helper via an `after` edge,
+/// and `after.ref` can only target an entry that carries an `id` (that's
+/// how reference resolution works in [`build_id_index`]). Therefore the
+/// component always has at least one `id`-bearing member, and
+/// [`Iterator::next`] on the sorted id list is guaranteed to be `Some`.
 fn auto_chain_name(members: &[usize], entries: &[ExpandedEntry]) -> String {
     let mut ids: Vec<&str> = members
         .iter()
         .filter_map(|&i| entries[i].id.as_deref())
         .collect();
     ids.sort();
-    if let Some(&first) = ids.first() {
-        format!("chain_{first}")
-    } else {
-        let min_idx = *members.iter().min().expect("non-empty component");
-        format!("chain_anonymous_{min_idx}")
-    }
+    let first = ids.first().unwrap_or_else(|| {
+        unreachable!(
+            "multi-entry component has no id-bearing member — `after.ref` \
+             resolution guarantees every linked entry carries an id"
+        )
+    });
+    format!("chain_{first}")
 }
 
 // ---------------------------------------------------------------------------
@@ -964,27 +1008,26 @@ fn find_cycle(entries: &[ExpandedEntry], id_to_idx: &BTreeMap<&str, usize>) -> V
     let n = entries.len();
     let mut color = vec![Color::White; n];
     let mut stack: Vec<usize> = Vec::new();
-    let mut on_stack = vec![false; n];
 
-    // Iterative DFS via an explicit recursion stack so we can reconstruct
-    // the cycle path without relying on the native call stack.
+    // Recursive DFS with a path-reconstruction vector: `stack` records the
+    // current ancestor chain so that on a back-edge we can slice out the
+    // cycle from `dep` to `node` without re-traversing the graph. Back-edge
+    // detection is driven by `color[dep] == Gray`.
     fn dfs(
         node: usize,
         entries: &[ExpandedEntry],
         id_to_idx: &BTreeMap<&str, usize>,
         color: &mut [Color],
         stack: &mut Vec<usize>,
-        on_stack: &mut [bool],
     ) -> Option<Vec<usize>> {
         color[node] = Color::Gray;
         stack.push(node);
-        on_stack[node] = true;
 
         if let Some(clause) = &entries[node].after {
             if let Some(&dep) = id_to_idx.get(clause.ref_id.as_str()) {
                 match color[dep] {
                     Color::White => {
-                        if let Some(cycle) = dfs(dep, entries, id_to_idx, color, stack, on_stack) {
+                        if let Some(cycle) = dfs(dep, entries, id_to_idx, color, stack) {
                             return Some(cycle);
                         }
                     }
@@ -1001,21 +1044,13 @@ fn find_cycle(entries: &[ExpandedEntry], id_to_idx: &BTreeMap<&str, usize>) -> V
         }
 
         color[node] = Color::Black;
-        on_stack[node] = false;
         stack.pop();
         None
     }
 
     for start in 0..n {
         if color[start] == Color::White {
-            if let Some(cycle) = dfs(
-                start,
-                entries,
-                id_to_idx,
-                &mut color,
-                &mut stack,
-                &mut on_stack,
-            ) {
+            if let Some(cycle) = dfs(start, entries, id_to_idx, &mut color, &mut stack) {
                 return cycle
                     .into_iter()
                     .map(|i| source_label(&entries[i]).into_owned())
@@ -1058,15 +1093,28 @@ fn parse_duration_secs(
 }
 
 /// Resolve an optional duration string to seconds, falling back to
-/// `default_secs` when `None`. Wrapped as a [`TimingError`] so it can be
-/// consumed by the same machinery that handles other crossing errors.
-fn duration_or_default(input: Option<&str>, default_secs: f64) -> Result<f64, TimingError> {
+/// `default_secs` when `None`.
+///
+/// Parse failures surface as [`TimingError::InvalidDuration`] tagged with
+/// the alias parameter name (e.g. `"flap.up_duration"`). The outer
+/// [`timing_to_error`] then maps this straight into
+/// [`CompileAfterError::InvalidDuration`] — the same variant used for
+/// top-level `after.delay` and `phase_offset` parse failures — so users
+/// see consistent diagnostics for every duration-shaped input regardless
+/// of where it appears on the generator config.
+fn duration_or_default(
+    input: Option<&str>,
+    default_secs: f64,
+    field: &'static str,
+) -> Result<f64, TimingError> {
     match input {
         Some(s) => {
             parse_duration(s)
                 .map(|d| d.as_secs_f64())
-                .map_err(|e| TimingError::OutOfRange {
-                    message: format!("invalid duration '{s}': {e}"),
+                .map_err(|e| TimingError::InvalidDuration {
+                    field,
+                    input: s.to_string(),
+                    reason: e.to_string(),
                 })
         }
         None => Ok(default_secs),
@@ -1077,9 +1125,27 @@ fn duration_or_default(input: Option<&str>, default_secs: f64) -> Result<f64, Ti
 /// [`parse_duration`].
 ///
 /// The output prefers the shortest whole-unit representation (e.g. `"1m"`
-/// for 60s, `"1h"` for 3600s) and falls back to seconds or milliseconds
-/// for fractional values. Zero and negative inputs normalize to `"0s"`.
+/// for 60s, `"1h"` for 3600s) and falls back to fractional seconds for
+/// values that cannot round-trip through a whole-unit form. Zero and
+/// negative inputs normalize to `"0s"`. In debug builds a
+/// `debug_assert!` guards against non-finite or negative inputs — these
+/// can only arise from programmer error; the release fallback preserves
+/// the `"0s"` normalization so production code never panics.
+///
+/// # Parity with the v1 story CLI
+///
+/// v1's `story::format_duration_secs` emits sub-second values in the
+/// `"{ms}ms"` form (`0.5s` → `"500ms"`). This v2 helper emits fractional
+/// seconds directly (`0.5s` → `"0.5s"`). Both strings round-trip through
+/// [`parse_duration`] to the same [`std::time::Duration`], so parity
+/// tests that parse the output back to seconds — like
+/// `v2_story_parity::link_failover_compile_parity` — continue to agree.
+/// Call sites that need byte-identical output to v1 must format locally.
 pub fn format_duration_secs(secs: f64) -> String {
+    debug_assert!(
+        secs.is_finite() && secs >= 0.0,
+        "format_duration_secs received non-finite or negative value: {secs}"
+    );
     if !secs.is_finite() || secs <= 0.0 {
         return "0s".to_string();
     }
@@ -1684,6 +1750,57 @@ scenarios:
         assert!(compiled.entries[0].clock_group.is_none());
     }
 
+    #[test]
+    fn clock_group_empty_string_mixed_with_some_x_uses_x() {
+        // An explicit empty string is filtered out (treated as "no value")
+        // and the concrete `"x"` wins for the whole component — no conflict.
+        let yaml = r#"
+version: 2
+scenarios:
+  - id: alpha
+    signal_type: metrics
+    name: a
+    rate: 1
+    clock_group: ""
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: bravo
+    signal_type: metrics
+    name: b
+    rate: 1
+    clock_group: x
+    generator: { type: constant, value: 1 }
+    after: { ref: alpha, op: "<", value: 1 }
+"#;
+        let compiled = compile(yaml).expect("compile");
+        assert_eq!(compiled.entries[0].clock_group.as_deref(), Some("x"));
+        assert_eq!(compiled.entries[1].clock_group.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn clock_group_whitespace_variants_conflict() {
+        // `"x "` and `"x"` differ under string equality, so the component
+        // carries two distinct non-empty values -> ConflictingClockGroup.
+        let yaml = r#"
+version: 2
+scenarios:
+  - id: alpha
+    signal_type: metrics
+    name: a
+    rate: 1
+    clock_group: "x "
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: bravo
+    signal_type: metrics
+    name: b
+    rate: 1
+    clock_group: x
+    generator: { type: constant, value: 1 }
+    after: { ref: alpha, op: "<", value: 1 }
+"#;
+        let err = compile(yaml).expect_err("trailing whitespace must conflict");
+        assert!(err.contains("conflicting clock_group"), "got: {err}");
+    }
+
     // -----------------------------------------------------------------------
     // Cross-signal-type after (spec §3.5, matrix 11.11)
     // -----------------------------------------------------------------------
@@ -1736,7 +1853,7 @@ scenarios:
     // -----------------------------------------------------------------------
 
     #[test]
-    fn flap_alias_produces_same_offset_as_direct_sequence_math() {
+    fn flap_alias_produces_expected_up_duration_offset() {
         let yaml_alias = r#"
 version: 2
 scenarios:
@@ -1848,6 +1965,145 @@ scenarios:
     }
 
     // -----------------------------------------------------------------------
+    // InvalidDuration coverage — every code path that can construct this
+    // variant must have a dedicated regression test.
+    // -----------------------------------------------------------------------
+
+    /// `compile_after` is the first validation pass that actually parses
+    /// `after.delay` as a [`std::time::Duration`] — the parser only checks
+    /// the shape of the YAML. A malformed delay string must surface as
+    /// [`CompileAfterError::InvalidDuration`] tagged with
+    /// `field == "after.delay"`.
+    #[test]
+    fn invalid_after_delay_duration_surfaces_invalid_duration() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: a
+    rate: 1
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: follower
+    signal_type: metrics
+    name: b
+    rate: 1
+    generator: { type: constant, value: 1 }
+    after: { ref: src, op: "<", value: 1, delay: "10seconds" }
+"#;
+        let err = match compile_after_from_yaml(yaml) {
+            Err(e) => e,
+            Ok(_) => panic!("invalid delay must fail"),
+        };
+        match err {
+            CompileAfterError::InvalidDuration {
+                ref source_id,
+                field,
+                ref input,
+                ..
+            } => {
+                assert_eq!(source_id, "follower");
+                assert_eq!(field, "after.delay");
+                assert_eq!(input, "10seconds");
+            }
+            other => panic!("expected InvalidDuration, got {other:?}"),
+        }
+    }
+
+    /// `phase_offset: "0s"` is a well-known `parse_duration` rejection
+    /// (zero durations are invalid). Because the entry's `phase_offset`
+    /// is parsed inside `compile_after`, this must surface as
+    /// [`CompileAfterError::InvalidDuration`] with `field == "phase_offset"`.
+    #[test]
+    fn invalid_phase_offset_duration_surfaces_invalid_duration() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: a
+    rate: 1
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: follower
+    signal_type: metrics
+    name: b
+    rate: 1
+    phase_offset: "0s"
+    generator: { type: constant, value: 1 }
+    after: { ref: src, op: "<", value: 1 }
+"#;
+        let err = match compile_after_from_yaml(yaml) {
+            Err(e) => e,
+            Ok(_) => panic!("phase_offset 0s must fail"),
+        };
+        match err {
+            CompileAfterError::InvalidDuration {
+                ref source_id,
+                field,
+                ref input,
+                ..
+            } => {
+                assert_eq!(source_id, "follower");
+                assert_eq!(field, "phase_offset");
+                assert_eq!(input, "0s");
+            }
+            other => panic!("expected InvalidDuration, got {other:?}"),
+        }
+    }
+
+    /// Invalid alias duration params (e.g. `flap.up_duration: "oops"`)
+    /// must also route through `InvalidDuration` — historically these
+    /// were folded into `OutOfRangeThreshold` because `duration_or_default`
+    /// wrapped them as `TimingError::OutOfRange`. PR 5 review flagged the
+    /// mis-classification; this regression anchors the fix.
+    #[test]
+    fn invalid_alias_duration_surfaces_invalid_duration() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: a
+    rate: 1
+    generator: { type: flap, up_duration: "oops", down_duration: 30s }
+  - id: follower
+    signal_type: metrics
+    name: b
+    rate: 1
+    generator: { type: constant, value: 1 }
+    after: { ref: src, op: "<", value: 1 }
+"#;
+        let err = match compile_after_from_yaml(yaml) {
+            Err(e) => e,
+            Ok(_) => panic!("invalid flap.up_duration must fail"),
+        };
+        match err {
+            CompileAfterError::InvalidDuration {
+                ref source_id,
+                field,
+                ref input,
+                ..
+            } => {
+                assert_eq!(source_id, "follower");
+                assert_eq!(field, "flap.up_duration");
+                assert_eq!(input, "oops");
+            }
+            other => panic!("expected InvalidDuration, got {other:?}"),
+        }
+    }
+
+    /// Pipe YAML straight to `compile_after` and return the typed error
+    /// (rather than the stringified form the other helpers use). Enables
+    /// the `InvalidDuration` tests above to pattern-match on the variant
+    /// shape without redundant string assertions.
+    fn compile_after_from_yaml(yaml: &str) -> Result<CompiledFile, CompileAfterError> {
+        let parsed = parse(yaml).expect("parse");
+        let normalized = normalize(parsed).expect("normalize");
+        let expanded = expand(normalized, &InMemoryPackResolver::new()).expect("expand");
+        compile_after(expanded)
+    }
+
+    // -----------------------------------------------------------------------
     // format_duration_secs round-trip
     // -----------------------------------------------------------------------
 
@@ -1878,8 +2134,10 @@ scenarios:
     }
 
     #[test]
-    fn format_duration_zero_and_negative_normalize() {
+    fn format_duration_zero_normalizes() {
+        // Exact zero (and the `-0.0` variant, which compares equal to 0.0)
+        // both route through the `<= 0.0` fallback and emit `"0s"`.
         assert_eq!(format_duration_secs(0.0), "0s");
-        assert_eq!(format_duration_secs(-5.0), "0s");
+        assert_eq!(format_duration_secs(-0.0), "0s");
     }
 }
