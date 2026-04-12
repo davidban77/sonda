@@ -63,7 +63,7 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 162-row chec
 - Reviewer findings fixed: feature gates, trailing newlines, password masking
 
 ### PR 2 — Compiler AST and parser (2026-04-11, in review)
-- `sonda-core/src/compiler/mod.rs` — AST types: `V2ScenarioFile`, `V2Defaults`, `V2Entry`, `AfterClause`, `AfterOp`
+- `sonda-core/src/compiler/mod.rs` — AST types: `ScenarioFile`, `Defaults`, `Entry`, `AfterClause`, `AfterOp`
 - `sonda-core/src/compiler/parse.rs` — parser with 9 validation rules, `detect_version()`
 - Single-signal shorthand wrapping (inline + pack)
 - Deterministic parse dispatch via `ShapeProbe` (no ambiguous fallback)

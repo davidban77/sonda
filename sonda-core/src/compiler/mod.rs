@@ -2,7 +2,7 @@
 //!
 //! This module defines the parsed representation of a v2 scenario file before
 //! any compilation (defaults resolution, pack expansion, or after-clause
-//! evaluation). The [`V2ScenarioFile`] is a direct, faithful representation of
+//! evaluation). The [`ScenarioFile`] is a direct, faithful representation of
 //! the YAML on disk.
 //!
 //! All types use `deny_unknown_fields` to reject YAML typos at parse time.
@@ -41,14 +41,14 @@ use crate::sink::SinkConfig;
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
-pub struct V2ScenarioFile {
+pub struct ScenarioFile {
     /// Schema version. Must be `2`.
     pub version: u32,
     /// Optional shared defaults inherited by all entries.
     #[cfg_attr(feature = "config", serde(default))]
-    pub defaults: Option<V2Defaults>,
+    pub defaults: Option<Defaults>,
     /// One or more scenario entries (inline signals or pack references).
-    pub scenarios: Vec<V2Entry>,
+    pub scenarios: Vec<Entry>,
 }
 
 /// Shared defaults inherited by all entries in a v2 scenario file.
@@ -62,7 +62,7 @@ pub struct V2ScenarioFile {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
-pub struct V2Defaults {
+pub struct Defaults {
     /// Default event rate in events per second.
     #[cfg_attr(feature = "config", serde(default))]
     pub rate: Option<f64>,
@@ -95,7 +95,7 @@ pub struct V2Defaults {
     derive(serde::Serialize, serde::Deserialize),
     serde(deny_unknown_fields)
 )]
-pub struct V2Entry {
+pub struct Entry {
     /// Unique identifier for causal dependency references (`after.ref`).
     #[cfg_attr(feature = "config", serde(default))]
     pub id: Option<String>,
@@ -203,7 +203,7 @@ pub enum AfterOp {
 
 /// Structured after-clause expressing a causal dependency on another signal.
 ///
-/// When present on a [`V2Entry`], the entry will not start emitting until the
+/// When present on a [`Entry`], the entry will not start emitting until the
 /// referenced signal's latest value satisfies the comparison. Compilation of
 /// after-clauses into runtime timing is handled in a later phase (PR 5).
 ///

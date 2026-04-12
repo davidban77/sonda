@@ -4,7 +4,7 @@
 //! v2 parser accepts and rejects, and a machine-verified test that the parser
 //! actually behaves that way.
 
-use sonda_core::compiler::parse::{parse_v2, V2ParseError};
+use sonda_core::compiler::parse::{parse_v2, ParseError};
 
 /// Helper: read a fixture file relative to the crate root.
 fn fixture(name: &str) -> String {
@@ -137,7 +137,7 @@ fn invalid_wrong_version_rejected() {
     let yaml = fixture("invalid-wrong-version.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-wrong-version.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::InvalidVersion(1)),
+        matches!(err, ParseError::InvalidVersion(1)),
         "expected InvalidVersion(1), got: {err}"
     );
 }
@@ -147,7 +147,7 @@ fn invalid_duplicate_ids_rejected() {
     let yaml = fixture("invalid-duplicate-ids.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-duplicate-ids.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::DuplicateId(ref id) if id == "my_signal"),
+        matches!(err, ParseError::DuplicateId(ref id) if id == "my_signal"),
         "expected DuplicateId('my_signal'), got: {err}"
     );
 }
@@ -157,7 +157,7 @@ fn invalid_generator_and_pack_rejected() {
     let yaml = fixture("invalid-generator-and-pack.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-generator-and-pack.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::GeneratorAndPack { index: 0 }),
+        matches!(err, ParseError::GeneratorAndPack { index: 0 }),
         "expected GeneratorAndPack at index 0, got: {err}"
     );
 }
@@ -167,7 +167,7 @@ fn invalid_pack_with_logs_rejected() {
     let yaml = fixture("invalid-pack-with-logs.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-pack-with-logs.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::PackNotMetrics { index: 0 }),
+        matches!(err, ParseError::PackNotMetrics { index: 0 }),
         "expected PackNotMetrics at index 0, got: {err}"
     );
 }
@@ -177,7 +177,7 @@ fn invalid_missing_name_rejected() {
     let yaml = fixture("invalid-missing-name.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-missing-name.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::MissingName { index: 0 }),
+        matches!(err, ParseError::MissingName { index: 0 }),
         "expected MissingName at index 0, got: {err}"
     );
 }
@@ -187,7 +187,7 @@ fn invalid_bad_after_op_rejected() {
     let yaml = fixture("invalid-bad-after-op.yaml");
     let err = parse_v2(&yaml).expect_err("invalid-bad-after-op.yaml must fail");
     assert!(
-        matches!(err, V2ParseError::Yaml(_)),
+        matches!(err, ParseError::Yaml(_)),
         "expected Yaml error for invalid op, got: {err}"
     );
     let msg = err.to_string();

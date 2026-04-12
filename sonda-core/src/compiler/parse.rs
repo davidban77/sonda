@@ -1,7 +1,7 @@
 //! YAML parsing, schema validation, and version detection for v2 scenario files.
 //!
 //! The primary entry point is [`parse_v2`], which deserializes a YAML string
-//! into a [`V2ScenarioFile`] and runs structural validation (version check,
+//! into a [`ScenarioFile`] and runs structural validation (version check,
 //! id uniqueness, signal type validity, generator/pack mutual exclusion).
 //!
 //! [`detect_version`] is a lightweight helper that peeks at the `version` field
@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use super::{V2Entry, V2ScenarioFile};
+use super::{Entry, ScenarioFile};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -18,7 +18,7 @@ use super::{V2Entry, V2ScenarioFile};
 
 /// Errors produced during v2 scenario parsing and validation.
 #[derive(Debug, thiserror::Error)]
-pub enum V2ParseError {
+pub enum ParseError {
     /// The YAML could not be deserialized into the expected structure.
     #[error("YAML parse error: {0}")]
     Yaml(#[from] serde_yaml_ng::Error),
@@ -136,7 +136,7 @@ pub fn detect_version(yaml: &str) -> Option<u32> {
 /// format where the top-level YAML mapping contains entry fields directly.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct V2FlatFile {
+struct FlatFile {
     version: u32,
 
     // Defaults-level fields (also allowed at top level in shorthand)
@@ -202,9 +202,9 @@ struct V2FlatFile {
     seed: Option<u64>,
 }
 
-impl V2FlatFile {
-    /// Convert the flat representation into a [`V2ScenarioFile`] with a single entry.
-    fn into_scenario_file(self) -> V2ScenarioFile {
+impl FlatFile {
+    /// Convert the flat representation into a [`ScenarioFile`] with a single entry.
+    fn into_scenario_file(self) -> ScenarioFile {
         let signal_type = self.signal_type.unwrap_or_else(|| {
             if self.distribution.is_some() {
                 if self.quantiles.is_some() {
@@ -219,7 +219,7 @@ impl V2FlatFile {
             }
         });
 
-        let entry = V2Entry {
+        let entry = Entry {
             id: self.id,
             signal_type,
             name: self.name,
@@ -249,7 +249,7 @@ impl V2FlatFile {
             seed: self.seed,
         };
 
-        V2ScenarioFile {
+        ScenarioFile {
             version: self.version,
             defaults: None,
             scenarios: vec![entry],
@@ -288,12 +288,12 @@ impl V2FlatFile {
 ///
 /// # Errors
 ///
-/// Returns [`V2ParseError`] describing the first validation failure found.
-pub fn parse_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
+/// Returns [`ParseError`] describing the first validation failure found.
+pub fn parse_v2(yaml: &str) -> Result<ScenarioFile, ParseError> {
     let file = deserialize_v2(yaml)?;
 
     if file.version != 2 {
-        return Err(V2ParseError::InvalidVersion(file.version));
+        return Err(ParseError::InvalidVersion(file.version));
     }
 
     validate_entries(&file.scenarios)?;
@@ -306,7 +306,7 @@ pub fn parse_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
 /// produces confusing errors when a canonical file has a structural mistake), we
 /// peek for the `scenarios` key first. If present, we parse as canonical. If
 /// absent, we parse as flat shorthand. No fallback.
-fn deserialize_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
+fn deserialize_v2(yaml: &str) -> Result<ScenarioFile, ParseError> {
     /// Minimal probe to detect whether the YAML contains a `scenarios` key.
     /// Intentionally does NOT use `deny_unknown_fields`.
     #[derive(serde::Deserialize)]
@@ -318,11 +318,11 @@ fn deserialize_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
 
     if probe.scenarios.is_some() {
         // Canonical format: top-level `scenarios` array.
-        let file: V2ScenarioFile = serde_yaml_ng::from_str(yaml)?;
+        let file: ScenarioFile = serde_yaml_ng::from_str(yaml)?;
         Ok(file)
     } else {
         // Flat single-signal shorthand: no `scenarios` key.
-        let flat: V2FlatFile = serde_yaml_ng::from_str(yaml)?;
+        let flat: FlatFile = serde_yaml_ng::from_str(yaml)?;
         Ok(flat.into_scenario_file())
     }
 }
@@ -332,23 +332,23 @@ fn deserialize_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
 // ---------------------------------------------------------------------------
 
 /// Validate all entries in a parsed scenario file.
-fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
+fn validate_entries(entries: &[Entry]) -> Result<(), ParseError> {
     let mut seen_ids = HashSet::new();
 
     for (index, entry) in entries.iter().enumerate() {
         // Validate id format and uniqueness.
         if let Some(ref id) = entry.id {
             if !is_valid_id(id) {
-                return Err(V2ParseError::InvalidId(id.clone()));
+                return Err(ParseError::InvalidId(id.clone()));
             }
             if !seen_ids.insert(id.clone()) {
-                return Err(V2ParseError::DuplicateId(id.clone()));
+                return Err(ParseError::DuplicateId(id.clone()));
             }
         }
 
         // Validate signal_type.
         if !VALID_SIGNAL_TYPES.contains(&entry.signal_type.as_str()) {
-            return Err(V2ParseError::InvalidSignalType {
+            return Err(ParseError::InvalidSignalType {
                 index,
                 signal_type: entry.signal_type.clone(),
             });
@@ -363,21 +363,21 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
         let is_logs = entry.signal_type == "logs";
 
         if (has_generator || has_log_generator || has_distribution) && has_pack {
-            return Err(V2ParseError::GeneratorAndPack { index });
+            return Err(ParseError::GeneratorAndPack { index });
         }
 
         // For non-pack entries, validate the correct generator variant is present.
         if !has_pack {
             if is_distribution_type {
                 if !has_distribution {
-                    return Err(V2ParseError::MissingGeneratorOrPack { index });
+                    return Err(ParseError::MissingGeneratorOrPack { index });
                 }
             } else if is_logs {
                 if !has_log_generator {
-                    return Err(V2ParseError::MissingGeneratorOrPack { index });
+                    return Err(ParseError::MissingGeneratorOrPack { index });
                 }
             } else if !has_generator {
-                return Err(V2ParseError::MissingGeneratorOrPack { index });
+                return Err(ParseError::MissingGeneratorOrPack { index });
             }
         }
 
@@ -387,12 +387,12 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
 
         // Pack entries must be metrics.
         if has_pack && entry.signal_type != "metrics" {
-            return Err(V2ParseError::PackNotMetrics { index });
+            return Err(ParseError::PackNotMetrics { index });
         }
 
         // Inline (non-pack) entries must have name.
         if !has_pack && entry.name.is_none() {
-            return Err(V2ParseError::MissingName { index });
+            return Err(ParseError::MissingName { index });
         }
     }
 
@@ -408,10 +408,7 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
 /// - `pack` (any signal_type with `pack`): forbids all three generator fields
 ///   (already checked upstream, but pack entries also pass through here safely
 ///   since they must be `metrics` and having no extra fields is fine)
-fn validate_no_unexpected_generator_fields(
-    entry: &V2Entry,
-    index: usize,
-) -> Result<(), V2ParseError> {
+fn validate_no_unexpected_generator_fields(entry: &Entry, index: usize) -> Result<(), ParseError> {
     let st = entry.signal_type.as_str();
 
     // Build list of fields that must NOT be present for this signal_type.
@@ -439,7 +436,7 @@ fn validate_no_unexpected_generator_fields(
 
     for &(field, present) in forbidden {
         if present {
-            return Err(V2ParseError::UnexpectedField {
+            return Err(ParseError::UnexpectedField {
                 index,
                 signal_type: entry.signal_type.clone(),
                 field: field.to_string(),
@@ -466,7 +463,7 @@ fn is_valid_id(id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AfterClause, AfterOp, V2Defaults};
+    use super::super::{AfterClause, AfterOp, Defaults};
     use super::*;
 
     // ======================================================================
@@ -811,7 +808,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("version 1 must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidVersion(1)),
+            matches!(err, ParseError::InvalidVersion(1)),
             "expected InvalidVersion(1), got: {err}"
         );
     }
@@ -829,7 +826,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("missing version must fail");
         assert!(
-            matches!(err, V2ParseError::Yaml(_)),
+            matches!(err, ParseError::Yaml(_)),
             "expected Yaml error, got: {err}"
         );
     }
@@ -855,7 +852,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("duplicate ids must fail");
         assert!(
-            matches!(err, V2ParseError::DuplicateId(ref id) if id == "same_id"),
+            matches!(err, ParseError::DuplicateId(ref id) if id == "same_id"),
             "expected DuplicateId('same_id'), got: {err}"
         );
     }
@@ -874,7 +871,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("invalid signal_type must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidSignalType { index: 0, ref signal_type } if signal_type == "traces"),
+            matches!(err, ParseError::InvalidSignalType { index: 0, ref signal_type } if signal_type == "traces"),
             "expected InvalidSignalType at index 0, got: {err}"
         );
     }
@@ -894,7 +891,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("generator + pack must fail");
         assert!(
-            matches!(err, V2ParseError::GeneratorAndPack { index: 0 }),
+            matches!(err, ParseError::GeneratorAndPack { index: 0 }),
             "expected GeneratorAndPack at index 0, got: {err}"
         );
     }
@@ -910,7 +907,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("missing generator/pack must fail");
         assert!(
-            matches!(err, V2ParseError::MissingGeneratorOrPack { index: 0 }),
+            matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack at index 0, got: {err}"
         );
     }
@@ -926,7 +923,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("pack + logs must fail");
         assert!(
-            matches!(err, V2ParseError::PackNotMetrics { index: 0 }),
+            matches!(err, ParseError::PackNotMetrics { index: 0 }),
             "expected PackNotMetrics at index 0, got: {err}"
         );
     }
@@ -942,7 +939,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("logs without log_generator must fail");
         assert!(
-            matches!(err, V2ParseError::MissingGeneratorOrPack { index: 0 }),
+            matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack at index 0, got: {err}"
         );
     }
@@ -960,7 +957,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("inline without name must fail");
         assert!(
-            matches!(err, V2ParseError::MissingName { index: 0 }),
+            matches!(err, ParseError::MissingName { index: 0 }),
             "expected MissingName at index 0, got: {err}"
         );
     }
@@ -980,7 +977,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("id starting with digit must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidId(ref id) if id == "123abc"),
+            matches!(err, ParseError::InvalidId(ref id) if id == "123abc"),
             "expected InvalidId('123abc'), got: {err}"
         );
     }
@@ -1000,7 +997,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("id with dot must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidId(ref id) if id == "my.id"),
+            matches!(err, ParseError::InvalidId(ref id) if id == "my.id"),
             "expected InvalidId('my.id'), got: {err}"
         );
     }
@@ -1030,7 +1027,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("invalid after op must fail");
         assert!(
-            matches!(err, V2ParseError::Yaml(_)),
+            matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for invalid op, got: {err}"
         );
         let msg = err.to_string();
@@ -1091,31 +1088,31 @@ scenarios:
 
     #[test]
     fn error_display_messages() {
-        let err = V2ParseError::InvalidVersion(3);
+        let err = ParseError::InvalidVersion(3);
         assert_eq!(err.to_string(), "version must be 2, got 3");
 
-        let err = V2ParseError::DuplicateId("foo".to_string());
+        let err = ParseError::DuplicateId("foo".to_string());
         assert_eq!(err.to_string(), "duplicate entry id: 'foo'");
 
-        let err = V2ParseError::InvalidSignalType {
+        let err = ParseError::InvalidSignalType {
             index: 2,
             signal_type: "traces".to_string(),
         };
         assert!(err.to_string().contains("entry 2"));
         assert!(err.to_string().contains("traces"));
 
-        let err = V2ParseError::GeneratorAndPack { index: 0 };
+        let err = ParseError::GeneratorAndPack { index: 0 };
         assert!(err.to_string().contains("entry 0"));
         assert!(err.to_string().contains("not both"));
 
-        let err = V2ParseError::MissingName { index: 1 };
+        let err = ParseError::MissingName { index: 1 };
         assert!(err.to_string().contains("entry 1"));
         assert!(err.to_string().contains("name"));
 
-        let err = V2ParseError::PackNotMetrics { index: 0 };
+        let err = ParseError::PackNotMetrics { index: 0 };
         assert!(err.to_string().contains("metrics"));
 
-        let err = V2ParseError::InvalidId("bad.id".to_string());
+        let err = ParseError::InvalidId("bad.id".to_string());
         assert!(err.to_string().contains("bad.id"));
     }
 
@@ -1126,15 +1123,15 @@ scenarios:
     #[test]
     fn error_type_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<V2ParseError>();
+        assert_send_sync::<ParseError>();
     }
 
     #[test]
     fn v2_scenario_file_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<V2ScenarioFile>();
-        assert_send_sync::<V2Defaults>();
-        assert_send_sync::<V2Entry>();
+        assert_send_sync::<ScenarioFile>();
+        assert_send_sync::<Defaults>();
+        assert_send_sync::<Entry>();
         assert_send_sync::<AfterClause>();
     }
 
@@ -1154,7 +1151,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("histogram without distribution must fail");
         assert!(
-            matches!(err, V2ParseError::MissingGeneratorOrPack { index: 0 }),
+            matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack, got: {err}"
         );
     }
@@ -1205,7 +1202,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("empty id must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidId(ref id) if id.is_empty()),
+            matches!(err, ParseError::InvalidId(ref id) if id.is_empty()),
             "expected InvalidId(''), got: {err}"
         );
     }
@@ -1235,7 +1232,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "metrics" && field == "log_generator"
             ),
             "expected UnexpectedField for log_generator on metrics, got: {err}"
@@ -1262,7 +1259,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "metrics" && field == "distribution"
             ),
             "expected UnexpectedField for distribution on metrics, got: {err}"
@@ -1290,7 +1287,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "logs" && field == "generator"
             ),
             "expected UnexpectedField for generator on logs, got: {err}"
@@ -1319,7 +1316,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "logs" && field == "distribution"
             ),
             "expected UnexpectedField for distribution on logs, got: {err}"
@@ -1346,7 +1343,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "histogram" && field == "generator"
             ),
             "expected UnexpectedField for generator on histogram, got: {err}"
@@ -1375,7 +1372,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "histogram" && field == "log_generator"
             ),
             "expected UnexpectedField for log_generator on histogram, got: {err}"
@@ -1403,7 +1400,7 @@ scenarios:
         assert!(
             matches!(
                 err,
-                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
                 if signal_type == "summary" && field == "generator"
             ),
             "expected UnexpectedField for generator on summary, got: {err}"
@@ -1448,7 +1445,7 @@ scenarios:
 
     #[test]
     fn unexpected_field_error_display_message() {
-        let err = V2ParseError::UnexpectedField {
+        let err = ParseError::UnexpectedField {
             index: 1,
             signal_type: "metrics".to_string(),
             field: "log_generator".to_string(),
@@ -1477,7 +1474,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("version 0 must fail");
         assert!(
-            matches!(err, V2ParseError::InvalidVersion(0)),
+            matches!(err, ParseError::InvalidVersion(0)),
             "expected InvalidVersion(0), got: {err}"
         );
     }
@@ -1512,7 +1509,7 @@ scenarios:
 
         let err = parse_v2(yaml).expect_err("typo in field name must fail");
         assert!(
-            matches!(err, V2ParseError::Yaml(_)),
+            matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for unknown field, got: {err}"
         );
         let msg = err.to_string();
@@ -1525,7 +1522,7 @@ scenarios:
     #[test]
     fn shorthand_with_defaults_key_is_rejected() {
         // The flat (shorthand) format does not have a `defaults` field.
-        // Since V2FlatFile uses deny_unknown_fields, including `defaults:`
+        // Since FlatFile uses deny_unknown_fields, including `defaults:`
         // in a flat file must produce a YAML parse error.
         let yaml = r#"
 version: 2
@@ -1540,7 +1537,7 @@ defaults:
 
         let err = parse_v2(yaml).expect_err("defaults in shorthand must fail");
         assert!(
-            matches!(err, V2ParseError::Yaml(_)),
+            matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for defaults in shorthand, got: {err}"
         );
         let msg = err.to_string();
