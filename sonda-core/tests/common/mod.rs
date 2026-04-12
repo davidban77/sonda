@@ -81,8 +81,16 @@ pub fn load_repo_pack(file_name: &str) -> MetricPackDef {
 
 /// Build an [`InMemoryPackResolver`] preloaded with the three built-in
 /// packs (telegraf_snmp_interface, node_exporter_cpu, node_exporter_memory),
-/// keyed by both the canonical pack name and the typical file-path
-/// reference used in test fixtures.
+/// keyed by both the canonical pack name and the `./packs/<file>` form.
+///
+/// The path-form keys are defensive: no current integration fixture uses
+/// file-path pack references (the `valid-expand-pack-file-path` fixture
+/// was deleted as redundant during the test-infra consolidation — its
+/// distinction is covered by the in-tree `classify_pack_reference` and
+/// `pack_by_file_path_is_resolved_through_trait` unit tests in
+/// `compiler::expand::tests`). Keep the dual registration so a future
+/// fixture that exercises path-style references can rely on this
+/// resolver without expanding the helper.
 pub fn builtin_pack_resolver() -> InMemoryPackResolver {
     let mut r = InMemoryPackResolver::new();
     for (file, pack_name) in [
