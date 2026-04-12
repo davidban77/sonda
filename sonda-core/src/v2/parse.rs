@@ -80,6 +80,20 @@ pub enum V2ParseError {
         /// The invalid operator string.
         op: String,
     },
+
+    /// An entry has a generator field that is incompatible with its `signal_type`.
+    ///
+    /// For example, a `signal_type: metrics` entry must not have `log_generator`
+    /// or `distribution`.
+    #[error("entry {index}: signal_type '{signal_type}' must not have '{field}' field")]
+    UnexpectedField {
+        /// Zero-based index of the offending entry.
+        index: usize,
+        /// The signal type of the entry.
+        signal_type: String,
+        /// The field name that is not allowed for this signal type.
+        field: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -266,9 +280,13 @@ impl V2FlatFile {
 /// 3. Entry `id` values must be unique and match `[a-zA-Z_][a-zA-Z0-9_]*`.
 /// 4. `signal_type` must be one of `metrics`, `logs`, `histogram`, `summary`.
 /// 5. Each entry has either `generator`/`distribution` or `pack`, not both.
-/// 6. Pack entries must have `signal_type: metrics`.
-/// 7. Inline (non-pack) entries must have `name`.
-/// 8. `after.op` must be `"<"` or `">"`.
+/// 6. Cross-generator mutual exclusion: each signal type may only carry its
+///    expected generator field (`generator` for metrics, `log_generator` for
+///    logs, `distribution` for histogram/summary). The other fields must be
+///    absent.
+/// 7. Pack entries must have `signal_type: metrics`.
+/// 8. Inline (non-pack) entries must have `name`.
+/// 9. `after.op` must be `"<"` or `">"`.
 ///
 /// # Errors
 ///
@@ -284,17 +302,31 @@ pub fn parse_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
     Ok(file)
 }
 
-/// Attempt deserialization, falling back to single-signal shorthand.
+/// Determine the file shape and deserialize accordingly.
+///
+/// Instead of trying canonical parsing and falling back to flat on failure (which
+/// produces confusing errors when a canonical file has a structural mistake), we
+/// peek for the `scenarios` key first. If present, we parse as canonical. If
+/// absent, we parse as flat shorthand. No fallback.
 fn deserialize_v2(yaml: &str) -> Result<V2ScenarioFile, V2ParseError> {
-    // First, try the canonical multi-entry format.
-    let canonical_result: Result<V2ScenarioFile, _> = serde_yaml_ng::from_str(yaml);
-    if let Ok(file) = canonical_result {
-        return Ok(file);
+    /// Minimal probe to detect whether the YAML contains a `scenarios` key.
+    /// Intentionally does NOT use `deny_unknown_fields`.
+    #[derive(serde::Deserialize)]
+    struct ShapeProbe {
+        scenarios: Option<serde_yaml_ng::Value>,
     }
 
-    // If canonical parse fails, try the flat single-signal shorthand.
-    let flat: V2FlatFile = serde_yaml_ng::from_str(yaml)?;
-    Ok(flat.into_scenario_file())
+    let probe: ShapeProbe = serde_yaml_ng::from_str(yaml)?;
+
+    if probe.scenarios.is_some() {
+        // Canonical format: top-level `scenarios` array.
+        let file: V2ScenarioFile = serde_yaml_ng::from_str(yaml)?;
+        Ok(file)
+    } else {
+        // Flat single-signal shorthand: no `scenarios` key.
+        let flat: V2FlatFile = serde_yaml_ng::from_str(yaml)?;
+        Ok(flat.into_scenario_file())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +383,10 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
             }
         }
 
+        // Cross-generator mutual exclusion: ensure only the expected generator
+        // field is set for each signal_type. The wrong fields must be absent.
+        validate_no_unexpected_generator_fields(entry, index)?;
+
         // Pack entries must be metrics.
         if has_pack && entry.signal_type != "metrics" {
             return Err(V2ParseError::PackNotMetrics { index });
@@ -369,6 +405,57 @@ fn validate_entries(entries: &[V2Entry]) -> Result<(), V2ParseError> {
                     op: after.op.clone(),
                 });
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Ensure that an entry does not carry generator fields incompatible with its
+/// `signal_type`.
+///
+/// - `metrics`: allows `generator`, forbids `log_generator` and `distribution`
+/// - `logs`: allows `log_generator`, forbids `generator` and `distribution`
+/// - `histogram`/`summary`: allows `distribution`, forbids `generator` and `log_generator`
+/// - `pack` (any signal_type with `pack`): forbids all three generator fields
+///   (already checked upstream, but pack entries also pass through here safely
+///   since they must be `metrics` and having no extra fields is fine)
+fn validate_no_unexpected_generator_fields(
+    entry: &V2Entry,
+    index: usize,
+) -> Result<(), V2ParseError> {
+    let st = entry.signal_type.as_str();
+
+    // Build list of fields that must NOT be present for this signal_type.
+    let forbidden: &[(&str, bool)] = match st {
+        "metrics" => &[
+            ("log_generator", entry.log_generator.is_some()),
+            ("distribution", entry.distribution.is_some()),
+        ],
+        "logs" => &[
+            ("generator", entry.generator.is_some()),
+            ("distribution", entry.distribution.is_some()),
+        ],
+        "histogram" | "summary" => &[
+            ("generator", entry.generator.is_some()),
+            ("log_generator", entry.log_generator.is_some()),
+        ],
+        // Pack-only or unknown signal_type (caught by earlier validation) —
+        // all three generator fields should be absent.
+        _ => &[
+            ("generator", entry.generator.is_some()),
+            ("log_generator", entry.log_generator.is_some()),
+            ("distribution", entry.distribution.is_some()),
+        ],
+    };
+
+    for &(field, present) in forbidden {
+        if present {
+            return Err(V2ParseError::UnexpectedField {
+                index,
+                signal_type: entry.signal_type.clone(),
+                field: field.to_string(),
+            });
         }
     }
 
@@ -1133,6 +1220,255 @@ scenarios:
         assert!(
             matches!(err, V2ParseError::InvalidId(ref id) if id.is_empty()),
             "expected InvalidId(''), got: {err}"
+        );
+    }
+
+    // ======================================================================
+    // Cross-generator mutual exclusion tests
+    // ======================================================================
+
+    #[test]
+    fn metrics_with_log_generator_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+    log_generator:
+      type: template
+      templates:
+        - message: "hello"
+      seed: 1
+"#;
+
+        let err = parse_v2(yaml).expect_err("metrics + log_generator must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "metrics" && field == "log_generator"
+            ),
+            "expected UnexpectedField for log_generator on metrics, got: {err}"
+        );
+    }
+
+    #[test]
+    fn metrics_with_distribution_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+"#;
+
+        let err = parse_v2(yaml).expect_err("metrics + distribution must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "metrics" && field == "distribution"
+            ),
+            "expected UnexpectedField for distribution on metrics, got: {err}"
+        );
+    }
+
+    #[test]
+    fn logs_with_generator_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: logs
+    name: syslog
+    log_generator:
+      type: template
+      templates:
+        - message: "hello"
+      seed: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse_v2(yaml).expect_err("logs + generator must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "logs" && field == "generator"
+            ),
+            "expected UnexpectedField for generator on logs, got: {err}"
+        );
+    }
+
+    #[test]
+    fn logs_with_distribution_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: logs
+    name: syslog
+    log_generator:
+      type: template
+      templates:
+        - message: "hello"
+      seed: 1
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+"#;
+
+        let err = parse_v2(yaml).expect_err("logs + distribution must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "logs" && field == "distribution"
+            ),
+            "expected UnexpectedField for distribution on logs, got: {err}"
+        );
+    }
+
+    #[test]
+    fn histogram_with_generator_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: histogram
+    name: request_duration
+    distribution:
+      type: exponential
+      rate: 10.0
+    buckets: [0.1, 0.5, 1.0]
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse_v2(yaml).expect_err("histogram + generator must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "histogram" && field == "generator"
+            ),
+            "expected UnexpectedField for generator on histogram, got: {err}"
+        );
+    }
+
+    #[test]
+    fn histogram_with_log_generator_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: histogram
+    name: request_duration
+    distribution:
+      type: exponential
+      rate: 10.0
+    buckets: [0.1, 0.5, 1.0]
+    log_generator:
+      type: template
+      templates:
+        - message: "hello"
+      seed: 1
+"#;
+
+        let err = parse_v2(yaml).expect_err("histogram + log_generator must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "histogram" && field == "log_generator"
+            ),
+            "expected UnexpectedField for log_generator on histogram, got: {err}"
+        );
+    }
+
+    #[test]
+    fn summary_with_generator_returns_unexpected_field() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: summary
+    name: rpc_duration
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    quantiles: [0.5, 0.9, 0.99]
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse_v2(yaml).expect_err("summary + generator must fail");
+        assert!(
+            matches!(
+                err,
+                V2ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
+                if signal_type == "summary" && field == "generator"
+            ),
+            "expected UnexpectedField for generator on summary, got: {err}"
+        );
+    }
+
+    // ======================================================================
+    // Fallback parse error clarity
+    // ======================================================================
+
+    #[test]
+    fn malformed_canonical_file_does_not_produce_misleading_error() {
+        // A canonical file (has `scenarios:`) with a structural error (unknown
+        // field `bogus` inside an entry). The old fallback approach would try
+        // flat parsing and produce a confusing "unknown field `scenarios`" error.
+        // With the ShapeProbe approach, we should get a clear error about the
+        // actual problem inside the canonical parse path.
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+    bogus: unexpected_field
+"#;
+
+        let err = parse_v2(yaml).expect_err("malformed canonical file must fail");
+        let msg = err.to_string();
+        // The error should mention the actual problem (unknown field `bogus`),
+        // not the misleading "unknown field `scenarios`".
+        assert!(
+            !msg.contains("unknown field `scenarios`"),
+            "error must not mention 'unknown field scenarios', got: {msg}"
+        );
+        assert!(
+            msg.contains("bogus"),
+            "error should reference the actual unknown field 'bogus', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn unexpected_field_error_display_message() {
+        let err = V2ParseError::UnexpectedField {
+            index: 1,
+            signal_type: "metrics".to_string(),
+            field: "log_generator".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "entry 1: signal_type 'metrics' must not have 'log_generator' field"
         );
     }
 }
