@@ -1,0 +1,31 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+
+scenarios:
+  - id: primary_uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 30s
+
+  - id: backup_signal
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: primary_uplink.ifOperStatus
+      op: "<"
+      value: 1

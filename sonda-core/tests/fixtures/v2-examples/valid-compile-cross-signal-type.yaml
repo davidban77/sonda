@@ -1,0 +1,27 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 3m
+
+scenarios:
+  - id: error_rate
+    signal_type: metrics
+    name: http_error_rate
+    generator:
+      type: saturation
+      baseline: 1
+      ceiling: 30
+      time_to_saturate: 90s
+
+  - id: error_logs
+    signal_type: logs
+    name: app_error_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "upstream timeout"
+    after:
+      ref: error_rate
+      op: ">"
+      value: 10

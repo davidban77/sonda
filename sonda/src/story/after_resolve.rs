@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use super::timing::{
+use sonda_core::compiler::timing::{
     self, flap_crossing_secs, sawtooth_crossing_secs, spike_crossing_secs, Operator, TimingError,
 };
 

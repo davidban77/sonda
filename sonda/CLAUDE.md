@@ -97,11 +97,10 @@ src/
 │   │                      signal→ScenarioEntry expansion. Stories are a concise YAML format
 │   │                      for multi-signal temporal scenarios that compiles to
 │   │                      Vec<ScenarioEntry> + phase_offset at parse time.
-│   ├── after_resolve.rs ← AfterClause parsing, dependency graph, topological sort (Kahn's
-│   │                      algorithm), cycle detection, and phase_offset computation.
-│   └── timing.rs       ← Pure timing functions per behavior alias (flap, saturation, leak,
-│                          degradation, spike_event). Computes threshold-crossing time in
-│                          seconds. Rejects steady (ambiguous sine crossings).
+│   └── after_resolve.rs ← AfterClause parsing, dependency graph, topological sort (Kahn's
+│                          algorithm), cycle detection, and phase_offset computation.
+│                          Threshold-crossing math lives in `sonda_core::compiler::timing`
+│                          (shared with the v2 compiler's Phase 4 `after` resolution).
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr

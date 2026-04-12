@@ -1,0 +1,53 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    device: rtr-edge-01
+    job: network
+
+scenarios:
+  - id: interface_oper_state
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+    labels:
+      interface: GigabitEthernet0/0/0
+
+  - id: backup_link_utilization
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    labels:
+      interface: GigabitEthernet0/1/0
+    after:
+      ref: interface_oper_state
+      op: "<"
+      value: 1
+
+  - id: latency_ms
+    signal_type: metrics
+    name: latency_ms
+    generator:
+      type: degradation
+      baseline: 5
+      ceiling: 150
+      time_to_degrade: 3m
+    labels:
+      path: backup
+    after:
+      ref: backup_link_utilization
+      op: ">"
+      value: 70

@@ -14,6 +14,9 @@
 //! - [`parse`] — YAML deserialization, schema validation, and version detection.
 //! - [`normalize`] — `defaults:` resolution and entry-level normalization.
 //! - [`expand`] — pack expansion inside `scenarios:` (Phase 3).
+//! - [`timing`] — pure threshold-crossing math for every supported generator.
+//! - [`compile_after`] — `after` clause resolution, dependency graph, and
+//!   clock-group assignment (Phases 4 and 5).
 
 #[cfg(feature = "config")]
 pub mod parse;
@@ -23,6 +26,11 @@ pub mod normalize;
 
 #[cfg(feature = "config")]
 pub mod expand;
+
+pub mod timing;
+
+#[cfg(feature = "config")]
+pub mod compile_after;
 
 use std::collections::BTreeMap;
 

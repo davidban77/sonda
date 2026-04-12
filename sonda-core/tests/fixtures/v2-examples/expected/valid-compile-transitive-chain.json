@@ -1,0 +1,116 @@
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "link",
+      "signal_type": "metrics",
+      "name": "interface_oper_state",
+      "rate": 1.0,
+      "duration": "10m",
+      "generator": {
+        "type": "flap",
+        "up_duration": "60s",
+        "down_duration": "30s",
+        "up_value": null,
+        "down_value": null
+      },
+      "log_generator": null,
+      "labels": null,
+      "dynamic_labels": null,
+      "encoder": {
+        "type": "prometheus_text",
+        "precision": null
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "jitter": null,
+      "jitter_seed": null,
+      "gaps": null,
+      "bursts": null,
+      "cardinality_spikes": null,
+      "phase_offset": null,
+      "clock_group": "chain_latency",
+      "distribution": null,
+      "buckets": null,
+      "quantiles": null,
+      "observations_per_tick": null,
+      "mean_shift_per_sec": null,
+      "seed": null
+    },
+    {
+      "id": "util",
+      "signal_type": "metrics",
+      "name": "backup_link_utilization",
+      "rate": 1.0,
+      "duration": "10m",
+      "generator": {
+        "type": "saturation",
+        "baseline": 20.0,
+        "ceiling": 85.0,
+        "time_to_saturate": "2m"
+      },
+      "log_generator": null,
+      "labels": null,
+      "dynamic_labels": null,
+      "encoder": {
+        "type": "prometheus_text",
+        "precision": null
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "jitter": null,
+      "jitter_seed": null,
+      "gaps": null,
+      "bursts": null,
+      "cardinality_spikes": null,
+      "phase_offset": "1m",
+      "clock_group": "chain_latency",
+      "distribution": null,
+      "buckets": null,
+      "quantiles": null,
+      "observations_per_tick": null,
+      "mean_shift_per_sec": null,
+      "seed": null
+    },
+    {
+      "id": "latency",
+      "signal_type": "metrics",
+      "name": "latency_ms",
+      "rate": 1.0,
+      "duration": "10m",
+      "generator": {
+        "type": "degradation",
+        "baseline": 5.0,
+        "ceiling": 150.0,
+        "time_to_degrade": "3m",
+        "noise": null,
+        "noise_seed": null
+      },
+      "log_generator": null,
+      "labels": null,
+      "dynamic_labels": null,
+      "encoder": {
+        "type": "prometheus_text",
+        "precision": null
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "jitter": null,
+      "jitter_seed": null,
+      "gaps": null,
+      "bursts": null,
+      "cardinality_spikes": null,
+      "phase_offset": "152.308s",
+      "clock_group": "chain_latency",
+      "distribution": null,
+      "buckets": null,
+      "quantiles": null,
+      "observations_per_tick": null,
+      "mean_shift_per_sec": null,
+      "seed": null
+    }
+  ]
+}

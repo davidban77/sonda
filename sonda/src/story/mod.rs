@@ -45,7 +45,6 @@
 //! 4. Return `Vec<ScenarioEntry>` for the existing `prepare_entries` pipeline
 
 pub mod after_resolve;
-pub mod timing;
 
 use std::collections::HashMap;
 use std::fs;

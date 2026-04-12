@@ -1,0 +1,31 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: a
+    signal_type: metrics
+    name: a
+    generator:
+      type: saturation
+      baseline: 0
+      ceiling: 100
+      time_to_saturate: 60s
+    after:
+      ref: b
+      op: ">"
+      value: 1
+
+  - id: b
+    signal_type: metrics
+    name: b
+    generator:
+      type: saturation
+      baseline: 0
+      ceiling: 100
+      time_to_saturate: 60s
+    after:
+      ref: a
+      op: ">"
+      value: 1

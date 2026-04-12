@@ -1,11 +1,11 @@
 # Sonda v2 Validation Matrix — Status
 
-Tracks all 162 validation checks for the v2 refactor.
+Tracks all 178 validation checks for the v2 refactor.
 **Every row must pass before the integration branch merges to `main`. No exceptions.**
 
-Sections 1-15 come from the original v2 feature parity matrix (148 rows).
+Sections 1-15 come from the original v2 feature parity matrix (163 rows).
 Sections 16-17 are parity bridge tests added to guarantee that every built-in
-scenario and pack produces identical output in v2 format (14 rows).
+scenario and pack produces identical output in v2 format (15 rows).
 
 **Legend:** Pass | Fail | Not Tested | N/A
 
@@ -113,7 +113,7 @@ scenario and pack produces identical output in v2 format (14 rows).
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
 | 8.1 | phase_offset | Not Tested | PR 6 | |
-| 8.2 | clock_group | Not Tested | PR 5/6 | |
+| 8.2 | clock_group | Pass | PR 5 | Compile-time clock-group assignment validated (auto-naming, explicit value propagation, conflict detection); runtime observability (per-entry runtime log line / scheduler coordination) lands in PR 6 |
 | 8.3 | Concurrent execution | Not Tested | PR 6 | |
 | 8.4 | Independent completion | Not Tested | PR 6 | |
 | 8.5 | --dry-run on multi-scenario | Not Tested | PR 7 | Enhanced for v2 |
@@ -143,17 +143,17 @@ scenario and pack produces identical output in v2 format (14 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 10.1 | after: flap < threshold | Not Tested | PR 5 | |
-| 10.2 | after: saturation > threshold | Not Tested | PR 5 | |
-| 10.3 | after: degradation > threshold | Not Tested | PR 5 | |
-| 10.4 | after: spike < threshold | Not Tested | PR 5 | |
-| 10.5 | Transitive chains (A → B → C) | Not Tested | PR 5 | |
-| 10.6 | Circular dependency detection | Not Tested | PR 5 | |
-| 10.7 | Unknown ref → error | Not Tested | PR 5 | |
-| 10.8 | Out-of-range threshold → error | Not Tested | PR 5 | |
-| 10.9 | Threshold true at t=0 → error | Not Tested | PR 5 | |
-| 10.10 | sine/steady in after → error | Not Tested | PR 5 | |
-| 10.11 | Shared clock_group | Not Tested | PR 5 | |
+| 10.1 | after: flap < threshold | Pass | PR 5 | compile_after: flap_crossing returns up_duration; covered by simple-chain fixture + unit tests |
+| 10.2 | after: saturation > threshold | Pass | PR 5 | linear-interp crossing; saturation target fixture + saturation_greater_than_sets_offset unit test |
+| 10.3 | after: degradation > threshold | Pass | PR 5 | degradation desugars to sawtooth; transitive-chain fixture asserts the 60+92.307s sum |
+| 10.4 | after: spike < threshold | Pass | PR 5 | spike_event crossing at spike_duration; spike_less_than_sets_spike_duration unit test |
+| 10.5 | Transitive chains (A → B → C) | Pass | PR 5 | Kahn topo sort; transitive-chain fixture validates A→B→C accumulation |
+| 10.6 | Circular dependency detection | Pass | PR 5 | DFS gray/black; invalid-compile-cycle fixture returns CircularDependency variant |
+| 10.7 | Unknown ref → error | Pass | PR 5 | UnknownRef with available-id list; invalid-compile-unknown-ref fixture |
+| 10.8 | Out-of-range threshold → error | Pass | PR 5 | OutOfRangeThreshold variant; invalid-compile-out-of-range fixture |
+| 10.9 | Threshold true at t=0 → error | Pass | PR 5 | AmbiguousAtT0 variant; invalid-compile-ambiguous-at-t0 fixture (spike_event > 50) |
+| 10.10 | sine/steady in after → error | Pass | PR 5 | UnsupportedGenerator variant; unit tests cover sine/steady/uniform/csv_replay |
+| 10.11 | Shared clock_group | Pass | PR 5 | auto-assigned `chain_{lowest_lex_id}` for dependency chain members |
 | 10.12 | Shared labels across signals | Pass | PR 3 | defaults.labels flows into every entry |
 | 10.13 | Per-signal label overrides | Pass | PR 3 | entry labels win on conflict, union otherwise |
 | 10.14 | Per-signal rate/duration override | Pass | PR 3 | entry rate/duration win over defaults |
@@ -169,18 +169,18 @@ scenario and pack produces identical output in v2 format (14 rows).
 | 11.4 | id field on entries | Pass | PR 2 | Uniqueness + format validated |
 | 11.5 | Single-signal shorthand | Pass | PR 2 | Flat files wrapped automatically |
 | 11.6 | Pack inside scenarios: list | Pass | PR 4 | Parsed in PR 2, expansion in PR 4 with one ExpandedEntry per pack metric |
-| 11.7 | Dotted after ref into pack | Not Tested | PR 5 | Sub-signal IDs of form `{entry_id}.{metric}` already assigned in PR 4 |
+| 11.7 | Dotted after ref into pack | Pass | PR 5 | `{entry}.{metric}` resolves; bare form against duplicate-name packs surfaces AmbiguousSubSignalRef with candidate list |
 | 11.8 | Auto-generated pack IDs | Pass | PR 4 | Deterministic `{pack_def_name}_{entry_index}` when `id` absent; duplicate metric names receive `"#{spec_index}"` suffix on the sub-signal id; post-expansion uniqueness check guards against user/auto id collisions |
-| 11.9 | delay in after clause | Not Tested | PR 5 | Parsed in PR 2 |
+| 11.9 | delay in after clause | Pass | PR 5 | delay parsed via parse_duration and added to crossing time; phase-offset-and-delay fixture asserts 10s + 60s + 15s = 85s |
 | 11.10 | Structured after validation | Pass | PR 2 | AfterOp enum, serde validation |
-| 11.11 | Cross-signal-type after | Not Tested | PR 5 | |
-| 11.12 | after on pack override | Pass | PR 4/5 | Carry-through Pass (PR 4); `after` resolution lands in PR 5 |
-| 11.13 | Pack entry-level after propagation | Pass | PR 4/5 | Propagation Pass (PR 4); `after` resolution lands in PR 5 |
-| 11.14 | after + phase_offset sum | Not Tested | PR 5 | |
-| 11.15 | Clock group auto-assignment | Not Tested | PR 5 | |
-| 11.16 | Conflicting clock_group → error | Not Tested | PR 5 | |
-| 11.17 | after with step generator | Not Tested | PR 5 | |
-| 11.18 | after with sequence generator | Not Tested | PR 5 | |
+| 11.11 | Cross-signal-type after | Pass | PR 5 | dependent can be metrics/logs/histogram/summary; target must be metrics (NonMetricsTarget error otherwise) |
+| 11.12 | after on pack override | Pass | PR 4/5 | PR 4 propagation + PR 5 resolution; compile_after_on_pack_override_applies_per_metric asserts override `after` lands on the specific sub-signal |
+| 11.13 | Pack entry-level after propagation | Pass | PR 4/5 | PR 4 propagation + PR 5 resolution; compile_after_pack_entry_level_propagates_to_all_sub_signals asserts every sub-signal inherits the same resolved offset |
+| 11.14 | after + phase_offset sum | Pass | PR 5 | total = user_phase_offset + Σ crossing_time + Σ delay; phase-offset-and-delay fixture |
+| 11.15 | Clock group auto-assignment | Pass | PR 5 | connected components receive `chain_{lowest_lex_id}` when no explicit value set |
+| 11.16 | Conflicting clock_group → error | Pass | PR 5 | ConflictingClockGroup variant; invalid-compile-conflicting-clock-group fixture |
+| 11.17 | after with step generator | Pass | PR 5 | step_crossing_secs uses ceil((threshold-start)/step_size) × tick interval; step-target fixture + unit tests |
+| 11.18 | after with sequence generator | Pass | PR 5 | sequence_crossing_secs finds first tick where value crosses threshold; sequence-target fixture + unit tests |
 
 ## 12. CLI Commands (22 rows)
 
@@ -281,7 +281,7 @@ structurally identical (for non-deterministic generators like uniform).
 | 16.9 | log-storm.yaml | Not Tested | Not Tested | PR 6 | Log signal, template generator |
 | 16.10 | cardinality-explosion.yaml | Not Tested | Not Tested | PR 6 | Cardinality spikes, dynamic labels |
 | 16.11 | histogram-latency.yaml | Not Tested | Not Tested | PR 6 | Histogram signal |
-| 16.12 | link-failover.yaml (story) | Not Tested | Not Tested | PR 6 | Story → v2 with after: clauses |
+| 16.12 | link-failover.yaml (story) | Pass | Not Tested | PR 5/6 | Compile parity Pass (PR 5): hand-written v2 equivalent of `stories/link-failover.yaml` compiles to phase_offset values identical to v1 story math (`v2_story_parity::link_failover_compile_parity`). Runtime parity lands in PR 6 |
 
 ## 17. Built-in Pack Parity (3 rows)
 
