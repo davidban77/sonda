@@ -24,4 +24,4 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 insta = { version = "1.40", features = ["json", "yaml"] }
-rstest = "0.23"
+rstest = "0.26"
