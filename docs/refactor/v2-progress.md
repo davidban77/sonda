@@ -186,7 +186,7 @@ PR 6 is the runtime parity proof — it shows the v2 pipeline produces correct o
 
 ## Process Notes
 - All PRs target integration branch (`refactor/unified-scenarios-v2`), not `main`
-- Integration branch merges to `main` only after full validation matrix passes (162/162)
+- Integration branch merges to `main` only after full validation matrix passes (178/178)
 - Progress file and validation status updated at end of every PR
 - Every PR includes example YAML fixtures for reviewability
 - Implementation plans get user approval before launching implementer
