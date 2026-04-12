@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/v2_compile_after_fixtures.rs
+expression: compiled
+---
 {
   "version": 2,
   "entries": [

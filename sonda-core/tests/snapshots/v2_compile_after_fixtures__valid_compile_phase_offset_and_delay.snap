@@ -1,17 +1,22 @@
+---
+source: sonda-core/tests/v2_compile_after_fixtures.rs
+expression: compiled
+---
 {
   "version": 2,
   "entries": [
     {
-      "id": "error_rate",
+      "id": "link",
       "signal_type": "metrics",
-      "name": "http_error_rate",
+      "name": "interface_oper_state",
       "rate": 1.0,
-      "duration": "3m",
+      "duration": "5m",
       "generator": {
-        "type": "saturation",
-        "baseline": 1.0,
-        "ceiling": 30.0,
-        "time_to_saturate": "90s"
+        "type": "flap",
+        "up_duration": "60s",
+        "down_duration": "30s",
+        "up_value": null,
+        "down_value": null
       },
       "log_generator": null,
       "labels": null,
@@ -29,7 +34,7 @@
       "bursts": null,
       "cardinality_spikes": null,
       "phase_offset": null,
-      "clock_group": "chain_error_logs",
+      "clock_group": "chain_backup",
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -38,27 +43,20 @@
       "seed": null
     },
     {
-      "id": "error_logs",
-      "signal_type": "logs",
-      "name": "app_error_logs",
+      "id": "backup",
+      "signal_type": "metrics",
+      "name": "backup_util",
       "rate": 1.0,
-      "duration": "3m",
-      "generator": null,
-      "log_generator": {
-        "type": "template",
-        "templates": [
-          {
-            "message": "upstream timeout",
-            "field_pools": {}
-          }
-        ],
-        "severity_weights": null,
-        "seed": null
+      "duration": "5m",
+      "generator": {
+        "type": "constant",
+        "value": 1.0
       },
+      "log_generator": null,
       "labels": null,
       "dynamic_labels": null,
       "encoder": {
-        "type": "json_lines",
+        "type": "prometheus_text",
         "precision": null
       },
       "sink": {
@@ -69,8 +67,8 @@
       "gaps": null,
       "bursts": null,
       "cardinality_spikes": null,
-      "phase_offset": "27.931s",
-      "clock_group": "chain_error_logs",
+      "phase_offset": "85s",
+      "clock_group": "chain_backup",
       "distribution": null,
       "buckets": null,
       "quantiles": null,

@@ -4,18 +4,15 @@
 //! Mirrors the pattern established by `v2_expand_fixtures.rs`: every fixture
 //! under `tests/fixtures/v2-examples/` starting with `valid-compile-` is
 //! parsed, normalized, expanded, and compiled, with the output compared
-//! against a golden JSON snapshot in `tests/fixtures/v2-examples/expected/`.
-//! Invalid fixtures assert the expected [`CompileAfterError`] variant.
+//! against an [`insta`] JSON snapshot under `tests/snapshots/`. Invalid
+//! fixtures assert the expected [`CompileAfterError`] variant.
 //!
-//! Set `UPDATE_SNAPSHOTS=1` to regenerate golden files after a schema
-//! change.
+//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test v2_compile_after_fixtures`
+//! (or `cargo insta accept`) to regenerate snapshots after a schema change.
 
 mod common;
 
-use common::{
-    assert_golden_json, builtin_pack_resolver, compile_to_compiled, compile_to_expanded,
-    example_fixture,
-};
+use common::{builtin_pack_resolver, compile_to_compiled, compile_to_expanded, example_fixture};
 use sonda_core::compiler::compile_after::{compile_after, CompileAfterError};
 use sonda_core::compiler::expand::InMemoryPackResolver;
 
@@ -25,7 +22,7 @@ fn compile_err(yaml: &str, resolver: &InMemoryPackResolver) -> CompileAfterError
 }
 
 // =====================================================================
-// Valid fixtures — golden snapshots
+// Valid fixtures — insta snapshots
 // =====================================================================
 
 #[test]
@@ -44,7 +41,9 @@ fn valid_compile_simple_chain() {
     );
     assert_eq!(util.clock_group.as_deref(), Some("chain_link"));
 
-    assert_golden_json(&compiled, "valid-compile-simple-chain.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -65,7 +64,9 @@ fn valid_compile_transitive_chain() {
         "expected ~152s, got {latency_offset}"
     );
 
-    assert_golden_json(&compiled, "valid-compile-transitive-chain.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -76,7 +77,9 @@ fn valid_compile_step_target() {
 
     // ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("3s"));
-    assert_golden_json(&compiled, "valid-compile-step-target.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -87,7 +90,9 @@ fn valid_compile_sequence_target() {
 
     // values[2] = 2 < 3 at index 2, rate=2 -> 1.0s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("1s"));
-    assert_golden_json(&compiled, "valid-compile-sequence-target.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -101,7 +106,9 @@ fn valid_compile_cross_signal_type() {
     assert!(offset.starts_with("27."), "expected ~27.9s, got {offset}");
     assert_eq!(compiled.entries[1].signal_type, "logs");
 
-    assert_golden_json(&compiled, "valid-compile-cross-signal-type.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -113,7 +120,9 @@ fn valid_compile_phase_offset_and_delay() {
     // 10s phase_offset + 60s flap crossing + 15s delay = 85s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("85s"));
 
-    assert_golden_json(&compiled, "valid-compile-phase-offset-and-delay.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 #[test]
@@ -139,7 +148,9 @@ fn valid_compile_pack_dotted_ref() {
         .expect("ifOperStatus sub-signal present");
     assert_eq!(ifoper.clock_group, backup.clock_group);
 
-    assert_golden_json(&compiled, "valid-compile-pack-dotted-ref.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(compiled);
+    });
 }
 
 // =====================================================================
