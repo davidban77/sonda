@@ -1,7 +1,11 @@
 # Sonda v2 Validation Matrix — Status
 
-Tracks all 148 validation checks from the v2 feature parity matrix.
-Each row must pass before the integration branch merges to `main`.
+Tracks all 162 validation checks for the v2 refactor.
+**Every row must pass before the integration branch merges to `main`. No exceptions.**
+
+Sections 1-15 come from the original v2 feature parity matrix (148 rows).
+Sections 16-17 are parity bridge tests added to guarantee that every built-in
+scenario and pack produces identical output in v2 format (14 rows).
 
 **Legend:** Pass | Fail | Not Tested | N/A
 
@@ -244,3 +248,48 @@ Each row must pass before the integration branch merges to `main`.
 | 15.5 | Scenario ConfigMap injection | Not Tested | PR 8/9 | |
 | 15.6 | Static musl binary | Not Tested | PR 9 | |
 | 15.7 | E2E test suite | Not Tested | PR 9 | |
+
+---
+
+## PARITY BRIDGE TESTS
+
+These sections are **mandatory merge blockers**. They verify that every existing built-in
+scenario, pack, and story produces identical output when converted to v2 format.
+
+Testing has two levels per file:
+- **Compile parity**: v1 and v2 files compile to identical `Vec<ScenarioEntry>` JSON snapshots
+- **Runtime parity**: v1 and v2 files produce identical stdout output (deterministic, seeded, limited ticks)
+
+Both levels must pass. A compile-only pass is not sufficient — runtime execution must match.
+
+## 16. Built-in Scenario Parity (12 rows)
+
+For each built-in scenario, a hand-written v2 equivalent is created. Both are compiled
+and executed. Output must be byte-identical (for deterministic generators) or
+structurally identical (for non-deterministic generators like uniform).
+
+| # | Scenario File | Compile Parity | Runtime Parity | PR | Notes |
+|---|--------------|----------------|----------------|-----|-------|
+| 16.1 | cpu-spike.yaml | Not Tested | Not Tested | PR 6 | Single metric, sine-based |
+| 16.2 | memory-leak.yaml | Not Tested | Not Tested | PR 6 | Single metric, leak alias |
+| 16.3 | disk-fill.yaml | Not Tested | Not Tested | PR 6 | Single metric, saturation alias |
+| 16.4 | latency-degradation.yaml | Not Tested | Not Tested | PR 6 | Single metric, degradation alias |
+| 16.5 | error-rate-spike.yaml | Not Tested | Not Tested | PR 6 | Single metric, spike_event alias |
+| 16.6 | interface-flap.yaml | Not Tested | Not Tested | PR 6 | Single metric, flap alias |
+| 16.7 | network-link-failure.yaml | Not Tested | Not Tested | PR 6 | Multi-signal, phase_offset, clock_group |
+| 16.8 | steady-state.yaml | Not Tested | Not Tested | PR 6 | Single metric, steady alias |
+| 16.9 | log-storm.yaml | Not Tested | Not Tested | PR 6 | Log signal, template generator |
+| 16.10 | cardinality-explosion.yaml | Not Tested | Not Tested | PR 6 | Cardinality spikes, dynamic labels |
+| 16.11 | histogram-latency.yaml | Not Tested | Not Tested | PR 6 | Histogram signal |
+| 16.12 | link-failover.yaml (story) | Not Tested | Not Tested | PR 6 | Story → v2 with after: clauses |
+
+## 17. Built-in Pack Parity (3 rows)
+
+For each built-in pack, a v2 scenario file is created that uses the pack inside
+`scenarios:`. The expanded output must match the current `sonda packs run` output.
+
+| # | Pack | Compile Parity | Runtime Parity | PR | Notes |
+|---|------|----------------|----------------|-----|-------|
+| 17.1 | telegraf-snmp-interface.yaml | Not Tested | Not Tested | PR 4/6 | 5 metrics, network category |
+| 17.2 | node-exporter-cpu.yaml | Not Tested | Not Tested | PR 4/6 | 8 metrics, step sizes sum to 1.0 |
+| 17.3 | node-exporter-memory.yaml | Not Tested | Not Tested | PR 4/6 | 5 metrics, 16 GiB defaults |

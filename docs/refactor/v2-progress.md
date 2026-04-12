@@ -38,9 +38,11 @@
 
 ## Validation Matrix Status
 
-See [v2-validation-status.md](v2-validation-status.md) for the full 148-row checklist.
+See [v2-validation-status.md](v2-validation-status.md) for the full 162-row checklist.
 
-**Summary:** 4 of 148 rows addressed so far (all in section 11 — new v2 features).
+**Every row is a mandatory merge blocker. No exceptions.**
+
+**Summary:** 4 of 162 rows addressed so far (all in section 11 — new v2 features).
 
 | Section | Rows | Addressed | Notes |
 |---------|------|-----------|-------|
@@ -59,6 +61,8 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 148-row chec
 | 13. Server API | 9 | 0 | Server (PR 9) |
 | 14. Status output & UX | 9 | 0 | CLI (PR 7) + runtime (PR 6) |
 | 15. Deployment | 7 | 0 | Final cleanup (PR 9) |
+| **16. Scenario parity bridge** | **12** | **0** | **v1→v2 compile + runtime parity for all 11 built-ins + 1 story** |
+| **17. Pack parity bridge** | **3** | **0** | **v1→v2 compile + runtime parity for all 3 built-in packs** |
 
 ## Completed Work
 
