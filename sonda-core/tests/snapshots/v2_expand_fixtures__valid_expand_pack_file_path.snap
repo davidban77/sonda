@@ -1,28 +1,27 @@
+---
+source: sonda-core/tests/v2_expand_fixtures.rs
+expression: expanded
+---
 {
   "version": 2,
   "entries": [
     {
-      "id": "primary_uplink.ifOperStatus",
+      "id": "uplink.ifOperStatus",
       "signal_type": "metrics",
       "name": "ifOperStatus",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "30s",
       "generator": {
-        "type": "flap",
-        "up_duration": "60s",
-        "down_duration": "30s",
-        "up_value": null,
-        "down_value": null
+        "type": "constant",
+        "value": 1.0
       },
       "log_generator": null,
       "labels": {
-        "device": "rtr-edge-01",
-        "env": "prod",
+        "device": "rtr-01",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
-        "job": "snmp",
-        "probe": "synthetic"
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
       },
       "dynamic_labels": null,
       "encoder": {
@@ -48,11 +47,11 @@
       "seed": null
     },
     {
-      "id": "primary_uplink.ifHCInOctets",
+      "id": "uplink.ifHCInOctets",
       "signal_type": "metrics",
       "name": "ifHCInOctets",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "30s",
       "generator": {
         "type": "step",
         "start": 0.0,
@@ -61,11 +60,10 @@
       },
       "log_generator": null,
       "labels": {
-        "device": "rtr-edge-01",
-        "env": "prod",
+        "device": "rtr-01",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -92,11 +90,11 @@
       "seed": null
     },
     {
-      "id": "primary_uplink.ifHCOutOctets",
+      "id": "uplink.ifHCOutOctets",
       "signal_type": "metrics",
       "name": "ifHCOutOctets",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "30s",
       "generator": {
         "type": "step",
         "start": 0.0,
@@ -105,11 +103,10 @@
       },
       "log_generator": null,
       "labels": {
-        "device": "rtr-edge-01",
-        "env": "prod",
+        "device": "rtr-01",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -136,22 +133,21 @@
       "seed": null
     },
     {
-      "id": "primary_uplink.ifInErrors",
+      "id": "uplink.ifInErrors",
       "signal_type": "metrics",
       "name": "ifInErrors",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "30s",
       "generator": {
         "type": "constant",
         "value": 0.0
       },
       "log_generator": null,
       "labels": {
-        "device": "rtr-edge-01",
-        "env": "prod",
+        "device": "rtr-01",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -178,22 +174,21 @@
       "seed": null
     },
     {
-      "id": "primary_uplink.ifOutErrors",
+      "id": "uplink.ifOutErrors",
       "signal_type": "metrics",
       "name": "ifOutErrors",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "30s",
       "generator": {
         "type": "constant",
         "value": 0.0
       },
       "log_generator": null,
       "labels": {
-        "device": "rtr-edge-01",
-        "env": "prod",
+        "device": "rtr-01",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,

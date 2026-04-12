@@ -4,22 +4,21 @@
 //! Mirrors the pattern established by `v2_fixture_examples.rs`: every
 //! fixture under `tests/fixtures/v2-examples/` starting with
 //! `valid-expand-` is parsed, normalized, and expanded, with the output
-//! compared against a golden JSON snapshot in
-//! `tests/fixtures/v2-examples/expected/`. Invalid fixtures assert the
-//! expected [`ExpandError`] variant.
+//! compared against an [`insta`] JSON snapshot under `tests/snapshots/`.
+//! Invalid fixtures assert the expected [`ExpandError`] variant.
 //!
-//! Set `UPDATE_SNAPSHOTS=1` to regenerate golden files after a schema
-//! change.
+//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test v2_expand_fixtures`
+//! (or `cargo insta accept`) to regenerate snapshots after a schema change.
 
 mod common;
 
-use common::{assert_golden_json, builtin_pack_resolver, compile_to_expanded, example_fixture};
+use common::{builtin_pack_resolver, compile_to_expanded, example_fixture};
 use sonda_core::compiler::expand::{expand, ExpandError};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
 
 // =====================================================================
-// Valid fixtures — golden snapshots
+// Valid fixtures — insta snapshots
 // =====================================================================
 
 #[test]
@@ -42,7 +41,9 @@ fn valid_expand_pack_with_overrides() {
     assert_eq!(labels.get("device").unwrap(), "rtr-edge-01");
     assert_eq!(labels.get("probe").unwrap(), "synthetic");
 
-    assert_golden_json(&expanded, "valid-expand-pack-with-overrides.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(expanded);
+    });
 }
 
 #[test]
@@ -58,7 +59,9 @@ fn valid_expand_pack_file_path() {
         Some("uplink.ifOperStatus")
     );
 
-    assert_golden_json(&expanded, "valid-expand-pack-file-path.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(expanded);
+    });
 }
 
 #[test]
@@ -98,7 +101,9 @@ fn valid_expand_multiple_packs() {
         "rtr-02"
     );
 
-    assert_golden_json(&expanded, "valid-expand-multiple-packs.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(expanded);
+    });
 }
 
 #[test]
@@ -113,7 +118,9 @@ fn valid_expand_anonymous_pack() {
         Some("telegraf_snmp_interface_0.ifOperStatus")
     );
 
-    assert_golden_json(&expanded, "valid-expand-anonymous-pack.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(expanded);
+    });
 }
 
 // =====================================================================
