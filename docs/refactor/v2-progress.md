@@ -1,7 +1,7 @@
 # Sonda v2 Refactor — Progress
 
 ## Current Status
-- **Phase:** 4 — `after` compiler + dependency graph (complete, pending merge)
+- **Phase:** 4 complete (PR 5 merged as #203); test-infra consolidation in review
 - **Branch:** `refactor/unified-scenarios-v2`
 - **Integration PR:** #197 (targets `main`, accumulates all v2 work)
 - **Next PR:** PR 6 — runtime wiring + parity tests
@@ -28,28 +28,28 @@
 | 2 | Compiler AST, parser, and version dispatch | `feat/v2-ast-parser` | integration (#198) | Merged | 2026-04-11 |
 | 3 | Defaults resolution + `parse_v2 → parse` rename | `feat/defaults-resolution` | integration (#199) | Merged | 2026-04-12 |
 | 4 | Pack expansion inside `scenarios:` | `feat/pack-expansion` | integration | Merged | 2026-04-12 |
-| 5 | `after` compiler + dependency graph + timing port | `feat/after-compilation` | integration | Pending Review | 2026-04-12 |
+| 5 | `after` compiler + dependency graph + timing port | `feat/after-compilation` | integration (#203) | Merged | 2026-04-12 |
+| — | Test-infra consolidation: insta + rstest + fixture dedup | `chore/test-infra-consolidation` | integration | In Review | 2026-04-12 |
 
 ## Test Coverage
 
 | Layer | Tests | Scope |
 |-------|-------|-------|
-| Compiler parser unit tests | 49 | AST parsing, validation, shorthand, edge cases |
-| Compiler normalize unit tests | 34 | Defaults inheritance, label merge (inline eager / pack deferred), built-in fallbacks, missing-rate error, defaults-labels surfacing |
-| Compiler expand unit tests | 33 | Pack expansion, label precedence, auto-IDs (including duplicate-name disambiguation), post-expansion id uniqueness, override validation, after propagation, resolver trait |
-| Compiler timing unit tests | 44 | Crossing math for every supported generator (sawtooth/step/sequence/spike/flap/saturation/leak/degradation/spike_event/constant) and blanket rejections (sine/steady/uniform/csv_replay); inactive-max wrap-around regression |
-| Compiler compile_after unit tests | 37 | Reference resolution, self-ref, cycles, transitive chains, delay + phase_offset additivity, step/sequence crossings, cross-signal-type, alias desugaring, clock group auto-assignment + conflicts (including whitespace/empty-string handling), dotted/ambiguous pack refs, `InvalidDuration` coverage for after.delay/phase_offset/alias-param code paths, format_duration_secs round-trip |
-| Compiler fixture integration tests | 15 | Valid/invalid YAML examples parsed + normalized from disk |
-| Compiler expand fixture integration tests | 5 | Pack expansion fixtures with golden snapshots + invalid-override rejection |
-| Compiler compile_after fixture integration tests | 16 | 7 valid fixtures with CompiledFile golden snapshots + 9 invalid fixtures asserting specific CompileAfterError variants |
+| Compiler parser unit tests | 58 | AST parsing, validation, shorthand, edge cases (rstest tables for invalid-YAML families) |
+| Compiler normalize unit tests | 37 | Defaults inheritance, label merge (inline eager / pack deferred), built-in fallbacks, missing-rate error, defaults-labels surfacing |
+| Compiler expand unit tests | 35 | Pack expansion, label precedence, auto-IDs (including duplicate-name disambiguation), post-expansion id uniqueness, override validation, after propagation, resolver trait |
+| Compiler timing unit tests | 44 | Crossing math for every supported generator (sawtooth/step/sequence/spike/flap/saturation/leak/degradation/spike_event/constant) and blanket rejections (sine/steady/uniform/csv_replay); inactive-max wrap-around regression — rstest tables per generator family |
+| Compiler compile_after unit tests | 38 | Reference resolution, self-ref, cycles, transitive chains, delay + phase_offset additivity, step/sequence crossings, cross-signal-type, alias desugaring, clock group auto-assignment + conflicts (including whitespace/empty-string handling), dotted/ambiguous pack refs, `InvalidDuration` coverage for after.delay/phase_offset/alias-param code paths, format_duration_secs round-trip |
+| Compiler fixture integration tests | 15 | Valid/invalid YAML examples parsed + normalized from disk (insta file snapshots) |
+| Compiler expand fixture integration tests | 4 | Pack expansion fixtures with insta snapshots + invalid-override rejection |
+| Compiler compile_after fixture integration tests | 15 | 6 valid fixtures with CompiledFile insta snapshots + 9 invalid fixtures asserting specific CompileAfterError variants |
 | Pack parity bridge integration tests | 5 | 3 pack compile parity (17.1–17.3) + 2 compile_after resolution tests (11.12 override, 11.13 entry-level propagation) |
 | Story parity bridge integration test | 1 | 16.12 compile parity: `stories/link-failover.yaml` v1 math vs v2 compile agree on phase_offset to the millisecond |
-| Compile snapshot golden files | 12 | v1 parity baseline (6 fixtures x raw+prepared) |
-| Normalize snapshot golden files | 3 | Resolved defaults snapshots (label merge, logs default encoder, pack entry) |
-| Expand snapshot golden files | 4 | Phase 3 snapshots (overrides, file-path, multi-pack, anonymous pack) |
-| Compile_after snapshot golden files | 7 | CompiledFile JSON snapshots covering simple/transitive chain, step/sequence targets, cross-signal-type, phase_offset + delay sum, dotted pack ref |
-| **New in refactor** | **264** | |
-| Workspace total | 2,704 | All existing + new |
+| Compile snapshot fixtures (insta) | 6 | v1 parity baseline; prepared-entry snapshots (non-prepared variants deleted as byte-redundant) |
+| Normalize snapshot fixtures (insta) | 3 | Resolved defaults snapshots (label merge, logs default encoder, pack entry) |
+| Expand snapshot fixtures (insta) | 3 | Phase 3 snapshots (overrides, multi-pack, anonymous pack; pack-file-path deleted — dual-registered in resolver) |
+| Compile_after snapshot fixtures (insta) | 6 | CompiledFile snapshots covering transitive chain, step/sequence targets, cross-signal-type, phase_offset + delay sum, dotted pack ref (simple-chain deleted — subset of transitive) |
+| Workspace total | 2,705 | All existing + new |
 
 ## Validation Matrix Status
 
@@ -69,7 +69,17 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 
 ## Completed Work
 
-### PR 5 — `after` compiler + dependency graph (2026-04-12, pending review)
+### Test infra consolidation (2026-04-12, in review)
+- Adopted `insta` (JSON + YAML features) for golden snapshots and `rstest` for parametrized unit tests; both hoisted into `[workspace.dependencies]` and pulled into `sonda-core` dev-deps.
+- Deleted hand-rolled `sonda-core/src/config/snapshot.rs` (390 LOC) and its `pub mod snapshot;` declaration — compile_snapshot tests now use `insta::assert_json_snapshot!` directly on the existing `Serialize` derives.
+- Consolidated duplicated fixture/resolver helpers (`fixture()`, `load_repo_pack`, `builtin_pack_resolver`, snapshot helpers) into `sonda-core/tests/common/mod.rs`; shared surface for every future v2 integration test.
+- Migrated 26 JSON goldens to 24 insta `.snap` files under `sonda-core/tests/snapshots/`. Deleted 2 redundant fixtures: `valid-compile-simple-chain` (strict subset of `valid-compile-transitive-chain` — clock-group assertion merged into the surviving test) and `valid-expand-pack-file-path` (covered by the dual-registered `InMemoryPackResolver`). Deleted 6 byte-redundant semantic `.json` non-prepared variants (content identical to `.prepared.json` minus `start_delay_ms`).
+- Parametrized timing / parse / normalize / expand / compile_after embedded unit tests with `rstest` tables where the case families were cookie-cutter; left semantically-unique tests as standalone `#[test]` fns rather than force-fit them into tables. rstest reports each `#[case]` as a distinct test, so per-case failure location is preserved.
+- Net source LOC: **−1,189** across 45 files (excluding `Cargo.lock`). Workspace test count: 2,704 → 2,705 (+1 net: rstest case expansion offset by the 12 deleted snapshot-harness self-tests and 2 redundant fixture tests — no integration coverage lost).
+- Zero production code changes outside the `snapshot.rs` deletion. All four quality gates green at every commit (`cargo build`, `cargo test`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --check`).
+- Branch: `chore/test-infra-consolidation`, 14 commits, based on `refactor/unified-scenarios-v2` post-PR-5. Implementer-authored discipline: no `v2` prefix on any new symbol, `#[rustfmt::skip]` applied to rstest tables to keep `#[case(...)]` rows column-aligned.
+
+### PR 5 — `after` compiler + dependency graph (2026-04-12, merged #203)
 - `sonda-core/src/compiler/timing.rs` — pure threshold-crossing math per §3.3 table. Ported verbatim from the v1 `sonda/src/story/timing.rs` (flap / sawtooth / spike / steady) and extended to cover every supported generator: `step_crossing_secs`, `sequence_crossing_secs`, `constant_crossing_secs`, plus blanket `sine_crossing_secs`, `uniform_crossing_secs`, `csv_replay_crossing_secs`. Module compiles without the `config` feature so `no-config` builds remain intact.
 - `sonda-core/src/compiler/compile_after.rs` — spec §4.4 (`after`-clause compilation) + §4.5 (clock-group assignment) compile pass. Exports `compile_after()`, `CompiledFile`, `CompiledEntry`, `CompileAfterError` (typed variants: `UnknownRef`, `AmbiguousSubSignalRef`, `SelfReference`, `CircularDependency`, `UnsupportedGenerator`, `OutOfRangeThreshold`, `AmbiguousAtT0`, `ConflictingClockGroup`, `NonMetricsTarget`, `InvalidDuration`). The type itself witnesses "after is resolved" — same discipline as `ExpandedFile`/`NormalizedFile`. Note: the milestone table below reserves execution-plan "Phase 5" for runtime wiring (PR 6); this file closes the *spec* §4.4 and §4.5 compile-time passes only.
 - **Reference resolution** keyed on `ExpandedEntry.id` (inline ids + pack sub-signal ids like `{entry}.{metric}#{n}`). Bare `{entry}.{metric}` against duplicate-name packs surfaces `AmbiguousSubSignalRef` with the concrete `#N` candidates listed.
