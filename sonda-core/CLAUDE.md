@@ -110,7 +110,12 @@ src/
 │                          (defaults → shared → per-metric → entry → override)
 │                          and entry-level after propagation. Auto-ID scheme is
 │                          `{pack_def_name}_{entry_index}` for anonymous pack
-│                          entries. Feature-gated (config).
+│                          entries; sub-signal IDs are `{entry_id}.{metric}`
+│                          (bare) or `{entry_id}.{metric}#{spec_index}` when
+│                          the pack ships duplicate metric names. Post-
+│                          expansion uniqueness check rejects user/auto id
+│                          collisions via ExpandError::DuplicateEntryId.
+│                          Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,

@@ -163,9 +163,11 @@ pub struct MetricOverride {
     /// Optional causal dependency (`after:`) attached specifically to this
     /// expanded metric.
     ///
-    /// Only used by the v2 compiler: when present, it replaces any
-    /// entry-level `after` on the parent pack entry for this particular
-    /// expanded signal. v1 pack expansion ignores this field.
+    /// Per spec §2.4, a per-metric `after:` on a pack override sets a
+    /// causal dependency for that specific expanded signal, overriding
+    /// any entry-level `after` on the parent pack entry. The v2 compiler
+    /// propagates this onto the resulting signal in Phase 3; v1 pack
+    /// expansion ignores the field.
     #[cfg_attr(feature = "config", serde(default))]
     pub after: Option<AfterClause>,
 }

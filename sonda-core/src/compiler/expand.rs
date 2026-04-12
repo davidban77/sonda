@@ -24,13 +24,13 @@
 //!
 //! Levels 1 (built-in defaults) and 3 (entry non-label fields) do not
 //! contribute labels. Level 8 (CLI flags) is applied later and is out of
-//! scope here. PR 3 deliberately left pack entry labels *unmerged* with
+//! scope here. Phase 2 deliberately left pack entry labels *unmerged* with
 //! `defaults.labels` so this pass can interleave levels 4 and 5 between
 //! them.
 //!
-//! Inline entries do **not** re-apply `defaults_labels`: PR 3 already merged
-//! them eagerly and we must not double-apply. Inline entries are copied
-//! through with their label map intact.
+//! Inline entries do **not** re-apply `defaults_labels`: Phase 2 already
+//! merged them eagerly and we must not double-apply. Inline entries are
+//! copied through with their label map intact.
 //!
 //! # Auto-generated pack entry IDs
 //!
@@ -42,9 +42,83 @@
 //! appended (even for the first anonymous pack entry) so two anonymous pack
 //! entries referencing the same pack never collide.
 //!
-//! The per-metric sub-signal IDs always take the form
-//! `"{effective_entry_id}.{metric_name}"`, where `effective_entry_id` is
-//! either the user-provided `id` or the auto-generated one above.
+//! After synthesis, a post-expansion uniqueness check runs over every
+//! effective pack-entry id *and* every emitted [`ExpandedEntry::id`]:
+//! collisions between user-authored ids and auto-generated ids (or between
+//! two pack sub-signals) are rejected via
+//! [`ExpandError::DuplicateEntryId`]. The parser's id uniqueness pass only
+//! sees user-provided ids, so this pass closes the gap.
+//!
+//! ## Sub-signal IDs and duplicate metric names
+//!
+//! When a pack's metrics are unique by name (the common case), the per-metric
+//! sub-signal id takes the form `"{effective_entry_id}.{metric_name}"` —
+//! e.g. the `telegraf_snmp_interface` pack produces
+//! `net.ifOperStatus`, `net.ifHCInOctets`, etc.
+//!
+//! When two or more [`MetricSpec`][crate::packs::MetricSpec] entries in a
+//! single pack share a `name` (the `node_exporter_cpu` pack ships eight
+//! `node_cpu_seconds_total` specs differentiated only by `labels.mode`), the
+//! bare `{effective_entry_id}.{metric_name}` id would collide. This pass
+//! appends `"#{spec_index}"` **only to the colliding specs**, producing ids
+//! such as `cpu.node_cpu_seconds_total#0`, `cpu.node_cpu_seconds_total#1`,
+//! etc., where `spec_index` is the metric's zero-based position in
+//! [`MetricPackDef::metrics`]. Unique metric names keep their clean form so
+//! dotted `after.ref` into a pack sub-signal (matrix row 11.7) is still
+//! ergonomic for the majority of packs.
+//!
+//! ## Worked example
+//!
+//! Given a pack entry written as:
+//!
+//! ```yaml
+//! scenarios:
+//!   - signal_type: metrics      # no `id:`, anonymous entry at index 0
+//!     pack: telegraf_snmp_interface
+//! ```
+//!
+//! and assuming `telegraf_snmp_interface` contains four metrics
+//! (`ifOperStatus`, `ifHCInOctets`, `ifHCOutOctets`, `ifInErrors`), this pass
+//! emits four [`ExpandedEntry`]s with the following ids:
+//!
+//! | `id` | derivation |
+//! |------|------------|
+//! | `telegraf_snmp_interface_0.ifOperStatus` | auto pack-entry id + metric name |
+//! | `telegraf_snmp_interface_0.ifHCInOctets` | auto pack-entry id + metric name |
+//! | `telegraf_snmp_interface_0.ifHCOutOctets` | auto pack-entry id + metric name |
+//! | `telegraf_snmp_interface_0.ifInErrors` | auto pack-entry id + metric name |
+//!
+//! If the same pack entry had a user-provided `id: primary`, the ids above
+//! would instead read `primary.ifOperStatus`, `primary.ifHCInOctets`, and so
+//! on.
+//!
+//! # Field propagation (parent pack entry → expanded metric)
+//!
+//! Spec §4.3 step 7 lists the fields that propagate from a pack entry to
+//! each expanded signal. The full set is wider than the spec's illustrative
+//! list; this pass copies the following fields from the parent
+//! [`NormalizedEntry`] onto every emitted [`ExpandedEntry`]:
+//!
+//! | Field | Propagation rule |
+//! |-------|------------------|
+//! | `rate` | copied verbatim (inherited from defaults in Phase 2) |
+//! | `duration` | copied verbatim |
+//! | `encoder` | copied verbatim |
+//! | `sink` | copied verbatim |
+//! | `jitter`, `jitter_seed` | copied verbatim |
+//! | `gaps` | cloned verbatim |
+//! | `bursts` | cloned verbatim |
+//! | `cardinality_spikes` | cloned verbatim |
+//! | `dynamic_labels` | cloned verbatim |
+//! | `phase_offset` | cloned verbatim |
+//! | `clock_group` | cloned verbatim |
+//! | `after` | per-metric override `after` wins, else parent entry `after` (see below) |
+//!
+//! Per-metric override fields in [`MetricOverride`] (`generator`, `labels`,
+//! `after`) replace or layer on top of the parent's values as documented
+//! above and in the label precedence chain. No other fields on a
+//! [`MetricOverride`] exist today; adding one requires both extending
+//! [`MetricOverride`] and teaching this pass to propagate it.
 //!
 //! # No pack references survive
 //!
@@ -59,7 +133,10 @@
 //!
 //! - unknown override keys in a pack entry,
 //! - pack resolver failures (name lookup, file IO, YAML parse),
-//! - pack definitions with no metrics.
+//! - pack definitions with no metrics,
+//! - duplicate entry ids after synthesis (user-authored id colliding with
+//!   an auto-generated pack-entry id, or sub-signal ids colliding with one
+//!   another).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -114,6 +191,31 @@ pub enum ExpandError {
     EmptyPack {
         /// The pack definition name that was being expanded.
         pack_name: String,
+    },
+
+    /// Two entries ended up with the same identifier after pack expansion.
+    ///
+    /// The parser already rejects duplicate **user-provided** ids, but this
+    /// pass synthesizes ids for anonymous pack entries (see the module docs'
+    /// "Auto-generated pack entry IDs" section) and composes sub-signal ids
+    /// of the form `"{effective_entry_id}.{metric_name}"`. Those synthesized
+    /// ids can clash with user-authored ids or with one another; such
+    /// collisions are detected here so later phases (e.g. the Phase 4
+    /// reference index) see a unique id space.
+    ///
+    /// The `first_source` / `second_source` fields describe where each
+    /// collider originated so the diagnostic points at both contributors.
+    #[error(
+        "duplicate entry id '{id}' after pack expansion: \
+         {first_source} conflicts with {second_source}"
+    )]
+    DuplicateEntryId {
+        /// The colliding identifier.
+        id: String,
+        /// Description of the first source that produced the id.
+        first_source: String,
+        /// Description of the second source that produced the same id.
+        second_source: String,
     },
 }
 
@@ -341,8 +443,7 @@ pub struct ExpandedEntry {
     ///
     /// For pack-expanded signals, an override-level `after` replaces the
     /// parent pack entry's `after`; otherwise the parent's `after` is
-    /// propagated verbatim. Resolution into timing offsets is Phase 4
-    /// (PR 5).
+    /// propagated verbatim. Resolution into timing offsets is Phase 4's job.
     pub after: Option<AfterClause>,
 
     // -- Histogram / summary fields (inline entries only) --
@@ -377,6 +478,10 @@ pub struct ExpandedEntry {
 /// the resolved pack, with labels composed according to the module-level
 /// precedence chain and fields propagated per spec §4.3.
 ///
+/// Id uniqueness — including collisions between user-provided ids and
+/// auto-synthesized pack-entry ids — is enforced after expansion; the parser
+/// only validates user-provided ids.
+///
 /// # Errors
 ///
 /// - [`ExpandError::ResolveFailed`] when the resolver cannot produce a
@@ -384,12 +489,20 @@ pub struct ExpandedEntry {
 /// - [`ExpandError::UnknownOverrideKey`] when an override targets a metric
 ///   that is not present in the resolved pack definition.
 /// - [`ExpandError::EmptyPack`] when the resolved pack has no metrics.
+/// - [`ExpandError::DuplicateEntryId`] when two entries end up with the
+///   same identifier after synthesis (e.g. a user-authored inline id
+///   colliding with an auto-generated pack-entry id, or two sub-signal
+///   ids composing to the same string).
 pub fn expand<R: PackResolver>(
     file: NormalizedFile,
     resolver: &R,
 ) -> Result<ExpandedFile, ExpandError> {
     let defaults_labels = file.defaults_labels;
     let mut entries: Vec<ExpandedEntry> = Vec::with_capacity(file.entries.len());
+    // Collects every id that occupies the signal-id namespace so we can
+    // catch collisions between user-authored ids, synthesized pack-entry
+    // ids, and pack sub-signal ids in a single pass.
+    let mut id_registry: BTreeMap<String, String> = BTreeMap::new();
 
     for (index, entry) in file.entries.into_iter().enumerate() {
         if entry.pack.is_some() {
@@ -399,9 +512,14 @@ pub fn expand<R: PackResolver>(
                 defaults_labels.as_ref(),
                 resolver,
                 &mut entries,
+                &mut id_registry,
             )?;
         } else {
-            entries.push(expand_inline_entry(entry));
+            let expanded = expand_inline_entry(entry);
+            if let Some(id) = expanded.id.as_ref() {
+                record_id(&mut id_registry, id, format!("inline entry '{id}'"))?;
+            }
+            entries.push(expanded);
         }
     }
 
@@ -409,6 +527,27 @@ pub fn expand<R: PackResolver>(
         version: file.version,
         entries,
     })
+}
+
+/// Insert an identifier into the post-expansion uniqueness registry.
+///
+/// Returns [`ExpandError::DuplicateEntryId`] if `id` was already registered,
+/// tagging both the previous and current source so the diagnostic points at
+/// both contributors.
+fn record_id(
+    registry: &mut BTreeMap<String, String>,
+    id: &str,
+    source: String,
+) -> Result<(), ExpandError> {
+    if let Some(prior) = registry.get(id) {
+        return Err(ExpandError::DuplicateEntryId {
+            id: id.to_string(),
+            first_source: prior.clone(),
+            second_source: source,
+        });
+    }
+    registry.insert(id.to_string(), source);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -456,13 +595,15 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
 // ---------------------------------------------------------------------------
 
 /// Expand a single pack-backed [`NormalizedEntry`] into one [`ExpandedEntry`]
-/// per metric in the resolved pack, appending to `out`.
+/// per metric in the resolved pack, appending to `out` and tracking every
+/// produced id in `id_registry` for the post-expansion uniqueness check.
 fn expand_pack_entry<R: PackResolver>(
     entry: NormalizedEntry,
     entry_index: usize,
     defaults_labels: Option<&BTreeMap<String, String>>,
     resolver: &R,
     out: &mut Vec<ExpandedEntry>,
+    id_registry: &mut BTreeMap<String, String>,
 ) -> Result<(), ExpandError> {
     // `entry.pack` is Some() by the caller's check; unwrap defensively.
     let reference = entry
@@ -485,12 +626,38 @@ fn expand_pack_entry<R: PackResolver>(
 
     validate_override_keys(&pack, entry.overrides.as_ref())?;
 
-    let effective_entry_id = match entry.id.clone() {
-        Some(id) => id,
-        None => format!("{}_{}", pack.name, entry_index),
+    let (effective_entry_id, effective_id_source) = match entry.id.clone() {
+        Some(id) => (id.clone(), format!("pack entry '{id}' (user-provided id)")),
+        None => {
+            let synthesized = format!("{}_{}", pack.name, entry_index);
+            (
+                synthesized.clone(),
+                format!(
+                    "pack entry at index {entry_index} (auto-generated id '{synthesized}' \
+                     from pack '{}')",
+                    pack.name
+                ),
+            )
+        }
     };
 
-    for metric in &pack.metrics {
+    // The effective pack-entry id occupies the signal-id namespace even
+    // though no single `ExpandedEntry` carries it verbatim: its sub-signal
+    // ids live underneath (e.g. `{effective_entry_id}.{metric_name}`) and a
+    // future `after.ref` targeting `effective_entry_id` would resolve into
+    // this namespace. Register it so user-authored ids cannot silently
+    // shadow an auto-generated pack-entry id and vice versa.
+    record_id(id_registry, &effective_entry_id, effective_id_source)?;
+
+    // Per the module docs, sub-signal ids default to
+    // `"{effective_entry_id}.{metric_name}"` but metrics whose name collides
+    // with another spec in the same pack receive an additional
+    // `"#{spec_index}"` suffix. This keeps the common case clean while
+    // preventing id collisions for packs like `node_exporter_cpu` where
+    // multiple `MetricSpec`s share a metric name.
+    let duplicate_metric_names = duplicate_metric_names(&pack);
+
+    for (spec_index, metric) in pack.metrics.iter().enumerate() {
         let override_for_metric = entry
             .overrides
             .as_ref()
@@ -509,13 +676,27 @@ fn expand_pack_entry<R: PackResolver>(
         // Override-level `after` replaces entry-level `after` for this
         // specific expanded metric; otherwise propagate the parent's
         // `after` verbatim. We do NOT resolve `after.ref` here — that is
-        // PR 5's job.
+        // Phase 4's job.
         let after = override_for_metric
             .and_then(|o| o.after.clone())
             .or_else(|| entry.after.clone());
 
+        let sub_signal_id = if duplicate_metric_names.contains(metric.name.as_str()) {
+            format!("{}.{}#{}", effective_entry_id, metric.name, spec_index)
+        } else {
+            format!("{}.{}", effective_entry_id, metric.name)
+        };
+        record_id(
+            id_registry,
+            &sub_signal_id,
+            format!(
+                "pack sub-signal '{sub_signal_id}' (pack '{}', metric '{}' at index {spec_index})",
+                pack.name, metric.name
+            ),
+        )?;
+
         out.push(ExpandedEntry {
-            id: Some(format!("{}.{}", effective_entry_id, metric.name)),
+            id: Some(sub_signal_id),
             signal_type: "metrics".to_string(),
             name: metric.name.clone(),
             rate: entry.rate,
@@ -544,6 +725,23 @@ fn expand_pack_entry<R: PackResolver>(
     }
 
     Ok(())
+}
+
+/// Return the set of metric names that appear more than once in `pack`.
+///
+/// Used by [`expand_pack_entry`] to decide which sub-signal ids need a
+/// `"#{spec_index}"` disambiguator per the scheme documented in the module
+/// docs. Unique metric names stay out of this set and keep their clean
+/// `{effective_entry_id}.{metric_name}` form.
+fn duplicate_metric_names(pack: &MetricPackDef) -> BTreeSet<&str> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut duplicates: BTreeSet<&str> = BTreeSet::new();
+    for metric in &pack.metrics {
+        if !seen.insert(metric.name.as_str()) {
+            duplicates.insert(metric.name.as_str());
+        }
+    }
+    duplicates
 }
 
 /// Reject overrides whose keys do not match any metric name in the pack.
@@ -1027,7 +1225,7 @@ scenarios:
 
     #[test]
     fn inline_entry_labels_pass_through_unchanged() {
-        // Inline entries must NOT re-apply defaults_labels; PR 3 already
+        // Inline entries must NOT re-apply defaults_labels; Phase 2 already
         // merged them. Verify that exactly the merged set from normalize
         // shows up here — not doubled, not missing a defaults key.
         let yaml = r#"
@@ -1424,6 +1622,203 @@ scenarios:
                 .get("mode")
                 .unwrap(),
             "system"
+        );
+    }
+
+    #[test]
+    fn repeated_metric_names_produce_unique_sub_signal_ids() {
+        // Regression anchor: every ExpandedEntry.id must be unique even
+        // when a pack ships multiple MetricSpec entries under one name
+        // (e.g. node_exporter_cpu). Duplicate names receive a
+        // "#{spec_index}" suffix per the module-level auto-ID docs.
+        let yaml = r#"
+version: 2
+defaults: { rate: 1 }
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    pack: node_exporter_cpu
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("node_exporter_cpu", node_cpu_pack());
+        let expanded = expand_yaml(yaml, &resolver);
+
+        let ids: Vec<&str> = expanded
+            .entries
+            .iter()
+            .map(|e| {
+                e.id.as_deref()
+                    .expect("pack-expanded entries always carry an id")
+            })
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "sub-signal ids must be unique; saw {ids:?}"
+        );
+
+        // Exact id shape: first two node_cpu_seconds_total specs live at
+        // pack metric indices 0 and 1.
+        assert_eq!(ids[0], "cpu.node_cpu_seconds_total#0");
+        assert_eq!(ids[1], "cpu.node_cpu_seconds_total#1");
+    }
+
+    #[test]
+    fn unique_metric_names_keep_clean_sub_signal_ids() {
+        // The `#{spec_index}` disambiguator is applied only when a metric
+        // name collides with another spec in the same pack. Packs whose
+        // metrics are unique by name (like telegraf_snmp_interface) keep
+        // the clean `{effective_entry_id}.{metric_name}` form so dotted
+        // `after.ref` into a pack sub-signal stays ergonomic.
+        let yaml = r#"
+version: 2
+defaults: { rate: 1 }
+scenarios:
+  - id: net
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let expanded = expand_yaml(yaml, &resolver);
+
+        let ids: Vec<&str> = expanded
+            .entries
+            .iter()
+            .filter_map(|e| e.id.as_deref())
+            .collect();
+        assert_eq!(ids, vec!["net.ifOperStatus", "net.ifHCInOctets"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-expansion id uniqueness (user-provided vs. auto-synthesized)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn user_id_colliding_with_auto_pack_entry_id_is_an_error() {
+        // Reviewer-described case: the user writes an inline id that
+        // equals what the anonymous pack entry at the next position would
+        // synthesize. The parser's id uniqueness pass never sees the
+        // synthesized id, so this pass must catch the collision.
+        let yaml = r#"
+version: 2
+defaults: { rate: 1 }
+scenarios:
+  - id: telegraf_snmp_interface_1
+    signal_type: metrics
+    name: cpu
+    generator: { type: constant, value: 1 }
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let parsed = parse(yaml).expect("parse");
+        let normalized = normalize(parsed).expect("normalize");
+        let err = expand(normalized, &resolver).expect_err("must fail");
+        match err {
+            ExpandError::DuplicateEntryId {
+                id,
+                first_source,
+                second_source,
+            } => {
+                assert_eq!(id, "telegraf_snmp_interface_1");
+                assert!(
+                    first_source.contains("inline entry"),
+                    "unexpected first source: {first_source}"
+                );
+                assert!(
+                    second_source.contains("auto-generated"),
+                    "unexpected second source: {second_source}"
+                );
+            }
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_pack_entry_id_colliding_with_later_user_id_is_an_error() {
+        // Reverse ordering: anonymous pack entry comes first, user-written
+        // id collides with the synthesized name afterward. The registry
+        // must flag the collision regardless of source order.
+        let yaml = r#"
+version: 2
+defaults: { rate: 1 }
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+  - id: telegraf_snmp_interface_0
+    signal_type: metrics
+    name: cpu
+    generator: { type: constant, value: 1 }
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let parsed = parse(yaml).expect("parse");
+        let normalized = normalize(parsed).expect("normalize");
+        let err = expand(normalized, &resolver).expect_err("must fail");
+        match err {
+            ExpandError::DuplicateEntryId {
+                id,
+                first_source,
+                second_source,
+            } => {
+                assert_eq!(id, "telegraf_snmp_interface_0");
+                assert!(
+                    first_source.contains("auto-generated"),
+                    "unexpected first source: {first_source}"
+                );
+                assert!(
+                    second_source.contains("inline entry"),
+                    "unexpected second source: {second_source}"
+                );
+            }
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_entry_id_error_preserves_both_sources() {
+        // The diagnostic must name both contributors so users can locate
+        // each side of the collision. Parser-level id validation rejects
+        // `.` and `#` in user ids, so the only reachable collisions travel
+        // between inline ids and synthesized pack-entry ids; both sources
+        // appear in the error regardless of document order.
+        //
+        // The pack entry here sits at index 1, so its auto-id is
+        // `telegraf_snmp_interface_1`; the inline entry claims that id
+        // first.
+        let yaml = r#"
+version: 2
+defaults: { rate: 1 }
+scenarios:
+  - id: telegraf_snmp_interface_1
+    signal_type: metrics
+    name: cpu
+    generator: { type: constant, value: 1 }
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let parsed = parse(yaml).expect("parse");
+        let normalized = normalize(parsed).expect("normalize");
+        let err = expand(normalized, &resolver).expect_err("must fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("'telegraf_snmp_interface_1'"),
+            "error must name the colliding id: {rendered}"
+        );
+        assert!(
+            rendered.contains("inline entry"),
+            "error must name the inline source: {rendered}"
+        );
+        assert!(
+            rendered.contains("auto-generated"),
+            "error must name the auto-generated source: {rendered}"
         );
     }
 

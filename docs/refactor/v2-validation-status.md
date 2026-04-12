@@ -170,7 +170,7 @@ scenario and pack produces identical output in v2 format (14 rows).
 | 11.5 | Single-signal shorthand | Pass | PR 2 | Flat files wrapped automatically |
 | 11.6 | Pack inside scenarios: list | Pass | PR 4 | Parsed in PR 2, expansion in PR 4 with one ExpandedEntry per pack metric |
 | 11.7 | Dotted after ref into pack | Not Tested | PR 5 | Sub-signal IDs of form `{entry_id}.{metric}` already assigned in PR 4 |
-| 11.8 | Auto-generated pack IDs | Pass | PR 4 | Deterministic `{pack_def_name}_{entry_index}` when `id` absent |
+| 11.8 | Auto-generated pack IDs | Pass | PR 4 | Deterministic `{pack_def_name}_{entry_index}` when `id` absent; duplicate metric names receive `"#{spec_index}"` suffix on the sub-signal id; post-expansion uniqueness check guards against user/auto id collisions |
 | 11.9 | delay in after clause | Not Tested | PR 5 | Parsed in PR 2 |
 | 11.10 | Structured after validation | Pass | PR 2 | AfterOp enum, serde validation |
 | 11.11 | Cross-signal-type after | Not Tested | PR 5 | |

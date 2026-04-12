@@ -119,6 +119,19 @@ fn v1_signal(entry: &ScenarioEntry) -> ComparableSignal {
 /// For `GeneratorConfig` and `EncoderConfig` (neither implements `Eq`),
 /// equality is checked via JSON round-trip serialization — both types
 /// are `Serialize` under the `config` feature.
+///
+/// # Why ids are not in the comparison
+///
+/// [`ComparableSignal`] deliberately omits `id`: v1's [`ScenarioEntry`]
+/// does not carry a stable per-entry id (the v1 catalog uses the pack
+/// scenario name as the single launchable unit), while v2 synthesizes
+/// sub-signal ids of the form `"{effective_entry_id}.{metric_name}"` with
+/// an optional `"#{spec_index}"` suffix for packs that ship duplicate
+/// metric names. Comparing ids across the two paths would fail by
+/// definition.
+///
+/// Id uniqueness on the v2 side is a distinct invariant and is asserted
+/// separately via [`assert_v2_ids_are_unique`] in each parity test.
 fn assert_same_signal_set(label: &str, v1: &[ScenarioEntry], v2: &[ExpandedEntry]) {
     assert_eq!(
         v1.len(),
@@ -141,6 +154,32 @@ fn assert_same_signal_set(label: &str, v1: &[ScenarioEntry], v2: &[ExpandedEntry
     assert_eq!(
         v1_sorted, v2_sorted,
         "{label}: v1 and v2 signal sets differ\nv1: {v1_sorted:#?}\nv2: {v2_sorted:#?}"
+    );
+}
+
+/// Assert that every [`ExpandedEntry`] produced by the v2 pipeline carries
+/// a distinct, non-empty `id`.
+///
+/// Complements [`assert_same_signal_set`]: parity covers signal *shape*,
+/// this covers signal *identity*. Regression anchor for the
+/// `node_exporter_cpu` pack, which ships eight `MetricSpec` entries all
+/// named `node_cpu_seconds_total` — each must expand into a unique
+/// sub-signal id.
+fn assert_v2_ids_are_unique(label: &str, v2: &[ExpandedEntry]) {
+    let ids: Vec<&str> = v2
+        .iter()
+        .map(|e| {
+            e.id.as_deref()
+                .unwrap_or_else(|| panic!("{label}: pack-expanded entry missing id: {e:?}"))
+        })
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "{label}: sub-signal ids must be unique; saw {ids:?}"
     );
 }
 
@@ -222,6 +261,7 @@ fn parity_telegraf_snmp_interface() {
     let v1_entries = expand_pack(&pack, &v1_config).expect("v1 expansion must succeed");
 
     assert_same_signal_set("telegraf_snmp_interface", &v1_entries, &v2_expanded.entries);
+    assert_v2_ids_are_unique("telegraf_snmp_interface", &v2_expanded.entries);
 }
 
 // =============================================================================
@@ -252,6 +292,7 @@ fn parity_node_exporter_cpu() {
     let v1_entries = expand_pack(&pack, &v1_config).expect("v1 expansion must succeed");
 
     assert_same_signal_set("node_exporter_cpu", &v1_entries, &v2_expanded.entries);
+    assert_v2_ids_are_unique("node_exporter_cpu", &v2_expanded.entries);
 }
 
 // =============================================================================
@@ -294,4 +335,5 @@ fn parity_node_exporter_memory() {
     let v1_entries = expand_pack(&pack, &v1_config).expect("v1 expansion must succeed");
 
     assert_same_signal_set("node_exporter_memory", &v1_entries, &v2_expanded.entries);
+    assert_v2_ids_are_unique("node_exporter_memory", &v2_expanded.entries);
 }
