@@ -13,12 +13,16 @@
 //!
 //! - [`parse`] — YAML deserialization, schema validation, and version detection.
 //! - [`normalize`] — `defaults:` resolution and entry-level normalization.
+//! - [`expand`] — pack expansion inside `scenarios:` (Phase 3).
 
 #[cfg(feature = "config")]
 pub mod parse;
 
 #[cfg(feature = "config")]
 pub mod normalize;
+
+#[cfg(feature = "config")]
+pub mod expand;
 
 use std::collections::BTreeMap;
 

@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::compiler::AfterClause;
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
@@ -138,10 +139,15 @@ pub struct PackScenarioConfig {
     pub overrides: Option<HashMap<String, MetricOverride>>,
 }
 
-/// Per-metric override within a [`PackScenarioConfig`].
+/// Per-metric override within a [`PackScenarioConfig`] or a v2 pack-backed
+/// scenario entry.
 ///
-/// Allows the user to customize the generator or add extra labels for a
-/// specific metric without modifying the pack definition.
+/// Allows the user to customize the generator, add extra labels, or attach a
+/// causal dependency (`after:`) for a specific metric without modifying the
+/// pack definition. The v1 expansion path ([`expand_pack`]) consumes only
+/// `generator` and `labels`; the v2 compiler additionally propagates `after`
+/// onto the expanded signal (see
+/// [`crate::compiler::expand`]).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct MetricOverride {
@@ -154,6 +160,16 @@ pub struct MetricOverride {
     /// the v2 AST label types.
     #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<BTreeMap<String, String>>,
+    /// Optional causal dependency (`after:`) attached specifically to this
+    /// expanded metric.
+    ///
+    /// Per spec §2.4, a per-metric `after:` on a pack override sets a
+    /// causal dependency for that specific expanded signal, overriding
+    /// any entry-level `after` on the parent pack entry. The v2 compiler
+    /// propagates this onto the resulting signal in Phase 3; v1 pack
+    /// expansion ignores the field.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub after: Option<AfterClause>,
 }
 
 #[cfg(feature = "config")]
@@ -435,6 +451,7 @@ mod tests {
             MetricOverride {
                 generator: Some(GeneratorConfig::Constant { value: 42.0 }),
                 labels: None,
+                after: None,
             },
         );
 
@@ -619,6 +636,7 @@ mod tests {
             MetricOverride {
                 generator: None,
                 labels: None,
+                after: None,
             },
         );
 
@@ -667,6 +685,7 @@ mod tests {
             MetricOverride {
                 generator: None,
                 labels: Some(override_labels),
+                after: None,
             },
         );
 

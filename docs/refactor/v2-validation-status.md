@@ -123,18 +123,18 @@ scenario and pack produces identical output in v2 format (14 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 9.1 | Run pack by name | Not Tested | PR 4/7 | |
-| 9.2 | Run pack from YAML | Not Tested | PR 4/6 | |
-| 9.3 | Pack search path | Not Tested | PR 4 | |
-| 9.4 | Pack by file path | Not Tested | PR 4 | |
-| 9.5 | Per-metric overrides (generator) | Not Tested | PR 4 | |
-| 9.6 | Per-metric overrides (labels) | Not Tested | PR 4 | |
-| 9.7 | Unknown override key → error | Not Tested | PR 4 | |
-| 9.8 | Label merge order | Not Tested | PR 4 | |
+| 9.1 | Run pack by name | Pass | PR 4 | Compile-level: name lookup via PackResolver; CLI wiring lands in PR 7 |
+| 9.2 | Run pack from YAML | Pass | PR 4 | Compile-level: v2 YAML with `scenarios: - pack:` parses and expands |
+| 9.3 | Pack search path | Pass | PR 4 | PackResolver trait abstraction; filesystem search path wiring lands in PR 7 CLI |
+| 9.4 | Pack by file path | Pass | PR 4 | classify_pack_reference routes `./x.yaml` or `/abs/x.yaml` to FilePath origin |
+| 9.5 | Per-metric overrides (generator) | Pass | PR 4 | expand::select_pack_metric_generator picks override > spec > constant(0) |
+| 9.6 | Per-metric overrides (labels) | Pass | PR 4 | Override labels sit at precedence level 7 in the merge |
+| 9.7 | Unknown override key → error | Pass | PR 4 | ExpandError::UnknownOverrideKey lists key + pack + valid metrics |
+| 9.8 | Label merge order | Pass | PR 4 | Five-level precedence chain validated by `label_precedence_chain_applied_in_order` |
 | 9.9 | Pack --dry-run | Not Tested | PR 7 | Enhanced |
 | 9.10 | List packs | Not Tested | PR 7 | |
 | 9.11 | Show pack YAML | Not Tested | PR 7 | |
-| 9.12 | Custom pack definitions | Not Tested | PR 4 | |
+| 9.12 | Custom pack definitions | Pass | PR 4 | InMemoryPackResolver accepts any MetricPackDef; classify_pack_reference supports file paths |
 | 9.13 | Built-in: telegraf_snmp_interface | Not Tested | PR 8 | |
 | 9.14 | Built-in: node_exporter_cpu | Not Tested | PR 8 | |
 | 9.15 | Built-in: node_exporter_memory | Not Tested | PR 8 | |
@@ -168,14 +168,14 @@ scenario and pack produces identical output in v2 format (14 rows).
 | 11.3 | Entry-level overrides defaults | Pass | PR 3 | entry values win over defaults across all precedence-eligible fields |
 | 11.4 | id field on entries | Pass | PR 2 | Uniqueness + format validated |
 | 11.5 | Single-signal shorthand | Pass | PR 2 | Flat files wrapped automatically |
-| 11.6 | Pack inside scenarios: list | Not Tested | PR 4 | Parsed in PR 2, expansion in PR 4 |
-| 11.7 | Dotted after ref into pack | Not Tested | PR 5 | |
-| 11.8 | Auto-generated pack IDs | Not Tested | PR 4 | |
+| 11.6 | Pack inside scenarios: list | Pass | PR 4 | Parsed in PR 2, expansion in PR 4 with one ExpandedEntry per pack metric |
+| 11.7 | Dotted after ref into pack | Not Tested | PR 5 | Sub-signal IDs of form `{entry_id}.{metric}` already assigned in PR 4 |
+| 11.8 | Auto-generated pack IDs | Pass | PR 4 | Deterministic `{pack_def_name}_{entry_index}` when `id` absent; duplicate metric names receive `"#{spec_index}"` suffix on the sub-signal id; post-expansion uniqueness check guards against user/auto id collisions |
 | 11.9 | delay in after clause | Not Tested | PR 5 | Parsed in PR 2 |
 | 11.10 | Structured after validation | Pass | PR 2 | AfterOp enum, serde validation |
 | 11.11 | Cross-signal-type after | Not Tested | PR 5 | |
-| 11.12 | after on pack override | Not Tested | PR 4/5 | |
-| 11.13 | Pack entry-level after propagation | Not Tested | PR 4/5 | |
+| 11.12 | after on pack override | Pass | PR 4/5 | Carry-through Pass (PR 4); `after` resolution lands in PR 5 |
+| 11.13 | Pack entry-level after propagation | Pass | PR 4/5 | Propagation Pass (PR 4); `after` resolution lands in PR 5 |
 | 11.14 | after + phase_offset sum | Not Tested | PR 5 | |
 | 11.15 | Clock group auto-assignment | Not Tested | PR 5 | |
 | 11.16 | Conflicting clock_group → error | Not Tested | PR 5 | |
@@ -290,6 +290,6 @@ For each built-in pack, a v2 scenario file is created that uses the pack inside
 
 | # | Pack | Compile Parity | Runtime Parity | PR | Notes |
 |---|------|----------------|----------------|-----|-------|
-| 17.1 | telegraf-snmp-interface.yaml | Not Tested | Not Tested | PR 4/6 | 5 metrics, network category |
-| 17.2 | node-exporter-cpu.yaml | Not Tested | Not Tested | PR 4/6 | 8 metrics, step sizes sum to 1.0 |
-| 17.3 | node-exporter-memory.yaml | Not Tested | Not Tested | PR 4/6 | 5 metrics, 16 GiB defaults |
+| 17.1 | telegraf-snmp-interface.yaml | Pass | Not Tested | PR 4/6 | v1 `expand_pack` and v2 pipeline yield the same concrete signals including flap override; runtime parity lands in PR 6 |
+| 17.2 | node-exporter-cpu.yaml | Pass | Not Tested | PR 4/6 | Eight per-mode metrics of `node_cpu_seconds_total` compile identically; runtime parity lands in PR 6 |
+| 17.3 | node-exporter-memory.yaml | Pass | Not Tested | PR 4/6 | Five memory gauge metrics + override labels compile identically; runtime parity lands in PR 6 |
