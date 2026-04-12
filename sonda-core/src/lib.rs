@@ -4,6 +4,7 @@
 //! schedulers, encoders, and sinks. The CLI and HTTP server are thin layers
 //! that call into this library.
 
+pub mod compiler;
 pub mod config;
 pub mod encoder;
 pub mod generator;
@@ -13,7 +14,6 @@ pub mod scenarios;
 pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
-pub mod v2;
 
 pub use config::aliases::{desugar_entry, desugar_scenario_config};
 pub use config::BaseScheduleConfig;

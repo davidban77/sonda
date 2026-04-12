@@ -110,7 +110,7 @@ const DISTRIBUTION_SIGNAL_TYPES: &[&str] = &["histogram", "summary"];
 /// # Examples
 ///
 /// ```
-/// use sonda_core::v2::parse::detect_version;
+/// use sonda_core::compiler::parse::detect_version;
 ///
 /// assert_eq!(detect_version("version: 2\nscenarios: []"), Some(2));
 /// assert_eq!(detect_version("version: 1"), Some(1));

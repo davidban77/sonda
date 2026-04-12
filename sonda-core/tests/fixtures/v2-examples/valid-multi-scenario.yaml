@@ -1,0 +1,54 @@
+# Multi-scenario file with defaults block.
+# All entries inherit rate, duration, encoder, and sink from defaults.
+# Entry-level values override defaults.
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  # Inline metric signal with an id (needed for after: references)
+  - id: link_state
+    signal_type: metrics
+    name: interface_oper_state
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/0/0
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  # Another metric that starts after link_state drops below 1
+  - id: backup_util
+    signal_type: metrics
+    name: backup_link_utilization
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/1/0
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: link_state
+      op: "<"
+      value: 1
+
+  # A log signal triggered by a metric threshold
+  - signal_type: logs
+    name: app_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "failover detected on {interface}"
+          field_pools:
+            interface: ["Gi0/0/0", "Gi0/1/0"]
+    after:
+      ref: backup_util
+      op: ">"
+      value: 70

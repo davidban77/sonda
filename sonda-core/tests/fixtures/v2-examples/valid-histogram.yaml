@@ -1,0 +1,14 @@
+# Histogram signal with normal distribution and custom buckets.
+version: 2
+name: http_request_duration_seconds
+signal_type: histogram
+rate: 10
+duration: 5m
+distribution:
+  type: normal
+  mean: 0.25
+  stddev: 0.1
+buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+observations_per_tick: 100
+labels:
+  service: api-gateway

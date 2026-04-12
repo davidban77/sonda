@@ -1,0 +1,8 @@
+# ERROR: version must be 2, got 1
+version: 1
+name: cpu_usage
+signal_type: metrics
+rate: 1
+generator:
+  type: constant
+  value: 42.0
