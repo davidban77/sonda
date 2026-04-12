@@ -190,6 +190,20 @@ Do NOT also:
 
 PR 6 is the runtime parity proof — it shows the v2 pipeline produces correct output when driven through the existing scheduler. Migrations and CLI changes follow once parity is nailed down.
 
+### Testing conventions for PR 6 (post test-infra consolidation)
+
+The test-infra consolidation PR landed between PR 5 and PR 6. New tests on this integration branch must follow the post-consolidation conventions — the hand-rolled snapshot harness is gone, and the shared test surface is now the canonical one:
+
+- **`sonda-core/src/config/snapshot.rs` no longer exists.** Do not try to import `snapshot_entries`, `snapshot_prepared_entries`, or `assert_or_update_snapshot` — they were deleted. Use `insta::assert_json_snapshot!` directly on the existing `Serialize` derives.
+- **Integration tests start with `mod common;`** to pull in shared helpers from `sonda-core/tests/common/mod.rs`: `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`, `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`. Add new helpers there — do not duplicate across test files.
+- **Golden snapshots use `insta`.** `sonda-core/tests/snapshots/*.snap` is the snapshot tree. Update via `cargo insta review` (interactive) or `INSTA_UPDATE=always cargo test` (batch). For JSON snapshots, wrap via `common::snapshot_settings().bind(|| insta::assert_json_snapshot!(...))` to get `sort_maps = true` determinism.
+- **Parametrized tests use `rstest`.** Use `#[case::<descriptive_name>(...)]` so each row reports as a distinct test. Apply `#[rustfmt::skip]` on tables so `#[case(...)]` rows stay column-aligned. Do NOT force-fit: semantically-unique cases stay as standalone `#[test]` fns.
+- **For the 11 built-in runtime-parity tests (rows 16.1–16.11)**, a single `#[rstest]` with 11 `#[case::<scenario_name>(...)]` rows is the right shape — one function body that loads both v1 and v2, runs them with a seeded scheduler, and asserts byte-equal stdout.
+- **Stdout-capturing helper**: add a `common::run_and_capture_stdout(entries: Vec<ScenarioEntry>, seed: u64, ticks: u64) -> Vec<u8>` (or a `StdoutHarness` struct) to `tests/common/mod.rs` — all runtime-parity tests will need the same plumbing.
+- **v1 vs v2 stdout-parity is `assert_eq!(v1_bytes, v2_bytes)`, not a snapshot.** If you also want to pin a canonical baseline so both paths drifting to new-but-matching output is caught, additionally snapshot ONE side via `insta::assert_snapshot!(String::from_utf8_lossy(&v1_bytes))`.
+- **No `v2` prefix** on any Rust symbol — the `compiler` module and `v2-` fixture paths already carry the version. Fixture filenames and directories may use `v2-`.
+- **Quality gates on every commit**: `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings` (project gate — NOT `--all-targets`, pre-existing Rust 1.93 drift is a separate PR), `cargo fmt --all -- --check`.
+
 ## Active Risks
 - Snapshot format stability — must be deterministic and survive refactor
 - `deny_unknown_fields` on parse-time AST prevents forward-compatible parsing (deliberate); `NormalizedFile`/`NormalizedEntry` are Serialize-only projections and intentionally do not carry that attribute

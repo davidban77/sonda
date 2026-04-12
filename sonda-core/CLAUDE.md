@@ -269,8 +269,41 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 
 ## Testing
 
+### Unit tests (embedded in source files)
+
 - Every generator: test at tick=0, tick=1, tick at period boundary, tick at large values.
 - Every encoder: test with known MetricEvent → assert exact byte output.
 - Schedule logic: test gap window math, burst window transitions, rate calculation.
 - Use `#[cfg(test)] mod tests` at the bottom of each file.
 - Seed all RNG-based generators for deterministic tests.
+
+### Parametrized tests — use `rstest`
+
+For test families that share a shape and differ only by input/expected output, use `rstest`:
+
+- Each `#[case::<descriptive_name>(...)]` row reports as a distinct test in `cargo test` output
+  — failure location is preserved per case. Use descriptive labels, not anonymous cases.
+- Apply `#[rustfmt::skip]` on the rstest fn so `#[case(...)]` rows stay column-aligned.
+- Do NOT force-fit singleton or semantically-unique cases into tables just to reduce line count.
+  A standalone `#[test]` fn is better than a table with heterogeneous payloads.
+- Example patterns: `compiler::timing::tests` (crossing math across generator families),
+  `compiler::parse::tests` (invalid-YAML rejection variants).
+
+### Integration tests (`sonda-core/tests/*.rs`)
+
+- Start every file with `mod common;` to pull in shared helpers from `tests/common/mod.rs`:
+  `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`,
+  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`.
+- Add new helpers to `tests/common/mod.rs` — do not duplicate across test files.
+
+### Golden-file snapshots — use `insta`
+
+- Snapshots live under `sonda-core/tests/snapshots/*.snap` and are updated via
+  `cargo insta review` (interactive) or `INSTA_UPDATE=always cargo test` (batch).
+- The hand-rolled harness previously at `src/config/snapshot.rs` was replaced by insta — do not
+  reintroduce it.
+- Structured outputs (compiled/expanded/normalized): wrap `insta::assert_json_snapshot!(value, ...)`
+  in `common::snapshot_settings().bind(|| ...)` for the shared `sort_maps = true` determinism config.
+- Text outputs (stdout bytes, log lines): `insta::assert_snapshot!(text)`.
+- Parametrized families: combine rstest + insta — each `#[case(...)]` generates its own snapshot
+  name automatically.
