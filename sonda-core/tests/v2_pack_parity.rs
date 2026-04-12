@@ -15,52 +15,19 @@
 //! compile-parity only.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
 
 use sonda_core::compiler::compile_after::{compile_after, CompiledEntry};
-use sonda_core::compiler::expand::{expand, ExpandedEntry, ExpandedFile, InMemoryPackResolver};
-use sonda_core::compiler::normalize::normalize;
-use sonda_core::compiler::parse::parse;
+use sonda_core::compiler::expand::ExpandedEntry;
 use sonda_core::compiler::{AfterClause, AfterOp};
 use sonda_core::config::ScenarioEntry;
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
-use sonda_core::packs::{expand_pack, MetricOverride, MetricPackDef, PackScenarioConfig};
+use sonda_core::packs::{expand_pack, MetricOverride, PackScenarioConfig};
 use sonda_core::sink::SinkConfig;
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
+mod common;
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate has parent")
-        .to_path_buf()
-}
-
-fn load_pack(file_name: &str) -> MetricPackDef {
-    let path = repo_root().join("packs").join(file_name);
-    let yaml = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
-    serde_yaml_ng::from_str::<MetricPackDef>(&yaml)
-        .unwrap_or_else(|e| panic!("cannot parse {}: {}", path.display(), e))
-}
-
-fn parity_fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/v2-parity")
-        .join(name);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e))
-}
-
-/// Run the v2 pipeline (parse → normalize → expand) on a fixture YAML.
-fn v2_compile(yaml: &str, resolver: &InMemoryPackResolver) -> ExpandedFile {
-    let parsed = parse(yaml).expect("parse");
-    let normalized = normalize(parsed).expect("normalize");
-    expand(normalized, resolver).expect("expand")
-}
+use common::{compile_to_expanded, load_repo_pack, parity_fixture, resolver_with};
 
 /// Normalize a label source into a sorted BTreeMap for comparison.
 ///
@@ -210,24 +177,18 @@ fn signal_key(s: &ComparableSignal) -> String {
     serde_json::to_string(&key).expect("serialization must succeed")
 }
 
-fn resolver_with(name: &str, pack: MetricPackDef) -> InMemoryPackResolver {
-    let mut r = InMemoryPackResolver::new();
-    r.insert(name, pack);
-    r
-}
-
 // =============================================================================
 // 17.1 — telegraf_snmp_interface parity
 // =============================================================================
 
 #[test]
 fn parity_telegraf_snmp_interface() {
-    let pack = load_pack("telegraf-snmp-interface.yaml");
+    let pack = load_repo_pack("telegraf-snmp-interface.yaml");
     let resolver = resolver_with("telegraf_snmp_interface", pack.clone());
     let yaml = parity_fixture("telegraf-snmp-interface.yaml");
 
     // v2 pipeline.
-    let v2_expanded = v2_compile(&yaml, &resolver);
+    let v2_expanded = compile_to_expanded(&yaml, &resolver);
 
     // Equivalent v1 config.
     let mut user_labels = HashMap::new();
@@ -272,11 +233,11 @@ fn parity_telegraf_snmp_interface() {
 
 #[test]
 fn parity_node_exporter_cpu() {
-    let pack = load_pack("node-exporter-cpu.yaml");
+    let pack = load_repo_pack("node-exporter-cpu.yaml");
     let resolver = resolver_with("node_exporter_cpu", pack.clone());
     let yaml = parity_fixture("node-exporter-cpu.yaml");
 
-    let v2_expanded = v2_compile(&yaml, &resolver);
+    let v2_expanded = compile_to_expanded(&yaml, &resolver);
 
     let mut user_labels = HashMap::new();
     user_labels.insert("instance".to_string(), "web-01:9100".to_string());
@@ -303,11 +264,11 @@ fn parity_node_exporter_cpu() {
 
 #[test]
 fn parity_node_exporter_memory() {
-    let pack = load_pack("node-exporter-memory.yaml");
+    let pack = load_repo_pack("node-exporter-memory.yaml");
     let resolver = resolver_with("node_exporter_memory", pack.clone());
     let yaml = parity_fixture("node-exporter-memory.yaml");
 
-    let v2_expanded = v2_compile(&yaml, &resolver);
+    let v2_expanded = compile_to_expanded(&yaml, &resolver);
 
     let mut user_labels = HashMap::new();
     user_labels.insert("instance".to_string(), "web-01:9100".to_string());
@@ -357,7 +318,7 @@ fn find_compiled_by_id<'a>(entries: &'a [CompiledEntry], id: &str) -> &'a Compil
 /// no `after`-derived offset (matrix row 11.12).
 #[test]
 fn compile_after_on_pack_override_applies_per_metric() {
-    let pack = load_pack("telegraf-snmp-interface.yaml");
+    let pack = load_repo_pack("telegraf-snmp-interface.yaml");
     let resolver = resolver_with("telegraf_snmp_interface", pack);
 
     let yaml = r#"
@@ -387,10 +348,7 @@ scenarios:
           value: 1
 "#;
 
-    let parsed = parse(yaml).expect("parse");
-    let normalized = normalize(parsed).expect("normalize");
-    let expanded = expand(normalized, &resolver).expect("expand");
-    let compiled = compile_after(expanded).expect("compile_after");
+    let compiled = common::compile_to_compiled(yaml, &resolver);
 
     let ifoper = find_compiled_by_id(&compiled.entries, "uplink.ifOperStatus");
     assert_eq!(
@@ -411,7 +369,7 @@ scenarios:
 /// expanded sub-signal (matrix row 11.13).
 #[test]
 fn compile_after_pack_entry_level_propagates_to_all_sub_signals() {
-    let pack = load_pack("telegraf-snmp-interface.yaml");
+    let pack = load_repo_pack("telegraf-snmp-interface.yaml");
     let resolver = resolver_with("telegraf_snmp_interface", pack);
 
     let yaml = r#"
@@ -439,9 +397,7 @@ scenarios:
       value: 1
 "#;
 
-    let parsed = parse(yaml).expect("parse");
-    let normalized = normalize(parsed).expect("normalize");
-    let expanded = expand(normalized, &resolver).expect("expand");
+    let expanded = compile_to_expanded(yaml, &resolver);
 
     // Entry-level `after` must have been propagated to every pack metric
     // in the expanded representation.
