@@ -73,7 +73,7 @@ scenario and pack produces identical output in v2 format (14 rows).
 | 5.5 | remote_write | Not Tested | PR 6 | |
 | 5.6 | otlp | Not Tested | PR 6 | |
 | 5.7 | precision field | Not Tested | PR 6 | |
-| 5.8 | Default encoder per signal type | Not Tested | PR 3 | Defaults resolution |
+| 5.8 | Default encoder per signal type | Pass | PR 3 | Defaults resolution: metrics/histogram/summary → prometheus_text, logs → json_lines |
 
 ## 6. Sinks (12 rows)
 
@@ -154,18 +154,18 @@ scenario and pack produces identical output in v2 format (14 rows).
 | 10.9 | Threshold true at t=0 → error | Not Tested | PR 5 | |
 | 10.10 | sine/steady in after → error | Not Tested | PR 5 | |
 | 10.11 | Shared clock_group | Not Tested | PR 5 | |
-| 10.12 | Shared labels across signals | Not Tested | PR 3 | via defaults |
-| 10.13 | Per-signal label overrides | Not Tested | PR 3 | |
-| 10.14 | Per-signal rate/duration override | Not Tested | PR 3 | |
-| 10.15 | Per-signal encoder/sink override | Not Tested | PR 3 | |
+| 10.12 | Shared labels across signals | Pass | PR 3 | defaults.labels flows into every entry |
+| 10.13 | Per-signal label overrides | Pass | PR 3 | entry labels win on conflict, union otherwise |
+| 10.14 | Per-signal rate/duration override | Pass | PR 3 | entry rate/duration win over defaults |
+| 10.15 | Per-signal encoder/sink override | Pass | PR 3 | entry encoder/sink win over defaults |
 
 ## 11. New v2 Features (18 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 11.1 | version: 2 field | Pass | PR 2 | parse_v2 validates version |
-| 11.2 | defaults: block | Not Tested | PR 3 | Parsed in PR 2, resolution in PR 3 |
-| 11.3 | Entry-level overrides defaults | Not Tested | PR 3 | |
+| 11.1 | version: 2 field | Pass | PR 2 | parse() validates version |
+| 11.2 | defaults: block | Pass | PR 3 | resolved into every entry by normalize() |
+| 11.3 | Entry-level overrides defaults | Pass | PR 3 | entry values win over defaults across all precedence-eligible fields |
 | 11.4 | id field on entries | Pass | PR 2 | Uniqueness + format validated |
 | 11.5 | Single-signal shorthand | Pass | PR 2 | Flat files wrapped automatically |
 | 11.6 | Pack inside scenarios: list | Not Tested | PR 4 | Parsed in PR 2, expansion in PR 4 |

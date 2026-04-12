@@ -90,9 +90,17 @@ src/
 │   │                      ScenarioFile, Defaults, Entry, AfterClause, AfterOp.
 │   │                      Pre-compilation representation of scenario YAML files.
 │   │                      No runtime integration — parsing only.
-│   └── parse.rs        ← YAML parser and structural validation.
-│                          parse_v2(), detect_version(), ParseError.
-│                          Single-signal shorthand support. Feature-gated (config).
+│   ├── parse.rs        ← YAML parser and structural validation.
+│   │                      parse(), detect_version(), ParseError.
+│   │                      Single-signal shorthand support. Feature-gated (config).
+│   └── normalize.rs    ← Phase 2 compilation: defaults resolution.
+│                          normalize(), NormalizedFile, NormalizedEntry,
+│                          NormalizeError. Flattens defaults: into every entry,
+│                          applies built-in encoder/sink fallbacks, merges
+│                          defaults.labels for inline entries (deferred for
+│                          pack entries so Phase 3 can interleave pack
+│                          shared/per-metric labels), and enforces rate
+│                          presence. Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,

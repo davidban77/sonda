@@ -1,0 +1,35 @@
+# Defaults resolution with per-entry label override and rate override.
+# Every entry inherits duration, encoder, and sink from `defaults:`.
+# The first entry merges its labels with `defaults.labels`: `region` is
+# overridden by the entry, `device` and `interface` remain.
+# The second entry overrides `rate` and uses `defaults.labels` as-is.
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    device: rtr-edge-01
+    region: us-west-2
+scenarios:
+  - id: link_state
+    signal_type: metrics
+    name: interface_oper_state
+    labels:
+      interface: Gi0/0/0
+      region: us-east-1
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: fast_metric
+    signal_type: metrics
+    name: cpu
+    rate: 10
+    generator:
+      type: constant
+      value: 42

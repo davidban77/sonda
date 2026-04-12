@@ -1,0 +1,13 @@
+# Built-in encoder fallback for logs when `defaults:` sets no encoder.
+# `defaults.rate` flows into the entry; the encoder becomes `json_lines`
+# via the built-in signal-type default.
+version: 2
+defaults:
+  rate: 5
+scenarios:
+  - signal_type: logs
+    name: app_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "hello"

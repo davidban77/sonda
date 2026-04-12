@@ -12,9 +12,13 @@
 //! # Submodules
 //!
 //! - [`parse`] — YAML deserialization, schema validation, and version detection.
+//! - [`normalize`] — `defaults:` resolution and entry-level normalization.
 
 #[cfg(feature = "config")]
 pub mod parse;
+
+#[cfg(feature = "config")]
+pub mod normalize;
 
 use std::collections::BTreeMap;
 
@@ -27,12 +31,12 @@ use crate::packs::MetricOverride;
 use crate::sink::SinkConfig;
 
 // ---------------------------------------------------------------------------
-// V2 AST types
+// Compiler AST types
 // ---------------------------------------------------------------------------
 
 /// A parsed v2 scenario file.
 ///
-/// This is the top-level AST node produced by [`parse::parse_v2`]. It captures
+/// This is the top-level AST node produced by [`parse::parse`]. It captures
 /// the exact structure of the YAML input without resolving defaults, expanding
 /// packs, or compiling after-clauses.
 #[derive(Debug, Clone)]
@@ -88,7 +92,7 @@ pub struct Defaults {
 ///
 /// All fields are optional in the struct to support flexible YAML authoring.
 /// Semantic validation (required fields, mutual exclusion) is performed by
-/// [`parse::parse_v2`].
+/// [`parse::parse`].
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "config",

@@ -1,0 +1,40 @@
+# Defaults resolution on a pack-backed entry.
+# The pack entry inherits `rate`, `duration`, `encoder`, and `sink` from
+# `defaults:`. Its own `pack:` and `overrides:` fields are preserved for
+# pack expansion (handled in a later compilation phase).
+#
+# Note on labels: `defaults.labels` is NOT merged into a pack entry's
+# `labels` here — per spec §2.2 the final pack-metric label map must
+# interleave pack shared/per-metric labels between the defaults layer and
+# the entry layer. Phase 3 expansion does that. Until then:
+#   - the pack entry's `labels` carries only what the user wrote on the
+#     entry (so `{device: rtr-01}`, NOT `{env: prod, device: rtr-01}`),
+#   - the file-level `defaults.labels` is surfaced on the normalized
+#     file's `defaults_labels` field so Phase 3 can apply it at the
+#     correct precedence slot.
+# The non-merge is observable in the golden snapshot: the pack entry's
+# `labels` holds only `{device: rtr-01}`. If we were (incorrectly) merging,
+# those labels would also contain `job` and `env` inherited from
+# `defaults.labels`.
+version: 2
+defaults:
+  rate: 1
+  duration: 10m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    job: web
+    env: prod
+scenarios:
+  - id: primary_uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-01
+    overrides:
+      ifOperStatus:
+        generator:
+          type: constant
+          value: 0.0
