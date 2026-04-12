@@ -1,0 +1,15 @@
+# Overrides key does not match any metric in the pack definition. Phase 3
+# expansion rejects this with ExpandError::UnknownOverrideKey identifying
+# the offending key, the pack name, and the list of valid metric names.
+version: 2
+defaults:
+  rate: 1
+scenarios:
+  - id: primary
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    overrides:
+      not_a_real_metric:
+        generator:
+          type: constant
+          value: 0

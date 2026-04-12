@@ -93,14 +93,24 @@ src/
 │   ├── parse.rs        ← YAML parser and structural validation.
 │   │                      parse(), detect_version(), ParseError.
 │   │                      Single-signal shorthand support. Feature-gated (config).
-│   └── normalize.rs    ← Phase 2 compilation: defaults resolution.
-│                          normalize(), NormalizedFile, NormalizedEntry,
-│                          NormalizeError. Flattens defaults: into every entry,
-│                          applies built-in encoder/sink fallbacks, merges
-│                          defaults.labels for inline entries (deferred for
-│                          pack entries so Phase 3 can interleave pack
-│                          shared/per-metric labels), and enforces rate
-│                          presence. Feature-gated (config).
+│   ├── normalize.rs    ← Phase 2 compilation: defaults resolution.
+│   │                      normalize(), NormalizedFile, NormalizedEntry,
+│   │                      NormalizeError. Flattens defaults: into every entry,
+│   │                      applies built-in encoder/sink fallbacks, merges
+│   │                      defaults.labels for inline entries (deferred for
+│   │                      pack entries so Phase 3 can interleave pack
+│   │                      shared/per-metric labels), and enforces rate
+│   │                      presence. Feature-gated (config).
+│   └── expand.rs       ← Phase 3 compilation: pack expansion inside scenarios:.
+│                          expand(), ExpandedFile, ExpandedEntry, ExpandError.
+│                          PackResolver trait (name vs file-path classification)
+│                          plus InMemoryPackResolver test impl. Pack entries are
+│                          materialized into one signal per pack metric with the
+│                          spec §2.2 five-level label precedence chain
+│                          (defaults → shared → per-metric → entry → override)
+│                          and entry-level after propagation. Auto-ID scheme is
+│                          `{pack_def_name}_{entry_index}` for anonymous pack
+│                          entries. Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,

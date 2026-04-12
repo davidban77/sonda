@@ -39,7 +39,8 @@
             "type": "constant",
             "value": 0.0
           },
-          "labels": null
+          "labels": null,
+          "after": null
         }
       },
       "distribution": null,
