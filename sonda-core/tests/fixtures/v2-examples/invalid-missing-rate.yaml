@@ -1,0 +1,9 @@
+# Missing `rate` — neither the entry nor `defaults:` sets it.
+# Normalization must reject this with a diagnostic identifying the entry.
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0

@@ -1,6 +1,6 @@
 //! YAML parsing, schema validation, and version detection for v2 scenario files.
 //!
-//! The primary entry point is [`parse_v2`], which deserializes a YAML string
+//! The primary entry point is [`parse`], which deserializes a YAML string
 //! into a [`ScenarioFile`] and runs structural validation (version check,
 //! id uniqueness, signal type validity, generator/pack mutual exclusion).
 //!
@@ -289,8 +289,8 @@ impl FlatFile {
 /// # Errors
 ///
 /// Returns [`ParseError`] describing the first validation failure found.
-pub fn parse_v2(yaml: &str) -> Result<ScenarioFile, ParseError> {
-    let file = deserialize_v2(yaml)?;
+pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
+    let file = deserialize(yaml)?;
 
     if file.version != 2 {
         return Err(ParseError::InvalidVersion(file.version));
@@ -306,7 +306,7 @@ pub fn parse_v2(yaml: &str) -> Result<ScenarioFile, ParseError> {
 /// produces confusing errors when a canonical file has a structural mistake), we
 /// peek for the `scenarios` key first. If present, we parse as canonical. If
 /// absent, we parse as flat shorthand. No fallback.
-fn deserialize_v2(yaml: &str) -> Result<ScenarioFile, ParseError> {
+fn deserialize(yaml: &str) -> Result<ScenarioFile, ParseError> {
     /// Minimal probe to detect whether the YAML contains a `scenarios` key.
     /// Intentionally does NOT use `deny_unknown_fields`.
     #[derive(serde::Deserialize)]
@@ -503,7 +503,7 @@ scenarios:
       device: rtr-01
 "#;
 
-        let file = parse_v2(yaml).expect("must parse valid multi-scenario file");
+        let file = parse(yaml).expect("must parse valid multi-scenario file");
         assert_eq!(file.version, 2);
         assert_eq!(file.scenarios.len(), 3);
         assert_eq!(file.scenarios[0].signal_type, "metrics");
@@ -530,7 +530,7 @@ generator:
   offset: 50
 "#;
 
-        let file = parse_v2(yaml).expect("must parse single-signal shorthand");
+        let file = parse(yaml).expect("must parse single-signal shorthand");
         assert_eq!(file.version, 2);
         assert!(file.defaults.is_none());
         assert_eq!(file.scenarios.len(), 1);
@@ -553,7 +553,7 @@ labels:
   device: rtr-01
 "#;
 
-        let file = parse_v2(yaml).expect("must parse pack shorthand");
+        let file = parse(yaml).expect("must parse pack shorthand");
         assert_eq!(file.version, 2);
         assert_eq!(file.scenarios.len(), 1);
 
@@ -591,7 +591,7 @@ scenarios:
       value: 90.0
 "#;
 
-        let file = parse_v2(yaml).expect("must parse after clause");
+        let file = parse(yaml).expect("must parse after clause");
         assert_eq!(file.scenarios.len(), 2);
 
         let after = file.scenarios[1]
@@ -630,7 +630,7 @@ scenarios:
       delay: "5s"
 "#;
 
-        let file = parse_v2(yaml).expect("must parse after with delay");
+        let file = parse(yaml).expect("must parse after with delay");
         let after = file.scenarios[1]
             .after
             .as_ref()
@@ -655,7 +655,7 @@ scenarios:
     seed: 42
 "#;
 
-        let file = parse_v2(yaml).expect("must parse histogram entry");
+        let file = parse(yaml).expect("must parse histogram entry");
         assert_eq!(file.scenarios.len(), 1);
 
         let entry = &file.scenarios[0];
@@ -684,7 +684,7 @@ scenarios:
     seed: 99
 "#;
 
-        let file = parse_v2(yaml).expect("must parse summary entry");
+        let file = parse(yaml).expect("must parse summary entry");
         assert_eq!(file.scenarios.len(), 1);
 
         let entry = &file.scenarios[0];
@@ -715,7 +715,7 @@ scenarios:
       value: 50.0
 "#;
 
-        let file = parse_v2(yaml).expect("must parse file with defaults");
+        let file = parse(yaml).expect("must parse file with defaults");
         let defaults = file.defaults.as_ref().expect("must have defaults");
         assert!((defaults.rate.expect("must have rate") - 10.0).abs() < f64::EPSILON);
         assert_eq!(defaults.duration.as_deref(), Some("60s"));
@@ -769,7 +769,7 @@ scenarios:
     clock_group: group_a
 "#;
 
-        let file = parse_v2(yaml).expect("must parse entry with all optional fields");
+        let file = parse(yaml).expect("must parse entry with all optional fields");
         let entry = &file.scenarios[0];
 
         assert_eq!(entry.id.as_deref(), Some("full_entry"));
@@ -806,7 +806,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("version 1 must fail");
+        let err = parse(yaml).expect_err("version 1 must fail");
         assert!(
             matches!(err, ParseError::InvalidVersion(1)),
             "expected InvalidVersion(1), got: {err}"
@@ -824,7 +824,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("missing version must fail");
+        let err = parse(yaml).expect_err("missing version must fail");
         assert!(
             matches!(err, ParseError::Yaml(_)),
             "expected Yaml error, got: {err}"
@@ -850,7 +850,7 @@ scenarios:
       value: 2.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("duplicate ids must fail");
+        let err = parse(yaml).expect_err("duplicate ids must fail");
         assert!(
             matches!(err, ParseError::DuplicateId(ref id) if id == "same_id"),
             "expected DuplicateId('same_id'), got: {err}"
@@ -869,7 +869,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("invalid signal_type must fail");
+        let err = parse(yaml).expect_err("invalid signal_type must fail");
         assert!(
             matches!(err, ParseError::InvalidSignalType { index: 0, ref signal_type } if signal_type == "traces"),
             "expected InvalidSignalType at index 0, got: {err}"
@@ -889,7 +889,7 @@ scenarios:
     pack: some_pack
 "#;
 
-        let err = parse_v2(yaml).expect_err("generator + pack must fail");
+        let err = parse(yaml).expect_err("generator + pack must fail");
         assert!(
             matches!(err, ParseError::GeneratorAndPack { index: 0 }),
             "expected GeneratorAndPack at index 0, got: {err}"
@@ -905,7 +905,7 @@ scenarios:
     name: bare_entry
 "#;
 
-        let err = parse_v2(yaml).expect_err("missing generator/pack must fail");
+        let err = parse(yaml).expect_err("missing generator/pack must fail");
         assert!(
             matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack at index 0, got: {err}"
@@ -921,7 +921,7 @@ scenarios:
     pack: some_log_pack
 "#;
 
-        let err = parse_v2(yaml).expect_err("pack + logs must fail");
+        let err = parse(yaml).expect_err("pack + logs must fail");
         assert!(
             matches!(err, ParseError::PackNotMetrics { index: 0 }),
             "expected PackNotMetrics at index 0, got: {err}"
@@ -937,7 +937,7 @@ scenarios:
     name: bare_log
 "#;
 
-        let err = parse_v2(yaml).expect_err("logs without log_generator must fail");
+        let err = parse(yaml).expect_err("logs without log_generator must fail");
         assert!(
             matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack at index 0, got: {err}"
@@ -955,7 +955,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("inline without name must fail");
+        let err = parse(yaml).expect_err("inline without name must fail");
         assert!(
             matches!(err, ParseError::MissingName { index: 0 }),
             "expected MissingName at index 0, got: {err}"
@@ -975,7 +975,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("id starting with digit must fail");
+        let err = parse(yaml).expect_err("id starting with digit must fail");
         assert!(
             matches!(err, ParseError::InvalidId(ref id) if id == "123abc"),
             "expected InvalidId('123abc'), got: {err}"
@@ -995,7 +995,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("id with dot must fail");
+        let err = parse(yaml).expect_err("id with dot must fail");
         assert!(
             matches!(err, ParseError::InvalidId(ref id) if id == "my.id"),
             "expected InvalidId('my.id'), got: {err}"
@@ -1025,7 +1025,7 @@ scenarios:
       value: 50.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("invalid after op must fail");
+        let err = parse(yaml).expect_err("invalid after op must fail");
         assert!(
             matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for invalid op, got: {err}"
@@ -1156,7 +1156,7 @@ scenarios:
     buckets: [0.1, 0.5, 1.0]
 "#;
 
-        let err = parse_v2(yaml).expect_err("histogram without distribution must fail");
+        let err = parse(yaml).expect_err("histogram without distribution must fail");
         assert!(
             matches!(err, ParseError::MissingGeneratorOrPack { index: 0 }),
             "expected MissingGeneratorOrPack, got: {err}"
@@ -1184,7 +1184,7 @@ scenarios:
           alert: down
 "#;
 
-        let file = parse_v2(yaml).expect("must parse pack with overrides");
+        let file = parse(yaml).expect("must parse pack with overrides");
         let entry = &file.scenarios[0];
         let overrides = entry.overrides.as_ref().expect("must have overrides");
         assert!(overrides.contains_key("ifOperStatus"));
@@ -1207,7 +1207,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("empty id must fail");
+        let err = parse(yaml).expect_err("empty id must fail");
         assert!(
             matches!(err, ParseError::InvalidId(ref id) if id.is_empty()),
             "expected InvalidId(''), got: {err}"
@@ -1235,7 +1235,7 @@ scenarios:
       seed: 1
 "#;
 
-        let err = parse_v2(yaml).expect_err("metrics + log_generator must fail");
+        let err = parse(yaml).expect_err("metrics + log_generator must fail");
         assert!(
             matches!(
                 err,
@@ -1262,7 +1262,7 @@ scenarios:
       stddev: 0.02
 "#;
 
-        let err = parse_v2(yaml).expect_err("metrics + distribution must fail");
+        let err = parse(yaml).expect_err("metrics + distribution must fail");
         assert!(
             matches!(
                 err,
@@ -1290,7 +1290,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("logs + generator must fail");
+        let err = parse(yaml).expect_err("logs + generator must fail");
         assert!(
             matches!(
                 err,
@@ -1319,7 +1319,7 @@ scenarios:
       stddev: 0.02
 "#;
 
-        let err = parse_v2(yaml).expect_err("logs + distribution must fail");
+        let err = parse(yaml).expect_err("logs + distribution must fail");
         assert!(
             matches!(
                 err,
@@ -1346,7 +1346,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("histogram + generator must fail");
+        let err = parse(yaml).expect_err("histogram + generator must fail");
         assert!(
             matches!(
                 err,
@@ -1375,7 +1375,7 @@ scenarios:
       seed: 1
 "#;
 
-        let err = parse_v2(yaml).expect_err("histogram + log_generator must fail");
+        let err = parse(yaml).expect_err("histogram + log_generator must fail");
         assert!(
             matches!(
                 err,
@@ -1403,7 +1403,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("summary + generator must fail");
+        let err = parse(yaml).expect_err("summary + generator must fail");
         assert!(
             matches!(
                 err,
@@ -1436,7 +1436,7 @@ scenarios:
     bogus: unexpected_field
 "#;
 
-        let err = parse_v2(yaml).expect_err("malformed canonical file must fail");
+        let err = parse(yaml).expect_err("malformed canonical file must fail");
         let msg = err.to_string();
         // The error should mention the actual problem (unknown field `bogus`),
         // not the misleading "unknown field `scenarios`".
@@ -1479,7 +1479,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("version 0 must fail");
+        let err = parse(yaml).expect_err("version 0 must fail");
         assert!(
             matches!(err, ParseError::InvalidVersion(0)),
             "expected InvalidVersion(0), got: {err}"
@@ -1495,7 +1495,7 @@ version: 2
 scenarios: []
 "#;
 
-        let file = parse_v2(yaml).expect("empty scenarios list should parse");
+        let file = parse(yaml).expect("empty scenarios list should parse");
         assert_eq!(file.version, 2);
         assert!(file.scenarios.is_empty());
     }
@@ -1514,7 +1514,7 @@ scenarios:
       value: 1.0
 "#;
 
-        let err = parse_v2(yaml).expect_err("typo in field name must fail");
+        let err = parse(yaml).expect_err("typo in field name must fail");
         assert!(
             matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for unknown field, got: {err}"
@@ -1554,7 +1554,7 @@ observations_per_tick: 100
 seed: 42
 "#;
 
-        let file = parse_v2(yaml).expect("must parse histogram shorthand");
+        let file = parse(yaml).expect("must parse histogram shorthand");
         assert_eq!(file.scenarios.len(), 1);
         let entry = &file.scenarios[0];
         assert_eq!(entry.signal_type, "histogram");
@@ -1581,7 +1581,7 @@ observations_per_tick: 200
 seed: 99
 "#;
 
-        let file = parse_v2(yaml).expect("must parse summary shorthand");
+        let file = parse(yaml).expect("must parse summary shorthand");
         assert_eq!(file.scenarios.len(), 1);
         let entry = &file.scenarios[0];
         assert_eq!(entry.signal_type, "summary");
@@ -1607,7 +1607,7 @@ log_generator:
   seed: 42
 "#;
 
-        let file = parse_v2(yaml).expect("must parse logs shorthand");
+        let file = parse(yaml).expect("must parse logs shorthand");
         assert_eq!(file.scenarios.len(), 1);
         let entry = &file.scenarios[0];
         assert_eq!(entry.signal_type, "logs");
@@ -1632,7 +1632,7 @@ defaults:
   rate: 10
 "#;
 
-        let err = parse_v2(yaml).expect_err("defaults in shorthand must fail");
+        let err = parse(yaml).expect_err("defaults in shorthand must fail");
         assert!(
             matches!(err, ParseError::Yaml(_)),
             "expected Yaml error for defaults in shorthand, got: {err}"

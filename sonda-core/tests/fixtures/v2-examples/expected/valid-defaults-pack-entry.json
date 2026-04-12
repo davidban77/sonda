@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "defaults_labels": {
+    "env": "prod",
+    "job": "web"
+  },
+  "entries": [
+    {
+      "id": "primary_uplink",
+      "signal_type": "metrics",
+      "name": null,
+      "rate": 1.0,
+      "duration": "10m",
+      "generator": null,
+      "log_generator": null,
+      "labels": {
+        "device": "rtr-01"
+      },
+      "dynamic_labels": null,
+      "encoder": {
+        "type": "prometheus_text",
+        "precision": null
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "jitter": null,
+      "jitter_seed": null,
+      "gaps": null,
+      "bursts": null,
+      "cardinality_spikes": null,
+      "phase_offset": null,
+      "clock_group": null,
+      "after": null,
+      "pack": "telegraf_snmp_interface",
+      "overrides": {
+        "ifOperStatus": {
+          "generator": {
+            "type": "constant",
+            "value": 0.0
+          },
+          "labels": null
+        }
+      },
+      "distribution": null,
+      "buckets": null,
+      "quantiles": null,
+      "observations_per_tick": null,
+      "mean_shift_per_sec": null,
+      "seed": null
+    }
+  ]
+}
