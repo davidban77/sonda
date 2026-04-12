@@ -4,6 +4,7 @@
 //! schedulers, encoders, and sinks. The CLI and HTTP server are thin layers
 //! that call into this library.
 
+pub mod compiler;
 pub mod config;
 pub mod encoder;
 pub mod generator;

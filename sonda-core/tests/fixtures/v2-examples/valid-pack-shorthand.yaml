@@ -1,0 +1,11 @@
+# Pack shorthand: uses a metric pack instead of an inline generator.
+# The pack expands into one concrete signal per metric in the pack definition.
+version: 2
+pack: telegraf_snmp_interface
+signal_type: metrics
+rate: 1
+duration: 10s
+labels:
+  device: rtr-edge-01
+  ifName: Gi0/0/0
+  ifIndex: "1"
