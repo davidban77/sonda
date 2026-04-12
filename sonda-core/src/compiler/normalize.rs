@@ -569,24 +569,26 @@ scenarios:
     // Built-in defaults
     // ======================================================================
 
-    #[test]
-    fn metrics_defaults_to_prometheus_text_and_stdout() {
-        let yaml = r#"
+    /// Expected built-in encoder for a signal type when defaults do not
+    /// supply one. Lets the parametrized test below classify the encoder
+    /// without introspecting its internal fields.
+    #[derive(Copy, Clone)]
+    enum ExpectedEncoder {
+        PrometheusText,
+        JsonLines,
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::metrics(r#"
 version: 2
 scenarios:
   - signal_type: metrics
     name: cpu
     rate: 1
     generator: { type: constant, value: 42 }
-"#;
-        let file = normalize_yaml(yaml).expect("must normalize");
-        assert!(is_prometheus_text(&file.entries[0].encoder));
-        assert!(is_stdout(&file.entries[0].sink));
-    }
-
-    #[test]
-    fn histogram_defaults_to_prometheus_text() {
-        let yaml = r#"
+"#, ExpectedEncoder::PrometheusText)]
+    #[case::histogram(r#"
 version: 2
 scenarios:
   - signal_type: histogram
@@ -596,14 +598,8 @@ scenarios:
     buckets: [0.1, 0.5, 1.0]
     observations_per_tick: 50
     seed: 1
-"#;
-        let file = normalize_yaml(yaml).expect("must normalize");
-        assert!(is_prometheus_text(&file.entries[0].encoder));
-    }
-
-    #[test]
-    fn summary_defaults_to_prometheus_text() {
-        let yaml = r#"
+"#, ExpectedEncoder::PrometheusText)]
+    #[case::summary(r#"
 version: 2
 scenarios:
   - signal_type: summary
@@ -613,14 +609,8 @@ scenarios:
     quantiles: [0.5, 0.9, 0.99]
     observations_per_tick: 50
     seed: 1
-"#;
-        let file = normalize_yaml(yaml).expect("must normalize");
-        assert!(is_prometheus_text(&file.entries[0].encoder));
-    }
-
-    #[test]
-    fn logs_defaults_to_json_lines() {
-        let yaml = r#"
+"#, ExpectedEncoder::PrometheusText)]
+    #[case::logs(r#"
 version: 2
 scenarios:
   - signal_type: logs
@@ -630,10 +620,18 @@ scenarios:
       type: template
       templates:
         - message: "hello"
-"#;
+"#, ExpectedEncoder::JsonLines)]
+    fn signal_type_picks_built_in_encoder_and_stdout_sink(
+        #[case] yaml: &str,
+        #[case] expected: ExpectedEncoder,
+    ) {
         let file = normalize_yaml(yaml).expect("must normalize");
-        assert!(is_json_lines(&file.entries[0].encoder));
-        assert!(is_stdout(&file.entries[0].sink));
+        let entry = &file.entries[0];
+        match expected {
+            ExpectedEncoder::PrometheusText => assert!(is_prometheus_text(&entry.encoder)),
+            ExpectedEncoder::JsonLines => assert!(is_json_lines(&entry.encoder)),
+        }
+        assert!(is_stdout(&entry.sink));
     }
 
     // ======================================================================
@@ -728,60 +726,45 @@ scenarios:
 
     // ======================================================================
     // Missing rate error
+    //
+    // The `label` field in MissingRate follows a priority chain:
+    //   name > id > pack name.
+    // This table exercises each arm — inline entry with only a name,
+    // pack entry with id (id wins over pack), pack entry with neither
+    // (falls back to pack name).
     // ======================================================================
 
-    #[test]
-    fn missing_rate_on_inline_entry_returns_error() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::inline_uses_name(r#"
 version: 2
 scenarios:
   - signal_type: metrics
     name: cpu
     generator: { type: constant, value: 1.0 }
-"#;
-        let err = normalize_yaml(yaml).expect_err("missing rate must fail");
-        match err {
-            NormalizeError::MissingRate { index, label } => {
-                assert_eq!(index, 0);
-                assert_eq!(label, "cpu");
-            }
-        }
-    }
-
-    #[test]
-    fn missing_rate_error_prefers_id_over_pack_label() {
-        // When `name` is absent, the label comes from `id` next. Here we set
-        // the entry's `id` and omit `name` via a pack entry (packs need not
-        // have `name`).
-        let yaml = r#"
+"#, "cpu")]
+    #[case::pack_prefers_id(r#"
 version: 2
 scenarios:
   - id: snmp_iface
     signal_type: metrics
     pack: telegraf_snmp_interface
-"#;
-        let err = normalize_yaml(yaml).expect_err("missing rate must fail");
-        match err {
-            NormalizeError::MissingRate { index, label } => {
-                assert_eq!(index, 0);
-                assert_eq!(label, "snmp_iface");
-            }
-        }
-    }
-
-    #[test]
-    fn missing_rate_error_falls_back_to_pack_label() {
-        let yaml = r#"
+"#, "snmp_iface")]
+    #[case::pack_falls_back_to_pack_name(r#"
 version: 2
 scenarios:
   - signal_type: metrics
     pack: telegraf_snmp_interface
-"#;
+"#, "telegraf_snmp_interface")]
+    fn missing_rate_error_label_follows_priority_chain(
+        #[case] yaml: &str,
+        #[case] expected_label: &str,
+    ) {
         let err = normalize_yaml(yaml).expect_err("missing rate must fail");
         match err {
             NormalizeError::MissingRate { index, label } => {
                 assert_eq!(index, 0);
-                assert_eq!(label, "telegraf_snmp_interface");
+                assert_eq!(label, expected_label);
             }
         }
     }
@@ -1250,24 +1233,25 @@ scenarios: []
         assert_eq!(merged.get("k").map(String::as_str), Some("from_entry"));
     }
 
-    #[test]
-    fn default_encoder_per_signal_type() {
-        assert!(matches!(
-            default_encoder_for("metrics"),
-            EncoderConfig::PrometheusText { .. }
-        ));
-        assert!(matches!(
-            default_encoder_for("histogram"),
-            EncoderConfig::PrometheusText { .. }
-        ));
-        assert!(matches!(
-            default_encoder_for("summary"),
-            EncoderConfig::PrometheusText { .. }
-        ));
-        assert!(matches!(
-            default_encoder_for("logs"),
-            EncoderConfig::JsonLines { .. }
-        ));
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::metrics("metrics",     ExpectedEncoder::PrometheusText)]
+    #[case::histogram("histogram", ExpectedEncoder::PrometheusText)]
+    #[case::summary("summary",     ExpectedEncoder::PrometheusText)]
+    #[case::logs("logs",           ExpectedEncoder::JsonLines)]
+    fn default_encoder_per_signal_type(
+        #[case] signal_type: &str,
+        #[case] expected: ExpectedEncoder,
+    ) {
+        let encoder = default_encoder_for(signal_type);
+        match expected {
+            ExpectedEncoder::PrometheusText => {
+                assert!(matches!(encoder, EncoderConfig::PrometheusText { .. }))
+            }
+            ExpectedEncoder::JsonLines => {
+                assert!(matches!(encoder, EncoderConfig::JsonLines { .. }))
+            }
+        }
     }
 
     #[test]
