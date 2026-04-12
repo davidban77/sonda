@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{builtin_pack_resolver, compile_to_expanded, example_fixture};
+use common::{builtin_pack_resolver, compile_to_expanded, example_fixture, snapshot_settings};
 use sonda_core::compiler::expand::{expand, ExpandError};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
@@ -41,9 +41,7 @@ fn valid_expand_pack_with_overrides() {
     assert_eq!(labels.get("device").unwrap(), "rtr-edge-01");
     assert_eq!(labels.get("probe").unwrap(), "synthetic");
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(expanded);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(expanded));
 }
 
 #[test]
@@ -83,9 +81,7 @@ fn valid_expand_multiple_packs() {
         "rtr-02"
     );
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(expanded);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(expanded));
 }
 
 #[test]
@@ -100,9 +96,7 @@ fn valid_expand_anonymous_pack() {
         Some("telegraf_snmp_interface_0.ifOperStatus")
     );
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(expanded);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(expanded));
 }
 
 // =====================================================================

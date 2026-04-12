@@ -17,9 +17,12 @@
 //! These tests are the safety net for every future refactor PR: if the
 //! compiled output changes, the snapshot diff tells you exactly what shifted.
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
+use common::snapshot_settings;
 use serde::Serialize;
 use sonda_core::config::{
     HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry,
@@ -77,9 +80,7 @@ fn snapshot_single_metric_constant() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as ScenarioConfig");
     let entries = vec![ScenarioEntry::Metrics(config)];
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(entries);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
 #[test]
@@ -90,9 +91,7 @@ fn snapshot_single_metric_constant_prepared() {
     let entries = vec![ScenarioEntry::Metrics(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +105,7 @@ fn snapshot_single_metric_sine() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as ScenarioConfig");
     let entries = vec![ScenarioEntry::Metrics(config)];
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(entries);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
 #[test]
@@ -119,9 +116,7 @@ fn snapshot_single_metric_sine_prepared() {
     let entries = vec![ScenarioEntry::Metrics(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 
 // ---------------------------------------------------------------------------
@@ -135,9 +130,7 @@ fn snapshot_single_log_template() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as LogScenarioConfig");
     let entries = vec![ScenarioEntry::Logs(config)];
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(entries);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
 #[test]
@@ -148,9 +141,7 @@ fn snapshot_single_log_template_prepared() {
     let entries = vec![ScenarioEntry::Logs(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 
 // ---------------------------------------------------------------------------
@@ -163,9 +154,7 @@ fn snapshot_multi_scenario() {
     let multi: MultiScenarioConfig =
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as MultiScenarioConfig");
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(multi.scenarios);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(multi.scenarios));
 }
 
 #[test]
@@ -175,9 +164,7 @@ fn snapshot_multi_scenario_prepared() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as MultiScenarioConfig");
 
     let prepared = prepare_entries(multi.scenarios).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +178,7 @@ fn snapshot_histogram_basic() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as HistogramScenarioConfig");
     let entries = vec![ScenarioEntry::Histogram(config)];
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(entries);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
 #[test]
@@ -204,9 +189,7 @@ fn snapshot_histogram_basic_prepared() {
     let entries = vec![ScenarioEntry::Histogram(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 
 // ---------------------------------------------------------------------------
@@ -220,9 +203,7 @@ fn snapshot_summary_basic() {
         serde_yaml_ng::from_str(&yaml).expect("fixture must parse as SummaryScenarioConfig");
     let entries = vec![ScenarioEntry::Summary(config)];
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(entries);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(entries));
 }
 
 #[test]
@@ -233,7 +214,5 @@ fn snapshot_summary_basic_prepared() {
     let entries = vec![ScenarioEntry::Summary(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(prepared_view(&prepared));
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }

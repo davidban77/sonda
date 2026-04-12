@@ -12,7 +12,10 @@
 
 mod common;
 
-use common::{builtin_pack_resolver, compile_to_compiled, compile_to_expanded, example_fixture};
+use common::{
+    builtin_pack_resolver, compile_to_compiled, compile_to_expanded, example_fixture,
+    snapshot_settings,
+};
 use sonda_core::compiler::compile_after::{compile_after, CompileAfterError};
 use sonda_core::compiler::expand::InMemoryPackResolver;
 
@@ -61,9 +64,7 @@ fn valid_compile_transitive_chain() {
         Some("chain_latency")
     );
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 #[test]
@@ -74,9 +75,7 @@ fn valid_compile_step_target() {
 
     // ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("3s"));
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 #[test]
@@ -87,9 +86,7 @@ fn valid_compile_sequence_target() {
 
     // values[2] = 2 < 3 at index 2, rate=2 -> 1.0s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("1s"));
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 #[test]
@@ -103,9 +100,7 @@ fn valid_compile_cross_signal_type() {
     assert!(offset.starts_with("27."), "expected ~27.9s, got {offset}");
     assert_eq!(compiled.entries[1].signal_type, "logs");
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 #[test]
@@ -117,9 +112,7 @@ fn valid_compile_phase_offset_and_delay() {
     // 10s phase_offset + 60s flap crossing + 15s delay = 85s.
     assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("85s"));
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 #[test]
@@ -145,9 +138,7 @@ fn valid_compile_pack_dotted_ref() {
         .expect("ifOperStatus sub-signal present");
     assert_eq!(ifoper.clock_group, backup.clock_group);
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(compiled));
 }
 
 // =====================================================================

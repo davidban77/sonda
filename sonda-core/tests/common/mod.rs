@@ -123,3 +123,20 @@ pub fn compile_to_compiled(yaml: &str, resolver: &InMemoryPackResolver) -> Compi
     let expanded = compile_to_expanded(yaml, resolver);
     compile_after(expanded).expect("fixture must compile after")
 }
+
+// -----------------------------------------------------------------------------
+// Snapshot settings
+// -----------------------------------------------------------------------------
+
+/// Return an [`insta::Settings`] pre-configured for compiler snapshots.
+///
+/// Every snapshot in the v2 suite wants `sort_maps = true` so that output is
+/// stable regardless of `HashMap` iteration order on the producer side. This
+/// helper centralizes that default; call
+/// `snapshot_settings().bind(|| insta::assert_json_snapshot!(value))` instead
+/// of duplicating a `with_settings!` block in every test.
+pub fn snapshot_settings() -> insta::Settings {
+    let mut s = insta::Settings::clone_current();
+    s.set_sort_maps(true);
+    s
+}

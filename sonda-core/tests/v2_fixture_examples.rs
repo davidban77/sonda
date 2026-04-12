@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::example_fixture;
+use common::{example_fixture, snapshot_settings};
 use sonda_core::compiler::normalize::{normalize, NormalizeError};
 use sonda_core::compiler::parse::{parse, ParseError};
 
@@ -230,9 +230,7 @@ fn valid_defaults_label_merge_normalizes() {
     let labels1 = e1.labels.as_ref().expect("labels must exist");
     assert_eq!(labels1.get("region").map(String::as_str), Some("us-west-2"));
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(normalized);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 #[test]
@@ -250,9 +248,7 @@ fn valid_defaults_logs_default_encoder_normalizes() {
         sonda_core::encoder::EncoderConfig::JsonLines { .. }
     ));
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(normalized);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 #[test]
@@ -283,9 +279,7 @@ fn valid_defaults_pack_entry_normalizes() {
     assert_eq!(d.get("job").map(String::as_str), Some("web"));
     assert_eq!(d.get("env").map(String::as_str), Some("prod"));
 
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(normalized);
-    });
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 // ======================================================================
