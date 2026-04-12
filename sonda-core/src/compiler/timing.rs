@@ -739,379 +739,245 @@ pub fn csv_replay_crossing_secs() -> Result<f64, TimingError> {
 mod tests {
     use super::*;
 
+    use rstest::rstest;
+
+    /// Expected outcome from a crossing computation.
+    ///
+    /// Collapses the three-way outcome (numeric result, typed error variant)
+    /// into a single value so rstest tables can mix success and failure
+    /// cases on equal footing. The float tolerance (`1e-9`) is the tightest
+    /// that survives the existing regression fixtures and matches the
+    /// `sawtooth` / `high-rate step` precision bound used by the v1 tests.
+    #[derive(Debug, Clone, Copy)]
+    enum Expect {
+        /// Result must be `Ok(v)` with `|actual - v| < 1e-9`.
+        Ok(f64),
+        /// Result must be `Err(TimingError::Ambiguous { .. })`.
+        Ambiguous,
+        /// Result must be `Err(TimingError::OutOfRange { .. })`.
+        OutOfRange,
+        /// Result must be `Err(TimingError::Unsupported { .. })`.
+        Unsupported,
+    }
+
+    /// Assert that `result` matches the [`Expect`] outcome.
+    ///
+    /// Centralizes the float-tolerance and `matches!` checks so each
+    /// `#[rstest]` table stays compact.
+    #[track_caller]
+    fn assert_outcome(result: Result<f64, TimingError>, expect: Expect) {
+        match (result, expect) {
+            (Ok(actual), Expect::Ok(want)) => {
+                assert!(
+                    (actual - want).abs() < 1e-9,
+                    "expected Ok({want}), got Ok({actual})"
+                );
+            }
+            (Err(TimingError::Ambiguous { .. }), Expect::Ambiguous) => {}
+            (Err(TimingError::OutOfRange { .. }), Expect::OutOfRange) => {}
+            (Err(TimingError::Unsupported { .. }), Expect::Unsupported) => {}
+            (actual, expect) => {
+                panic!("expected {expect:?}, got {actual:?}");
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Flap crossing
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn flap_less_than_one_returns_up_duration() {
-        let t = flap_crossing_secs(Operator::LessThan, 1.0, 60.0, 30.0, 1.0, 0.0)
-            .expect("should succeed");
-        assert!((t - 60.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn flap_less_than_half_returns_up_duration() {
-        let t = flap_crossing_secs(Operator::LessThan, 0.5, 10.0, 5.0, 1.0, 0.0)
-            .expect("should succeed");
-        assert!((t - 10.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn flap_greater_than_zero_is_ambiguous() {
-        let err = flap_crossing_secs(Operator::GreaterThan, 0.0, 10.0, 5.0, 1.0, 0.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn flap_less_than_zero_is_out_of_range() {
-        let err = flap_crossing_secs(Operator::LessThan, 0.0, 10.0, 5.0, 1.0, 0.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn flap_threshold_above_up_value_less_than_is_ambiguous() {
-        let err = flap_crossing_secs(Operator::LessThan, 2.0, 10.0, 5.0, 1.0, 0.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn flap_threshold_above_up_value_greater_than_is_out_of_range() {
-        let err = flap_crossing_secs(Operator::GreaterThan, 2.0, 10.0, 5.0, 1.0, 0.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn flap_custom_values() {
-        let t = flap_crossing_secs(Operator::LessThan, 75.0, 20.0, 10.0, 100.0, 50.0)
-            .expect("should succeed");
-        assert!((t - 20.0).abs() < f64::EPSILON);
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::less_than_one_returns_up_duration(                Operator::LessThan,    1.0,  60.0, 30.0, 1.0,   0.0,  Expect::Ok(60.0))]
+    #[case::less_than_half_returns_up_duration(               Operator::LessThan,    0.5,  10.0,  5.0, 1.0,   0.0,  Expect::Ok(10.0))]
+    #[case::greater_than_zero_is_ambiguous(                   Operator::GreaterThan, 0.0,  10.0,  5.0, 1.0,   0.0,  Expect::Ambiguous)]
+    #[case::less_than_zero_is_out_of_range(                   Operator::LessThan,    0.0,  10.0,  5.0, 1.0,   0.0,  Expect::OutOfRange)]
+    #[case::threshold_above_up_value_less_than_is_ambiguous(  Operator::LessThan,    2.0,  10.0,  5.0, 1.0,   0.0,  Expect::Ambiguous)]
+    #[case::threshold_above_up_value_greater_than_out_of_range(Operator::GreaterThan, 2.0,  10.0,  5.0, 1.0,   0.0,  Expect::OutOfRange)]
+    #[case::custom_values(                                    Operator::LessThan,    75.0, 20.0, 10.0, 100.0, 50.0, Expect::Ok(20.0))]
+    fn flap_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] up_duration: f64,
+        #[case] down_duration: f64,
+        #[case] up_value: f64,
+        #[case] down_value: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = flap_crossing_secs(
+            op,
+            threshold,
+            up_duration,
+            down_duration,
+            up_value,
+            down_value,
+        );
+        assert_outcome(result, expect);
     }
 
     // -----------------------------------------------------------------------
     // Sawtooth crossing (covers saturation / leak / degradation)
+    //
+    // Midpoint and near-ceiling cases use the analytical formula
+    // `(threshold - baseline) / (ceiling - baseline) * period`.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn sawtooth_greater_than_at_midpoint() {
-        let t = sawtooth_crossing_secs(Operator::GreaterThan, 70.0, 20.0, 85.0, 120.0)
-            .expect("should succeed");
-        let expected = (70.0 - 20.0) / (85.0 - 20.0) * 120.0;
-        assert!((t - expected).abs() < 1e-9, "got {t}, expected {expected}");
-    }
-
-    #[test]
-    fn sawtooth_greater_than_near_ceiling() {
-        let t = sawtooth_crossing_secs(Operator::GreaterThan, 84.0, 20.0, 85.0, 120.0)
-            .expect("should succeed");
-        let expected = (84.0 - 20.0) / (85.0 - 20.0) * 120.0;
-        assert!((t - expected).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sawtooth_greater_than_at_ceiling_is_out_of_range() {
-        let err = sawtooth_crossing_secs(Operator::GreaterThan, 85.0, 20.0, 85.0, 120.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn sawtooth_greater_than_below_baseline_is_ambiguous() {
-        let err = sawtooth_crossing_secs(Operator::GreaterThan, 10.0, 20.0, 85.0, 120.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn sawtooth_less_than_above_ceiling_is_ambiguous() {
-        let err = sawtooth_crossing_secs(Operator::LessThan, 100.0, 20.0, 85.0, 120.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn sawtooth_less_than_at_baseline_is_out_of_range() {
-        let err = sawtooth_crossing_secs(Operator::LessThan, 20.0, 20.0, 85.0, 120.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn sawtooth_less_than_midpoint_is_ambiguous_at_t0() {
-        let err = sawtooth_crossing_secs(Operator::LessThan, 50.0, 20.0, 85.0, 120.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn sawtooth_equal_baseline_ceiling_is_out_of_range() {
-        let err = sawtooth_crossing_secs(Operator::GreaterThan, 50.0, 50.0, 50.0, 120.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::greater_than_at_midpoint(             Operator::GreaterThan, 70.0,  20.0, 85.0, 120.0, Expect::Ok((70.0 - 20.0) / (85.0 - 20.0) * 120.0))]
+    #[case::greater_than_near_ceiling(            Operator::GreaterThan, 84.0,  20.0, 85.0, 120.0, Expect::Ok((84.0 - 20.0) / (85.0 - 20.0) * 120.0))]
+    #[case::greater_than_at_ceiling_out_of_range( Operator::GreaterThan, 85.0,  20.0, 85.0, 120.0, Expect::OutOfRange)]
+    #[case::greater_than_below_baseline_ambiguous(Operator::GreaterThan, 10.0,  20.0, 85.0, 120.0, Expect::Ambiguous)]
+    #[case::less_than_above_ceiling_ambiguous(    Operator::LessThan,    100.0, 20.0, 85.0, 120.0, Expect::Ambiguous)]
+    #[case::less_than_at_baseline_out_of_range(   Operator::LessThan,    20.0,  20.0, 85.0, 120.0, Expect::OutOfRange)]
+    #[case::less_than_midpoint_ambiguous_at_t0(   Operator::LessThan,    50.0,  20.0, 85.0, 120.0, Expect::Ambiguous)]
+    #[case::equal_baseline_ceiling_out_of_range(  Operator::GreaterThan, 50.0,  50.0, 50.0, 120.0, Expect::OutOfRange)]
+    fn sawtooth_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] baseline: f64,
+        #[case] ceiling: f64,
+        #[case] period: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = sawtooth_crossing_secs(op, threshold, baseline, ceiling, period);
+        assert_outcome(result, expect);
     }
 
     // -----------------------------------------------------------------------
     // Spike crossing
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn spike_less_than_returns_spike_duration() {
-        let t = spike_crossing_secs(Operator::LessThan, 50.0, 0.0, 100.0, 10.0)
-            .expect("should succeed");
-        assert!((t - 10.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn spike_greater_than_is_ambiguous_at_t0() {
-        let err = spike_crossing_secs(Operator::GreaterThan, 50.0, 0.0, 100.0, 10.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn spike_less_than_at_baseline_is_out_of_range() {
-        let err = spike_crossing_secs(Operator::LessThan, 0.0, 0.0, 100.0, 10.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn spike_greater_than_at_peak_is_out_of_range() {
-        let err = spike_crossing_secs(Operator::GreaterThan, 100.0, 0.0, 100.0, 10.0)
-            .expect_err("should be out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn spike_less_than_above_peak_is_ambiguous() {
-        let err = spike_crossing_secs(Operator::LessThan, 150.0, 0.0, 100.0, 10.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn spike_greater_than_below_baseline_is_ambiguous() {
-        let err = spike_crossing_secs(Operator::GreaterThan, -10.0, 0.0, 100.0, 10.0)
-            .expect_err("should be ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    // -----------------------------------------------------------------------
-    // Steady / sine / uniform / csv_replay (always rejected)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn steady_always_unsupported() {
-        let err = steady_crossing_secs().expect_err("steady should be unsupported");
-        assert!(matches!(err, TimingError::Unsupported { .. }));
-        assert!(err.to_string().contains("steady"));
-    }
-
-    #[test]
-    fn sine_always_unsupported() {
-        let err = sine_crossing_secs().expect_err("sine should be unsupported");
-        assert!(matches!(err, TimingError::Unsupported { .. }));
-        assert!(err.to_string().contains("sine"));
-    }
-
-    #[test]
-    fn uniform_always_unsupported() {
-        let err = uniform_crossing_secs().expect_err("uniform should be unsupported");
-        assert!(matches!(err, TimingError::Unsupported { .. }));
-        assert!(err.to_string().contains("uniform"));
-    }
-
-    #[test]
-    fn csv_replay_always_unsupported() {
-        let err = csv_replay_crossing_secs().expect_err("csv_replay should be unsupported");
-        assert!(matches!(err, TimingError::Unsupported { .. }));
-        assert!(err.to_string().contains("csv_replay"));
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::less_than_returns_spike_duration(    Operator::LessThan,     50.0,   0.0, 100.0, 10.0, Expect::Ok(10.0))]
+    #[case::greater_than_ambiguous_at_t0(        Operator::GreaterThan,  50.0,   0.0, 100.0, 10.0, Expect::Ambiguous)]
+    #[case::less_than_at_baseline_out_of_range(  Operator::LessThan,      0.0,   0.0, 100.0, 10.0, Expect::OutOfRange)]
+    #[case::greater_than_at_peak_out_of_range(   Operator::GreaterThan, 100.0,   0.0, 100.0, 10.0, Expect::OutOfRange)]
+    #[case::less_than_above_peak_ambiguous(      Operator::LessThan,    150.0,   0.0, 100.0, 10.0, Expect::Ambiguous)]
+    #[case::greater_than_below_baseline_ambiguous(Operator::GreaterThan, -10.0,  0.0, 100.0, 10.0, Expect::Ambiguous)]
+    fn spike_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] baseline: f64,
+        #[case] peak: f64,
+        #[case] spike_duration: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = spike_crossing_secs(op, threshold, baseline, peak, spike_duration);
+        assert_outcome(result, expect);
     }
 
     // -----------------------------------------------------------------------
     // Step crossing
+    //
+    // `max` is encoded as an `Option<f64>`; the table uses `None` to
+    // represent the unbounded case and `Some(v)` for explicit wraps. One
+    // case (`inactive_max`) exercises the StepGenerator-runtime quirk
+    // where `max <= start` disables wrap entirely.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn step_greater_than_divides_evenly_advances_one_tick() {
-        // start=0, step_size=10, threshold=50, rate=1 -> ceil(50/10) = 5 ticks,
-        // but start + 5 * 10 = 50 which is not > 50, so advance to tick 6.
-        let t = step_crossing_secs(Operator::GreaterThan, 50.0, 0.0, 10.0, None, 1.0)
-            .expect("should succeed");
-        assert!((t - 6.0).abs() < f64::EPSILON, "got {t}, expected 6.0");
-    }
-
-    #[test]
-    fn step_greater_than_non_divisible_uses_ceil() {
-        // start=0, step_size=10, threshold=55, rate=1 -> ceil((55-0)/10) = 6,
-        // start + 6 * 10 = 60 > 55 -> tick 6.
-        let t = step_crossing_secs(Operator::GreaterThan, 55.0, 0.0, 10.0, None, 1.0)
-            .expect("should succeed");
-        assert!((t - 6.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn step_greater_than_high_rate_divides_ticks_by_rate() {
-        // rate=2 -> each tick is 0.5s. 6 ticks * 0.5s/tick = 3.0s.
-        let t = step_crossing_secs(Operator::GreaterThan, 55.0, 0.0, 10.0, None, 2.0)
-            .expect("should succeed");
-        assert!((t - 3.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn step_less_than_rejected_as_unsupported() {
-        let err = step_crossing_secs(Operator::LessThan, 50.0, 0.0, 10.0, None, 1.0)
-            .expect_err("step < is unsupported");
-        assert!(matches!(err, TimingError::Unsupported { .. }));
-    }
-
-    #[test]
-    fn step_greater_than_start_above_threshold_ambiguous() {
-        let err = step_crossing_secs(Operator::GreaterThan, 10.0, 50.0, 5.0, None, 1.0)
-            .expect_err("start > threshold is ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn step_zero_step_size_is_out_of_range() {
-        let err = step_crossing_secs(Operator::GreaterThan, 10.0, 0.0, 0.0, None, 1.0)
-            .expect_err("step_size=0 is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn step_negative_step_size_is_out_of_range() {
-        let err = step_crossing_secs(Operator::GreaterThan, 10.0, 0.0, -1.0, None, 1.0)
-            .expect_err("step_size<0 with > threshold is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn step_wrap_below_threshold_is_out_of_range() {
-        // max=30 wraps at 30, threshold=50 is above wrap -> out of range.
-        let err = step_crossing_secs(Operator::GreaterThan, 50.0, 0.0, 10.0, Some(30.0), 1.0)
-            .expect_err("threshold above wrap is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn step_wrap_above_threshold_succeeds() {
-        // start=0, step=10, threshold=25, max=100 -> tick 3, value 30 > 25, 3s.
-        let t = step_crossing_secs(Operator::GreaterThan, 25.0, 0.0, 10.0, Some(100.0), 1.0)
-            .expect("should succeed");
-        assert!((t - 3.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn step_greater_than_with_inactive_max() {
-        // max <= start means wrap is inactive at runtime (StepGenerator only
-        // wraps when max > start); threshold 50 must still be reachable via
-        // unbounded step growth: ceil((50 - 0) / 10) = 5 ticks, but the
-        // crossing value (5*10=50) is not strictly > 50, so the math bumps
-        // one more tick -> 6 ticks at rate=1 -> 6.0s.
-        let t = step_crossing_secs(Operator::GreaterThan, 50.0, 0.0, 10.0, Some(-5.0), 1.0)
-            .expect("inactive max should not reject the crossing");
-        assert!((t - 6.0).abs() < f64::EPSILON);
+    #[rustfmt::skip]
+    #[rstest]
+    // start=0, step_size=10, threshold=50, rate=1 -> ceil(50/10) = 5 ticks,
+    // but 5*10 = 50 is not > 50 so we bump to tick 6.
+    #[case::divides_evenly_advances_one_tick(Operator::GreaterThan, 50.0,  0.0,  10.0, None,        1.0, Expect::Ok(6.0))]
+    // ceil((55-0)/10) = 6 ticks, 6*10 = 60 > 55.
+    #[case::non_divisible_uses_ceil(         Operator::GreaterThan, 55.0,  0.0,  10.0, None,        1.0, Expect::Ok(6.0))]
+    // rate=2 -> each tick is 0.5s, so 6 ticks * 0.5s = 3.0s.
+    #[case::high_rate_divides_ticks_by_rate( Operator::GreaterThan, 55.0,  0.0,  10.0, None,        2.0, Expect::Ok(3.0))]
+    #[case::less_than_unsupported(           Operator::LessThan,    50.0,  0.0,  10.0, None,        1.0, Expect::Unsupported)]
+    #[case::start_above_threshold_ambiguous( Operator::GreaterThan, 10.0, 50.0,   5.0, None,        1.0, Expect::Ambiguous)]
+    #[case::zero_step_size_out_of_range(     Operator::GreaterThan, 10.0,  0.0,   0.0, None,        1.0, Expect::OutOfRange)]
+    #[case::negative_step_size_out_of_range( Operator::GreaterThan, 10.0,  0.0,  -1.0, None,        1.0, Expect::OutOfRange)]
+    // max=30 wraps at 30, threshold=50 is above the wrap.
+    #[case::wrap_below_threshold_out_of_range(Operator::GreaterThan, 50.0, 0.0,  10.0, Some(30.0),  1.0, Expect::OutOfRange)]
+    // tick 3, value 30 > 25.
+    #[case::wrap_above_threshold_succeeds(    Operator::GreaterThan, 25.0, 0.0,  10.0, Some(100.0), 1.0, Expect::Ok(3.0))]
+    // max <= start means wrap is inactive at runtime; threshold 50 must
+    // still be reachable via unbounded step growth (same shape as the
+    // divisible case above) -> 6 ticks at rate=1 -> 6.0s.
+    #[case::inactive_max(                     Operator::GreaterThan, 50.0, 0.0,  10.0, Some(-5.0),  1.0, Expect::Ok(6.0))]
+    fn step_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] start: f64,
+        #[case] step_size: f64,
+        #[case] max: Option<f64>,
+        #[case] rate: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = step_crossing_secs(op, threshold, start, step_size, max, rate);
+        assert_outcome(result, expect);
     }
 
     // -----------------------------------------------------------------------
     // Sequence crossing
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn sequence_greater_than_finds_first_crossing() {
-        // values = [1, 2, 5, 10], threshold 4 -> index 2 (value 5). rate=1 -> 2s.
-        let t = sequence_crossing_secs(
-            Operator::GreaterThan,
-            4.0,
-            &[1.0, 2.0, 5.0, 10.0],
-            Some(true),
-            1.0,
-        )
-        .expect("should succeed");
-        assert!((t - 2.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn sequence_less_than_finds_first_crossing() {
-        // values = [10, 5, 1, 0], threshold 2 -> index 2 (value 1). rate=2 -> 1.0s.
-        let t = sequence_crossing_secs(
-            Operator::LessThan,
-            2.0,
-            &[10.0, 5.0, 1.0, 0.0],
-            Some(false),
-            2.0,
-        )
-        .expect("should succeed");
-        assert!((t - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn sequence_first_value_matches_is_ambiguous() {
-        let err = sequence_crossing_secs(
-            Operator::GreaterThan,
-            0.5,
-            &[1.0, 2.0, 3.0],
-            Some(true),
-            1.0,
-        )
-        .expect_err("first value > threshold is ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn sequence_no_crossing_is_out_of_range() {
-        let err = sequence_crossing_secs(
-            Operator::GreaterThan,
-            100.0,
-            &[1.0, 2.0, 3.0],
-            Some(true),
-            1.0,
-        )
-        .expect_err("no value > 100 is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
-
-    #[test]
-    fn sequence_empty_values_is_out_of_range() {
-        let err = sequence_crossing_secs(Operator::GreaterThan, 0.0, &[], Some(true), 1.0)
-            .expect_err("empty sequence is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
+    #[rustfmt::skip]
+    #[rstest]
+    // values = [1, 2, 5, 10], threshold 4 -> index 2 (value 5). rate=1 -> 2s.
+    #[case::greater_than_finds_first_crossing(Operator::GreaterThan,   4.0, &[1.0, 2.0, 5.0, 10.0], Some(true),  1.0, Expect::Ok(2.0))]
+    // values = [10, 5, 1, 0], threshold 2 -> index 2 (value 1). rate=2 -> 1.0s.
+    #[case::less_than_finds_first_crossing(   Operator::LessThan,      2.0, &[10.0, 5.0, 1.0, 0.0], Some(false), 2.0, Expect::Ok(1.0))]
+    #[case::first_value_matches_ambiguous(    Operator::GreaterThan,   0.5, &[1.0, 2.0, 3.0],       Some(true),  1.0, Expect::Ambiguous)]
+    #[case::no_crossing_out_of_range(         Operator::GreaterThan, 100.0, &[1.0, 2.0, 3.0],       Some(true),  1.0, Expect::OutOfRange)]
+    #[case::empty_values_out_of_range(        Operator::GreaterThan,   0.0, &[],                    Some(true),  1.0, Expect::OutOfRange)]
+    fn sequence_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] values: &[f64],
+        #[case] repeat: Option<bool>,
+        #[case] rate: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = sequence_crossing_secs(op, threshold, values, repeat, rate);
+        assert_outcome(result, expect);
     }
 
     // -----------------------------------------------------------------------
     // Constant
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn constant_greater_than_satisfied_is_ambiguous() {
-        let err = constant_crossing_secs(Operator::GreaterThan, 10.0, 50.0)
-            .expect_err("constant value > threshold is ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::greater_than_satisfied_ambiguous(    Operator::GreaterThan, 10.0, 50.0, Expect::Ambiguous)]
+    #[case::greater_than_not_satisfied_out_of_range(Operator::GreaterThan, 50.0, 10.0, Expect::OutOfRange)]
+    #[case::less_than_satisfied_ambiguous(       Operator::LessThan,    50.0, 10.0, Expect::Ambiguous)]
+    #[case::less_than_not_satisfied_out_of_range(Operator::LessThan,    10.0, 50.0, Expect::OutOfRange)]
+    fn constant_crossing(
+        #[case] op: Operator,
+        #[case] threshold: f64,
+        #[case] value: f64,
+        #[case] expect: Expect,
+    ) {
+        let result = constant_crossing_secs(op, threshold, value);
+        assert_outcome(result, expect);
     }
 
-    #[test]
-    fn constant_greater_than_not_satisfied_is_out_of_range() {
-        let err = constant_crossing_secs(Operator::GreaterThan, 50.0, 10.0)
-            .expect_err("constant value < threshold is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
-    }
+    // -----------------------------------------------------------------------
+    // Unsupported-by-nature generators (steady, sine, uniform, csv_replay).
+    //
+    // Each is rejected regardless of inputs — they take no parameters at
+    // all at this layer — so the table keys on the generator's name and
+    // asserts both the [`TimingError::Unsupported`] variant and that the
+    // rendered message mentions the generator so compiler diagnostics
+    // stay identifiable.
+    // -----------------------------------------------------------------------
 
-    #[test]
-    fn constant_less_than_satisfied_is_ambiguous() {
-        let err = constant_crossing_secs(Operator::LessThan, 50.0, 10.0)
-            .expect_err("constant value < threshold is ambiguous");
-        assert!(matches!(err, TimingError::Ambiguous { .. }));
-    }
-
-    #[test]
-    fn constant_less_than_not_satisfied_is_out_of_range() {
-        let err = constant_crossing_secs(Operator::LessThan, 10.0, 50.0)
-            .expect_err("constant value > threshold is out of range");
-        assert!(matches!(err, TimingError::OutOfRange { .. }));
+    #[rustfmt::skip]
+    #[rstest]
+    #[case::steady(    "steady",     steady_crossing_secs     as fn() -> Result<f64, TimingError>)]
+    #[case::sine(      "sine",       sine_crossing_secs       as fn() -> Result<f64, TimingError>)]
+    #[case::uniform(   "uniform",    uniform_crossing_secs    as fn() -> Result<f64, TimingError>)]
+    #[case::csv_replay("csv_replay", csv_replay_crossing_secs as fn() -> Result<f64, TimingError>)]
+    fn always_unsupported(#[case] name: &str, #[case] f: fn() -> Result<f64, TimingError>) {
+        let err = f().expect_err("generator should be unsupported");
+        assert!(matches!(err, TimingError::Unsupported { .. }));
+        assert!(
+            err.to_string().contains(name),
+            "error message should mention '{name}', got: {err}"
+        );
     }
 }

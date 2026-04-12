@@ -6,65 +6,15 @@
 //! actually behaves that way.
 //!
 //! Normalization fixtures go one step further and compare the resolved entries
-//! against golden JSON snapshots in `tests/fixtures/v2-examples/expected/`.
-//! Set `UPDATE_SNAPSHOTS=1` to regenerate them after a schema change.
+//! against [`insta`] JSON snapshots under `tests/snapshots/`. Run
+//! `INSTA_UPDATE=always cargo test -p sonda-core --test v2_fixture_examples`
+//! (or `cargo insta accept`) to regenerate them after a schema change.
 
-use sonda_core::compiler::normalize::{normalize, NormalizeError, NormalizedFile};
+mod common;
+
+use common::{example_fixture, snapshot_settings};
+use sonda_core::compiler::normalize::{normalize, NormalizeError};
 use sonda_core::compiler::parse::{parse, ParseError};
-
-/// Helper: read a fixture file relative to the crate root.
-fn fixture(name: &str) -> String {
-    let path = format!(
-        "{}/tests/fixtures/v2-examples/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read fixture {path}: {e}"))
-}
-
-/// Serialize a [`NormalizedFile`] as pretty-printed JSON.
-///
-/// Normalized types use `BTreeMap` for all map fields, so the output is
-/// deterministic without any post-processing. A trailing newline is appended
-/// to match the convention used by existing golden files.
-fn snapshot_normalized(file: &NormalizedFile) -> String {
-    let mut s =
-        serde_json::to_string_pretty(file).expect("serializing a NormalizedFile must not fail");
-    s.push('\n');
-    s
-}
-
-/// Assert that the snapshot matches the golden file, or regenerate it when
-/// `UPDATE_SNAPSHOTS=1` is set in the environment.
-fn assert_snapshot(actual: &str, golden_name: &str) {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/v2-examples/expected")
-        .join(golden_name);
-
-    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
-        let dir = path
-            .parent()
-            .unwrap_or_else(|| panic!("golden path {} has no parent", path.display()));
-        std::fs::create_dir_all(dir)
-            .unwrap_or_else(|e| panic!("cannot create {}: {e}", dir.display()));
-        std::fs::write(&path, actual)
-            .unwrap_or_else(|e| panic!("cannot write golden {}: {e}", path.display()));
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read golden {} (run with UPDATE_SNAPSHOTS=1 to create it): {}",
-            path.display(),
-            e
-        )
-    });
-    assert_eq!(
-        actual,
-        expected,
-        "snapshot mismatch for {}\nRun with UPDATE_SNAPSHOTS=1 to update.",
-        path.display()
-    );
-}
 
 // ======================================================================
 // Valid fixtures — parse only
@@ -72,7 +22,7 @@ fn assert_snapshot(actual: &str, golden_name: &str) {
 
 #[test]
 fn valid_single_metric_parses() {
-    let yaml = fixture("valid-single-metric.yaml");
+    let yaml = example_fixture("valid-single-metric.yaml");
     let file = parse(&yaml).expect("valid-single-metric.yaml must parse");
     assert_eq!(file.version, 2);
     assert_eq!(file.scenarios.len(), 1);
@@ -88,7 +38,7 @@ fn valid_single_metric_parses() {
 
 #[test]
 fn valid_multi_scenario_parses() {
-    let yaml = fixture("valid-multi-scenario.yaml");
+    let yaml = example_fixture("valid-multi-scenario.yaml");
     let file = parse(&yaml).expect("valid-multi-scenario.yaml must parse");
     assert_eq!(file.version, 2);
     assert_eq!(file.scenarios.len(), 3);
@@ -123,7 +73,7 @@ fn valid_multi_scenario_parses() {
 
 #[test]
 fn valid_pack_shorthand_parses() {
-    let yaml = fixture("valid-pack-shorthand.yaml");
+    let yaml = example_fixture("valid-pack-shorthand.yaml");
     let file = parse(&yaml).expect("valid-pack-shorthand.yaml must parse");
     assert_eq!(file.version, 2);
     assert_eq!(file.scenarios.len(), 1);
@@ -141,7 +91,7 @@ fn valid_pack_shorthand_parses() {
 
 #[test]
 fn valid_pack_in_scenarios_parses() {
-    let yaml = fixture("valid-pack-in-scenarios.yaml");
+    let yaml = example_fixture("valid-pack-in-scenarios.yaml");
     let file = parse(&yaml).expect("valid-pack-in-scenarios.yaml must parse");
     assert_eq!(file.version, 2);
     assert_eq!(file.scenarios.len(), 1);
@@ -160,7 +110,7 @@ fn valid_pack_in_scenarios_parses() {
 
 #[test]
 fn valid_histogram_parses() {
-    let yaml = fixture("valid-histogram.yaml");
+    let yaml = example_fixture("valid-histogram.yaml");
     let file = parse(&yaml).expect("valid-histogram.yaml must parse");
     assert_eq!(file.version, 2);
     assert_eq!(file.scenarios.len(), 1);
@@ -185,7 +135,7 @@ fn valid_histogram_parses() {
 
 #[test]
 fn invalid_wrong_version_rejected() {
-    let yaml = fixture("invalid-wrong-version.yaml");
+    let yaml = example_fixture("invalid-wrong-version.yaml");
     let err = parse(&yaml).expect_err("invalid-wrong-version.yaml must fail");
     assert!(
         matches!(err, ParseError::InvalidVersion(1)),
@@ -195,7 +145,7 @@ fn invalid_wrong_version_rejected() {
 
 #[test]
 fn invalid_duplicate_ids_rejected() {
-    let yaml = fixture("invalid-duplicate-ids.yaml");
+    let yaml = example_fixture("invalid-duplicate-ids.yaml");
     let err = parse(&yaml).expect_err("invalid-duplicate-ids.yaml must fail");
     assert!(
         matches!(err, ParseError::DuplicateId(ref id) if id == "my_signal"),
@@ -205,7 +155,7 @@ fn invalid_duplicate_ids_rejected() {
 
 #[test]
 fn invalid_generator_and_pack_rejected() {
-    let yaml = fixture("invalid-generator-and-pack.yaml");
+    let yaml = example_fixture("invalid-generator-and-pack.yaml");
     let err = parse(&yaml).expect_err("invalid-generator-and-pack.yaml must fail");
     assert!(
         matches!(err, ParseError::GeneratorAndPack { index: 0 }),
@@ -215,7 +165,7 @@ fn invalid_generator_and_pack_rejected() {
 
 #[test]
 fn invalid_pack_with_logs_rejected() {
-    let yaml = fixture("invalid-pack-with-logs.yaml");
+    let yaml = example_fixture("invalid-pack-with-logs.yaml");
     let err = parse(&yaml).expect_err("invalid-pack-with-logs.yaml must fail");
     assert!(
         matches!(err, ParseError::PackNotMetrics { index: 0 }),
@@ -225,7 +175,7 @@ fn invalid_pack_with_logs_rejected() {
 
 #[test]
 fn invalid_missing_name_rejected() {
-    let yaml = fixture("invalid-missing-name.yaml");
+    let yaml = example_fixture("invalid-missing-name.yaml");
     let err = parse(&yaml).expect_err("invalid-missing-name.yaml must fail");
     assert!(
         matches!(err, ParseError::MissingName { index: 0 }),
@@ -235,7 +185,7 @@ fn invalid_missing_name_rejected() {
 
 #[test]
 fn invalid_bad_after_op_rejected() {
-    let yaml = fixture("invalid-bad-after-op.yaml");
+    let yaml = example_fixture("invalid-bad-after-op.yaml");
     let err = parse(&yaml).expect_err("invalid-bad-after-op.yaml must fail");
     assert!(
         matches!(err, ParseError::Yaml(_)),
@@ -249,16 +199,16 @@ fn invalid_bad_after_op_rejected() {
 }
 
 // ======================================================================
-// Defaults normalization — valid fixtures with golden snapshots
+// Defaults normalization — valid fixtures with insta snapshots
 // ======================================================================
 
 #[test]
 fn valid_defaults_label_merge_normalizes() {
-    let yaml = fixture("valid-defaults-label-merge.yaml");
+    let yaml = example_fixture("valid-defaults-label-merge.yaml");
     let parsed = parse(&yaml).expect("must parse");
     let normalized = normalize(parsed).expect("must normalize");
 
-    // Spot-check the merged output before comparing against the golden file.
+    // Spot-check the merged output before comparing against the snapshot.
     assert_eq!(normalized.entries.len(), 2);
 
     let e0 = &normalized.entries[0];
@@ -280,14 +230,12 @@ fn valid_defaults_label_merge_normalizes() {
     let labels1 = e1.labels.as_ref().expect("labels must exist");
     assert_eq!(labels1.get("region").map(String::as_str), Some("us-west-2"));
 
-    // Golden comparison
-    let snap = snapshot_normalized(&normalized);
-    assert_snapshot(&snap, "valid-defaults-label-merge.json");
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 #[test]
 fn valid_defaults_logs_default_encoder_normalizes() {
-    let yaml = fixture("valid-defaults-logs-default-encoder.yaml");
+    let yaml = example_fixture("valid-defaults-logs-default-encoder.yaml");
     let parsed = parse(&yaml).expect("must parse");
     let normalized = normalize(parsed).expect("must normalize");
 
@@ -300,13 +248,12 @@ fn valid_defaults_logs_default_encoder_normalizes() {
         sonda_core::encoder::EncoderConfig::JsonLines { .. }
     ));
 
-    let snap = snapshot_normalized(&normalized);
-    assert_snapshot(&snap, "valid-defaults-logs-default-encoder.json");
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 #[test]
 fn valid_defaults_pack_entry_normalizes() {
-    let yaml = fixture("valid-defaults-pack-entry.yaml");
+    let yaml = example_fixture("valid-defaults-pack-entry.yaml");
     let parsed = parse(&yaml).expect("must parse");
     let normalized = normalize(parsed).expect("must normalize");
 
@@ -332,8 +279,7 @@ fn valid_defaults_pack_entry_normalizes() {
     assert_eq!(d.get("job").map(String::as_str), Some("web"));
     assert_eq!(d.get("env").map(String::as_str), Some("prod"));
 
-    let snap = snapshot_normalized(&normalized);
-    assert_snapshot(&snap, "valid-defaults-pack-entry.json");
+    snapshot_settings().bind(|| insta::assert_json_snapshot!(normalized));
 }
 
 // ======================================================================
@@ -342,7 +288,7 @@ fn valid_defaults_pack_entry_normalizes() {
 
 #[test]
 fn invalid_missing_rate_rejected() {
-    let yaml = fixture("invalid-missing-rate.yaml");
+    let yaml = example_fixture("invalid-missing-rate.yaml");
     let parsed = parse(&yaml).expect("parse must succeed (rate is not required at parse time)");
     let err = normalize(parsed).expect_err("normalize must fail on missing rate");
     match err {

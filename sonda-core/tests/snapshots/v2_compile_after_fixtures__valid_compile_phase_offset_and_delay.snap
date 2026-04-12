@@ -1,12 +1,12 @@
+---
+source: sonda-core/tests/v2_compile_after_fixtures.rs
+expression: compiled
+---
 {
   "version": 2,
-  "defaults_labels": {
-    "device": "rtr-edge-01",
-    "region": "us-west-2"
-  },
   "entries": [
     {
-      "id": "link_state",
+      "id": "link",
       "signal_type": "metrics",
       "name": "interface_oper_state",
       "rate": 1.0,
@@ -19,11 +19,7 @@
         "down_value": null
       },
       "log_generator": null,
-      "labels": {
-        "device": "rtr-edge-01",
-        "interface": "Gi0/0/0",
-        "region": "us-east-1"
-      },
+      "labels": null,
       "dynamic_labels": null,
       "encoder": {
         "type": "prometheus_text",
@@ -38,10 +34,7 @@
       "bursts": null,
       "cardinality_spikes": null,
       "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "pack": null,
-      "overrides": null,
+      "clock_group": "chain_backup",
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -50,20 +43,17 @@
       "seed": null
     },
     {
-      "id": "fast_metric",
+      "id": "backup",
       "signal_type": "metrics",
-      "name": "cpu",
-      "rate": 10.0,
+      "name": "backup_util",
+      "rate": 1.0,
       "duration": "5m",
       "generator": {
         "type": "constant",
-        "value": 42.0
+        "value": 1.0
       },
       "log_generator": null,
-      "labels": {
-        "device": "rtr-edge-01",
-        "region": "us-west-2"
-      },
+      "labels": null,
       "dynamic_labels": null,
       "encoder": {
         "type": "prometheus_text",
@@ -77,11 +67,8 @@
       "gaps": null,
       "bursts": null,
       "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "pack": null,
-      "overrides": null,
+      "phase_offset": "85s",
+      "clock_group": "chain_backup",
       "distribution": null,
       "buckets": null,
       "quantiles": null,

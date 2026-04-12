@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: entries
+---
 [
   {
     "bursts": null,
@@ -6,19 +10,15 @@
     "duration": "20s",
     "dynamic_labels": null,
     "encoder": {
-      "precision": null,
-      "type": "json_lines"
+      "type": "json_lines",
+      "precision": null
     },
     "gaps": null,
     "generator": {
-      "seed": 42,
-      "severity_weights": {
-        "error": 0.1,
-        "info": 0.7,
-        "warn": 0.2
-      },
+      "type": "template",
       "templates": [
         {
+          "message": "Request from {ip} to {endpoint} completed",
           "field_pools": {
             "endpoint": [
               "/api/v1/health",
@@ -29,11 +29,15 @@
               "10.0.0.2",
               "10.0.0.3"
             ]
-          },
-          "message": "Request from {ip} to {endpoint} completed"
+          }
         }
       ],
-      "type": "template"
+      "severity_weights": {
+        "error": 0.1,
+        "info": 0.7,
+        "warn": 0.2
+      },
+      "seed": 42
     },
     "jitter": null,
     "jitter_seed": null,

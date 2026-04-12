@@ -794,9 +794,9 @@ scenarios:
     // Invalid cases
     // ======================================================================
 
-    #[test]
-    fn version_1_returns_invalid_version() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::version_1(r#"
 version: 1
 scenarios:
   - signal_type: metrics
@@ -804,12 +804,21 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("version 1 must fail");
+"#, 1)]
+    #[case::version_0(r#"
+version: 0
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    generator:
+      type: constant
+      value: 1.0
+"#, 0)]
+    fn unsupported_version_returns_invalid_version(#[case] yaml: &str, #[case] expected: u32) {
+        let err = parse(yaml).expect_err("unsupported version must fail");
         assert!(
-            matches!(err, ParseError::InvalidVersion(1)),
-            "expected InvalidVersion(1), got: {err}"
+            matches!(err, ParseError::InvalidVersion(v) if v == expected),
+            "expected InvalidVersion({expected}), got: {err}"
         );
     }
 
@@ -962,9 +971,9 @@ scenarios:
         );
     }
 
-    #[test]
-    fn invalid_id_starting_with_digit() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::starts_with_digit(r#"
 version: 2
 scenarios:
   - signal_type: metrics
@@ -973,18 +982,8 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("id starting with digit must fail");
-        assert!(
-            matches!(err, ParseError::InvalidId(ref id) if id == "123abc"),
-            "expected InvalidId('123abc'), got: {err}"
-        );
-    }
-
-    #[test]
-    fn invalid_id_with_dot() {
-        let yaml = r#"
+"#, "123abc")]
+    #[case::contains_dot(r#"
 version: 2
 scenarios:
   - signal_type: metrics
@@ -993,12 +992,22 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("id with dot must fail");
+"#, "my.id")]
+    #[case::empty_string(r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    id: ""
+    name: metric_a
+    generator:
+      type: constant
+      value: 1.0
+"#, "")]
+    fn invalid_id_returns_invalid_id_error(#[case] yaml: &str, #[case] expected_id: &str) {
+        let err = parse(yaml).expect_err("invalid id must fail");
         assert!(
-            matches!(err, ParseError::InvalidId(ref id) if id == "my.id"),
-            "expected InvalidId('my.id'), got: {err}"
+            matches!(err, ParseError::InvalidId(ref id) if id == expected_id),
+            "expected InvalidId({expected_id:?}), got: {err}"
         );
     }
 
@@ -1041,52 +1050,37 @@ scenarios:
     // Version detection tests
     // ======================================================================
 
-    #[test]
-    fn detect_version_v2() {
-        let yaml = "version: 2\nscenarios: []";
-        assert_eq!(detect_version(yaml), Some(2));
-    }
-
-    #[test]
-    fn detect_version_v1_explicit() {
-        let yaml = "version: 1\nname: test";
-        assert_eq!(detect_version(yaml), Some(1));
-    }
-
-    #[test]
-    fn detect_version_absent() {
-        let yaml = "name: cpu_usage\nrate: 1";
-        assert_eq!(detect_version(yaml), None);
-    }
-
-    #[test]
-    fn detect_version_unparseable_yaml_returns_none() {
-        // Malformed YAML must surface as `None` rather than panicking — callers
-        // rely on `detect_version` as a lightweight pre-flight probe.
-        assert_eq!(detect_version("not valid yaml {"), None);
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::v2("version: 2\nscenarios: []",  Some(2))]
+    #[case::v1_explicit("version: 1\nname: test", Some(1))]
+    #[case::absent("name: cpu_usage\nrate: 1",    None)]
+    // Malformed YAML must surface as `None` rather than panicking — callers
+    // rely on `detect_version` as a lightweight pre-flight probe.
+    #[case::unparseable("not valid yaml {",       None)]
+    fn detect_version_cases(#[case] yaml: &str, #[case] expected: Option<u32>) {
+        assert_eq!(detect_version(yaml), expected);
     }
 
     // ======================================================================
     // ID validation unit tests
     // ======================================================================
 
-    #[test]
-    fn valid_ids() {
-        assert!(is_valid_id("cpu_signal"));
-        assert!(is_valid_id("_private"));
-        assert!(is_valid_id("A"));
-        assert!(is_valid_id("a1b2c3"));
-        assert!(is_valid_id("__double_underscore__"));
-    }
-
-    #[test]
-    fn invalid_ids() {
-        assert!(!is_valid_id(""));
-        assert!(!is_valid_id("123abc"));
-        assert!(!is_valid_id("my.id"));
-        assert!(!is_valid_id("has-hyphen"));
-        assert!(!is_valid_id("has space"));
-        assert!(!is_valid_id("0"));
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::simple_snake("cpu_signal",            true)]
+    #[case::leading_underscore("_private",        true)]
+    #[case::single_upper("A",                     true)]
+    #[case::alphanumeric("a1b2c3",                true)]
+    #[case::double_underscore("__double_underscore__", true)]
+    #[case::empty("",                             false)]
+    #[case::starts_with_digit("123abc",           false)]
+    #[case::contains_dot("my.id",                 false)]
+    #[case::contains_hyphen("has-hyphen",         false)]
+    #[case::contains_space("has space",           false)]
+    #[case::single_digit("0",                     false)]
+    fn id_validation_cases(#[case] id: &str, #[case] expected: bool) {
+        assert_eq!(is_valid_id(id), expected, "is_valid_id({id:?})");
     }
 
     // ======================================================================
@@ -1191,36 +1185,12 @@ scenarios:
     }
 
     // ======================================================================
-    // Edge case: empty id string
-    // ======================================================================
-
-    #[test]
-    fn empty_id_string_returns_invalid_id() {
-        let yaml = r#"
-version: 2
-scenarios:
-  - signal_type: metrics
-    id: ""
-    name: metric_a
-    generator:
-      type: constant
-      value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("empty id must fail");
-        assert!(
-            matches!(err, ParseError::InvalidId(ref id) if id.is_empty()),
-            "expected InvalidId(''), got: {err}"
-        );
-    }
-
-    // ======================================================================
     // Cross-generator mutual exclusion tests
     // ======================================================================
 
-    #[test]
-    fn metrics_with_log_generator_returns_unexpected_field() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::metrics_with_log_generator(r#"
 version: 2
 scenarios:
   - signal_type: metrics
@@ -1233,22 +1203,8 @@ scenarios:
       templates:
         - message: "hello"
       seed: 1
-"#;
-
-        let err = parse(yaml).expect_err("metrics + log_generator must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "metrics" && field == "log_generator"
-            ),
-            "expected UnexpectedField for log_generator on metrics, got: {err}"
-        );
-    }
-
-    #[test]
-    fn metrics_with_distribution_returns_unexpected_field() {
-        let yaml = r#"
+"#, "metrics", "log_generator")]
+    #[case::metrics_with_distribution(r#"
 version: 2
 scenarios:
   - signal_type: metrics
@@ -1260,22 +1216,8 @@ scenarios:
       type: normal
       mean: 0.1
       stddev: 0.02
-"#;
-
-        let err = parse(yaml).expect_err("metrics + distribution must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "metrics" && field == "distribution"
-            ),
-            "expected UnexpectedField for distribution on metrics, got: {err}"
-        );
-    }
-
-    #[test]
-    fn logs_with_generator_returns_unexpected_field() {
-        let yaml = r#"
+"#, "metrics", "distribution")]
+    #[case::logs_with_generator(r#"
 version: 2
 scenarios:
   - signal_type: logs
@@ -1288,22 +1230,8 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("logs + generator must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "logs" && field == "generator"
-            ),
-            "expected UnexpectedField for generator on logs, got: {err}"
-        );
-    }
-
-    #[test]
-    fn logs_with_distribution_returns_unexpected_field() {
-        let yaml = r#"
+"#, "logs", "generator")]
+    #[case::logs_with_distribution(r#"
 version: 2
 scenarios:
   - signal_type: logs
@@ -1317,22 +1245,8 @@ scenarios:
       type: normal
       mean: 0.1
       stddev: 0.02
-"#;
-
-        let err = parse(yaml).expect_err("logs + distribution must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "logs" && field == "distribution"
-            ),
-            "expected UnexpectedField for distribution on logs, got: {err}"
-        );
-    }
-
-    #[test]
-    fn histogram_with_generator_returns_unexpected_field() {
-        let yaml = r#"
+"#, "logs", "distribution")]
+    #[case::histogram_with_generator(r#"
 version: 2
 scenarios:
   - signal_type: histogram
@@ -1344,22 +1258,8 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("histogram + generator must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "histogram" && field == "generator"
-            ),
-            "expected UnexpectedField for generator on histogram, got: {err}"
-        );
-    }
-
-    #[test]
-    fn histogram_with_log_generator_returns_unexpected_field() {
-        let yaml = r#"
+"#, "histogram", "generator")]
+    #[case::histogram_with_log_generator(r#"
 version: 2
 scenarios:
   - signal_type: histogram
@@ -1373,22 +1273,8 @@ scenarios:
       templates:
         - message: "hello"
       seed: 1
-"#;
-
-        let err = parse(yaml).expect_err("histogram + log_generator must fail");
-        assert!(
-            matches!(
-                err,
-                ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "histogram" && field == "log_generator"
-            ),
-            "expected UnexpectedField for log_generator on histogram, got: {err}"
-        );
-    }
-
-    #[test]
-    fn summary_with_generator_returns_unexpected_field() {
-        let yaml = r#"
+"#, "histogram", "log_generator")]
+    #[case::summary_with_generator(r#"
 version: 2
 scenarios:
   - signal_type: summary
@@ -1401,16 +1287,20 @@ scenarios:
     generator:
       type: constant
       value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("summary + generator must fail");
+"#, "summary", "generator")]
+    fn mismatched_generator_family_returns_unexpected_field(
+        #[case] yaml: &str,
+        #[case] expected_signal_type: &str,
+        #[case] expected_field: &str,
+    ) {
+        let err = parse(yaml).expect_err("mismatched generator family must fail");
         assert!(
             matches!(
                 err,
                 ParseError::UnexpectedField { index: 0, ref signal_type, ref field }
-                if signal_type == "summary" && field == "generator"
+                if signal_type == expected_signal_type && field == expected_field
             ),
-            "expected UnexpectedField for generator on summary, got: {err}"
+            "expected UnexpectedField for {expected_field} on {expected_signal_type}, got: {err}"
         );
     }
 
@@ -1466,25 +1356,6 @@ scenarios:
     // ======================================================================
     // Edge cases (NOTE 2)
     // ======================================================================
-
-    #[test]
-    fn version_zero_returns_invalid_version() {
-        let yaml = r#"
-version: 0
-scenarios:
-  - signal_type: metrics
-    name: cpu
-    generator:
-      type: constant
-      value: 1.0
-"#;
-
-        let err = parse(yaml).expect_err("version 0 must fail");
-        assert!(
-            matches!(err, ParseError::InvalidVersion(0)),
-            "expected InvalidVersion(0), got: {err}"
-        );
-    }
 
     #[test]
     fn empty_scenarios_list_parses_successfully() {

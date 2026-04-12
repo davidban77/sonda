@@ -943,28 +943,17 @@ mod tests {
     // Resolver classification & in-memory impl
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn classify_name_reference_returns_name() {
-        assert_eq!(
-            classify_pack_reference("telegraf_snmp_interface"),
-            PackResolveOrigin::Name
-        );
-    }
-
-    #[test]
-    fn classify_file_path_reference_returns_file_path() {
-        assert_eq!(
-            classify_pack_reference("./packs/custom.yaml"),
-            PackResolveOrigin::FilePath
-        );
-        assert_eq!(
-            classify_pack_reference("/abs/path/pack.yaml"),
-            PackResolveOrigin::FilePath
-        );
-        assert_eq!(
-            classify_pack_reference("rel/pack.yaml"),
-            PackResolveOrigin::FilePath
-        );
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::plain_name("telegraf_snmp_interface",  PackResolveOrigin::Name)]
+    #[case::dot_relative("./packs/custom.yaml",    PackResolveOrigin::FilePath)]
+    #[case::absolute_path("/abs/path/pack.yaml",   PackResolveOrigin::FilePath)]
+    #[case::plain_relative("rel/pack.yaml",        PackResolveOrigin::FilePath)]
+    fn classify_pack_reference_distinguishes_name_and_file_path(
+        #[case] reference: &str,
+        #[case] expected: PackResolveOrigin,
+    ) {
+        assert_eq!(classify_pack_reference(reference), expected);
     }
 
     #[test]
@@ -1034,50 +1023,38 @@ scenarios:
     // Sub-signal IDs: user-provided and auto-generated
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn sub_signal_ids_use_entry_id_when_set() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // User-supplied id becomes the effective entry id; sub-signal ids use
+    // the clean `{entry_id}.{metric}` shape.
+    #[case::user_supplied_entry_id(r#"
 version: 2
 defaults: { rate: 1 }
 scenarios:
   - id: primary
     signal_type: metrics
     pack: telegraf_snmp_interface
-"#;
-        let mut resolver = InMemoryPackResolver::new();
-        resolver.insert("telegraf_snmp_interface", telegraf_pack());
-        let expanded = expand_yaml(yaml, &resolver);
-        assert_eq!(
-            expanded.entries[0].id.as_deref(),
-            Some("primary.ifOperStatus")
-        );
-        assert_eq!(
-            expanded.entries[1].id.as_deref(),
-            Some("primary.ifHCInOctets")
-        );
-    }
-
-    #[test]
-    fn anonymous_pack_entry_gets_auto_generated_id() {
-        let yaml = r#"
+"#, "primary.ifOperStatus", "primary.ifHCInOctets")]
+    // Anonymous pack entries use the auto-id scheme
+    // `{pack_def_name}_{entry_index}`, so at index 0 the effective id is
+    // `telegraf_snmp_interface_0`.
+    #[case::auto_generated_entry_id(r#"
 version: 2
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
     pack: telegraf_snmp_interface
-"#;
+"#, "telegraf_snmp_interface_0.ifOperStatus", "telegraf_snmp_interface_0.ifHCInOctets")]
+    fn sub_signal_ids_follow_effective_entry_id(
+        #[case] yaml: &str,
+        #[case] expected_first: &str,
+        #[case] expected_second: &str,
+    ) {
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("telegraf_snmp_interface", telegraf_pack());
         let expanded = expand_yaml(yaml, &resolver);
-        // Auto-ID is `{pack_def_name}_{entry_index}` = `telegraf_snmp_interface_0`.
-        assert_eq!(
-            expanded.entries[0].id.as_deref(),
-            Some("telegraf_snmp_interface_0.ifOperStatus")
-        );
-        assert_eq!(
-            expanded.entries[1].id.as_deref(),
-            Some("telegraf_snmp_interface_0.ifHCInOctets")
-        );
+        assert_eq!(expanded.entries[0].id.as_deref(), Some(expected_first));
+        assert_eq!(expanded.entries[1].id.as_deref(), Some(expected_second));
     }
 
     #[test]
@@ -1697,13 +1674,13 @@ scenarios:
     // Post-expansion id uniqueness (user-provided vs. auto-synthesized)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn user_id_colliding_with_auto_pack_entry_id_is_an_error() {
-        // Reviewer-described case: the user writes an inline id that
-        // equals what the anonymous pack entry at the next position would
-        // synthesize. The parser's id uniqueness pass never sees the
-        // synthesized id, so this pass must catch the collision.
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // Reviewer-described case: the user writes an inline id that equals
+    // what the anonymous pack entry at the next position would synthesize.
+    // The parser's id uniqueness pass never sees the synthesized id, so
+    // this pass must catch the collision.
+    #[case::inline_first_then_auto(r#"
 version: 2
 defaults: { rate: 1 }
 scenarios:
@@ -1713,38 +1690,11 @@ scenarios:
     generator: { type: constant, value: 1 }
   - signal_type: metrics
     pack: telegraf_snmp_interface
-"#;
-        let mut resolver = InMemoryPackResolver::new();
-        resolver.insert("telegraf_snmp_interface", telegraf_pack());
-        let parsed = parse(yaml).expect("parse");
-        let normalized = normalize(parsed).expect("normalize");
-        let err = expand(normalized, &resolver).expect_err("must fail");
-        match err {
-            ExpandError::DuplicateEntryId {
-                id,
-                first_source,
-                second_source,
-            } => {
-                assert_eq!(id, "telegraf_snmp_interface_1");
-                assert!(
-                    first_source.contains("inline entry"),
-                    "unexpected first source: {first_source}"
-                );
-                assert!(
-                    second_source.contains("auto-generated"),
-                    "unexpected second source: {second_source}"
-                );
-            }
-            other => panic!("wrong error variant: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn auto_pack_entry_id_colliding_with_later_user_id_is_an_error() {
-        // Reverse ordering: anonymous pack entry comes first, user-written
-        // id collides with the synthesized name afterward. The registry
-        // must flag the collision regardless of source order.
-        let yaml = r#"
+"#, "telegraf_snmp_interface_1", "inline entry", "auto-generated")]
+    // Reverse ordering: anonymous pack entry comes first, user-written id
+    // collides with the synthesized name afterward. The registry must flag
+    // the collision regardless of source order.
+    #[case::auto_first_then_inline(r#"
 version: 2
 defaults: { rate: 1 }
 scenarios:
@@ -1754,7 +1704,13 @@ scenarios:
     signal_type: metrics
     name: cpu
     generator: { type: constant, value: 1 }
-"#;
+"#, "telegraf_snmp_interface_0", "auto-generated", "inline entry")]
+    fn duplicate_entry_id_detected_regardless_of_source_order(
+        #[case] yaml: &str,
+        #[case] expected_id: &str,
+        #[case] expected_first_substr: &str,
+        #[case] expected_second_substr: &str,
+    ) {
         let mut resolver = InMemoryPackResolver::new();
         resolver.insert("telegraf_snmp_interface", telegraf_pack());
         let parsed = parse(yaml).expect("parse");
@@ -1766,13 +1722,13 @@ scenarios:
                 first_source,
                 second_source,
             } => {
-                assert_eq!(id, "telegraf_snmp_interface_0");
+                assert_eq!(id, expected_id);
                 assert!(
-                    first_source.contains("auto-generated"),
+                    first_source.contains(expected_first_substr),
                     "unexpected first source: {first_source}"
                 );
                 assert!(
-                    second_source.contains("inline entry"),
+                    second_source.contains(expected_second_substr),
                     "unexpected second source: {second_source}"
                 );
             }

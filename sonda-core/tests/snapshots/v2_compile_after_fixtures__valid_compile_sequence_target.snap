@@ -1,18 +1,25 @@
+---
+source: sonda-core/tests/v2_compile_after_fixtures.rs
+expression: compiled
+---
 {
   "version": 2,
   "entries": [
     {
-      "id": "link",
+      "id": "seq",
       "signal_type": "metrics",
-      "name": "interface_oper_state",
-      "rate": 1.0,
-      "duration": "5m",
+      "name": "health_probe",
+      "rate": 2.0,
+      "duration": "1m",
       "generator": {
-        "type": "flap",
-        "up_duration": "60s",
-        "down_duration": "30s",
-        "up_value": null,
-        "down_value": null
+        "type": "sequence",
+        "values": [
+          10.0,
+          5.0,
+          2.0,
+          1.0
+        ],
+        "repeat": false
       },
       "log_generator": null,
       "labels": null,
@@ -30,7 +37,7 @@
       "bursts": null,
       "cardinality_spikes": null,
       "phase_offset": null,
-      "clock_group": "chain_backup",
+      "clock_group": "chain_alert",
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -39,11 +46,11 @@
       "seed": null
     },
     {
-      "id": "backup",
+      "id": "alert",
       "signal_type": "metrics",
-      "name": "backup_util",
-      "rate": 1.0,
-      "duration": "5m",
+      "name": "alert",
+      "rate": 2.0,
+      "duration": "1m",
       "generator": {
         "type": "constant",
         "value": 1.0
@@ -63,8 +70,8 @@
       "gaps": null,
       "bursts": null,
       "cardinality_spikes": null,
-      "phase_offset": "85s",
-      "clock_group": "chain_backup",
+      "phase_offset": "1s",
+      "clock_group": "chain_alert",
       "distribution": null,
       "buckets": null,
       "quantiles": null,

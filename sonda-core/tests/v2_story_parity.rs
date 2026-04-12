@@ -12,21 +12,14 @@
 //! Runtime parity (identical stdout output for the whole story) is PR 6
 //! scope; this file asserts compile-time equivalence only.
 
-use std::path::Path;
+mod common;
 
+use common::parity_fixture;
 use sonda_core::compiler::compile_after::compile_after;
 use sonda_core::compiler::expand::{expand, InMemoryPackResolver};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
 use sonda_core::compiler::timing::{flap_crossing_secs, sawtooth_crossing_secs, Operator};
-
-fn fixture(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/v2-parity")
-        .join(name);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e))
-}
 
 /// Compile the v2 link-failover equivalent and compare every signal's
 /// `phase_offset` to the value produced by applying the v1 story math
@@ -60,7 +53,7 @@ fn link_failover_compile_parity() {
     // ------------------------------------------------------------------
     // v2 compile of the hand-written parity equivalent.
     // ------------------------------------------------------------------
-    let yaml = fixture("link-failover.yaml");
+    let yaml = parity_fixture("link-failover.yaml");
     let resolver = InMemoryPackResolver::new();
     let parsed = parse(&yaml).expect("fixture parses");
     let normalized = normalize(parsed).expect("fixture normalizes");

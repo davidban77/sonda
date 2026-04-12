@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/v2_compile_after_fixtures.rs
+expression: compiled
+---
 {
   "version": 2,
   "entries": [
@@ -6,7 +10,7 @@
       "signal_type": "metrics",
       "name": "ifOperStatus",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "5m",
       "generator": {
         "type": "flap",
         "up_duration": "60s",
@@ -17,12 +21,10 @@
       "log_generator": null,
       "labels": {
         "device": "rtr-edge-01",
-        "env": "prod",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
-        "job": "snmp",
-        "probe": "synthetic"
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
       },
       "dynamic_labels": null,
       "encoder": {
@@ -38,8 +40,7 @@
       "bursts": null,
       "cardinality_spikes": null,
       "phase_offset": null,
-      "clock_group": null,
-      "after": null,
+      "clock_group": "chain_backup_signal",
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -52,7 +53,7 @@
       "signal_type": "metrics",
       "name": "ifHCInOctets",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "5m",
       "generator": {
         "type": "step",
         "start": 0.0,
@@ -62,10 +63,9 @@
       "log_generator": null,
       "labels": {
         "device": "rtr-edge-01",
-        "env": "prod",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -83,7 +83,6 @@
       "cardinality_spikes": null,
       "phase_offset": null,
       "clock_group": null,
-      "after": null,
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -96,7 +95,7 @@
       "signal_type": "metrics",
       "name": "ifHCOutOctets",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "5m",
       "generator": {
         "type": "step",
         "start": 0.0,
@@ -106,10 +105,9 @@
       "log_generator": null,
       "labels": {
         "device": "rtr-edge-01",
-        "env": "prod",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -127,7 +125,6 @@
       "cardinality_spikes": null,
       "phase_offset": null,
       "clock_group": null,
-      "after": null,
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -140,7 +137,7 @@
       "signal_type": "metrics",
       "name": "ifInErrors",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "5m",
       "generator": {
         "type": "constant",
         "value": 0.0
@@ -148,10 +145,9 @@
       "log_generator": null,
       "labels": {
         "device": "rtr-edge-01",
-        "env": "prod",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -169,7 +165,6 @@
       "cardinality_spikes": null,
       "phase_offset": null,
       "clock_group": null,
-      "after": null,
       "distribution": null,
       "buckets": null,
       "quantiles": null,
@@ -182,7 +177,7 @@
       "signal_type": "metrics",
       "name": "ifOutErrors",
       "rate": 1.0,
-      "duration": "2m",
+      "duration": "5m",
       "generator": {
         "type": "constant",
         "value": 0.0
@@ -190,10 +185,9 @@
       "log_generator": null,
       "labels": {
         "device": "rtr-edge-01",
-        "env": "prod",
         "ifAlias": "",
-        "ifIndex": "1",
-        "ifName": "Gi0/0/0",
+        "ifIndex": "",
+        "ifName": "",
         "job": "snmp"
       },
       "dynamic_labels": null,
@@ -211,7 +205,42 @@
       "cardinality_spikes": null,
       "phase_offset": null,
       "clock_group": null,
-      "after": null,
+      "distribution": null,
+      "buckets": null,
+      "quantiles": null,
+      "observations_per_tick": null,
+      "mean_shift_per_sec": null,
+      "seed": null
+    },
+    {
+      "id": "backup_signal",
+      "signal_type": "metrics",
+      "name": "backup_link_utilization",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "saturation",
+        "baseline": 20.0,
+        "ceiling": 85.0,
+        "time_to_saturate": "2m"
+      },
+      "log_generator": null,
+      "labels": null,
+      "dynamic_labels": null,
+      "encoder": {
+        "type": "prometheus_text",
+        "precision": null
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "jitter": null,
+      "jitter_seed": null,
+      "gaps": null,
+      "bursts": null,
+      "cardinality_spikes": null,
+      "phase_offset": "1m",
+      "clock_group": "chain_backup_signal",
       "distribution": null,
       "buckets": null,
       "quantiles": null,

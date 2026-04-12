@@ -1280,9 +1280,10 @@ scenarios:
         );
     }
 
-    #[test]
-    fn flap_less_than_sets_up_duration() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // Flap `<` crosses at the up_duration boundary (60s → "1m").
+    #[case::flap_less_than(r#"
 version: 2
 scenarios:
   - id: link
@@ -1296,14 +1297,9 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: link, op: "<", value: 1 }
-"#;
-        let compiled = compile(yaml).expect("should compile");
-        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("1m"));
-    }
-
-    #[test]
-    fn spike_less_than_sets_spike_duration() {
-        let yaml = r#"
+"#, "1m")]
+    // spike_event `<` crosses at the spike_duration boundary (10s).
+    #[case::spike_event_less_than(r#"
 version: 2
 scenarios:
   - id: burst
@@ -1317,18 +1313,9 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: burst, op: "<", value: 50 }
-"#;
-        let compiled = compile(yaml).expect("should compile");
-        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("10s"));
-    }
-
-    // -----------------------------------------------------------------------
-    // Step generator (matrix 11.17)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn step_greater_than_yields_tick_count_offset() {
-        let yaml = r#"
+"#, "10s")]
+    // Step `>`: ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
+    #[case::step_greater_than(r#"
 version: 2
 scenarios:
   - id: counter
@@ -1342,10 +1329,32 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: counter, op: ">", value: 55 }
-"#;
+"#, "3s")]
+    // Sequence `<`: index 2 (value 2) is the first < 3; rate=2 -> 1.0s.
+    #[case::sequence_less_than(r#"
+version: 2
+scenarios:
+  - id: seq
+    signal_type: metrics
+    name: values
+    rate: 2
+    generator: { type: sequence, values: [10, 5, 2, 1], repeat: false }
+  - id: follower
+    signal_type: metrics
+    name: alert
+    rate: 1
+    generator: { type: constant, value: 1 }
+    after: { ref: seq, op: "<", value: 3 }
+"#, "1s")]
+    fn follower_phase_offset_matches_expected_crossing(
+        #[case] yaml: &str,
+        #[case] expected_offset: &str,
+    ) {
         let compiled = compile(yaml).expect("should compile");
-        // ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
-        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("3s"));
+        assert_eq!(
+            compiled.entries[1].phase_offset.as_deref(),
+            Some(expected_offset)
+        );
     }
 
     #[test]
@@ -1370,38 +1379,18 @@ scenarios:
     }
 
     // -----------------------------------------------------------------------
-    // Sequence generator (matrix 11.18)
+    // Targets that cannot be resolved to a crossing time.
+    //
+    // `constant` values are out-of-range when the threshold is unreachable;
+    // `sine`, `steady`, and `uniform` are blanket-unsupported because their
+    // values never settle into a predictable threshold-crossing schedule.
+    // Each error message must name the offending generator type so the
+    // diagnostic points the user at the right signal.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn sequence_less_than_returns_first_matching_tick() {
-        let yaml = r#"
-version: 2
-scenarios:
-  - id: seq
-    signal_type: metrics
-    name: values
-    rate: 2
-    generator: { type: sequence, values: [10, 5, 2, 1], repeat: false }
-  - id: follower
-    signal_type: metrics
-    name: alert
-    rate: 1
-    generator: { type: constant, value: 1 }
-    after: { ref: seq, op: "<", value: 3 }
-"#;
-        let compiled = compile(yaml).expect("should compile");
-        // index 2 (value 2) is first < 3; rate=2 -> 1.0s.
-        assert_eq!(compiled.entries[1].phase_offset.as_deref(), Some("1s"));
-    }
-
-    // -----------------------------------------------------------------------
-    // Constant target (always rejected)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn constant_target_is_rejected() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::constant(r#"
 version: 2
 scenarios:
   - id: k
@@ -1415,19 +1404,8 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: k, op: ">", value: 100 }
-"#;
-        let err = compile(yaml).expect_err("constant target is out of range");
-        // Out-of-range or ambiguous depending on threshold; here 42 < 100 -> out of range.
-        assert!(err.contains("constant"), "got: {err}");
-    }
-
-    // -----------------------------------------------------------------------
-    // Sine / uniform / csv_replay blanket rejection
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sine_target_is_unsupported() {
-        let yaml = r#"
+"#, "constant")]
+    #[case::sine(r#"
 version: 2
 scenarios:
   - id: wave
@@ -1441,14 +1419,8 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: wave, op: ">", value: 55 }
-"#;
-        let err = compile(yaml).expect_err("sine is unsupported");
-        assert!(err.contains("sine"), "got: {err}");
-    }
-
-    #[test]
-    fn steady_target_is_unsupported() {
-        let yaml = r#"
+"#, "sine")]
+    #[case::steady(r#"
 version: 2
 scenarios:
   - id: base
@@ -1462,14 +1434,8 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: base, op: ">", value: 55 }
-"#;
-        let err = compile(yaml).expect_err("steady is unsupported");
-        assert!(err.contains("steady"), "got: {err}");
-    }
-
-    #[test]
-    fn uniform_target_is_unsupported() {
-        let yaml = r#"
+"#, "steady")]
+    #[case::uniform(r#"
 version: 2
 scenarios:
   - id: u
@@ -1483,9 +1449,16 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: u, op: ">", value: 5 }
-"#;
-        let err = compile(yaml).expect_err("uniform is unsupported");
-        assert!(err.contains("uniform"), "got: {err}");
+"#, "uniform")]
+    fn unresolvable_target_generator_is_rejected(
+        #[case] yaml: &str,
+        #[case] expected_substring: &str,
+    ) {
+        let err = compile(yaml).expect_err("target generator must be rejected");
+        assert!(
+            err.contains(expected_substring),
+            "expected error to mention {expected_substring:?}, got: {err}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1967,16 +1940,20 @@ scenarios:
     // -----------------------------------------------------------------------
     // InvalidDuration coverage — every code path that can construct this
     // variant must have a dedicated regression test.
+    //
+    // Each case names the source id of the failing entry, the field that
+    // flagged the malformed duration, and the literal input string so the
+    // error round-trip is byte-exact.
     // -----------------------------------------------------------------------
 
-    /// `compile_after` is the first validation pass that actually parses
-    /// `after.delay` as a [`std::time::Duration`] — the parser only checks
-    /// the shape of the YAML. A malformed delay string must surface as
-    /// [`CompileAfterError::InvalidDuration`] tagged with
-    /// `field == "after.delay"`.
-    #[test]
-    fn invalid_after_delay_duration_surfaces_invalid_duration() {
-        let yaml = r#"
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    // `compile_after` is the first validation pass that actually parses
+    // `after.delay` as a `std::time::Duration` — the parser only checks
+    // the shape of the YAML. A malformed delay string must surface as
+    // `CompileAfterError::InvalidDuration` tagged with
+    // `field == "after.delay"`.
+    #[case::after_delay(r#"
 version: 2
 scenarios:
   - id: src
@@ -1990,33 +1967,12 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: src, op: "<", value: 1, delay: "10seconds" }
-"#;
-        let err = match compile_after_from_yaml(yaml) {
-            Err(e) => e,
-            Ok(_) => panic!("invalid delay must fail"),
-        };
-        match err {
-            CompileAfterError::InvalidDuration {
-                ref source_id,
-                field,
-                ref input,
-                ..
-            } => {
-                assert_eq!(source_id, "follower");
-                assert_eq!(field, "after.delay");
-                assert_eq!(input, "10seconds");
-            }
-            other => panic!("expected InvalidDuration, got {other:?}"),
-        }
-    }
-
-    /// `phase_offset: "0s"` is a well-known `parse_duration` rejection
-    /// (zero durations are invalid). Because the entry's `phase_offset`
-    /// is parsed inside `compile_after`, this must surface as
-    /// [`CompileAfterError::InvalidDuration`] with `field == "phase_offset"`.
-    #[test]
-    fn invalid_phase_offset_duration_surfaces_invalid_duration() {
-        let yaml = r#"
+"#, "follower", "after.delay", "10seconds")]
+    // `phase_offset: "0s"` is a well-known `parse_duration` rejection
+    // (zero durations are invalid). Because the entry's `phase_offset`
+    // is parsed inside `compile_after`, this must surface as
+    // `CompileAfterError::InvalidDuration` with `field == "phase_offset"`.
+    #[case::phase_offset_zero(r#"
 version: 2
 scenarios:
   - id: src
@@ -2031,34 +1987,13 @@ scenarios:
     phase_offset: "0s"
     generator: { type: constant, value: 1 }
     after: { ref: src, op: "<", value: 1 }
-"#;
-        let err = match compile_after_from_yaml(yaml) {
-            Err(e) => e,
-            Ok(_) => panic!("phase_offset 0s must fail"),
-        };
-        match err {
-            CompileAfterError::InvalidDuration {
-                ref source_id,
-                field,
-                ref input,
-                ..
-            } => {
-                assert_eq!(source_id, "follower");
-                assert_eq!(field, "phase_offset");
-                assert_eq!(input, "0s");
-            }
-            other => panic!("expected InvalidDuration, got {other:?}"),
-        }
-    }
-
-    /// Invalid alias duration params (e.g. `flap.up_duration: "oops"`)
-    /// must also route through `InvalidDuration` — historically these
-    /// were folded into `OutOfRangeThreshold` because `duration_or_default`
-    /// wrapped them as `TimingError::OutOfRange`. PR 5 review flagged the
-    /// mis-classification; this regression anchors the fix.
-    #[test]
-    fn invalid_alias_duration_surfaces_invalid_duration() {
-        let yaml = r#"
+"#, "follower", "phase_offset", "0s")]
+    // Invalid alias duration params (e.g. `flap.up_duration: "oops"`) must
+    // also route through `InvalidDuration` — historically these were
+    // folded into `OutOfRangeThreshold` because `duration_or_default`
+    // wrapped them as `TimingError::OutOfRange`. PR 5 review flagged the
+    // mis-classification; this regression anchors the fix.
+    #[case::alias_flap_up_duration(r#"
 version: 2
 scenarios:
   - id: src
@@ -2072,10 +2007,16 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     after: { ref: src, op: "<", value: 1 }
-"#;
+"#, "follower", "flap.up_duration", "oops")]
+    fn invalid_duration_surfaces_invalid_duration(
+        #[case] yaml: &str,
+        #[case] expected_source_id: &str,
+        #[case] expected_field: &str,
+        #[case] expected_input: &str,
+    ) {
         let err = match compile_after_from_yaml(yaml) {
             Err(e) => e,
-            Ok(_) => panic!("invalid flap.up_duration must fail"),
+            Ok(_) => panic!("invalid duration must fail"),
         };
         match err {
             CompileAfterError::InvalidDuration {
@@ -2084,9 +2025,9 @@ scenarios:
                 ref input,
                 ..
             } => {
-                assert_eq!(source_id, "follower");
-                assert_eq!(field, "flap.up_duration");
-                assert_eq!(input, "oops");
+                assert_eq!(source_id, expected_source_id);
+                assert_eq!(field, expected_field);
+                assert_eq!(input, expected_input);
             }
             other => panic!("expected InvalidDuration, got {other:?}"),
         }
@@ -2107,19 +2048,17 @@ scenarios:
     // format_duration_secs round-trip
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn format_duration_whole_seconds() {
-        assert_eq!(format_duration_secs(30.0), "30s");
-    }
-
-    #[test]
-    fn format_duration_whole_minutes() {
-        assert_eq!(format_duration_secs(120.0), "2m");
-    }
-
-    #[test]
-    fn format_duration_whole_hours() {
-        assert_eq!(format_duration_secs(3600.0), "1h");
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::whole_seconds(30.0,            "30s")]
+    #[case::whole_minutes(120.0,           "2m")]
+    #[case::whole_hours(3600.0,            "1h")]
+    // Exact zero (and the `-0.0` variant, which compares equal to 0.0)
+    // both route through the `<= 0.0` fallback and emit `"0s"`.
+    #[case::zero(0.0,                      "0s")]
+    #[case::negative_zero(-0.0,            "0s")]
+    fn format_duration_whole_units(#[case] secs: f64, #[case] expected: &str) {
+        assert_eq!(format_duration_secs(secs), expected);
     }
 
     #[test]
@@ -2131,13 +2070,5 @@ scenarios:
             "got {}, expected ~92.307",
             dur.as_secs_f64()
         );
-    }
-
-    #[test]
-    fn format_duration_zero_normalizes() {
-        // Exact zero (and the `-0.0` variant, which compares equal to 0.0)
-        // both route through the `<= 0.0` fallback and emit `"0s"`.
-        assert_eq!(format_duration_secs(0.0), "0s");
-        assert_eq!(format_duration_secs(-0.0), "0s");
     }
 }
