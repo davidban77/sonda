@@ -6,12 +6,13 @@
 //! actually behaves that way.
 //!
 //! Normalization fixtures go one step further and compare the resolved entries
-//! against golden JSON snapshots in `tests/fixtures/v2-examples/expected/`.
-//! Set `UPDATE_SNAPSHOTS=1` to regenerate them after a schema change.
+//! against [`insta`] JSON snapshots under `tests/snapshots/`. Run
+//! `INSTA_UPDATE=always cargo test -p sonda-core --test v2_fixture_examples`
+//! (or `cargo insta accept`) to regenerate them after a schema change.
 
 mod common;
 
-use common::{assert_golden_json, example_fixture};
+use common::example_fixture;
 use sonda_core::compiler::normalize::{normalize, NormalizeError};
 use sonda_core::compiler::parse::{parse, ParseError};
 
@@ -198,7 +199,7 @@ fn invalid_bad_after_op_rejected() {
 }
 
 // ======================================================================
-// Defaults normalization — valid fixtures with golden snapshots
+// Defaults normalization — valid fixtures with insta snapshots
 // ======================================================================
 
 #[test]
@@ -207,7 +208,7 @@ fn valid_defaults_label_merge_normalizes() {
     let parsed = parse(&yaml).expect("must parse");
     let normalized = normalize(parsed).expect("must normalize");
 
-    // Spot-check the merged output before comparing against the golden file.
+    // Spot-check the merged output before comparing against the snapshot.
     assert_eq!(normalized.entries.len(), 2);
 
     let e0 = &normalized.entries[0];
@@ -229,8 +230,9 @@ fn valid_defaults_label_merge_normalizes() {
     let labels1 = e1.labels.as_ref().expect("labels must exist");
     assert_eq!(labels1.get("region").map(String::as_str), Some("us-west-2"));
 
-    // Golden comparison
-    assert_golden_json(&normalized, "valid-defaults-label-merge.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(normalized);
+    });
 }
 
 #[test]
@@ -248,7 +250,9 @@ fn valid_defaults_logs_default_encoder_normalizes() {
         sonda_core::encoder::EncoderConfig::JsonLines { .. }
     ));
 
-    assert_golden_json(&normalized, "valid-defaults-logs-default-encoder.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(normalized);
+    });
 }
 
 #[test]
@@ -279,7 +283,9 @@ fn valid_defaults_pack_entry_normalizes() {
     assert_eq!(d.get("job").map(String::as_str), Some("web"));
     assert_eq!(d.get("env").map(String::as_str), Some("prod"));
 
-    assert_golden_json(&normalized, "valid-defaults-pack-entry.json");
+    insta::with_settings!({ sort_maps => true }, {
+        insta::assert_json_snapshot!(normalized);
+    });
 }
 
 // ======================================================================
