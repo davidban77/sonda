@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: prepared_view(&prepared)
+---
 [
   {
     "bursts": null,
@@ -6,8 +10,8 @@
     "duration": "10s",
     "dynamic_labels": null,
     "encoder": {
-      "precision": null,
-      "type": "prometheus_text"
+      "type": "prometheus_text",
+      "precision": null
     },
     "gaps": null,
     "generator": {
@@ -23,6 +27,7 @@
     "signal_type": "metrics",
     "sink": {
       "type": "stdout"
-    }
+    },
+    "start_delay_ms": null
   }
 ]

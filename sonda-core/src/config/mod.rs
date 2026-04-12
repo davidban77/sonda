@@ -5,9 +5,6 @@
 //! the feature, configs can still be constructed in code — only YAML/JSON
 //! serialization and parsing are gated.
 
-#[cfg(feature = "config")]
-pub mod snapshot;
-
 pub mod aliases;
 pub mod validate;
 

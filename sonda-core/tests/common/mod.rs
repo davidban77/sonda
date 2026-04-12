@@ -4,16 +4,18 @@
 //! file is compiled once per integration test that declares `mod common;`
 //! at its root, so it never produces a standalone `no tests` harness run.
 //!
-//! This module consolidates the fixture-loading, pack-loading, compilation
-//! chaining, and golden-file helpers that were previously duplicated across
+//! This module consolidates the fixture-loading, pack-loading, and
+//! compilation-chaining helpers that were previously duplicated across
 //! `v2_fixture_examples.rs`, `v2_expand_fixtures.rs`,
 //! `v2_compile_after_fixtures.rs`, `v2_story_parity.rs`, and
 //! `v2_pack_parity.rs`.
 //!
+//! Snapshot assertions are handled by [`insta`] directly — this module only
+//! produces the value that the caller feeds into `insta::assert_json_snapshot!`.
+//!
 //! Keep the surface area here deliberately small: every helper either loads
-//! a fixture from disk, runs a deterministic compile step, or asserts a
-//! golden-file match. Nothing in this module decides *what* a test
-//! expects — that still lives in the caller.
+//! a fixture from disk or runs a deterministic compile step. Nothing in
+//! this module decides *what* a test expects — that still lives in the caller.
 
 #![cfg(feature = "config")]
 #![allow(dead_code)]
@@ -120,69 +122,4 @@ pub fn compile_to_expanded(yaml: &str, resolver: &InMemoryPackResolver) -> Expan
 pub fn compile_to_compiled(yaml: &str, resolver: &InMemoryPackResolver) -> CompiledFile {
     let expanded = compile_to_expanded(yaml, resolver);
     compile_after(expanded).expect("fixture must compile after")
-}
-
-// -----------------------------------------------------------------------------
-// Serialization
-// -----------------------------------------------------------------------------
-
-/// Serialize `value` as pretty-printed JSON with a trailing newline.
-///
-/// Matches the on-disk format used by the existing golden files so that
-/// `UPDATE_SNAPSHOTS=1` round-trips cleanly. The caller is responsible for
-/// passing a value whose serialization is deterministic (all compiler
-/// output types use `BTreeMap` for label fields).
-pub fn pretty_json<T: serde::Serialize>(value: &T) -> String {
-    let mut s = serde_json::to_string_pretty(value).expect("serialization must succeed");
-    s.push('\n');
-    s
-}
-
-// -----------------------------------------------------------------------------
-// Golden-file comparison
-// -----------------------------------------------------------------------------
-
-/// Assert that `actual` matches the golden file at
-/// `tests/fixtures/v2-examples/expected/{golden_name}`, or regenerate the
-/// golden file when `UPDATE_SNAPSHOTS=1` is set.
-///
-/// This is the hand-rolled comparator the v2 fixture suites have always
-/// used. It is kept in this batch to preserve test semantics while the
-/// helpers are consolidated; a later batch will replace it with `insta`.
-pub fn assert_golden(actual: &str, golden_name: &str) {
-    let path = fixtures_dir()
-        .join("v2-examples")
-        .join("expected")
-        .join(golden_name);
-
-    if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
-        let dir = path
-            .parent()
-            .unwrap_or_else(|| panic!("golden path {} has no parent", path.display()));
-        std::fs::create_dir_all(dir)
-            .unwrap_or_else(|e| panic!("cannot create {}: {e}", dir.display()));
-        std::fs::write(&path, actual)
-            .unwrap_or_else(|e| panic!("cannot write golden {}: {e}", path.display()));
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read golden {} (run with UPDATE_SNAPSHOTS=1 to create it): {}",
-            path.display(),
-            e
-        )
-    });
-    assert_eq!(
-        actual,
-        expected,
-        "snapshot mismatch for {}\nRun with UPDATE_SNAPSHOTS=1 to update.",
-        path.display()
-    );
-}
-
-/// Serialize `value` with [`pretty_json`] and compare it against the
-/// golden file named `golden_name` under `tests/fixtures/v2-examples/expected/`.
-pub fn assert_golden_json<T: serde::Serialize>(value: &T, golden_name: &str) {
-    assert_golden(&pretty_json(value), golden_name);
 }

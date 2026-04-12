@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: entries
+---
 [
   {
     "buckets": [
@@ -17,15 +21,15 @@
     "cardinality_spikes": null,
     "clock_group": null,
     "distribution": {
+      "type": "normal",
       "mean": 0.1,
-      "stddev": 0.05,
-      "type": "normal"
+      "stddev": 0.05
     },
     "duration": "30s",
     "dynamic_labels": null,
     "encoder": {
-      "precision": null,
-      "type": "prometheus_text"
+      "type": "prometheus_text",
+      "precision": null
     },
     "gaps": null,
     "jitter": null,
@@ -43,7 +47,6 @@
     "signal_type": "histogram",
     "sink": {
       "type": "stdout"
-    },
-    "start_delay_ms": null
+    }
   }
 ]

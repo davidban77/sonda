@@ -1,3 +1,7 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: multi.scenarios
+---
 [
   {
     "bursts": null,
@@ -6,8 +10,8 @@
     "duration": "60s",
     "dynamic_labels": null,
     "encoder": {
-      "precision": null,
-      "type": "prometheus_text"
+      "type": "prometheus_text",
+      "precision": null
     },
     "gaps": null,
     "generator": {
@@ -32,15 +36,15 @@
     "duration": "60s",
     "dynamic_labels": null,
     "encoder": {
-      "precision": null,
-      "type": "prometheus_text"
+      "type": "prometheus_text",
+      "precision": null
     },
     "gaps": null,
     "generator": {
+      "type": "sine",
       "amplitude": 20.0,
-      "offset": 50.0,
       "period_secs": 30.0,
-      "type": "sine"
+      "offset": 50.0
     },
     "jitter": null,
     "jitter_seed": null,
@@ -62,16 +66,16 @@
     "duration": "60s",
     "dynamic_labels": null,
     "encoder": {
+      "type": "influx_lp",
       "field_key": null,
-      "precision": null,
-      "type": "influx_lp"
+      "precision": null
     },
     "gaps": null,
     "generator": {
-      "max": 100.0,
+      "type": "sawtooth",
       "min": 0.0,
-      "period_secs": 120.0,
-      "type": "sawtooth"
+      "max": 100.0,
+      "period_secs": 120.0
     },
     "jitter": null,
     "jitter_seed": null,

@@ -143,10 +143,6 @@ src/
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_entry (entry-level wrapper for expand_scenario)
-    ├── snapshot.rs     ← deterministic JSON snapshot serializer for golden-file tests.
-    │                      snapshot_entries(), snapshot_prepared_entries(),
-    │                      assert_or_update_snapshot(). Sorts all map keys for determinism.
-    │                      Test infrastructure for the v2 refactor.
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.
