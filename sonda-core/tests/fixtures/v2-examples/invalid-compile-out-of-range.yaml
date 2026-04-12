@@ -1,0 +1,26 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: util
+    signal_type: metrics
+    name: util
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+
+  - id: follower
+    signal_type: metrics
+    name: follower
+    generator:
+      type: constant
+      value: 1
+    # threshold 150 is above ceiling 85 — never crosses.
+    after:
+      ref: util
+      op: ">"
+      value: 150

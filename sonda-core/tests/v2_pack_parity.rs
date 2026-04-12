@@ -17,9 +17,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use sonda_core::compiler::compile_after::{compile_after, CompiledEntry};
 use sonda_core::compiler::expand::{expand, ExpandedEntry, ExpandedFile, InMemoryPackResolver};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
+use sonda_core::compiler::{AfterClause, AfterOp};
 use sonda_core::config::ScenarioEntry;
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
@@ -336,4 +338,158 @@ fn parity_node_exporter_memory() {
 
     assert_same_signal_set("node_exporter_memory", &v1_entries, &v2_expanded.entries);
     assert_v2_ids_are_unique("node_exporter_memory", &v2_expanded.entries);
+}
+
+// =============================================================================
+// 11.12 — after on pack override (per-metric dependency)
+// 11.13 — pack entry-level after propagation (applies to all expanded signals)
+// =============================================================================
+
+fn find_compiled_by_id<'a>(entries: &'a [CompiledEntry], id: &str) -> &'a CompiledEntry {
+    entries
+        .iter()
+        .find(|e| e.id.as_deref() == Some(id))
+        .unwrap_or_else(|| panic!("expected entry with id '{id}' in compiled output"))
+}
+
+/// Assert that an override-level `after` on a pack sub-signal resolves to
+/// exactly that metric's `phase_offset`, leaving its sibling metrics with
+/// no `after`-derived offset (matrix row 11.12).
+#[test]
+fn compile_after_on_pack_override_applies_per_metric() {
+    let pack = load_pack("telegraf-snmp-interface.yaml");
+    let resolver = resolver_with("telegraf_snmp_interface", pack);
+
+    let yaml = r#"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+
+scenarios:
+  - id: source_link
+    signal_type: metrics
+    name: primary_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    overrides:
+      ifOperStatus:
+        after:
+          ref: source_link
+          op: "<"
+          value: 1
+"#;
+
+    let parsed = parse(yaml).expect("parse");
+    let normalized = normalize(parsed).expect("normalize");
+    let expanded = expand(normalized, &resolver).expect("expand");
+    let compiled = compile_after(expanded).expect("compile_after");
+
+    let ifoper = find_compiled_by_id(&compiled.entries, "uplink.ifOperStatus");
+    assert_eq!(
+        ifoper.phase_offset.as_deref(),
+        Some("1m"),
+        "override-level after should land on ifOperStatus specifically"
+    );
+
+    // Sibling sub-signals in the same pack must NOT inherit the offset.
+    let sibling = find_compiled_by_id(&compiled.entries, "uplink.ifHCInOctets");
+    assert!(
+        sibling.phase_offset.is_none(),
+        "sibling pack metrics should not inherit an override-level after"
+    );
+}
+
+/// Assert that entry-level `after` on a pack entry propagates to every
+/// expanded sub-signal (matrix row 11.13).
+#[test]
+fn compile_after_pack_entry_level_propagates_to_all_sub_signals() {
+    let pack = load_pack("telegraf-snmp-interface.yaml");
+    let resolver = resolver_with("telegraf_snmp_interface", pack);
+
+    let yaml = r#"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+
+scenarios:
+  - id: source_link
+    signal_type: metrics
+    name: primary_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    after:
+      ref: source_link
+      op: "<"
+      value: 1
+"#;
+
+    let parsed = parse(yaml).expect("parse");
+    let normalized = normalize(parsed).expect("normalize");
+    let expanded = expand(normalized, &resolver).expect("expand");
+
+    // Entry-level `after` must have been propagated to every pack metric
+    // in the expanded representation.
+    let expected_clause = AfterClause {
+        ref_id: "source_link".to_string(),
+        op: AfterOp::LessThan,
+        value: 1.0,
+        delay: None,
+    };
+    for entry in &expanded.entries {
+        if entry
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("uplink."))
+        {
+            let clause = entry
+                .after
+                .as_ref()
+                .unwrap_or_else(|| panic!("pack sub-signal {:?} missing after", entry.id));
+            assert_eq!(clause.ref_id, expected_clause.ref_id);
+            assert_eq!(clause.op, expected_clause.op);
+            assert!((clause.value - expected_clause.value).abs() < f64::EPSILON);
+        }
+    }
+
+    let compiled = compile_after(expanded).expect("compile_after");
+
+    // After compilation every sub-signal shares the same resolved offset.
+    let pack_ids = [
+        "uplink.ifOperStatus",
+        "uplink.ifHCInOctets",
+        "uplink.ifHCOutOctets",
+        "uplink.ifInErrors",
+        "uplink.ifOutErrors",
+    ];
+    for id in pack_ids {
+        let entry = find_compiled_by_id(&compiled.entries, id);
+        assert_eq!(
+            entry.phase_offset.as_deref(),
+            Some("1m"),
+            "{id} should inherit propagated after offset"
+        );
+    }
+
+    // The whole chain (source + pack sub-signals) is a single connected
+    // component, so they share the auto-assigned clock group.
+    let source = find_compiled_by_id(&compiled.entries, "source_link");
+    let ifoper = find_compiled_by_id(&compiled.entries, "uplink.ifOperStatus");
+    assert!(source.clock_group.is_some());
+    assert_eq!(source.clock_group, ifoper.clock_group);
 }

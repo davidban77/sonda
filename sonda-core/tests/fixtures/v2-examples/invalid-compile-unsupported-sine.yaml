@@ -1,0 +1,25 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: wave
+    signal_type: metrics
+    name: wave
+    generator:
+      type: sine
+      amplitude: 10
+      period_secs: 60
+      offset: 50
+
+  - id: follower
+    signal_type: metrics
+    name: follower
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: wave
+      op: ">"
+      value: 55

@@ -1,0 +1,25 @@
+version: 2
+
+defaults:
+  rate: 2
+  duration: 2m
+
+scenarios:
+  - id: counter
+    signal_type: metrics
+    name: req_total
+    generator:
+      type: step
+      start: 0
+      step_size: 10
+
+  - id: alarm
+    signal_type: metrics
+    name: alarm_flag
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: counter
+      op: ">"
+      value: 55

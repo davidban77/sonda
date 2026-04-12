@@ -1,0 +1,27 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: spiker
+    signal_type: metrics
+    name: spiker
+    generator:
+      type: spike_event
+      baseline: 0
+      spike_height: 100
+      spike_duration: 10s
+      spike_interval: 60s
+
+  - id: follower
+    signal_type: metrics
+    name: follower
+    generator:
+      type: constant
+      value: 1
+    # spike > 50 is satisfied at t=0 (peak=100 > 50) — ambiguous.
+    after:
+      ref: spiker
+      op: ">"
+      value: 50

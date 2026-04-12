@@ -1,0 +1,25 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  # node_exporter_cpu ships 8 `node_cpu_seconds_total` specs differentiated
+  # only by `labels.mode`, so a bare dotted ref is ambiguous — the user
+  # must pick #0..#7.
+  - id: node
+    signal_type: metrics
+    pack: node_exporter_cpu
+    labels:
+      host: rtr-01
+
+  - id: follower
+    signal_type: metrics
+    name: follower
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: node.node_cpu_seconds_total
+      op: ">"
+      value: 50

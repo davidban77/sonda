@@ -101,21 +101,36 @@ src/
 │   │                      pack entries so Phase 3 can interleave pack
 │   │                      shared/per-metric labels), and enforces rate
 │   │                      presence. Feature-gated (config).
-│   └── expand.rs       ← Phase 3 compilation: pack expansion inside scenarios:.
-│                          expand(), ExpandedFile, ExpandedEntry, ExpandError.
-│                          PackResolver trait (name vs file-path classification)
-│                          plus InMemoryPackResolver test impl. Pack entries are
-│                          materialized into one signal per pack metric with the
-│                          spec §2.2 five-level label precedence chain
-│                          (defaults → shared → per-metric → entry → override)
-│                          and entry-level after propagation. Auto-ID scheme is
-│                          `{pack_def_name}_{entry_index}` for anonymous pack
-│                          entries; sub-signal IDs are `{entry_id}.{metric}`
-│                          (bare) or `{entry_id}.{metric}#{spec_index}` when
-│                          the pack ships duplicate metric names. Post-
-│                          expansion uniqueness check rejects user/auto id
-│                          collisions via ExpandError::DuplicateEntryId.
-│                          Feature-gated (config).
+│   ├── expand.rs       ← Phase 3 compilation: pack expansion inside scenarios:.
+│   │                      expand(), ExpandedFile, ExpandedEntry, ExpandError.
+│   │                      PackResolver trait (name vs file-path classification)
+│   │                      plus InMemoryPackResolver test impl. Pack entries are
+│   │                      materialized into one signal per pack metric with the
+│   │                      spec §2.2 five-level label precedence chain
+│   │                      (defaults → shared → per-metric → entry → override)
+│   │                      and entry-level after propagation. Auto-ID scheme is
+│   │                      `{pack_def_name}_{entry_index}` for anonymous pack
+│   │                      entries; sub-signal IDs are `{entry_id}.{metric}`
+│   │                      (bare) or `{entry_id}.{metric}#{spec_index}` when
+│   │                      the pack ships duplicate metric names. Post-
+│   │                      expansion uniqueness check rejects user/auto id
+│   │                      collisions via ExpandError::DuplicateEntryId.
+│   │                      Feature-gated (config).
+│   ├── timing.rs       ← Pure threshold-crossing math per generator
+│   │                      (sawtooth, step, sequence, spike, flap, saturation,
+│   │                      leak, degradation, spike_event, constant). Returns
+│   │                      crossing time in seconds or a typed TimingError
+│   │                      (OutOfRange | Ambiguous | Unsupported). Shared with
+│   │                      the v1 story CLI path. No features — compiles in
+│   │                      `no-config` builds as well.
+│   └── compile_after.rs ← Phase 4+5 compilation: after-clause resolution,
+│                          dependency graph, cycle detection (Kahn + DFS),
+│                          clock-group auto-assignment. compile_after(),
+│                          CompiledFile, CompiledEntry, CompileAfterError.
+│                          Total offset = user_phase_offset + Σ crossing_time
+│                          + Σ delay; clock_group is auto-named
+│                          `chain_{lowest_lex_id}` per connected component
+│                          when none is explicit. Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
