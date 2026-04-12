@@ -26,27 +26,6 @@ fn compile_err(yaml: &str, resolver: &InMemoryPackResolver) -> CompileAfterError
 // =====================================================================
 
 #[test]
-fn valid_compile_simple_chain() {
-    let yaml = example_fixture("valid-compile-simple-chain.yaml");
-    let resolver = builtin_pack_resolver();
-    let compiled = compile_to_compiled(&yaml, &resolver);
-
-    assert_eq!(compiled.entries.len(), 2);
-    let util = &compiled.entries[1];
-    assert_eq!(util.phase_offset.as_deref(), Some("1m"));
-    // Both entries share the auto-assigned chain_{lowest_id} clock group.
-    assert_eq!(
-        compiled.entries[0].clock_group.as_deref(),
-        Some("chain_link")
-    );
-    assert_eq!(util.clock_group.as_deref(), Some("chain_link"));
-
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(compiled);
-    });
-}
-
-#[test]
 fn valid_compile_transitive_chain() {
     let yaml = example_fixture("valid-compile-transitive-chain.yaml");
     let resolver = builtin_pack_resolver();
@@ -62,6 +41,24 @@ fn valid_compile_transitive_chain() {
     assert!(
         latency_offset.starts_with("152."),
         "expected ~152s, got {latency_offset}"
+    );
+
+    // All three entries share the auto-assigned chain_{lowest_lex_id} clock
+    // group. In the transitive chain the lex-smallest id is `latency`.
+    // (Previously the simpler `link`/`util` case was exercised by a dedicated
+    // `simple-chain` fixture that has since been removed as a strict prefix
+    // of this one.)
+    assert_eq!(
+        compiled.entries[0].clock_group.as_deref(),
+        Some("chain_latency")
+    );
+    assert_eq!(
+        compiled.entries[1].clock_group.as_deref(),
+        Some("chain_latency")
+    );
+    assert_eq!(
+        compiled.entries[2].clock_group.as_deref(),
+        Some("chain_latency")
     );
 
     insta::with_settings!({ sort_maps => true }, {

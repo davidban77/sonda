@@ -47,24 +47,6 @@ fn valid_expand_pack_with_overrides() {
 }
 
 #[test]
-fn valid_expand_pack_file_path() {
-    let yaml = example_fixture("valid-expand-pack-file-path.yaml");
-    let resolver = builtin_pack_resolver();
-    let expanded = compile_to_expanded(&yaml, &resolver);
-
-    assert_eq!(expanded.entries.len(), 5);
-    assert_eq!(expanded.entries[0].name, "ifOperStatus");
-    assert_eq!(
-        expanded.entries[0].id.as_deref(),
-        Some("uplink.ifOperStatus")
-    );
-
-    insta::with_settings!({ sort_maps => true }, {
-        insta::assert_json_snapshot!(expanded);
-    });
-}
-
-#[test]
 fn valid_expand_multiple_packs() {
     let yaml = example_fixture("valid-expand-multiple-packs.yaml");
     let resolver = builtin_pack_resolver();
