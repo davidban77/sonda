@@ -119,19 +119,30 @@ fn parse_offset_secs(s: Option<&str>) -> f64 {
 // Row 16.12: link-failover runtime parity (LineMultiset)
 // -----------------------------------------------------------------------------
 
-/// Build the `Vec<ScenarioEntry>` that the v1 story compile path produces
-/// for the built-in `stories/link-failover.yaml`.
+/// Build a hand-authored v2-equivalent reference `Vec<ScenarioEntry>` for
+/// the built-in `stories/link-failover.yaml` story, used **only** by the
+/// runtime-shape parity assertion below.
 ///
-/// Values match the output of `sonda::story::compile_story(...)`: the
-/// flap/saturation/degradation aliases carry through (v1 does not
-/// desugar them before running the scheduler, matching v2), labels are
-/// the merge of story-level + signal-level, and phase_offsets are the
-/// formatted crossing sums (already covered by the compile-parity test
-/// above).
+/// This helper does **not** reproduce `sonda::story::compile_story`'s
+/// output verbatim. The most visible divergence is `clock_group`:
+/// `compile_story` emits `"link_failover"` (the story's own id), while
+/// this reference uses `"chain_backup_link_utilization"` (the auto-named
+/// group produced by the v2 `compile_after` phase from the lowest-lex id
+/// of the connected component). The encoded byte streams are unaffected
+/// because no encoder serializes `clock_group`, but the field values
+/// themselves diverge — which is why this helper is scoped strictly to
+/// runtime-shape parity, not to a v1-output mirror.
 ///
-/// This is the regression anchor the runtime parity test compares against.
-/// Pinning the expected v1 shape here avoids a build-time dependency on
-/// the `sonda` crate from `sonda-core` tests.
+/// The v1 story compile path is validated separately:
+/// 1. The compile-parity test directly above asserts entry-shape equality
+///    after explicitly normalizing `clock_group` and `phase_offset`.
+/// 2. The `sonda story` CLI smoke path keeps end-to-end coverage of v1
+///    until PR 9 lands and that surface is removed.
+///
+/// Pinning the expected v2 shape here also avoids a build-time
+/// dev-dependency on the `sonda` crate from `sonda-core` tests, which
+/// would re-introduce the workspace cycle the split was designed to
+/// prevent.
 fn v1_link_failover_entries(duration: &str) -> Vec<ScenarioEntry> {
     use sonda_core::config::{BaseScheduleConfig, ScenarioConfig};
     use sonda_core::encoder::EncoderConfig;
