@@ -49,6 +49,7 @@ nav:
   - Getting Started: getting-started.md
   - Configuration:
     - Scenario Files: configuration/scenario-file.md
+    - v2 Scenario Files: configuration/v2-scenarios.md
     - Generators: configuration/generators.md
     - Encoders: configuration/encoders.md
     - Sinks: configuration/sinks.md

@@ -3,6 +3,13 @@
 Scenario files define everything about a Sonda run: what to generate, how to encode it, and where
 to send it. They are YAML files that you pass with `--scenario`.
 
+!!! info "Two supported formats"
+    This page covers the **v1** scenario format, which `sonda metrics`, `sonda logs`,
+    `sonda histogram`, `sonda summary`, and `sonda run` all accept. For the newer
+    [**v2 format**](v2-scenarios.md) -- with `version: 2`, shared `defaults:`, `after:` chains,
+    and inline pack references -- see the v2 reference. Both formats run through
+    `sonda run --scenario` and coexist freely.
+
 ## Complete example
 
 This scenario touches every available field:
@@ -494,3 +501,13 @@ scenario without editing the file:
 ```bash
 sonda metrics --scenario examples/basic-metrics.yaml --precision 2
 ```
+
+## What next
+
+- [**v2 Scenario Files**](v2-scenarios.md) -- the newer format with `version: 2`, shared
+  `defaults:`, temporal `after:` chains, and inline pack references. Recommended for multi-signal
+  scenarios.
+- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- dispatches both v1 and v2 files
+  based on the `version:` field.
+- [**Metric Packs**](../guides/metric-packs.md) -- reusable metric name + label schemas you can
+  reference via `pack:`.

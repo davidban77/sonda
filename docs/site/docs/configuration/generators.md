@@ -397,7 +397,7 @@ generator:
 Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-second cycle.
 
 !!! tip "Built-in scenario"
-    Run `sonda scenarios run steady-state` for a ready-to-use version with Prometheus labels.
+    Run `sonda metrics --scenario @steady-state` for a ready-to-use version with Prometheus labels.
 
 ### flap
 
@@ -482,7 +482,7 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
     alias instead if you want repeating fill-and-reset cycles.
 
 !!! tip "Built-in scenario"
-    Run `sonda scenarios run memory-leak` for a ready-to-use version modeling a process
+    Run `sonda metrics --scenario @memory-leak` for a ready-to-use version modeling a process
     leaking from 40% to 95% over 120 seconds.
 
 ### degradation
@@ -511,7 +511,7 @@ generator:
 Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
 
 !!! tip "Built-in scenario"
-    Run `sonda scenarios run latency-degradation` for a ready-to-use version with HTTP
+    Run `sonda metrics --scenario @latency-degradation` for a ready-to-use version with HTTP
     latency labels.
 
 ### spike_event
@@ -538,7 +538,7 @@ generator:
 Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
 
 !!! tip "Built-in scenario"
-    Run `sonda scenarios run cpu-spike` for a ready-to-use version with node exporter labels.
+    Run `sonda metrics --scenario @cpu-spike` for a ready-to-use version with node exporter labels.
 
 ??? tip "Aliases vs. core generators"
     You can always use the underlying generator directly if you need parameters that the alias

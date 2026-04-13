@@ -35,39 +35,39 @@ For Docker, the `SONDA_PACK_PATH` env var is set to `/packs` in the image.
 
 ## Browse the catalog
 
-List every available pack with `sonda packs list`:
+List every available pack with `sonda catalog list --type pack`:
 
 ```bash
-sonda packs list
+sonda catalog list --type pack
 ```
 
 ```text title="Output"
-NAME                             CATEGORY           METRICS    DESCRIPTION
-telegraf_snmp_interface          network            5          Standard SNMP interface metrics (Telegraf-normalized)
-node_exporter_cpu                infrastructure     8          Per-CPU mode counters (node_exporter-compatible)
-node_exporter_memory             infrastructure     5          Memory gauge metrics (node_exporter-compatible)
-3 packs
+NAME                             TYPE       CATEGORY         SIGNAL     RUNNABLE   DESCRIPTION
+node_exporter_memory             pack       infrastructure   metrics    no         Memory gauge metrics (node_exporter-compatible)
+telegraf_snmp_interface          pack       network          metrics    no         Standard SNMP interface metrics (Telegraf-normalized)
+node_exporter_cpu                pack       infrastructure   metrics    no         Per-CPU mode counters (node_exporter-compatible)
+3 entries
 ```
+
+Packs are marked `RUNNABLE: no` -- they need instance-specific labels before they emit anything
+useful, so a bare `catalog run <pack>` without `--label` flags will produce generic output.
 
 Filter by category:
 
 ```bash
-sonda packs list --category infrastructure
+sonda catalog list --type pack --category infrastructure
 ```
 
-For machine-readable output, add `--json`:
-
-```bash
-sonda packs list --json
-```
+For machine-readable output, add `--json` to get the same
+[stable DTO](../configuration/cli-reference.md#json-output) that scenarios use.
 
 ## Run a pack
 
-Pick any pack and run it directly. You must provide `--rate` and typically `--duration`, plus any
-labels your scenario needs:
+Pick any pack and run it directly with `sonda catalog run`. You must provide `--rate` and
+typically `--duration`, plus any labels your scenario needs:
 
 ```bash
-sonda packs run telegraf_snmp_interface \
+sonda catalog run telegraf_snmp_interface \
   --rate 1 --duration 10s \
   --label device=rtr-edge-01 \
   --label ifName=GigabitEthernet0/0/0 \
@@ -90,12 +90,12 @@ ifOutErrors{device="rtr-edge-01",ifAlias="",ifIndex="1",ifName="GigabitEthernet0
 Override the encoder or sink:
 
 ```bash
-sonda packs run node_exporter_memory \
+sonda catalog run node_exporter_memory \
   --rate 1 --duration 30s \
   --label instance=web-01 \
   --encoder json_lines
 
-sonda packs run telegraf_snmp_interface \
+sonda catalog run telegraf_snmp_interface \
   --rate 1 --duration 60s \
   --label device=rtr-core-01 \
   --label ifName=Ethernet1 \
@@ -106,7 +106,7 @@ sonda packs run telegraf_snmp_interface \
 Use `--dry-run` to see the expanded config without emitting data:
 
 ```bash
-sonda --dry-run packs run telegraf_snmp_interface \
+sonda --dry-run catalog run telegraf_snmp_interface \
   --rate 1 --duration 10s \
   --label device=rtr-edge-01 \
   --label ifName=Gi0/0/0 \
@@ -147,7 +147,7 @@ Validation: OK (5 scenarios)
 View the raw YAML for any built-in pack:
 
 ```bash
-sonda packs show telegraf_snmp_interface
+sonda catalog show telegraf_snmp_interface
 ```
 
 ```yaml title="Output"
@@ -194,7 +194,7 @@ metrics:
 Save a pack to a file to use as a starting point for a custom pack:
 
 ```bash
-sonda packs show telegraf_snmp_interface > my-snmp-pack.yaml
+sonda catalog show telegraf_snmp_interface > my-snmp-pack.yaml
 ```
 
 ## Use packs in YAML scenario files
@@ -224,7 +224,9 @@ sonda run --scenario pack-scenario.yaml
 ```
 
 The `pack:` field tells Sonda to expand the referenced pack before running. The result is
-identical to running `sonda packs run` with the same parameters.
+identical to running `sonda catalog run` with the same parameters. For a v2 file, set the pack
+inline on a `scenarios:` entry -- see
+[v2 Scenario Files -- Pack-backed entries](../configuration/v2-scenarios.md#pack-backed-entries).
 
 ### Per-metric overrides
 
@@ -266,7 +268,7 @@ You can override any metric by name. Each override accepts:
 
 !!! warning "Override key must match a metric name"
     If an override key does not match any metric in the pack, Sonda returns an error. This catches
-    typos early. Use `sonda packs show <name>` to check metric names.
+    typos early. Use `sonda catalog show <name>` to check metric names.
 
 ### Label merge order
 
@@ -405,14 +407,14 @@ Drop your pack YAML file into any directory on the search path. For example, cre
 `~/.sonda/packs/my-app-pack.yaml` and it will be discovered automatically:
 
 ```bash
-sonda packs list                        # shows my_app_metrics
-sonda packs run my_app_metrics --rate 1 --duration 60s --label service=api-gateway
+sonda catalog list --type pack           # shows my_app_metrics
+sonda catalog run my_app_metrics --rate 1 --duration 60s --label service=api-gateway
 ```
 
 Or use `--pack-path` to point to a custom directory:
 
 ```bash
-sonda --pack-path ./my-packs packs list
+sonda --pack-path ./my-packs catalog list --type pack
 ```
 
 ### Reference by file path
@@ -464,7 +466,7 @@ pack definition from disk.
 ## How packs integrate with the pipeline
 
 When Sonda encounters a `pack:` field in a YAML file (via `sonda run --scenario`) or a pack
-name (via `sonda packs run`), it:
+name (via `sonda catalog run`), it:
 
 1. Resolves the pack definition (built-in catalog or file path).
 2. Calls `expand_pack()` to produce one `ScenarioEntry` per metric in the pack.
@@ -477,6 +479,7 @@ This means every feature that works with multi-scenario runs -- `--dry-run`, `--
 ## What next
 
 - [**Network Device Telemetry**](network-device-telemetry.md) -- end-to-end walkthrough using SNMP metrics for dashboard testing
-- [**CLI Reference**](../configuration/cli-reference.md#sonda-packs) -- full flag reference for `packs list`, `packs show`, `packs run`
+- [**CLI Reference**](../configuration/cli-reference.md#sonda-catalog) -- full flag reference for `catalog list`, `catalog show`, `catalog run`
+- [**v2 Scenario Files**](../configuration/v2-scenarios.md#pack-backed-entries) -- reference a pack inline from a v2 `scenarios:` entry
 - [**Scenario Files**](../configuration/scenario-file.md) -- YAML reference for all scenario fields
 - [**Generators**](../configuration/generators.md) -- all generator types and operational aliases

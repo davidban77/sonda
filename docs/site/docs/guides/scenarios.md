@@ -1,8 +1,8 @@
 # Built-in Scenarios
 
-Sonda ships with 11 curated scenario patterns you can discover, inspect, and run without writing
-any YAML. Scenario YAML files live on the filesystem and are loaded at runtime through a
-configurable search path.
+Sonda ships with curated scenario patterns you can discover, inspect, and run without writing
+any YAML. Scenario files live on the filesystem and load at runtime through a configurable
+search path, alongside [metric packs](metric-packs.md) in the same unified catalog.
 
 ## Scenario search path
 
@@ -21,96 +21,97 @@ For Docker, the `SONDA_SCENARIO_PATH` env var is set to `/scenarios` in the imag
 
 ## Browse the catalog
 
-List every built-in scenario with `sonda scenarios list`:
+List every scenario and pack with `sonda catalog list`:
 
 ```bash
-sonda scenarios list
+sonda catalog list
 ```
 
 ```text title="Output"
-NAME                         CATEGORY           SIGNAL       DESCRIPTION
-cpu-spike                    infrastructure     metrics      Periodic CPU usage spikes above threshold
-memory-leak                  infrastructure     metrics      Monotonically growing memory usage (sawtooth)
-disk-fill                    infrastructure     metrics      Constant-rate disk consumption (step counter)
-interface-flap               network            multi        Network interface toggling up/down with traffic shifts
-latency-degradation          application        metrics      Growing response latency with jitter (sawtooth)
-error-rate-spike             application        metrics      Periodic HTTP error rate bursts
-cardinality-explosion        observability      metrics      Pod label cardinality explosion with spike windows
-log-storm                    application        logs         Error-level log burst with template generation
-steady-state                 infrastructure     metrics      Normal oscillating baseline (sine + jitter)
-network-link-failure         network            multi        Link down with traffic shift to backup path
-histogram-latency            application        histogram    Request latency histogram (normal distribution)
-11 scenarios
+NAME                             TYPE       CATEGORY         SIGNAL     RUNNABLE   DESCRIPTION
+cpu-spike                        scenario   infrastructure   metrics    yes        Periodic CPU usage spikes above threshold
+memory-leak                      scenario   infrastructure   metrics    yes        Monotonically growing memory usage (sawtooth)
+interface-flap                   scenario   network          multi      yes        Network interface toggling up/down with traffic shifts
+log-storm                        scenario   application      logs       yes        Error-level log burst with template generation
+histogram-latency                scenario   application      histogram  yes        Request latency histogram (normal distribution)
+telegraf_snmp_interface          pack       network          metrics    no         Standard SNMP interface metrics (Telegraf-normalized)
+node_exporter_cpu                pack       infrastructure   metrics    no         Per-CPU mode counters (node_exporter-compatible)
+14 entries
 ```
 
-Filter by category to narrow the list:
+Restrict to just scenarios:
 
 ```bash
-sonda scenarios list --category network
+sonda catalog list --type scenario
 ```
 
-```text title="Output"
-NAME                         CATEGORY           SIGNAL       DESCRIPTION
-interface-flap               network            multi        Network interface toggling up/down with traffic shifts
-network-link-failure         network            multi        Link down with traffic shift to backup path
-2 scenarios in category "network"
-```
-
-Available categories: `infrastructure`, `network`, `application`, `observability`.
-
-For machine-readable output, add `--json` to get a JSON array:
+Filter by category:
 
 ```bash
-sonda scenarios list --json
+sonda catalog list --category network
 ```
+
+Available categories (scenarios and packs share the same set): `infrastructure`, `network`,
+`application`, `observability`.
+
+For machine-readable output, add `--json` to get a stable JSON array. See
+[`catalog list`](../configuration/cli-reference.md#catalog-list) for the DTO schema.
 
 ## Run a scenario
 
-Pick any scenario and run it directly:
+Use `sonda run --scenario @<name>` with the `@name` shorthand to execute a built-in scenario:
 
 ```bash
-sonda scenarios run cpu-spike
+sonda run --scenario @interface-flap --duration 30s
+```
+
+For flat single-signal built-ins like `cpu-spike`, use the matching signal subcommand:
+
+```bash
+sonda metrics --scenario @cpu-spike --duration 10s --rate 5
+sonda logs    --scenario @log-storm --duration 20s
+sonda histogram --scenario @histogram-latency
 ```
 
 ```text title="Output"
-▶ node_cpu_usage_percent  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 60s
+▶ node_cpu_usage_percent  signal_type: metrics | rate: 5/s | encoder: prometheus_text | sink: stdout | duration: 10s
 node_cpu_usage_percent{cpu="0",instance="web-01",job="node_exporter"} 95 1775589686141
-node_cpu_usage_percent{cpu="0",instance="web-01",job="node_exporter"} 95 1775589687146
+node_cpu_usage_percent{cpu="0",instance="web-01",job="node_exporter"} 95 1775589686641
 ...
-■ node_cpu_usage_percent  completed in 60.0s | events: 61 | bytes: 5307 B | errors: 0
+■ node_cpu_usage_percent  completed in 10.0s | events: 50 | bytes: 4350 B | errors: 0
 ```
 
-Override duration, rate, encoder, or sink without editing any YAML:
+Any flag available on the signal subcommand (`--label`, `--precision`, `--sink`, `--output`,
+etc.) composes with `@name`:
 
 ```bash
-sonda scenarios run cpu-spike --duration 10s --rate 5
+sonda metrics --scenario @cpu-spike \
+  --duration 30s --rate 5 \
+  --sink http_push --endpoint http://localhost:9090/api/v1/write \
+  --label env=staging
 ```
-
-```bash
-sonda scenarios run cpu-spike --sink http_push --endpoint http://localhost:9090/api/v1/write
-```
-
-| Override | Description |
-|----------|-------------|
-| `--duration <d>` | Shorten or extend the run (e.g. `10s`, `2m`) |
-| `--rate <r>` | Change events per second |
-| `--encoder <enc>` | Switch output format (e.g. `influx_lp`, `json_lines`) |
-| `--sink <type>` | Redirect output to a sink (e.g. `http_push`, `remote_write`) |
-| `--endpoint <url>` | Set the sink endpoint (required for network sinks) |
 
 !!! tip
     Use `--dry-run` to validate what a scenario *would* do without emitting any data:
 
     ```bash
-    sonda --dry-run scenarios run cpu-spike
+    sonda --dry-run metrics --scenario @cpu-spike
     ```
+
+!!! info "Why `sonda run --scenario @name` does not always work"
+    `sonda run` expects a multi-scenario file (top-level `scenarios:` list), a `pack:`
+    shorthand, or a [v2 file](../configuration/v2-scenarios.md). Most built-in single-signal
+    scenarios use the flat v1 format, so they run through the signal subcommand
+    (`sonda metrics`, `sonda logs`, `sonda histogram`) instead. Multi-signal built-ins like
+    `interface-flap` work with `sonda run` because they already use the `scenarios:` list form.
 
 ## Inspect the YAML
 
-Every built-in scenario is a standard YAML file on disk. View it with `sonda scenarios show`:
+Every scenario in the catalog is a standard YAML file on disk. View it with
+`sonda catalog show`:
 
 ```bash
-sonda scenarios show cpu-spike
+sonda catalog show cpu-spike
 ```
 
 ```yaml title="Output"
@@ -156,7 +157,7 @@ Built-in scenarios are a starting point. To customize one beyond what the `--dur
 overrides offer, save the YAML to a file and edit it:
 
 ```bash
-sonda scenarios show cpu-spike > my-cpu-spike.yaml
+sonda catalog show cpu-spike > my-cpu-spike.yaml
 # Edit my-cpu-spike.yaml to change labels, generator params, etc.
 sonda metrics --scenario my-cpu-spike.yaml
 ```
@@ -196,10 +197,12 @@ The `@name` shorthand works exactly like a file path -- CLI flags still override
 scenario YAML. For example, `--duration 10s` overrides whatever duration the built-in defines.
 
 !!! info
-    The `@name` shorthand is an alternative to `sonda scenarios run`. Both resolve the same
-    scenario YAML from the search path. Use `scenarios run` when you want purpose-built override
-    flags (`--sink`, `--encoder`, `--endpoint`). Use `@name` when you want the full set of flags
-    available on `metrics`, `logs`, or `histogram`.
+    `@name` and `sonda catalog run <name>` both resolve the same scenario from the search path.
+    Use `@name` on a signal subcommand when you want the full set of per-signal flags
+    (`--label`, `--precision`, `--value`). Use `catalog run` for a focused, cross-type surface
+    (scenarios and packs) with a small override set. See
+    [`catalog run`](../configuration/cli-reference.md#catalog-run) for the limitations
+    on flat v1 scenarios.
 
 ## Scenario catalog
 
@@ -240,15 +243,14 @@ You can add your own scenario YAML files to any directory on the search path. Fo
 create `~/.sonda/scenarios/my-scenario.yaml` and it will be discovered automatically:
 
 ```bash
-sonda scenarios list                        # shows your custom scenario
-sonda scenarios run my-scenario             # run it by name
-sonda metrics --scenario @my-scenario       # @name shorthand works too
+sonda catalog list                          # shows your custom scenario
+sonda metrics --scenario @my-scenario       # @name shorthand on the signal subcommand
 ```
 
 Or use `--scenario-path` to point to a custom directory:
 
 ```bash
-sonda --scenario-path ./my-scenarios scenarios list
+sonda --scenario-path ./my-scenarios catalog list
 ```
 
 Custom scenario files use the same YAML format as any scenario file. The only addition is
@@ -276,14 +278,15 @@ sink:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `scenario_name` | yes | Kebab-case identifier used with `scenarios run` and `@name` |
+| `scenario_name` | yes | Kebab-case identifier used with `@name` and `sonda catalog run` |
 | `category` | yes | Grouping for `--category` filter |
 | `signal_type` | yes | Signal type: `metrics`, `logs`, `histogram`, `multi` |
-| `description` | yes | One-line description shown in `scenarios list` |
+| `description` | yes | One-line description shown in `sonda catalog list` |
 
 ## What next
 
 - [**Metric Packs**](metric-packs.md) -- pre-built metric bundles for Telegraf SNMP and node_exporter with correct schemas
 - [**Alert Testing**](alert-testing.md) -- end-to-end walkthrough using shaped signals to validate alert rules
-- [**CLI Reference**](../configuration/cli-reference.md#sonda-scenarios) -- full flag reference for all `scenarios` subcommands
+- [**CLI Reference**](../configuration/cli-reference.md#sonda-catalog) -- full flag reference for `sonda catalog`
 - [**Scenario Files**](../configuration/scenario-file.md) -- YAML reference for writing your own scenarios from scratch
+- [**v2 Scenario Files**](../configuration/v2-scenarios.md) -- the forward-compatible format with defaults, `after:`, and inline packs

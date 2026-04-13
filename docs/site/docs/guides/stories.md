@@ -1,5 +1,13 @@
 # Stories
 
+!!! warning "Deprecated: use v2 scenario files for new work"
+    The `sonda story` subcommand is hidden from `sonda --help` and retained only for
+    backward compatibility. Write the same temporal chains directly in
+    [v2 scenario files](../configuration/v2-scenarios.md#temporal-chains-with-after) -- they
+    use the same `after:` semantics, compose cleanly with `defaults:` and packs, and run
+    through the unified `sonda run --scenario <file>` entry point. A future release will
+    remove `sonda story` entirely.
+
 When real incidents happen, signals don't fire in isolation. A link goes down, traffic shifts
 to a backup, and latency climbs as the backup saturates. Stories let you express that causal
 chain in a single YAML file, with Sonda handling the timing math for you.
