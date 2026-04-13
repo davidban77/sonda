@@ -20,13 +20,25 @@
 #![cfg(feature = "config")]
 #![allow(dead_code)]
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use sonda_core::compiler::compile_after::{compile_after, CompiledFile};
 use sonda_core::compiler::expand::{expand, ExpandedFile, InMemoryPackResolver};
 use sonda_core::compiler::normalize::normalize;
 use sonda_core::compiler::parse::parse;
 use sonda_core::packs::MetricPackDef;
+use sonda_core::prepare_entries;
+use sonda_core::schedule::histogram_runner;
+use sonda_core::schedule::log_runner;
+use sonda_core::schedule::runner;
+use sonda_core::schedule::summary_runner;
+use sonda_core::sink::Sink;
+use sonda_core::{ScenarioEntry, SondaError};
 
 // -----------------------------------------------------------------------------
 // Paths
@@ -130,6 +142,207 @@ pub fn compile_to_expanded(yaml: &str, resolver: &InMemoryPackResolver) -> Expan
 pub fn compile_to_compiled(yaml: &str, resolver: &InMemoryPackResolver) -> CompiledFile {
     let expanded = compile_to_expanded(yaml, resolver);
     compile_after(expanded).expect("fixture must compile after")
+}
+
+// -----------------------------------------------------------------------------
+// Snapshot settings
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Runtime parity harness
+// -----------------------------------------------------------------------------
+
+/// An in-memory [`Sink`] that appends every byte written to a shared buffer.
+///
+/// Duplicated (tiny) from `sonda_core::sink::memory::MemorySink` so the
+/// parity harness can push an `Arc<Mutex<Vec<u8>>>` through the closure
+/// boundary and drain the captured bytes after the runner thread joins —
+/// `MemorySink` owns its buffer directly and does not expose the shared
+/// ownership the harness needs.
+struct CapturingSink {
+    buffer: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Sink for CapturingSink {
+    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        let mut guard = self
+            .buffer
+            .lock()
+            .expect("parity harness buffer lock poisoned");
+        guard.extend_from_slice(data);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), SondaError> {
+        Ok(())
+    }
+}
+
+/// Run every entry in `entries` to completion against an in-memory sink,
+/// returning the raw concatenated stdout-equivalent bytes.
+///
+/// The harness mirrors a trimmed-down version of `launch_scenario`:
+///
+/// 1. `prepare_entries` expands csv_replay, desugars aliases, validates
+///    every entry, and resolves each entry's `phase_offset` into a
+///    `start_delay: Option<Duration>` — exactly the same preparation the
+///    production launcher does.
+/// 2. Each prepared entry runs on its own OS thread with a
+///    [`CapturingSink`] substituted for the user-configured sink. The
+///    shared `Arc<Mutex<Vec<u8>>>` is cloned into the thread so the parent
+///    can drain bytes after the thread joins.
+/// 3. Each thread honors its `start_delay` via `thread::sleep` (no shared
+///    shutdown signal — the scenario's own `duration:` field bounds the
+///    run, which must be set on every entry this harness sees).
+///
+/// The returned `Vec<u8>` is the raw byte stream a real stdout sink would
+/// have produced. Callers choose `assert_eq!` or a line-multiset comparison
+/// depending on whether order is deterministic for their scenario.
+///
+/// # Panics
+///
+/// Panics if `prepare_entries` fails, if a runner thread panics, or if a
+/// runner returns an error. For parity tests these are all bugs, not
+/// legitimate test outcomes.
+///
+/// # Determinism
+///
+/// All seeds, jitter seeds, and `seed:` fields must be pinned by the
+/// caller's configuration. The harness does not inject any randomness.
+/// Multi-entry output order is **not** deterministic — concurrent threads
+/// interleave writes at byte granularity. For multi-signal parity tests,
+/// compare via [`assert_line_multisets_equal`].
+pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
+    let prepared =
+        prepare_entries(entries).expect("run_and_capture_stdout: prepare_entries must succeed");
+
+    let mut handles = Vec::with_capacity(prepared.len());
+    for (idx, prepared_entry) in prepared.into_iter().enumerate() {
+        let buffer = Arc::new(Mutex::new(Vec::<u8>::with_capacity(4096)));
+        let buffer_for_thread = Arc::clone(&buffer);
+        let start_delay = prepared_entry.start_delay;
+        let entry = prepared_entry.entry;
+
+        // Each runner needs a `'static` closure, so move ownership into the thread.
+        let handle = thread::Builder::new()
+            .name(format!("parity-{idx}"))
+            .spawn(move || -> Result<(), SondaError> {
+                if let Some(delay) = start_delay {
+                    let deadline = Instant::now() + delay;
+                    while Instant::now() < deadline {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        let chunk = remaining.min(Duration::from_millis(25));
+                        if chunk > Duration::ZERO {
+                            thread::sleep(chunk);
+                        }
+                    }
+                }
+
+                let mut sink = CapturingSink {
+                    buffer: buffer_for_thread,
+                };
+                run_entry_with_sink(&entry, &mut sink)
+            })
+            .expect("failed to spawn parity harness thread");
+
+        handles.push((handle, buffer));
+    }
+
+    // Join in order. Each thread's scenario-level `duration:` bounds the
+    // run, so joining sequentially is fine — every thread exits naturally.
+    let mut result = Vec::new();
+    for (handle, buffer) in handles {
+        handle
+            .join()
+            .expect("parity harness thread panicked")
+            .expect("parity harness runner returned an error");
+        let mut guard = buffer.lock().expect("buffer lock poisoned");
+        result.extend_from_slice(&guard);
+        guard.clear();
+    }
+    result
+}
+
+/// Dispatch a single `ScenarioEntry` to the runner matching its variant.
+///
+/// The runner is driven with `shutdown: None` (the scenario's own
+/// `duration:` field bounds the run) and `stats: None` (parity tests do
+/// not inspect stats).
+fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut dyn Sink) -> Result<(), SondaError> {
+    // All four runners take the same shape: &Config, &mut dyn Sink,
+    // Option<&AtomicBool>, Option<Arc<RwLock<ScenarioStats>>>.
+    const NONE_ATOMIC: Option<&AtomicBool> = None;
+    match entry {
+        ScenarioEntry::Metrics(config) => runner::run_with_sink(config, sink, NONE_ATOMIC, None),
+        ScenarioEntry::Logs(config) => {
+            log_runner::run_logs_with_sink(config, sink, NONE_ATOMIC, None)
+        }
+        ScenarioEntry::Histogram(config) => {
+            histogram_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
+        }
+        ScenarioEntry::Summary(config) => {
+            summary_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
+        }
+    }
+}
+
+/// Assert that two byte streams contain the same set of newline-delimited
+/// lines, ignoring order.
+///
+/// Used for multi-signal parity tests where runner threads interleave
+/// output nondeterministically. Both sides must produce the same *set* of
+/// lines — duplicates are preserved (comparison is multiset, not set).
+///
+/// # Panics
+///
+/// Panics with a detailed diff-like report if the line multisets differ.
+pub fn assert_line_multisets_equal(label: &str, expected: &[u8], actual: &[u8]) {
+    let expected_lines: Vec<&[u8]> = split_lines_preserve_empty(expected);
+    let actual_lines: Vec<&[u8]> = split_lines_preserve_empty(actual);
+
+    let mut expected_sorted: Vec<Vec<u8>> = expected_lines.iter().map(|l| l.to_vec()).collect();
+    let mut actual_sorted: Vec<Vec<u8>> = actual_lines.iter().map(|l| l.to_vec()).collect();
+    expected_sorted.sort();
+    actual_sorted.sort();
+
+    if expected_sorted != actual_sorted {
+        // Build human-readable diagnostics.
+        let expected_set: BTreeSet<&[u8]> = expected_sorted.iter().map(Vec::as_slice).collect();
+        let actual_set: BTreeSet<&[u8]> = actual_sorted.iter().map(Vec::as_slice).collect();
+        let only_in_expected: Vec<String> = expected_set
+            .difference(&actual_set)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect();
+        let only_in_actual: Vec<String> = actual_set
+            .difference(&expected_set)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect();
+        panic!(
+            "{label}: line multisets differ\n\
+             expected {} lines, got {} lines\n\
+             only in expected:\n  {}\n\
+             only in actual:\n  {}",
+            expected_sorted.len(),
+            actual_sorted.len(),
+            only_in_expected.join("\n  "),
+            only_in_actual.join("\n  ")
+        );
+    }
+}
+
+/// Split a byte slice on `\n`, preserving empty leading/trailing lines so
+/// the multiset comparison is exact.
+fn split_lines_preserve_empty(bytes: &[u8]) -> Vec<&[u8]> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
+    // `split` yields a trailing empty slice when the input ends with `\n`;
+    // drop it so the line count reflects actual emitted lines.
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
 }
 
 // -----------------------------------------------------------------------------
