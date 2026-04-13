@@ -895,6 +895,14 @@ pub struct PacksRunArgs {
     #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
 
+    /// Write output to a file (shorthand for `--sink file --endpoint <path>`).
+    ///
+    /// Mutually exclusive with `--sink`. Matches the shape of
+    /// [`RunArgs::output`] so `sonda catalog run <pack> -o <path>` and
+    /// `sonda packs run <pack> -o <path>` share a single code path.
+    #[arg(short = 'o', long, conflicts_with = "sink", help_heading = "Sink")]
+    pub output: Option<PathBuf>,
+
     /// Add or override a label (format: `key=value`). Can be specified
     /// multiple times to set multiple labels.
     #[arg(long = "label", value_parser = parse_label)]

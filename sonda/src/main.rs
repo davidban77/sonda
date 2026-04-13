@@ -444,7 +444,11 @@ fn run_catalog_run(
             }
         }
         catalog::CatalogKind::Pack => {
-            // Reuse the existing pack-run helper.
+            // Reuse the existing pack-run helper. `-o` / `--output` was
+            // advertised on `CatalogRunArgs` but not forwarded here in the
+            // original PR 7 landing, which silently dropped the flag and
+            // sent all pack output to stdout. Threading `output` through
+            // restores parity with `RunArgs` / `sonda run -o <path>`.
             let pack_args = cli::PacksRunArgs {
                 name: args.name.clone(),
                 duration: args.duration.clone(),
@@ -452,6 +456,7 @@ fn run_catalog_run(
                 sink: args.sink.clone(),
                 endpoint: args.endpoint.clone(),
                 encoder: args.encoder.clone(),
+                output: args.output.clone(),
                 labels: args.labels.clone(),
             };
             run_pack(&pack_args, cli_opts, verbosity, running, pack_catalog)?;

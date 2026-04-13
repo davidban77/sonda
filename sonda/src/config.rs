@@ -1745,9 +1745,18 @@ pub fn load_pack_from_catalog(
         labels = Some(map);
     }
 
-    let sink = match args.sink {
-        Some(ref sink_name) => parse_sink_override(sink_name, args.endpoint.as_deref())?,
-        None => sonda_core::sink::SinkConfig::Stdout,
+    // `--output` takes precedence over `--sink`/`--endpoint` because clap
+    // marks the two flags mutually exclusive on `PacksRunArgs`. Resolving
+    // the file-sink shorthand here keeps the pack entrypoint symmetric
+    // with the `sonda run` path (`resolve_run_overrides`).
+    let sink = if let Some(ref path) = args.output {
+        sonda_core::sink::SinkConfig::File {
+            path: path.display().to_string(),
+        }
+    } else if let Some(ref sink_name) = args.sink {
+        parse_sink_override(sink_name, args.endpoint.as_deref())?
+    } else {
+        sonda_core::sink::SinkConfig::Stdout
     };
 
     let encoder = match args.encoder {
@@ -5587,6 +5596,7 @@ sink:
             sink: None,
             endpoint: None,
             encoder: None,
+            output: None,
             labels: vec![],
         }
     }

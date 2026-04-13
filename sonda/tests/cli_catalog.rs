@@ -240,6 +240,71 @@ fn catalog_run_pack_with_labels_succeeds() {
     );
 }
 
+/// `catalog run <pack> -o <path>` writes metric output to the supplied
+/// file and leaves stdout empty — regression for PR 7's pack dispatch
+/// which silently dropped `-o` because `PacksRunArgs` had no `output`
+/// field.
+#[test]
+fn catalog_run_pack_honors_output_flag() {
+    let tmp = tempfile::tempdir().expect("must create temp dir");
+    let out_path = tmp.path().join("pack-out.prom");
+
+    let output = Command::new(sonda_bin())
+        .args(["--quiet", "--scenario-path"])
+        .arg(scenarios_dir())
+        .args(["--pack-path"])
+        .arg(packs_dir())
+        .args(["catalog", "run", "tiny_pack", "-o"])
+        .arg(&out_path)
+        .args([
+            "--rate",
+            "1",
+            "--duration",
+            "300ms",
+            "--label",
+            "device=rtr-test-01",
+        ])
+        .output()
+        .expect("must spawn sonda");
+
+    assert!(
+        output.status.success(),
+        "pack run -o failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        out_path.exists(),
+        "output file must be created at {}",
+        out_path.display()
+    );
+    let contents = std::fs::read_to_string(&out_path).expect("must read output file");
+    assert!(
+        !contents.is_empty(),
+        "output file must have metric lines, got empty file"
+    );
+    // The pack contains two metrics; each runs on its own thread with a
+    // File sink pointed at the same path. We only assert that at least
+    // one pack metric landed (matching either name) — the regression
+    // being guarded against is the silently-dropped `-o` flag, not the
+    // file-sink concurrency semantics.
+    assert!(
+        contents.contains("pack_metric_a") || contents.contains("pack_metric_b"),
+        "output file must contain a pack metric, got:\n{contents}"
+    );
+    assert!(
+        contents.contains("device=\"rtr-test-01\""),
+        "output file must carry the --label override, got:\n{contents}"
+    );
+    // Stdout must be empty — metrics went to the file. stderr may carry
+    // status banners (even under `--quiet` some paths print; we only
+    // assert stdout).
+    assert!(
+        output.stdout.is_empty(),
+        "stdout must be empty when -o redirects to file, got:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 /// Unknown name → non-zero exit with an error mentioning the name.
 #[test]
 fn catalog_run_unknown_name_errors() {
