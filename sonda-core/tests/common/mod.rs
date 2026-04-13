@@ -212,6 +212,20 @@ impl Sink for CapturingSink {
 /// Multi-entry output order is **not** deterministic — concurrent threads
 /// interleave writes at byte granularity. For multi-signal parity tests,
 /// compare via [`assert_line_multisets_equal`].
+///
+/// # Shutdown caveat
+///
+/// Unlike production
+/// [`launch_scenario`][sonda_core::schedule::launch::launch_scenario]
+/// — which polls a shared `Arc<AtomicBool>` every 50 ms during the
+/// `start_delay` window so an external stop signal can short-circuit the
+/// pre-roll — this harness only sleeps until the deadline elapses. It
+/// does **not** honor a shutdown signal during `start_delay`, and the
+/// runner threads are driven with `shutdown: None` thereafter. Every
+/// current call site is bounded by the scenario's own `duration:` field
+/// and never needs cancellation, so this is safe today; future callers
+/// that need cooperative cancellation must extend the harness rather
+/// than rely on it.
 pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
     let prepared =
         prepare_entries(entries).expect("run_and_capture_stdout: prepare_entries must succeed");
@@ -425,4 +439,51 @@ pub fn snapshot_settings() -> insta::Settings {
     let mut s = insta::Settings::clone_current();
     s.set_sort_maps(true);
     s
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+//
+// Note: this `tests/common/mod.rs` module is included by every integration
+// test that declares `mod common;`, so any `#[test]` here runs once per
+// containing binary. The two cases below are tiny, deterministic regression
+// anchors — that small amount of duplication is acceptable to keep them
+// next to the helper they describe.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prometheus text exposition: only the trailing 13-digit millisecond
+    /// timestamp is replaced; metric name, labels, and the value `42` are
+    /// preserved byte-for-byte.
+    #[test]
+    fn normalize_timestamps_replaces_only_prometheus_trailing_millis() {
+        let input = b"my_metric{foo=\"bar\"} 42 1712345678901\n";
+        let out = normalize_timestamps(input);
+        let expected = b"my_metric{foo=\"bar\"} 42 ___TS___\n";
+        assert_eq!(
+            out,
+            expected,
+            "got: {:?}",
+            String::from_utf8_lossy(&out).into_owned()
+        );
+    }
+
+    /// JSON Lines: only the value of the `"timestamp":"..."` field is
+    /// replaced; sibling fields (`msg`, `n`) and their values pass through
+    /// unchanged.
+    #[test]
+    fn normalize_timestamps_replaces_only_json_timestamp_value() {
+        let input = b"{\"timestamp\":\"2026-04-13T12:34:56.789Z\",\"msg\":\"hello\",\"n\":42}\n";
+        let out = normalize_timestamps(input);
+        let expected = b"{\"timestamp\":\"___TS___\",\"msg\":\"hello\",\"n\":42}\n";
+        assert_eq!(
+            out,
+            expected,
+            "got: {:?}",
+            String::from_utf8_lossy(&out).into_owned()
+        );
+    }
 }
