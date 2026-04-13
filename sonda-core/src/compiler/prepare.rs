@@ -67,6 +67,12 @@ pub enum PrepareError {
     },
 
     /// A metrics entry had no `generator` field set.
+    ///
+    /// `signal_type: metrics` is the only variant that reads `generator`
+    /// from the compiled entry. When the YAML path is used the parser
+    /// rejects a metrics entry missing `generator` at parse-time; reaching
+    /// this variant therefore implies the [`CompiledFile`] was built in
+    /// code rather than through [`parse`][crate::compiler::parse::parse].
     #[error("entry '{entry_label}' (signal_type: metrics): missing required field 'generator'")]
     MissingGenerator {
         /// The entry's id (or name when id is absent).
@@ -74,6 +80,13 @@ pub enum PrepareError {
     },
 
     /// A logs entry had no `log_generator` field set.
+    ///
+    /// `signal_type: logs` is the only variant that reads `log_generator`
+    /// from the compiled entry. When the YAML path is used the parser
+    /// rejects a logs entry missing `log_generator` at parse-time;
+    /// reaching this variant therefore implies the [`CompiledFile`] was
+    /// built in code rather than through
+    /// [`parse`][crate::compiler::parse::parse].
     #[error("entry '{entry_label}' (signal_type: logs): missing required field 'log_generator'")]
     MissingLogGenerator {
         /// The entry's id (or name when id is absent).
@@ -81,6 +94,13 @@ pub enum PrepareError {
     },
 
     /// A histogram or summary entry had no `distribution` field set.
+    ///
+    /// `signal_type: histogram` and `signal_type: summary` both read
+    /// `distribution` from the compiled entry. When the YAML path is used
+    /// the parser rejects either shape missing `distribution` at
+    /// parse-time; reaching this variant therefore implies the
+    /// [`CompiledFile`] was built in code rather than through
+    /// [`parse`][crate::compiler::parse::parse].
     #[error(
         "entry '{entry_label}' (signal_type: {signal_type}): missing required field 'distribution'"
     )]
@@ -89,6 +109,18 @@ pub enum PrepareError {
         entry_label: String,
         /// The signal type that requires a distribution (`"histogram"` or `"summary"`).
         signal_type: String,
+    },
+
+    /// The compiled file's `version` was not `2`.
+    ///
+    /// Defense-in-depth against programmatic callers that construct a
+    /// [`CompiledFile`] in code with a non-v2 version. Going through
+    /// [`parse`][crate::compiler::parse::parse] already pins the version
+    /// at parse-time, so this variant is unreachable via the YAML path.
+    #[error("unsupported compiled file version: expected 2, got {version}")]
+    UnsupportedVersion {
+        /// The rejected version value as carried by the compiled file.
+        version: u32,
     },
 }
 
@@ -104,15 +136,21 @@ pub enum PrepareError {
 /// by this function takes the same hot path as if it had been constructed
 /// directly by the v1 loader.
 ///
-/// Field-by-field mapping lives in the variant-specific helpers
-/// ([`metrics_entry`], [`logs_entry`], [`histogram_entry`],
-/// [`summary_entry`]). Each helper consumes its [`CompiledEntry`] by value so
-/// no deep clone is performed on the generator or label maps.
+/// Field-by-field mapping lives in per-variant helpers; see the module
+/// source for the exact wiring. Each helper consumes its [`CompiledEntry`]
+/// by value so no deep clone is performed on the generator or label maps.
+///
+/// `CompiledEntry::id` is intentionally dropped during translation: its
+/// job ended in Phase 4+5's dependency resolution, and [`ScenarioEntry`]
+/// has no `id` field. Future observability wiring that wants to correlate
+/// runtime back to v2 ids will need another channel (e.g. a side map keyed
+/// on `name` + `clock_group`).
 ///
 /// # Errors
 ///
 /// Returns [`PrepareError`] on the first entry that fails translation:
 ///
+/// - [`PrepareError::UnsupportedVersion`] if `file.version` is not `2`.
 /// - [`PrepareError::UnknownSignalType`] when `signal_type` is not one of
 ///   `"metrics"`, `"logs"`, `"histogram"`, or `"summary"`.
 /// - [`PrepareError::MissingGenerator`] for a metrics entry missing `generator`.
@@ -120,13 +158,13 @@ pub enum PrepareError {
 /// - [`PrepareError::MissingDistribution`] for a histogram/summary entry
 ///   missing `distribution`.
 ///
-/// The shorter-circuiting semantics match the v2 compiler's other passes —
+/// The short-circuiting semantics match the v2 compiler's other passes —
 /// no partial output is returned on failure.
 pub fn prepare(file: CompiledFile) -> Result<Vec<ScenarioEntry>, PrepareError> {
-    let CompiledFile {
-        version: _,
-        entries,
-    } = file;
+    let CompiledFile { version, entries } = file;
+    if version != 2 {
+        return Err(PrepareError::UnsupportedVersion { version });
+    }
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         out.push(translate_entry(entry)?);
@@ -761,5 +799,38 @@ mod tests {
     fn prepare_error_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<PrepareError>();
+    }
+
+    // -- Version gate -------------------------------------------------------
+
+    /// A [`CompiledFile`] with a non-v2 version is rejected with
+    /// [`PrepareError::UnsupportedVersion`] carrying the offending value.
+    #[test]
+    fn prepare_rejects_non_v2_version() {
+        let file = CompiledFile {
+            version: 3,
+            entries: vec![metrics_compiled("never_translated")],
+        };
+        let err = prepare(file).expect_err("version != 2 must fail");
+        match err {
+            PrepareError::UnsupportedVersion { version } => assert_eq!(version, 3),
+            other => panic!("expected UnsupportedVersion, got {other:?}"),
+        }
+    }
+
+    /// The `UnsupportedVersion` check fires before any entry-level
+    /// translation, so a bogus version with an otherwise-invalid entry
+    /// surfaces the version error (not the entry error).
+    #[test]
+    fn prepare_version_check_precedes_entry_translation() {
+        let file = CompiledFile {
+            version: 0,
+            entries: vec![bare("traces", "would_fail_if_translated")],
+        };
+        let err = prepare(file).expect_err("version 0 must fail");
+        assert!(
+            matches!(err, PrepareError::UnsupportedVersion { version: 0 }),
+            "expected UnsupportedVersion {{ version: 0 }}, got {err:?}"
+        );
     }
 }
