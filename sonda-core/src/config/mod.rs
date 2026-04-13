@@ -259,6 +259,27 @@ pub struct BaseScheduleConfig {
     /// cross-scenario signaling is deferred to a future phase.
     #[cfg_attr(feature = "config", serde(default))]
     pub clock_group: Option<String>,
+    /// Provenance of [`Self::clock_group`] from the v2 compiler.
+    ///
+    /// Populated by [`crate::compiler::prepare`] when an entry traverses
+    /// the v2 compile pipeline. Carries:
+    ///
+    /// - `Some(true)` — the compiler synthesized
+    ///   `chain_{lowest_lex_id}` because the `after:` component had no
+    ///   user-supplied `clock_group`.
+    /// - `Some(false)` — the value was adopted from an explicit user
+    ///   assignment (including explicit values that happen to start with
+    ///   `chain_`).
+    /// - `None` — the entry did not flow through the v2 compiler (v1
+    ///   loaders, hand-built configs); display code must not show an
+    ///   `(auto)` marker.
+    ///
+    /// Hidden from YAML serialization because it is a compiler-derived
+    /// field, not user-supplied input. Skipped from deserialization for
+    /// the same reason — round-tripping a config never resurrects this
+    /// flag.
+    #[cfg_attr(feature = "config", serde(skip))]
+    pub clock_group_is_auto: Option<bool>,
     /// Optional jitter amplitude. When set, adds uniform noise in
     /// `[-jitter, +jitter]` to every generated value. Defaults to `None` (no jitter).
     #[cfg_attr(feature = "config", serde(default))]
@@ -543,6 +564,16 @@ impl ScenarioEntry {
     /// Return the `clock_group` identifier, if set on the inner config.
     pub fn clock_group(&self) -> Option<&str> {
         self.base().clock_group.as_deref()
+    }
+
+    /// Return the v2-compiler-derived provenance for [`Self::clock_group`].
+    ///
+    /// `Some(true)` when the v2 compiler synthesized the `chain_<id>`
+    /// name; `Some(false)` for explicit user assignments via the v2
+    /// pipeline; `None` for entries that bypassed the v2 compiler (v1
+    /// loaders, hand-built configs).
+    pub fn clock_group_is_auto(&self) -> Option<bool> {
+        self.base().clock_group_is_auto
     }
 }
 
@@ -1246,6 +1277,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1271,6 +1303,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1296,6 +1329,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("10s".to_string()),
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1332,6 +1366,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: Some("my-group".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1357,6 +1392,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1386,6 +1422,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1412,6 +1449,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1710,6 +1748,7 @@ gaps:
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
+            clock_group_is_auto: None,
             jitter: None,
             jitter_seed: None,
         };
@@ -1743,6 +1782,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("1s".to_string()),
                 clock_group: Some("group-a".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1774,6 +1814,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1812,6 +1853,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -2220,6 +2262,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: Some(0.5),
                 jitter_seed: Some(42),
                 dynamic_labels: None,
@@ -2298,6 +2341,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2657,6 +2701,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2794,6 +2839,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2867,6 +2913,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2928,6 +2975,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2974,6 +3022,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3011,6 +3060,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3052,6 +3102,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3382,6 +3433,7 @@ distribution:
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -3413,6 +3465,7 @@ distribution:
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },

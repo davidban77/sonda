@@ -211,8 +211,15 @@ fn describe(entry: &CompiledEntry) -> String {
 /// `Option<HashMap<...>>`. The runtime uses `HashMap` internally but the
 /// compiler operates on `BTreeMap` for deterministic iteration — this
 /// one-shot conversion is the only place the shape changes.
+///
+/// The `clock_group_is_auto` provenance is mapped to
+/// `Some(bool)` so v1-loaded entries (which never traverse this
+/// translator) read `None` and render without the `(auto)` suffix.
 fn build_base(entry: &mut CompiledEntry) -> BaseScheduleConfig {
     let labels = entry.labels.take().map(btree_to_hash);
+
+    let clock_group = entry.clock_group.take();
+    let clock_group_is_auto = clock_group.as_ref().map(|_| entry.clock_group_is_auto);
 
     BaseScheduleConfig {
         name: std::mem::take(&mut entry.name),
@@ -225,7 +232,8 @@ fn build_base(entry: &mut CompiledEntry) -> BaseScheduleConfig {
         labels,
         sink: std::mem::replace(&mut entry.sink, crate::sink::SinkConfig::Stdout),
         phase_offset: entry.phase_offset.take(),
-        clock_group: entry.clock_group.take(),
+        clock_group,
+        clock_group_is_auto,
         jitter: entry.jitter,
         jitter_seed: entry.jitter_seed,
     }
@@ -382,6 +390,7 @@ mod tests {
             cardinality_spikes: None,
             phase_offset: None,
             clock_group: None,
+            clock_group_is_auto: false,
             distribution: None,
             buckets: None,
             quantiles: None,

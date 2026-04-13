@@ -140,7 +140,7 @@ fn write_metrics_fields<W: Write>(out: &mut W, c: &ScenarioConfig) -> io::Result
     write_field(out, "sink:", &sink_display(&c.sink))?;
     write_labels(out, &c.labels)?;
     write_phase_offset(out, &c.phase_offset)?;
-    write_clock_group(out, &c.clock_group)?;
+    write_clock_group(out, &c.clock_group, c.clock_group_is_auto)?;
     Ok(())
 }
 
@@ -158,7 +158,7 @@ fn write_logs_fields<W: Write>(out: &mut W, c: &LogScenarioConfig) -> io::Result
     write_field(out, "sink:", &sink_display(&c.sink))?;
     write_labels(out, &c.labels)?;
     write_phase_offset(out, &c.phase_offset)?;
-    write_clock_group(out, &c.clock_group)?;
+    write_clock_group(out, &c.clock_group, c.clock_group_is_auto)?;
     Ok(())
 }
 
@@ -176,7 +176,7 @@ fn write_histogram_fields<W: Write>(out: &mut W, c: &HistogramScenarioConfig) ->
     write_field(out, "sink:", &sink_display(&c.sink))?;
     write_labels(out, &c.labels)?;
     write_phase_offset(out, &c.phase_offset)?;
-    write_clock_group(out, &c.clock_group)?;
+    write_clock_group(out, &c.clock_group, c.clock_group_is_auto)?;
     Ok(())
 }
 
@@ -194,7 +194,7 @@ fn write_summary_fields<W: Write>(out: &mut W, c: &SummaryScenarioConfig) -> io:
     write_field(out, "sink:", &sink_display(&c.sink))?;
     write_labels(out, &c.labels)?;
     write_phase_offset(out, &c.phase_offset)?;
-    write_clock_group(out, &c.clock_group)?;
+    write_clock_group(out, &c.clock_group, c.clock_group_is_auto)?;
     Ok(())
 }
 
@@ -224,10 +224,21 @@ fn write_phase_offset<W: Write>(out: &mut W, phase_offset: &Option<String>) -> i
     Ok(())
 }
 
-fn write_clock_group<W: Write>(out: &mut W, clock_group: &Option<String>) -> io::Result<()> {
+/// Render the `clock_group:` line.
+///
+/// When `is_auto` is `Some(true)` — meaning the v2 compiler synthesized
+/// the value because the entry's `after:` component had no explicit
+/// override — append a trailing ` (auto)` marker so users can tell the
+/// auto-name apart from a value they wrote themselves. Explicit values
+/// (including ones that happen to start with `chain_`) and entries that
+/// never traversed the v2 compiler render bare.
+fn write_clock_group<W: Write>(
+    out: &mut W,
+    clock_group: &Option<String>,
+    is_auto: Option<bool>,
+) -> io::Result<()> {
     if let Some(ref cg) = clock_group {
-        let is_auto = cg.starts_with("chain_");
-        let rendered = if is_auto {
+        let rendered = if is_auto == Some(true) {
             format!("{cg} (auto)")
         } else {
             cg.clone()
@@ -407,6 +418,15 @@ struct ScenarioDto<'a> {
     labels: std::collections::BTreeMap<String, String>,
     phase_offset: Option<&'a str>,
     clock_group: Option<&'a str>,
+    /// Compiler-derived provenance for [`Self::clock_group`]. Mirrors
+    /// [`sonda_core::config::BaseScheduleConfig::clock_group_is_auto`]:
+    /// `Some(true)` when the v2 compiler synthesized the value,
+    /// `Some(false)` when it was an explicit user assignment, `None`
+    /// when the entry did not flow through the v2 compiler. Suppressed
+    /// from JSON when `None` so v1-loaded entries don't see a noise
+    /// field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clock_group_is_auto: Option<bool>,
 }
 
 fn write_json<W: Write>(
@@ -446,6 +466,7 @@ fn to_scenario_dto(index: usize, entry: &ScenarioEntry) -> ScenarioDto<'_> {
             labels: labels_btree(&c.labels),
             phase_offset: c.phase_offset.as_deref(),
             clock_group: c.clock_group.as_deref(),
+            clock_group_is_auto: c.clock_group_is_auto,
         },
         ScenarioEntry::Logs(c) => ScenarioDto {
             index,
@@ -459,6 +480,7 @@ fn to_scenario_dto(index: usize, entry: &ScenarioEntry) -> ScenarioDto<'_> {
             labels: labels_btree(&c.labels),
             phase_offset: c.phase_offset.as_deref(),
             clock_group: c.clock_group.as_deref(),
+            clock_group_is_auto: c.clock_group_is_auto,
         },
         ScenarioEntry::Histogram(c) => ScenarioDto {
             index,
@@ -472,6 +494,7 @@ fn to_scenario_dto(index: usize, entry: &ScenarioEntry) -> ScenarioDto<'_> {
             labels: labels_btree(&c.labels),
             phase_offset: c.phase_offset.as_deref(),
             clock_group: c.clock_group.as_deref(),
+            clock_group_is_auto: c.clock_group_is_auto,
         },
         ScenarioEntry::Summary(c) => ScenarioDto {
             index,
@@ -485,6 +508,7 @@ fn to_scenario_dto(index: usize, entry: &ScenarioEntry) -> ScenarioDto<'_> {
             labels: labels_btree(&c.labels),
             phase_offset: c.phase_offset.as_deref(),
             clock_group: c.clock_group.as_deref(),
+            clock_group_is_auto: c.clock_group_is_auto,
         },
     }
 }

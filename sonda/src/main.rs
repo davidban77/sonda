@@ -1023,15 +1023,19 @@ fn launch_and_join_prepared(
     let run_start = Instant::now();
     let scenario_count = prepared.len();
     let mut handles = Vec::with_capacity(scenario_count);
-    // Capture each entry's `clock_group` before consuming the entry into
-    // `launch_scenario` — we'll pair each group with its stats later to
+    // Capture each entry's `clock_group` and its compiler-derived
+    // provenance before consuming the entry into `launch_scenario` —
+    // we'll pair each (group, is_auto) tuple with its stats later to
     // build the clock-group-grouped summary (spec §5 / matrix 8.6).
-    let mut clock_groups: Vec<Option<String>> = Vec::with_capacity(scenario_count);
+    let mut clock_groups: Vec<(Option<String>, Option<bool>)> = Vec::with_capacity(scenario_count);
 
     for (i, p) in prepared.into_iter().enumerate() {
         let position = Some((i + 1, scenario_count));
         status::print_start(&p.entry, verbosity, position);
-        clock_groups.push(p.entry.clock_group().map(|s| s.to_string()));
+        clock_groups.push((
+            p.entry.clock_group().map(|s| s.to_string()),
+            p.entry.clock_group_is_auto(),
+        ));
         let id = format!("{id_prefix}-{i}");
         let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -1113,8 +1117,13 @@ fn stop_infos_for_groups(
 /// Bin per-scenario stats into [`status::ClockGroupStats`] entries, one
 /// per distinct `clock_group` (or one `None` bucket for ungrouped
 /// scenarios). Stable order: first-seen insertion order.
+///
+/// `clock_groups` carries `(group_name, group_is_auto)` pairs in the same
+/// order as `stop_infos`; the provenance flag is propagated onto the
+/// resulting [`status::ClockGroupStats::group_is_auto`] for consistent
+/// `(auto)` rendering in the grouped summary header.
 fn build_clock_group_stats(
-    clock_groups: &[Option<String>],
+    clock_groups: &[(Option<String>, Option<bool>)],
     stop_infos: &[(&sonda_core::schedule::stats::ScenarioStats,)],
 ) -> Vec<status::ClockGroupStats> {
     debug_assert_eq!(clock_groups.len(), stop_infos.len());
@@ -1123,12 +1132,13 @@ fn build_clock_group_stats(
     let mut bins: std::collections::HashMap<Option<String>, status::ClockGroupStats> =
         std::collections::HashMap::new();
 
-    for (group, (stats,)) in clock_groups.iter().zip(stop_infos.iter()) {
+    for ((group, is_auto), (stats,)) in clock_groups.iter().zip(stop_infos.iter()) {
         let key = group.clone();
         let entry = bins
             .entry(key.clone())
             .or_insert_with(|| status::ClockGroupStats {
                 group: key.clone(),
+                group_is_auto: *is_auto,
                 scenario_count: 0,
                 total_events: 0,
                 total_bytes: 0,
@@ -1151,9 +1161,11 @@ fn build_clock_group_stats(
 
 /// Count the number of distinct `clock_group` values, treating `None` as
 /// its own "ungrouped" bucket. Used to decide whether the grouped
-/// aggregate summary applies.
-fn distinct_group_count(groups: &[Option<String>]) -> usize {
-    let set: std::collections::BTreeSet<&Option<String>> = groups.iter().collect();
+/// aggregate summary applies. The provenance flag is intentionally
+/// ignored for distinctness — two scenarios sharing a name belong to the
+/// same group regardless of how each name was assigned.
+fn distinct_group_count(groups: &[(Option<String>, Option<bool>)]) -> usize {
+    let set: std::collections::BTreeSet<&Option<String>> = groups.iter().map(|(g, _)| g).collect();
     set.len()
 }
 

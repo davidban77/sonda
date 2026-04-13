@@ -74,6 +74,7 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
         ),
     };
     let clock_group = entry.clock_group();
+    let clock_group_is_auto = entry.clock_group_is_auto();
 
     let arrow = "\u{25b6}".if_supports_color(Stderr, |t| t.green());
     let pos_prefix = format_position_prefix(position);
@@ -104,7 +105,7 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
     }
     if let Some(cg) = clock_group {
         let cg_label = "clock_group:".if_supports_color(Stderr, |t| t.dimmed());
-        let cg_display = format_clock_group(cg);
+        let cg_display = format_clock_group(cg, clock_group_is_auto);
         let cg_value = cg_display.if_supports_color(Stderr, |t| t.cyan());
         line.push_str(&format!(" {pipe} {cg_label} {cg_value}"));
     }
@@ -113,11 +114,14 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
 
 /// Render a clock group string for the banner.
 ///
-/// Auto-assigned groups (prefix `chain_`, per the compiler's naming
-/// convention) get a trailing ` (auto)` marker so users can distinguish
-/// them from explicit assignments. Spec §5 format: `link_failover (auto)`.
-pub fn format_clock_group(group: &str) -> String {
-    if group.starts_with("chain_") {
+/// When `is_auto` is `Some(true)` — meaning the v2 compiler synthesized
+/// the value because the entry's `after:` component had no explicit
+/// override — append a trailing ` (auto)` marker. Explicit values
+/// (including ones that happen to start with `chain_`) and entries that
+/// never traversed the v2 compiler render bare. Matches the spec §5 dry-run
+/// output (`link_failover (auto)`) for chain-derived names.
+pub fn format_clock_group(group: &str, is_auto: Option<bool>) -> String {
+    if is_auto == Some(true) {
         format!("{group} (auto)")
     } else {
         group.to_string()
@@ -575,6 +579,13 @@ pub struct AggregateStats {
 pub struct ClockGroupStats {
     /// Clock group name, or `None` for scenarios without one.
     pub group: Option<String>,
+    /// Compiler provenance for [`Self::group`].
+    ///
+    /// Mirrors [`sonda_core::config::ScenarioEntry::clock_group_is_auto`]:
+    /// `Some(true)` when the v2 compiler synthesized the name,
+    /// `Some(false)` for an explicit user assignment, `None` when the
+    /// entry never traversed the v2 compiler.
+    pub group_is_auto: Option<bool>,
     /// Number of scenarios in this group.
     pub scenario_count: usize,
     /// Total events across scenarios in this group.
@@ -612,7 +623,7 @@ pub fn print_summary_by_clock_group(
     let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
     for g in groups {
         let group_label = match g.group {
-            Some(ref name) => format_clock_group(name),
+            Some(ref name) => format_clock_group(name, g.group_is_auto),
             None => "(ungrouped)".to_string(),
         };
         let bold_group = group_label.if_supports_color(Stderr, |t| t.bold());
@@ -1294,6 +1305,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1317,6 +1329,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1385,6 +1398,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1541,6 +1555,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1571,6 +1586,7 @@ mod tests {
                 },
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1739,6 +1755,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: Some("alert-group".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1763,6 +1780,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("2s".to_string()),
                 clock_group: Some("log-sync".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1892,6 +1910,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1923,6 +1942,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
