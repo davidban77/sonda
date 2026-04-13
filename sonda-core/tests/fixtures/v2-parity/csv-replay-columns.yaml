@@ -1,0 +1,32 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# rows 2.9 + 2.10 — `csv_replay` multi-column spec (per-column index, name,
+# labels) must thread unchanged through the v2 translator. The `file:` path
+# is intentionally a non-existent stub: the translator-semantic test only
+# inspects compiled shape and never opens the file.
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: system_metrics
+    rate: 1
+    duration: 1s
+    generator:
+      type: csv_replay
+      file: /tmp/fake-for-translator-semantic-test.csv
+      columns:
+        - index: 1
+          name: cpu_usage
+          labels:
+            kind: cpu
+        - index: 2
+          name: mem_usage
+          labels:
+            kind: memory
+      repeat: true
+    labels:
+      instance: prod-server-42
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

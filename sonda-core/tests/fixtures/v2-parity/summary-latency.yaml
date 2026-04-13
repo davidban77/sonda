@@ -1,0 +1,25 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# rows 4.1-4.8 on the summary signal path — distribution, quantiles,
+# observations_per_tick, mean_shift_per_sec, seed, and labels must all
+# round-trip unchanged through the v2 translator.
+version: 2
+
+scenarios:
+  - signal_type: summary
+    name: rpc_duration_seconds
+    rate: 1
+    duration: 1s
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    quantiles: [0.5, 0.9, 0.95, 0.99]
+    observations_per_tick: 100
+    mean_shift_per_sec: 0.001
+    seed: 42
+    labels:
+      service: rpc
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

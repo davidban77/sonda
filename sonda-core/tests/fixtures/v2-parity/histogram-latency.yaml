@@ -1,0 +1,24 @@
+# Parity equivalent of `scenarios/histogram-latency.yaml`; closes matrix
+# row 16.11. Seeded Normal distribution so bucket counts are deterministic.
+version: 2
+
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    rate: 1
+    duration: 1s
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.03
+    observations_per_tick: 50
+    seed: 42
+    labels:
+      instance: api-server-01
+      job: app
+      method: GET
+      handler: "/api/v1/query"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

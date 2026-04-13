@@ -1,0 +1,32 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 1.6 — multiple signal types (metrics + logs + histogram) in one file
+# must translate side-by-side without cross-contamination between entries.
+version: 2
+
+defaults:
+  rate: 1
+  duration: 1s
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 50.0
+
+  - signal_type: logs
+    name: app_log
+    log_generator:
+      type: template
+      templates:
+        - message: "event"
+          field_pools: {}
+      seed: 0
+
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 25
+    seed: 1

@@ -1,3 +1,8 @@
+# Parity equivalent of `stories/link-failover.yaml`; closes matrix row 16.12.
+# Re-encodes the v1 story (three signals chained with `after:` + `clock_group`
+# auto-assignment) as a v2 scenario. Runtime parity is asserted in
+# `v2_story_parity.rs::link_failover_runtime_parity` under shortened test-
+# window offsets; compile-level timing math is checked in the same suite.
 version: 2
 
 defaults:

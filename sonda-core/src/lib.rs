@@ -39,6 +39,15 @@ pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::ScenarioStats;
 
+#[cfg(feature = "config")]
+pub use compiler::prepare::PrepareError;
+
+#[cfg(feature = "config")]
+pub use compile::{compile_scenario_file, CompileError};
+
+#[cfg(feature = "config")]
+mod compile;
+
 /// Top-level error type for sonda-core.
 ///
 /// Each variant delegates to a typed sub-enum that preserves the original

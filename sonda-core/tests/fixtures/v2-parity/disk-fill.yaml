@@ -1,0 +1,23 @@
+# Parity equivalent of `scenarios/disk-fill.yaml`; closes matrix row 16.3.
+# Drives `step` to mimic monotonically growing disk usage.
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: node_disk_used_bytes
+    rate: 1
+    duration: 1s
+    generator:
+      type: step
+      start: 100000000000
+      step_size: 500000000
+      max: 500000000000
+    labels:
+      instance: db-server-01
+      job: node_exporter
+      device: "/dev/sda1"
+      mountpoint: "/data"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

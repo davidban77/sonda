@@ -1,0 +1,24 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 7.3 — when both `gaps` and `bursts` are set, `gaps` overrides `bursts`
+# during the gap window (runtime contract preserved by the v2 translator).
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: gap_and_burst_metric
+    rate: 5
+    duration: 2m
+    generator:
+      type: constant
+      value: 1.0
+    gaps:
+      every: 30s
+      for: 5s
+    bursts:
+      every: 15s
+      for: 3s
+      multiplier: 4.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

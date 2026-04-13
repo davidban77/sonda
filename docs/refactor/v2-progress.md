@@ -1,10 +1,10 @@
 # Sonda v2 Refactor — Progress
 
 ## Current Status
-- **Phase:** 4 complete (PR 5 merged as #203); test-infra consolidation in review
+- **Phase:** 5 complete (PR 6 — runtime wiring + parity tests)
 - **Branch:** `refactor/unified-scenarios-v2`
 - **Integration PR:** #197 (targets `main`, accumulates all v2 work)
-- **Next PR:** PR 6 — runtime wiring + parity tests
+- **Next PR:** PR 7 — CLI unification (`sonda run` v2 dispatch, `sonda catalog`, `sonda init` v2 output, deprecation/hiding of split commands)
 
 ## Milestone Checklist
 
@@ -15,7 +15,7 @@
 | 2 | Defaults resolution | Done | PR 3 (#199) | 2026-04-12 |
 | 3 | Pack expansion in scenarios | Done | PR 4 | 2026-04-12 |
 | 4 | `after` compiler + dependency graph | Done | PR 5 | 2026-04-12 |
-| 5 | Runtime wiring + parity tests | Not Started | PR 6 | |
+| 5 | Runtime wiring + parity tests | Done | PR 6 | 2026-04-13 |
 | 6 | CLI unification | Not Started | PR 7 | |
 | 7 | Built-ins migration + docs | Not Started | PR 8 | |
 | 8 | Server API + final cleanup | Not Started | PR 9 | |
@@ -29,7 +29,8 @@
 | 3 | Defaults resolution + `parse_v2 → parse` rename | `feat/defaults-resolution` | integration (#199) | Merged | 2026-04-12 |
 | 4 | Pack expansion inside `scenarios:` | `feat/pack-expansion` | integration | Merged | 2026-04-12 |
 | 5 | `after` compiler + dependency graph + timing port | `feat/after-compilation` | integration (#203) | Merged | 2026-04-12 |
-| — | Test-infra consolidation: insta + rstest + fixture dedup | `chore/test-infra-consolidation` | integration | In Review | 2026-04-12 |
+| — | Test-infra consolidation: insta + rstest + fixture dedup | `chore/test-infra-consolidation` | integration (#204) | Merged | 2026-04-12 |
+| 6 | Runtime wiring + parity tests | `feat/runtime-wiring` | integration | In Review | 2026-04-13 |
 
 ## Test Coverage
 
@@ -49,7 +50,14 @@
 | Normalize snapshot fixtures (insta) | 3 | Resolved defaults snapshots (label merge, logs default encoder, pack entry) |
 | Expand snapshot fixtures (insta) | 3 | Phase 3 snapshots (overrides, multi-pack, anonymous pack; pack-file-path deleted — dual-registered in resolver) |
 | Compile_after snapshot fixtures (insta) | 6 | CompiledFile snapshots covering transitive chain, step/sequence targets, cross-signal-type, phase_offset + delay sum, dotted pack ref (simple-chain deleted — subset of transitive) |
-| Workspace total | 2,705 | All existing + new |
+| Compiler prepare unit tests | 28 | Translator per-variant happy paths, every `PrepareError` variant, label BTreeMap→HashMap conversion, `observations_per_tick` u32→u64 widening, `clock_group`/`phase_offset` pass-through, non-v2 version rejection, rstest variant-matched missing-field coverage |
+| Compile one-shot unit tests | 6 | `compile_scenario_file` end-to-end composition; `CompileError` `From` variants fire per phase |
+| Runtime parity integration tests (rstest, rows 16.1–16.11) | 11 | Byte-equal for single-signal, line-multiset for multi-signal (`interface-flap`, `network-link-failure`); seeds pinned symmetrically on v1 and v2 sides |
+| Link-failover runtime parity (row 16.12) | 1 | Staggered test-window `phase_offset` override on both sides; compile-side offsets already covered by the compile-parity sibling test |
+| Pack runtime parity (rows 17.1–17.3) | 3 | All three built-in packs compared byte-for-byte via the same runtime path |
+| Translator-semantic direct tests | 10 | Rows 1.6, 2.9–2.10, 4.1–4.8 (Exponential/Normal/Uniform distributions + histogram custom buckets), 5.2, 5.7, 6.12, 7.1–7.3 |
+| Runtime parity fixtures (v2-parity, with headers) | 21 | 11 v1-built-in mirrors + 10 hand-written translator probes; every fixture has a leading comment identifying matrix rows and any deliberate divergence |
+| Workspace total | 2,785 | All existing + new (+80 from PR 6; +57 tests across the 8 post-implementer-commit gate pass, plus +23 from the fix pass covering version gate, distribution rstest, rows 4.1–4.8, and regression anchors) |
 
 ## Validation Matrix Status
 
@@ -57,15 +65,15 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 
 **Every row is a mandatory merge blocker. No exceptions.**
 
-**Summary:** 48 of 178 rows addressed so far.
+**Summary:** 110 of 178 rows Pass (62 flipped by PR 6).
 
-| Section | Rows | Addressed | Notes |
-|---------|------|-----------|-------|
-| 1-10. Feature parity | 98 | 26 | 5.8 (PR 3), 8.2 (PR 5 compile-time, runtime observability PR 6), 9.1–9.8, 9.12 (PR 4), 10.1–10.15 (PR 3 + PR 5) — rest need runtime wiring |
-| 11. New v2 features | 18 | 18 | All 11.1–11.18 addressed; 11.7/11.9/11.11/11.12/11.13/11.14/11.15/11.16/11.17/11.18 land in PR 5 with `compile_after` |
+| Section | Rows | Pass | Notes |
+|---------|------|------|-------|
+| 1-10. Feature parity | 98 | 77 | PR 3: 5.8, 10.12–10.15; PR 4: 9.1–9.8, 9.12; PR 5: 10.1–10.11; PR 6: 1.1–1.6, 2.1–2.10, 3.1–3.7, 4.1–4.8, 5.1/5.2/5.3/5.7, 6.1/6.12, 7.1–7.11, 8.1/8.2/8.3/8.4. Deferred: 5.4–5.6 (syslog/remote_write/otlp encoders, PR 8 smoke), 6.2–6.10 (non-stdout sinks, PR 8 smoke), 8.5/8.6 (CLI UX, PR 7), 9.9/9.10/9.11 (CLI, PR 7), 9.13/9.14/9.15 (built-in migration, PR 8). |
+| 11. New v2 features | 18 | 18 | Complete. |
 | 12-15. CLI/Server/UX/Deploy | 47 | 0 | Later PRs (7-9) |
-| **16. Scenario parity bridge** | **12** | **1** | **16.12 compile parity Pass (PR 5); runtime parity for all rows lands in PR 6** |
-| **17. Pack parity bridge** | **3** | **3** | **compile parity passes for all three built-in packs; runtime parity is PR 6** |
+| **16. Scenario parity bridge** | **12** | **12** | **All 12 rows Pass both compile and runtime (PR 5 + PR 6).** |
+| **17. Pack parity bridge** | **3** | **3** | **All three built-in packs Pass both compile and runtime (PR 4 + PR 6).** |
 
 ## Completed Work
 
@@ -142,67 +150,80 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 - Reviewer NOTE (pack-label precedence collision) resolved inline via Option 2 — documented in `normalize.rs` module docs (see "Labels merge")
 - Reviewer NITs addressed: stale `V2 AST types` comment renamed; no-op `serde(deny_unknown_fields)` dropped from `NormalizedFile`/`NormalizedEntry`; snapshot-harness `expect()` calls converted to `unwrap_or_else(panic!)` with OS error detail
 
-## PR 6 Preparation Notes
+### PR 6 — Runtime wiring + parity tests (2026-04-13, in review)
 
-These notes capture decisions and handoff context from PR 5 that PR 6 (runtime wiring + parity tests) must not re-litigate. A future session starting cold on PR 6 should read this section first.
+- **`sonda-core/src/compiler/prepare.rs`** — new Phase 6 translator (`CompiledFile → Vec<ScenarioEntry>`). `prepare()` consumes a `CompiledFile`, fast-fails on non-v2 version via `PrepareError::UnsupportedVersion`, then dispatches on `signal_type` to variant-specific helpers. Field-for-field mapping: `labels: BTreeMap→HashMap` lossless (keys are String, no duplicates), `observations_per_tick: u32→u64` via `u64::from` (no `as` cast), `phase_offset` / `clock_group` pass through verbatim, `CompiledEntry::id` intentionally dropped (its job ended in `compile_after`'s dependency resolution — `ScenarioEntry` has no id slot). `PrepareError` variants: `UnknownSignalType`, `MissingGenerator` (metrics-only), `MissingLogGenerator` (logs-only), `MissingDistribution` (histogram/summary), `UnsupportedVersion`.
+- **`sonda-core/src/compile.rs`** — new one-shot `compile_scenario_file(yaml, &dyn PackResolver) -> Result<Vec<ScenarioEntry>, CompileError>` composing `parse → normalize → expand → compile_after → prepare`. Unified `CompileError` with `#[from]` on each phase's error. Each variant doc is phase-anchored (`**Phase N** (name): ...`). Uses a private `DynPackResolver<'a>` newtype to bridge `&dyn PackResolver` (requested public API) against `expand<R: PackResolver>`'s generic bound — keeps `expand.rs` frozen. Re-exports on `sonda_core::*`: `compile_scenario_file`, `CompileError`, `PrepareError`.
+- **`sonda-core/tests/common/mod.rs`** — extended with `run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8>`: mirrors a trimmed `launch_scenario` in test-only code, spawning runners with in-memory capturing sinks instead of stdout. **Does not honor shutdown during `start_delay`** (unlike production `launch_scenario` which polls every 50ms) — fine for current call sites, caveat documented for future cancellation wiring. Sibling helpers: `assert_line_multisets_equal` for multi-signal thread-interleaved output, `normalize_timestamps` that strips Prometheus `<value> <11–19 digits>\n` ms-epoch trailers and JSON `"timestamp":"...Z"` fields (regression-anchored by two tests in the same module). No public `SinkConfig::Channel` variant was added — test surface stays out of the production enum.
+- **Runtime parity suite (`sonda-core/tests/v2_runtime_parity.rs`)** — one `#[rstest]` with 11 `#[case::<scenario_name>(...)]` rows closing matrix rows 16.1–16.11. `Comparison::ByteEqual` for single-signal scenarios; `Comparison::LineMultiset` for `interface-flap` and `network-link-failure` (multi-signal → thread-interleaved writes). Seeds pinned symmetrically on v1 and v2 sides. Test durations are short (500ms–1s) to keep the suite fast.
+- **Link-failover runtime parity (`sonda-core/tests/v2_story_parity.rs::link_failover_runtime_parity`)** — closes row 16.12 runtime half. Staggered `[1ms, 10ms, 20ms]` `phase_offset` override applied symmetrically on both sides so the test completes in ~1s (actual compiled offsets are 1m / ~152s, which is covered by the sibling `link_failover_compile_parity` test). The v1 oracle is a hand-built `v1_link_failover_entries` helper — `sonda-core` tests cannot dev-dep the `sonda` binary crate that owns `compile_story`, so the helper is explicitly framed as a **hand-built v2-equivalent reference** in its docstring, not a mirror. Drift risk is low because the compile-parity sibling test pins the v2 compile offsets and the `sonda story` CLI smoke path still exercises the v1 code until PR 9 removes it.
+- **Pack runtime parity (`sonda-core/tests/v2_pack_runtime_parity.rs`)** — 3 tests closing rows 17.1–17.3. v1 side: `expand_pack` → hand-built `PackScenarioConfig`; v2 side: new one-shot. Byte-equal per-sub-signal after timestamp normalization.
+- **Translator semantic tests (`sonda-core/tests/v2_translator_semantics.rs`)** — 10 direct tests covering matrix rows not naturally exercised by the built-in parity suite: 1.6 (mixed signal types), 2.9–2.10 (csv_replay auto-discovery + per-column labels), 4.1–4.8 (summary distribution variants — `#[rstest]` with Exponential/Normal/Uniform cases + histogram custom-buckets), 5.2 (`influx_lp` with custom `field_key`), 5.7 (encoder `precision`), 6.12 (TCP retry config), 7.1–7.3 (gaps / bursts / gap-overrides-burst). All assertions are translator-shape checks against hand-built reference `ScenarioEntry`s — no scheduler runs needed.
+- **21 runtime-parity fixtures** under `sonda-core/tests/fixtures/v2-parity/`: 11 mirrors of `scenarios/*.yaml` built-ins plus 10 hand-written translator probes. Every fixture has a leading comment header naming the matrix rows it closes and (for probes) stating explicitly that it is not a v1 mirror. The pack fixtures (`node-exporter-*.yaml`, `telegraf-snmp-interface.yaml`) already had headers from PR 4.
+- **Validation matrix rows Pass**: 16.1–16.11 runtime, 16.12 runtime, 17.1–17.3 runtime, plus 1.1–1.6 / 2.1–2.10 / 3.1–3.7 / 4.1–4.8 / 5.1/5.3/5.7/5.8 / 6.1/6.12 / 7.1–7.11 / 8.1/8.2/8.3/8.4. The 8.2 claim is **end-to-end carry only** — `clock_group` threads through the translator into `ScenarioEntry.clock_group`; any per-entry observability log line or scheduler coordination is deferred to PR 7 (which owns CLI status output).
+- **Fix-pass commits** (post-review): doc fixes on `PrepareError` variants + `CompileError` phase anchors + broken intra-doc links in `prepare()`; YAML-comment headers on 21 fixtures; Exponential/Uniform distribution rstest in `v2_translator_semantics`; `v1_link_failover_entries` docstring correction; `normalize_timestamps` regression anchor; `v2_pack_runtime_parity` match-dispatch cleanup; strengthened `missing_required_field_fails_per_signal_type` with variant-specific `matches!`.
+- **Workspace test count**: 2,705 → 2,785 (**+80**). All four quality gates green on every one of the 17 commits. Branch: `feat/runtime-wiring`.
 
-### What PR 5 already hands off
+### What PR 6 deliberately did not do
 
-PR 5 produces `CompiledFile { version, entries: Vec<CompiledEntry> }` — a flat list of concrete signals with every `after:` clause resolved into `phase_offset` and every dependency chain member assigned a shared `clock_group`. The runtime never sees `AfterClause` objects: the causal graph has been compiled down to a pair of `Option<String>` fields that the existing scheduler already understands.
+- **`clock_group` runtime observability.** PR 7 scope. The value threads through the translator; any log line or scheduler coordination is UX / CLI work.
+- **`From<CompileError> for SondaError`.** PR 7 scope — lands naturally when the CLI starts routing through `compile_scenario_file`.
+- **Built-in scenario migration to v2 format.** PR 8.
+- **v1 story CLI removal.** PR 9.
+- **`SinkConfig::Channel` public variant.** Kept test sink substitution out of the production enum.
+- **Relax `expand<R: PackResolver>` to `+ ?Sized`.** `expand.rs` is frozen; the `DynPackResolver<'a>` newtype is the bridge. Unfreeze and remove the newtype in a future PR that naturally reopens `expand.rs`.
 
-Every `CompiledEntry` guarantees:
-- **Reference resolution complete.** No unresolved `after.ref` survives; `CompileAfterError::UnknownRef` / `SelfReference` / `CircularDependency` have already fired if anything was wrong.
-- **`phase_offset` is the full offset.** It equals `user_phase_offset + Σ crossing_time + Σ delay` across the entire transitive chain. PR 6 can feed this directly into `prepare_entries`; no further timing math is needed at runtime.
-- **`clock_group` is authoritative.** Dependency chain members all share a group (user-set or auto-assigned `chain_{lowest_lex_id}`); independents keep their explicit group or `None`.
-- **Generator aliases are still present.** PR 5's internal desugaring only touches timing math; `CompiledEntry.generator` carries the same `GeneratorConfig` variant the user wrote. The existing runtime pipeline already handles aliases via `config::aliases::desugar_entry`.
+## PR 7 Preparation Notes
 
-### What PR 6 must build
+PR 7 is **CLI unification**. A future session starting cold on PR 7 should read this section first; everything below is the handoff context from PR 6.
 
-1. **Wire `CompiledFile` into `prepare_entries`.** The CLI currently routes through `sonda_core::schedule::launch::prepare_entries(Vec<ScenarioEntry>)`. PR 6 must add a conversion from `Vec<CompiledEntry>` to `Vec<ScenarioEntry>` (the runtime's existing input shape) — this is largely a field-for-field mapping since PR 2/3/4 already mirrored the shapes. The simplest path is a `CompiledEntry → ScenarioEntry` `TryFrom` impl or a helper in `sonda-core::compiler`. Do not duplicate the scheduler; reuse `prepare_entries` and `launch_scenario` as-is.
+### What PR 6 already hands off
 
-2. **Runtime parity for built-in scenarios (rows 16.1–16.11 single-signal).** Each of the eleven built-in scenario YAMLs has an existing v1 baseline. Hand-write a v2 equivalent (`scenarios/<name>.v2.yaml`), pipe both through `prepare_entries` → `launch_scenario` with a deterministic seed and tick count, and assert the stdout output is byte-identical.
+- **`sonda_core::compile_scenario_file(yaml, &dyn PackResolver) -> Result<Vec<ScenarioEntry>, CompileError>`** — one-shot composition of the five v2 compile phases. This is the single library entry point the CLI should call when it detects a v2 file.
+- **`sonda_core::compiler::prepare::prepare(CompiledFile) -> Result<Vec<ScenarioEntry>, PrepareError>`** — the phase-by-phase escape hatch, useful for `--dry-run` where the CLI may want to stop after `compile_after` and serialize the intermediate for inspection, or after `prepare` for the final pre-runtime view.
+- **Every phase's error type remains publicly accessible** (`ParseError`, `NormalizeError`, `ExpandError`, `CompileAfterError`, `PrepareError`) so phase-by-phase callers get typed diagnostics. `CompileError` is the unified wrapper for the one-shot.
+- **`ScenarioEntry.clock_group`** carries the auto-assigned or explicit clock-group string. No CLI surface reads it yet; PR 7 is the natural place to add a start-banner line or aggregate-summary grouping.
+- **Runtime contract unchanged.** `prepare_entries` / `PreparedEntry` / `launch_scenario` / `run_multi` are untouched. PR 7 should not need to modify them — just route v2 output into them.
 
-3. **Runtime parity for link-failover story (row 16.12 runtime).** PR 5 already closed compile parity for `link-failover.yaml`. PR 6 must close the runtime half: same seed, same tick count, same byte-for-byte stdout. Live story runtime still uses the v1 `compile_story` path — point the runtime comparison at both paths.
+### What PR 7 must build
 
-4. **Runtime parity for packs (rows 17.1–17.3 runtime).** The three built-in packs already pass compile parity (PR 4). Same drill: build the v2 scenario from the existing fixture, run both paths with a seed, assert identical stdout.
+1. **`sonda run --scenario` v2 dispatch.** Detect `version: 2` at the top of the YAML (the existing parser has `detect_version()` — reuse it). Route v2 files through `compile_scenario_file`; route v1 files through the existing v1 loader. Both paths land in `prepare_entries` → `launch_scenario` / `run_multi`, so the branching is at the top of `run_command`.
+2. **`sonda catalog list/show/run`** replacing `sonda scenarios` + `sonda packs` per spec §6.3. Catalog metadata fields: `name`, `type`, `category`, `signal`, `description`, `runnable`. Search path is the same as today (`--scenario-path`, `--pack-path`, env vars, `./scenarios/` + `./packs/`, `~/.sonda/`).
+3. **`sonda init` v2 output.** The interactive wizard should emit `version: 2` files with `defaults:` and `scenarios:` blocks instead of the current v1 shape. Pre-fill paths (`--from @name`, `--from path.csv`) should map cleanly into the v2 schema.
+4. **Deprecate or hide** `sonda scenarios`, `sonda packs`, `sonda story` subcommands. The story CLI must keep working — it is still the row-16.12 runtime oracle until PR 9.
+5. **`--dry-run` enhancements (spec §5).** Print the compiled v2 view (resolved defaults, expanded packs, resolved `phase_offset`, assigned `clock_group`) in the format the spec shows. `compile_scenario_file` gives you the `Vec<ScenarioEntry>` directly; the formatting is the new work.
+6. **CLI status output for `clock_group`.** Add a start-banner line for each scenario naming its clock_group (spec §5 format shows `clock_group: link_failover (auto)` as an example). Also consider grouping the aggregate summary by clock_group when more than one is present. This closes matrix row 8.2 "runtime observability" fully.
+7. **`From<CompileError> for SondaError`.** PR 7's CLI will want to propagate compile errors through the existing `SondaError` chain.
 
-### What `sonda/src/story/` looks like after PR 5
+### Target matrix rows for PR 7
 
-- `timing.rs` is **gone**. The math now lives in `sonda_core::compiler::timing` and is shared by v1 and v2.
-- `after_resolve.rs` remains as-is, but now imports from `sonda_core::compiler::timing`. It still owns the v1 story-specific parsing of free-form `after:` strings (`"metric < 1"`) and the `SignalParams` data model, because the v1 story YAML grammar differs from the v2 compiler AST.
-- `mod.rs` (top-level story module) is unchanged — the CLI entrypoint `sonda story --file` still works.
+- **Section 12** CLI: 12.1, 12.7 (enhanced `--dry-run`), 12.10, 12.11, 12.12–12.17 (catalog), 12.19 (`init` v2), 12.20, 12.22
+- **Section 14** status output / UX: 14.1–14.9 (all)
+- **Matrix row 8.2 runtime observability** — fully close (PR 6 closed end-to-end carry only)
+- **Matrix row 8.6** aggregate summary grouping by clock_group
+- **Matrix rows 5.2 + 6.11** `--output` shorthand on the CLI layer
 
-This split is deliberate: the shared math is now in one place, while v1-specific YAML plumbing stays in the binary crate until PR 9 removes the `story` subcommand.
+### PR 9 forward pointer — v1 story parity oracle cleanup
 
-### Scope for PR 6 (target matrix rows)
+When PR 9 removes the v1 story CLI (`sonda story --file`), the hand-built `v1_link_failover_entries` helper in `sonda-core/tests/v2_story_parity.rs` becomes a relic. It exists only because `sonda-core` tests cannot dev-dep the binary crate that owns `compile_story`. Once the v1 story module is gone there is no "v1 side" to mirror, so PR 9 should either:
 
-- 16.1–16.11 (single-signal built-in scenarios — runtime parity)
-- 16.12 (link-failover story runtime parity; compile parity already Pass)
-- 17.1–17.3 (pack runtime parity; compile parity already Pass)
-- Any row from sections 1–6 that tests runtime behavior (metrics/logs/histogram/summary signal types, generators, encoders, sinks, dynamic/cardinality features) — these are runtime-observable and should flip from "Not Tested" to "Pass" where the v2 pipeline already produces correct output.
+- **Delete** the `link_failover_runtime_parity` test and the `v1_link_failover_entries` helper entirely (the `link_failover_compile_parity` test remains and is sufficient — it pins the v2 compile offsets byte-for-byte against the `timing::*_crossing_secs` math), **or**
+- **Refactor** to compare v2-compile stdout against a pinned byte-snapshot (via `insta::assert_snapshot!` on one canonical v2 run) if the runtime execution remains valuable to protect.
 
-### Scope discipline for PR 6
+The first option is cleaner and aligns with PR 9's remit ("remove transitional oracle code"). Surface this decision in PR 9's plan.
+
+### Scope discipline for PR 7
 
 Do NOT also:
 - Migrate built-in scenario YAMLs to v2 format (PR 8).
 - Remove v1 CLI subcommands (PR 9).
 - Add v2 scenario server API (PR 9).
+- Touch the sonda-core compile pipeline (all five phases are frozen after PR 6).
+- Change `prepare_entries` / `PreparedEntry` / `launch_scenario` / `run_multi`.
 
-PR 6 is the runtime parity proof — it shows the v2 pipeline produces correct output when driven through the existing scheduler. Migrations and CLI changes follow once parity is nailed down.
+### Testing conventions for PR 7
 
-### Testing conventions for PR 6 (post test-infra consolidation)
-
-The test-infra consolidation PR landed between PR 5 and PR 6. New tests on this integration branch must follow the post-consolidation conventions — the hand-rolled snapshot harness is gone, and the shared test surface is now the canonical one:
-
-- **`sonda-core/src/config/snapshot.rs` no longer exists.** Do not try to import `snapshot_entries`, `snapshot_prepared_entries`, or `assert_or_update_snapshot` — they were deleted. Use `insta::assert_json_snapshot!` directly on the existing `Serialize` derives.
-- **Integration tests start with `mod common;`** to pull in shared helpers from `sonda-core/tests/common/mod.rs`: `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`, `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`. Add new helpers there — do not duplicate across test files.
-- **Golden snapshots use `insta`.** `sonda-core/tests/snapshots/*.snap` is the snapshot tree. Update via `cargo insta review` (interactive) or `INSTA_UPDATE=always cargo test` (batch). For JSON snapshots, wrap via `common::snapshot_settings().bind(|| insta::assert_json_snapshot!(...))` to get `sort_maps = true` determinism.
-- **Parametrized tests use `rstest`.** Use `#[case::<descriptive_name>(...)]` so each row reports as a distinct test. Apply `#[rustfmt::skip]` on tables so `#[case(...)]` rows stay column-aligned. Do NOT force-fit: semantically-unique cases stay as standalone `#[test]` fns.
-- **For the 11 built-in runtime-parity tests (rows 16.1–16.11)**, a single `#[rstest]` with 11 `#[case::<scenario_name>(...)]` rows is the right shape — one function body that loads both v1 and v2, runs them with a seeded scheduler, and asserts byte-equal stdout.
-- **Stdout-capturing helper**: add a `common::run_and_capture_stdout(entries: Vec<ScenarioEntry>, seed: u64, ticks: u64) -> Vec<u8>` (or a `StdoutHarness` struct) to `tests/common/mod.rs` — all runtime-parity tests will need the same plumbing.
-- **v1 vs v2 stdout-parity is `assert_eq!(v1_bytes, v2_bytes)`, not a snapshot.** If you also want to pin a canonical baseline so both paths drifting to new-but-matching output is caught, additionally snapshot ONE side via `insta::assert_snapshot!(String::from_utf8_lossy(&v1_bytes))`.
-- **No `v2` prefix** on any Rust symbol — the `compiler` module and `v2-` fixture paths already carry the version. Fixture filenames and directories may use `v2-`.
-- **Quality gates on every commit**: `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings` (project gate — NOT `--all-targets`, pre-existing Rust 1.93 drift is a separate PR), `cargo fmt --all -- --check`.
+Same post-consolidation conventions as PR 6. The shared test surface is `sonda-core/tests/common/mod.rs`; any CLI-level test infrastructure goes in `sonda/tests/` (that directory already exists for CLI integration). For end-to-end CLI tests, spawn the binary as a subprocess — this is the natural setting for the subprocess tests that PR 6 deferred.
 
 ## Active Risks
 - Snapshot format stability — must be deterministic and survive refactor

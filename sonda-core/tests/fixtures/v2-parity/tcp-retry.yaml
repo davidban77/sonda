@@ -1,0 +1,22 @@
+# Hand-written translator probe (no v1 built-in mirrors it); covers matrix
+# row 6.12 — TCP sink `retry` block (max_attempts + initial_backoff +
+# max_backoff) must round-trip unchanged through the v2 translator.
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: tcp_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: tcp
+      address: "127.0.0.1:9999"
+      retry:
+        max_attempts: 5
+        initial_backoff: "100ms"
+        max_backoff: "5s"

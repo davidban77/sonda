@@ -1,0 +1,24 @@
+# Parity equivalent of `scenarios/cpu-spike.yaml`; closes matrix row 16.1.
+# Runtime parity harness in `v2_runtime_parity.rs` asserts byte-equal stdout
+# between v1 load and v2 compile on a 1s window.
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_usage_percent
+    rate: 1
+    duration: 1s
+    generator:
+      type: spike_event
+      baseline: 35.0
+      spike_height: 60.0
+      spike_duration: "10s"
+      spike_interval: "30s"
+    labels:
+      instance: web-01
+      job: node_exporter
+      cpu: "0"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

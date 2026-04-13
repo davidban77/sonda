@@ -1,0 +1,72 @@
+# Parity equivalent of `scenarios/interface-flap.yaml`; closes matrix row 16.6.
+# Three-signal SNMP scenario compared via line-multiset equality (runner
+# threads interleave bytes non-deterministically).
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+               0, 0, 0, 0, 0,
+               1, 1, 1, 1, 1,
+               0, 0, 0, 0, 0,
+               1, 1, 1, 1, 1]
+      repeat: true
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-transit
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_in_octets
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [150000000, 160000000, 170000000, 155000000, 165000000,
+               175000000, 150000000, 160000000, 170000000, 155000000,
+               0, 0, 0, 0, 0,
+               50000000, 80000000, 120000000, 140000000, 150000000,
+               0, 0, 0, 0, 0,
+               50000000, 80000000, 120000000, 140000000, 150000000]
+      repeat: true
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-transit
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_errors
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               25, 32, 28, 35, 30,
+               2, 1, 0, 0, 0,
+               25, 32, 28, 35, 30,
+               2, 1, 0, 0, 0]
+      repeat: true
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-transit
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

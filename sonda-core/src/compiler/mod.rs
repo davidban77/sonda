@@ -17,6 +17,8 @@
 //! - [`timing`] — pure threshold-crossing math for every supported generator.
 //! - [`compile_after`] — `after` clause resolution, dependency graph, and
 //!   clock-group assignment (Phases 4 and 5).
+//! - [`prepare`] — translation from [`compile_after::CompiledFile`] into the
+//!   runtime's `Vec<ScenarioEntry>` input shape (Phase 6).
 
 #[cfg(feature = "config")]
 pub mod parse;
@@ -31,6 +33,9 @@ pub mod timing;
 
 #[cfg(feature = "config")]
 pub mod compile_after;
+
+#[cfg(feature = "config")]
+pub mod prepare;
 
 use std::collections::BTreeMap;
 
