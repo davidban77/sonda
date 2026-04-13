@@ -1,10 +1,10 @@
 # Sonda v2 Refactor — Progress
 
 ## Current Status
-- **Phase:** 5 complete (PR 6 — runtime wiring + parity tests)
+- **Phase:** 6 complete (PR 7 — CLI unification)
 - **Branch:** `refactor/unified-scenarios-v2`
 - **Integration PR:** #197 (targets `main`, accumulates all v2 work)
-- **Next PR:** PR 7 — CLI unification (`sonda run` v2 dispatch, `sonda catalog`, `sonda init` v2 output, deprecation/hiding of split commands)
+- **Next PR:** PR 8 — Built-ins migration (convert `scenarios/*.yaml` and `packs/*.yaml` to v2 format, dedup overlapping examples, canonical failover example, absorb `stories/` into v2 docs/examples)
 
 ## Milestone Checklist
 
@@ -16,7 +16,7 @@
 | 3 | Pack expansion in scenarios | Done | PR 4 | 2026-04-12 |
 | 4 | `after` compiler + dependency graph | Done | PR 5 | 2026-04-12 |
 | 5 | Runtime wiring + parity tests | Done | PR 6 | 2026-04-13 |
-| 6 | CLI unification | Not Started | PR 7 | |
+| 6 | CLI unification | Done | PR 7 | 2026-04-13 |
 | 7 | Built-ins migration + docs | Not Started | PR 8 | |
 | 8 | Server API + final cleanup | Not Started | PR 9 | |
 
@@ -30,7 +30,8 @@
 | 4 | Pack expansion inside `scenarios:` | `feat/pack-expansion` | integration | Merged | 2026-04-12 |
 | 5 | `after` compiler + dependency graph + timing port | `feat/after-compilation` | integration (#203) | Merged | 2026-04-12 |
 | — | Test-infra consolidation: insta + rstest + fixture dedup | `chore/test-infra-consolidation` | integration (#204) | Merged | 2026-04-12 |
-| 6 | Runtime wiring + parity tests | `feat/runtime-wiring` | integration | In Review | 2026-04-13 |
+| 6 | Runtime wiring + parity tests | `feat/runtime-wiring` | integration (#205) | Merged | 2026-04-13 |
+| 7 | CLI unification | `feat/cli-unification` | integration | In Review | 2026-04-13 |
 
 ## Test Coverage
 
@@ -57,7 +58,7 @@
 | Pack runtime parity (rows 17.1–17.3) | 3 | All three built-in packs compared byte-for-byte via the same runtime path |
 | Translator-semantic direct tests | 10 | Rows 1.6, 2.9–2.10, 4.1–4.8 (Exponential/Normal/Uniform distributions + histogram custom buckets), 5.2, 5.7, 6.12, 7.1–7.3 |
 | Runtime parity fixtures (v2-parity, with headers) | 21 | 11 v1-built-in mirrors + 10 hand-written translator probes; every fixture has a leading comment identifying matrix rows and any deliberate divergence |
-| Workspace total | 2,785 | All existing + new (+80 from PR 6; +57 tests across the 8 post-implementer-commit gate pass, plus +23 from the fix pass covering version gate, distribution rstest, rows 4.1–4.8, and regression anchors) |
+| Workspace total | 2,798 | All existing + new (+80 from PR 6; +13 from PR 7 — CLI subprocess suite, catalog/scenario_loader/sink_format unit tests, clock_group_is_auto provenance tests) |
 
 ## Validation Matrix Status
 
@@ -65,17 +66,34 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 
 **Every row is a mandatory merge blocker. No exceptions.**
 
-**Summary:** 110 of 178 rows Pass (62 flipped by PR 6).
+**Summary:** 146 of 178 rows Pass (36 flipped by PR 7).
 
 | Section | Rows | Pass | Notes |
 |---------|------|------|-------|
-| 1-10. Feature parity | 98 | 77 | PR 3: 5.8, 10.12–10.15; PR 4: 9.1–9.8, 9.12; PR 5: 10.1–10.11; PR 6: 1.1–1.6, 2.1–2.10, 3.1–3.7, 4.1–4.8, 5.1/5.2/5.3/5.7, 6.1/6.12, 7.1–7.11, 8.1/8.2/8.3/8.4. Deferred: 5.4–5.6 (syslog/remote_write/otlp encoders, PR 8 smoke), 6.2–6.10 (non-stdout sinks, PR 8 smoke), 8.5/8.6 (CLI UX, PR 7), 9.9/9.10/9.11 (CLI, PR 7), 9.13/9.14/9.15 (built-in migration, PR 8). |
+| 1-10. Feature parity | 98 | 84 | PR 3: 5.8, 10.12–10.15; PR 4: 9.1–9.8, 9.12; PR 5: 10.1–10.11; PR 6: 1.1–1.6, 2.1–2.10, 3.1–3.7, 4.1–4.8, 5.1/5.2/5.3/5.7, 6.1/6.12, 7.1–7.11, 8.1/8.2/8.3/8.4; PR 7: 6.11, 8.5/8.6, 9.9/9.10/9.11. Deferred: 5.4–5.6 (syslog/remote_write/otlp encoders, PR 8 smoke), 6.2–6.10 (non-stdout sinks, PR 8 smoke), 9.13/9.14/9.15 (built-in migration, PR 8). |
 | 11. New v2 features | 18 | 18 | Complete. |
-| 12-15. CLI/Server/UX/Deploy | 47 | 0 | Later PRs (7-9) |
+| 12-15. CLI/Server/UX/Deploy | 47 | 29 | PR 7: 12.1–12.20, 12.22 (21 rows); 14.1–14.9 (9 rows). Deferred: 12.21 (story removal, PR 9), 13.1–13.9 (server API, PR 9), 15.1–15.7 (deployment, PR 9). |
 | **16. Scenario parity bridge** | **12** | **12** | **All 12 rows Pass both compile and runtime (PR 5 + PR 6).** |
 | **17. Pack parity bridge** | **3** | **3** | **All three built-in packs Pass both compile and runtime (PR 4 + PR 6).** |
 
 ## Completed Work
+
+### PR 7 — CLI unification (2026-04-13, in review)
+
+- **`sonda/src/scenario_loader.rs`** — new `load_scenario_entries(path, scenario_catalog, pack_catalog) -> anyhow::Result<LoadedScenario>`. Resolves `@name` shorthand / path via existing `resolve_scenario_source`, calls `sonda_core::compiler::parse::detect_version()`, and branches: v2 → `compile_scenario_file` via a `FilesystemPackResolver` shim; v1 → explicit probe chain `is_pack_config` → `is_flat_single_scenario` (new) → `MultiScenarioConfig` fallback. Returns `Vec<ScenarioEntry>` + the detected version for downstream formatter routing. All v2 compile errors surface through `anyhow::Context` with the source path; no `From<CompileError> for SondaError` added.
+- **`sonda/src/catalog.rs`** — new unified row iterator. `CatalogRow` shape is `{name, type, category, signal, description, runnable}`; `Source<'a>` enum holds borrowed `&BuiltinScenario` or `&PackEntry` (extensible to stories or other kinds). `catalog_rows`, `find_row`, `find_closest_name` (edit-distance suggestions) all work without modifying `ScenarioCatalog` / `PackCatalog`.
+- **`sonda/src/dry_run.rs`** — spec §5 pretty formatter + JSON DTO behind `--format=json`. Pretty output lands on stderr (matches v1 `--dry-run` convention); JSON goes to stdout. DTO carries `clock_group_is_auto` as a boolean so consumers can distinguish auto-assigned from explicit chains.
+- **`sonda/src/sink_format.rs`** — shared `sink_display` helper. Exhaustive match over every `SinkConfig` variant under every feature combination, including feature-gated `HttpPushDisabled {}` / `LokiDisabled {}` / `RemoteWriteDisabled {}` / `KafkaDisabled {}` / `OtlpGrpcDisabled {}`. Unified the sink banner format across `status.rs` start banner and `dry_run.rs` resolved-config block — both now use spec §5 `name (detail)` parens form (the prior `status.rs` used colon-separated `name: detail`, a format drift). Closed the `cargo build -p sonda --no-default-features` regression that existed at PR 7 implementer-commit time.
+- **`sonda/src/init/yaml_gen.rs`** — full rewrite. Every `InitScenarioType` variant (SingleMetric, Pack, Logs, Histogram, Summary) now emits `version: 2` + `defaults:` + `scenarios:`. Round-trip tests compile the emitted YAML via `compile_scenario_file` to enforce the "init output is always runnable" invariant. No v1 fallback, no `--legacy` flag.
+- **`sonda/src/cli.rs`** — `Commands::Catalog(CatalogArgs)` variant with `list` / `show` / `run` actions. `PacksRunArgs` gained `output: Option<PathBuf>` (BLOCKER 2 fix — catalog-run-pack with `-o` now writes to file). `#[command(hide = true)]` on `Scenarios`, `Packs`, `Story` — still callable (row-16.12 oracle), hidden from `--help`. Global `--format` on the CLI root (orthogonal to `--dry-run`).
+- **`sonda/src/main.rs`** — `Run` arm routes through `scenario_loader::load_scenario_entries`; `Commands::Catalog` dispatch with `CatalogRunArgs → (RunArgs | PacksRunArgs)` projection so v1/v2 dispatch and CLI overrides apply identically. `apply_run_overrides` (in `config.rs`) is the single override application point for both surfaces, preserving YAML < env < CLI precedence unchanged.
+- **`sonda/src/status.rs`** — `print_start` gains an optional `clock_group: <name> (auto)` line when the entry carries a clock group. `print_summary_by_clock_group` fires when ≥2 distinct groups present (including "ungrouped" as a distinct value); flat `print_summary` otherwise. `ClockGroupStats::group_is_auto: Option<bool>` threads provenance through to the aggregate.
+- **sonda-core surface change (minimum):** `BaseScheduleConfig::clock_group_is_auto: Option<bool>` + `ScenarioEntry::clock_group_is_auto()` getter — authorized scope expansion. `#[serde(skip)]` so the field never leaks into YAML (compiler output, not user input). `CompiledEntry::clock_group_is_auto` + private `ClockGroupAssignment` enum in `compile_after.rs` populate it exactly at the four assignment sites (auto-derived chain → `true`, user-explicit → `false`, conflicting → error, single-node → `false`). `prepare::build_base` carries it through verbatim. v1 entries that never go through the v2 compiler read `None`, so the `(auto)` renderer correctly suppresses the suffix.
+- **Subprocess test suite** under `sonda/tests/`: `cli_run_dispatch.rs` (5 tests), `cli_catalog.rs` (14 tests incl. the `-o` on pack regression), `dry_run_format.rs` (3 tests), `init_v2_output.rs` (4 tests — one per signal type), plus new fixtures under `sonda/tests/fixtures/cli/` (flat v1, multi-v1, inline v2, multi-after-chain v2, pack-backed v2, broken self-ref v2). `sonda/tests/common/mod.rs` consolidates subprocess helpers. All tests use `Command::new(env!("CARGO_BIN_EXE_sonda"))`; no new dev-deps.
+- **Nine commits** on `feat/cli-unification` (3 feat + 1 doc + 5 fix-pass). Every commit passes ALL FIVE gates individually: `cargo build --workspace`, `cargo build -p sonda --no-default-features`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all -- --check`.
+- **Reviewer fix-pass resolved 5 BLOCKERs**: (1) non-exhaustive `sink_display` match breaking `--no-default-features` build; (2) `catalog run <pack> -o <path>` silently dropping the flag; (3) `(auto)` suffix misfiring when user wrote `clock_group: chain_*` explicitly — fixed by threading `is_auto` provenance through compile_after → prepare → BaseScheduleConfig; (4) `v2` in production symbol names (`print_v2_dry_run` → `print_dry_run`, `compile_v2` inlined); (5) flat v1 single-scenario YAMLs rejected by `sonda run --scenario` (spec §6.1 violation).
+- **Validation matrix rows closed (36)**: 6.11, 8.2 (fully — prior PRs landed end-to-end carry; PR 7 added the CLI observability surface), 8.5, 8.6, 9.9–9.11, 12.1–12.20 + 12.22, 14.1–14.9. Not closed: 12.21 (story removal — PR 9 scope).
+- Discipline: no `v2` prefix/suffix on any Rust symbol (production or test). Existing `sonda-core/tests/v2_*.rs` parity-bridge files unchanged (PR 9 renames them alongside v1 CLI removal). Built-in YAMLs in `scenarios/` and `packs/` untouched (PR 8).
 
 ### Test infra consolidation (2026-04-12, in review)
 - Adopted `insta` (JSON + YAML features) for golden snapshots and `rstest` for parametrized unit tests; both hoisted into `[workspace.dependencies]` and pulled into `sonda-core` dev-deps.
@@ -173,57 +191,95 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 - **`SinkConfig::Channel` public variant.** Kept test sink substitution out of the production enum.
 - **Relax `expand<R: PackResolver>` to `+ ?Sized`.** `expand.rs` is frozen; the `DynPackResolver<'a>` newtype is the bridge. Unfreeze and remove the newtype in a future PR that naturally reopens `expand.rs`.
 
-## PR 7 Preparation Notes
+## PR 8 Preparation Notes
 
-PR 7 is **CLI unification**. A future session starting cold on PR 7 should read this section first; everything below is the handoff context from PR 6.
+PR 8 is **built-ins migration**. A future session starting cold on PR 8 should read this section first; everything below is the handoff context from PR 7.
 
-### What PR 6 already hands off
+### What PR 7 already hands off
 
-- **`sonda_core::compile_scenario_file(yaml, &dyn PackResolver) -> Result<Vec<ScenarioEntry>, CompileError>`** — one-shot composition of the five v2 compile phases. This is the single library entry point the CLI should call when it detects a v2 file.
-- **`sonda_core::compiler::prepare::prepare(CompiledFile) -> Result<Vec<ScenarioEntry>, PrepareError>`** — the phase-by-phase escape hatch, useful for `--dry-run` where the CLI may want to stop after `compile_after` and serialize the intermediate for inspection, or after `prepare` for the final pre-runtime view.
-- **Every phase's error type remains publicly accessible** (`ParseError`, `NormalizeError`, `ExpandError`, `CompileAfterError`, `PrepareError`) so phase-by-phase callers get typed diagnostics. `CompileError` is the unified wrapper for the one-shot.
-- **`ScenarioEntry.clock_group`** carries the auto-assigned or explicit clock-group string. No CLI surface reads it yet; PR 7 is the natural place to add a start-banner line or aggregate-summary grouping.
-- **Runtime contract unchanged.** `prepare_entries` / `PreparedEntry` / `launch_scenario` / `run_multi` are untouched. PR 7 should not need to modify them — just route v2 output into them.
+- **`sonda run --scenario <file>`** — auto-dispatches v1 (flat single-scenario / multi-scenario / pack-scenario) or v2 transparently per spec §6.1. Once PR 8 converts `scenarios/*.yaml` and `packs/*.yaml` to v2, the same CLI surface takes them end-to-end with no caller changes.
+- **`sonda catalog list/show/run`** — the unified browsing/running surface. After PR 8 migrates built-ins, the catalog list will show all of them as v2. `catalog run <name>` works the same regardless.
+- **`compile_scenario_file` is the canonical library entry point** for v2 compilation. PR 8's built-in migrations should use it (directly or via `sonda run`) in their parity tests.
+- **v1 loaders still exist** (`is_flat_single_scenario`, `is_pack_config`, `MultiScenarioConfig`). They will be removed in PR 9 when the last built-in YAMLs are v2 and the v1 story CLI is gone. PR 8 should not remove them.
+- **The runtime parity suite in `sonda-core/tests/v2_runtime_parity.rs`** already compares v1 vs v2 output byte-for-byte (rows 16.1–16.12) and pack compile+runtime parity (rows 17.1–17.3). Use these as the regression harness when swapping YAML contents.
 
-### What PR 7 must build
+### What PR 8 must build
 
-1. **`sonda run --scenario` v2 dispatch.** Detect `version: 2` at the top of the YAML (the existing parser has `detect_version()` — reuse it). Route v2 files through `compile_scenario_file`; route v1 files through the existing v1 loader. Both paths land in `prepare_entries` → `launch_scenario` / `run_multi`, so the branching is at the top of `run_command`.
-2. **`sonda catalog list/show/run`** replacing `sonda scenarios` + `sonda packs` per spec §6.3. Catalog metadata fields: `name`, `type`, `category`, `signal`, `description`, `runnable`. Search path is the same as today (`--scenario-path`, `--pack-path`, env vars, `./scenarios/` + `./packs/`, `~/.sonda/`).
-3. **`sonda init` v2 output.** The interactive wizard should emit `version: 2` files with `defaults:` and `scenarios:` blocks instead of the current v1 shape. Pre-fill paths (`--from @name`, `--from path.csv`) should map cleanly into the v2 schema.
-4. **Deprecate or hide** `sonda scenarios`, `sonda packs`, `sonda story` subcommands. The story CLI must keep working — it is still the row-16.12 runtime oracle until PR 9.
-5. **`--dry-run` enhancements (spec §5).** Print the compiled v2 view (resolved defaults, expanded packs, resolved `phase_offset`, assigned `clock_group`) in the format the spec shows. `compile_scenario_file` gives you the `Vec<ScenarioEntry>` directly; the formatting is the new work.
-6. **CLI status output for `clock_group`.** Add a start-banner line for each scenario naming its clock_group (spec §5 format shows `clock_group: link_failover (auto)` as an example). Also consider grouping the aggregate summary by clock_group when more than one is present. This closes matrix row 8.2 "runtime observability" fully.
-7. **`From<CompileError> for SondaError`.** PR 7's CLI will want to propagate compile errors through the existing `SondaError` chain.
+1. **Migrate `scenarios/*.yaml` to v2 format.** Every built-in scenario (cpu-spike, memory-leak, disk-fill, latency-degradation, error-rate-spike, interface-flap, network-link-failure, steady-state, log-storm, cardinality-explosion, histogram-latency) gets `version: 2` + `defaults:` + `scenarios:` shape. Compile-parity test (v2 YAML via `compile_scenario_file` == reference `Vec<ScenarioEntry>`) must pass for each. Runtime parity (byte-equal or line-multiset stdout) must still pass against the pinned v1 baselines the parity suite already covers.
+2. **Migrate `stories/link-failover.yaml`** into the v2 scenarios (absorbed, not a separate directory). Close the canonical "network link failover" example on the v2 surface. Matrix rows 9.13–9.15 flip to Pass here.
+3. **Migrate `packs/*.yaml`** if any changes are needed — pack definition format is nominally unchanged per spec §7, but verify each of the three built-ins (`telegraf_snmp_interface`, `node_exporter_cpu`, `node_exporter_memory`) still resolves via `classify_pack_reference`.
+4. **Dedup overlapping examples.** `network-link-failure.yaml` (scenario) and `link-failover.yaml` (story) both express the same situation — pick the canonical one (probably `link-failover.v2.yaml` with the full `after:` chain) and remove the other. Spec §5.3 calls this out.
+5. **Close feature-parity rows that smoke-tests land on**: 5.4–5.6 (syslog/remote_write/otlp encoders), 6.2–6.10 (non-stdout sinks). These are docker-compose smoke tests per the SRE review memory — `@smoke` agent runs here.
+6. **Update `docs/site/` examples** that reference v1 built-ins to show the v2 shape. Fold v2-scenarios.md callouts into the main docs flow where duplication arises. The doc-level dedup follows the YAML migration.
 
-### Target matrix rows for PR 7
+### Target matrix rows for PR 8
 
-- **Section 12** CLI: 12.1, 12.7 (enhanced `--dry-run`), 12.10, 12.11, 12.12–12.17 (catalog), 12.19 (`init` v2), 12.20, 12.22
-- **Section 14** status output / UX: 14.1–14.9 (all)
-- **Matrix row 8.2 runtime observability** — fully close (PR 6 closed end-to-end carry only)
-- **Matrix row 8.6** aggregate summary grouping by clock_group
-- **Matrix rows 5.2 + 6.11** `--output` shorthand on the CLI layer
+- **5.4, 5.5, 5.6** encoder smoke (syslog, remote_write, otlp)
+- **6.2–6.10** sink smoke (file, tcp, udp, http_push, remote_write, kafka, loki, otlp_grpc)
+- **9.13, 9.14, 9.15** built-in packs end-to-end
+- **15.1–15.7** deployment rows may land here or PR 9 depending on docker-compose scope
 
-### PR 9 forward pointer — v1 story parity oracle cleanup
+### Scope discipline for PR 8
 
-When PR 9 removes the v1 story CLI (`sonda story --file`), the hand-built `v1_link_failover_entries` helper in `sonda-core/tests/v2_story_parity.rs` becomes a relic. It exists only because `sonda-core` tests cannot dev-dep the binary crate that owns `compile_story`. Once the v1 story module is gone there is no "v1 side" to mirror, so PR 9 should either:
+Do NOT also:
+- Remove v1 CLI subcommands or v1 story module (PR 9).
+- Remove v1 loaders in `scenario_loader.rs` (PR 9).
+- Delete `v1_link_failover_entries` helper in `sonda-core/tests/v2_story_parity.rs` (PR 9).
+- Rename `sonda-core/tests/v2_*.rs` parity bridge files (PR 9).
+- Touch the sonda-core compile pipeline (frozen after PR 6 + the PR 7 `clock_group_is_auto` addition).
+- Add `From<CompileError> for SondaError` or other sonda-core surface changes.
+
+### Testing conventions for PR 8
+
+- `@smoke` agent runs alongside `@uat` when the changeset touches Docker Compose / Helm / sink-integration surfaces (smoke tests row 5.4–5.6 + 6.2–6.10).
+- v2-migration PRs MUST regenerate the v1 parity snapshots where the v1 built-in changes, but if the v2 migration preserves semantic parity (same compiled entries, same runtime output), no snapshot changes are needed.
+
+## PR 9 Forward Pointer — final cleanup
+
+Consolidated checklist for the final cleanup PR. Surface this list in the PR 9 plan.
+
+### v1 story parity oracle cleanup
+
+When PR 9 removes the v1 story CLI (`sonda story --file`), the hand-built `v1_link_failover_entries` helper in `sonda-core/tests/v2_story_parity.rs` becomes a relic. It exists only because `sonda-core` tests cannot dev-dep the binary crate that owns `compile_story`. Once the v1 story module is gone, there is no "v1 side" to mirror, so PR 9 should either:
 
 - **Delete** the `link_failover_runtime_parity` test and the `v1_link_failover_entries` helper entirely (the `link_failover_compile_parity` test remains and is sufficient — it pins the v2 compile offsets byte-for-byte against the `timing::*_crossing_secs` math), **or**
 - **Refactor** to compare v2-compile stdout against a pinned byte-snapshot (via `insta::assert_snapshot!` on one canonical v2 run) if the runtime execution remains valuable to protect.
 
-The first option is cleaner and aligns with PR 9's remit ("remove transitional oracle code"). Surface this decision in PR 9's plan.
+The first option is cleaner and aligns with PR 9's remit ("remove transitional oracle code").
 
-### Scope discipline for PR 7
+### Rename `sonda-core/tests/v2_*.rs` parity bridge files
 
-Do NOT also:
-- Migrate built-in scenario YAMLs to v2 format (PR 8).
-- Remove v1 CLI subcommands (PR 9).
-- Add v2 scenario server API (PR 9).
-- Touch the sonda-core compile pipeline (all five phases are frozen after PR 6).
-- Change `prepare_entries` / `PreparedEntry` / `launch_scenario` / `run_multi`.
+Per the `feedback_no_v2_prefix` discipline, test files should not carry `v2_` prefixes. The existing parity-bridge files were tolerated during the v1→v2 transition. After PR 9 removes v1, rename to feature-named files:
 
-### Testing conventions for PR 7
+- `v2_runtime_parity.rs` → `runtime_parity.rs` (or absorb into per-scenario test files)
+- `v2_pack_parity.rs` + `v2_pack_runtime_parity.rs` → `pack_parity.rs`
+- `v2_translator_semantics.rs` → `translator_semantics.rs`
+- `v2_compile_after_fixtures.rs` → `compile_after_fixtures.rs`
+- `v2_story_parity.rs` → delete (story oracle removed) or absorb into `link_failover_tests.rs`
+- `v2_fixture_examples.rs`, `v2_expand_fixtures.rs` → drop the `v2_` prefix
 
-Same post-consolidation conventions as PR 6. The shared test surface is `sonda-core/tests/common/mod.rs`; any CLI-level test infrastructure goes in `sonda/tests/` (that directory already exists for CLI integration). For end-to-end CLI tests, spawn the binary as a subprocess — this is the natural setting for the subprocess tests that PR 6 deferred.
+Memory record: `project_pr9_test_rename.md` in auto-memory tracks this decision.
+
+### NITs carried forward from PR 7 reviewer passes
+
+- **NIT 7 — dry-run `[config]` header missing `(id: ...)` annotation** per spec §5 (`[config] [1/3] interface_oper_state (id: primary_link_state)`). Requires threading `CompiledEntry.id` through `compile_scenario_file`'s output. Forward work: enrich the library's return shape or pair `Vec<ScenarioEntry>` with a side `Vec<Option<String>>` of ids.
+- **Pack-expansion dry-run missing `[override]` markers** per spec §5.2. Pre-existing gap from PR 7 commit 1 (not a regression). Render `[override]` tag on generator/label fields that came from the entry's `overrides:` block rather than the pack default. Requires carrying override provenance through `expand::ExpandedEntry`.
+- **`_scenario_type: InitScenarioType` parameter in `run_init_scenario`** is now dead because every init path uses `compile_scenario_file`. Either delete the parameter + enum or document why it's retained. Small cleanup.
+- **`#[allow(dead_code)] load_multi_config`** in `sonda/src/config.rs` — BLOCKER 5's flat-v1 fix routed around it, so the helper is now genuinely unused in the runtime path. Delete it (and its six unit tests) once v1 removal opens that area.
+
+### Pre-existing `--no-default-features` test hygiene
+
+PR 7 BLOCKER 1 fix made `cargo build -p sonda --no-default-features` pass for the first time. That revealed 4 pre-existing tests in `sonda/src/config.rs` that call `.expect(...)` without `#[cfg(feature = "http")]` gates and fail under `cargo test --workspace --no-default-features`: `parse_sink_override_http_push_with_endpoint`, `parse_sink_override_loki_with_endpoint`, `all_three_retry_flags_together_succeeds`, `logs_all_three_retry_flags_together_succeeds`. They originate from commit `82a690f` (PR #167, 2026-04-07) — **not a PR 7 regression** — but they should be fixed in PR 9 (or a dedicated hygiene PR) alongside the v1 cleanup. Gate `cargo build -p sonda --no-default-features` passes; test gate does not.
+
+### Server API v2
+
+- Accept v2 YAML bodies in `sonda-server` endpoints. Rows 13.1–13.9 close here.
+- Matrix row 13.9 is explicitly "v2 multi-scenario response" — new response shape for the unified model.
+
+### UX observations from PR 7 UAT
+
+- **Exit code 0 on TCP sink connection failure** — UAT flagged. The process prints the error to stderr but exits successfully, which could mask failures in CI. Pre-existing behavior; audit and decide if exit code should propagate the sink failure.
+- **File-sink concurrency** — when `catalog run <multi-pack> -o <file>` writes concurrent scenarios to a single file path, only the last scenario's output survives (file-sink concurrency limitation acknowledged in PR 7's `cli_catalog::catalog_run_pack_honors_output_flag` test).
 
 ## Active Risks
 - Snapshot format stability — must be deterministic and survive refactor
