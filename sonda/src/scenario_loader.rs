@@ -88,15 +88,106 @@ pub fn load_scenario_entries(
     Ok(LoadedScenario { entries, version })
 }
 
-/// Load v1 entries: either the legacy `pack:` shorthand or the
-/// `scenarios:` multi-scenario list.
+/// Load v1 entries: either the legacy `pack:` shorthand, the flat
+/// single-scenario layout (a top-level `name:` + `generator:`, no
+/// `scenarios:` list — used by most built-in scenarios like
+/// `cpu-spike.yaml`), or the `scenarios:` multi-scenario list.
+///
+/// The three shapes are probed in that order. The spec §6.1 mandate
+/// (`handles v1 files (multi-scenario, single-scenario, pack-scenario)
+/// and v2 files transparently`) requires all three to flow through
+/// `sonda run --scenario`.
 fn load_v1(yaml: &str, pack_catalog: &PackCatalog) -> Result<Vec<ScenarioEntry>> {
     if crate::config::is_pack_config(yaml) {
-        crate::config::load_pack_from_yaml(yaml, pack_catalog)
-    } else {
-        let multi: sonda_core::MultiScenarioConfig =
-            serde_yaml_ng::from_str(yaml).context("failed to parse multi-scenario YAML")?;
-        Ok(multi.scenarios)
+        return crate::config::load_pack_from_yaml(yaml, pack_catalog);
+    }
+    if is_flat_single_scenario(yaml) {
+        return load_flat_single_scenario(yaml);
+    }
+    let multi: sonda_core::MultiScenarioConfig =
+        serde_yaml_ng::from_str(yaml).context("failed to parse multi-scenario YAML")?;
+    Ok(multi.scenarios)
+}
+
+/// Detect a v1 flat single-scenario file.
+///
+/// The flat layout carries schedule fields (`name:`, `rate:`,
+/// `generator:` / `distribution:`) at the top level instead of inside a
+/// `scenarios:` list. It is how all built-in scenarios on disk are
+/// written today (`scenarios/cpu-spike.yaml` and friends).
+///
+/// The probe looks for a top-level `generator:` or `distribution:` key
+/// and the absence of a `scenarios:` key — that pair uniquely
+/// disambiguates a flat scenario from the other v1 shapes and any v2
+/// file (which always declares `version: 2` and routes through
+/// `compile_scenario_file` upstream of this function).
+fn is_flat_single_scenario(yaml: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        #[serde(default)]
+        scenarios: Option<serde_yaml_ng::Value>,
+        #[serde(default)]
+        generator: Option<serde_yaml_ng::Value>,
+        #[serde(default)]
+        distribution: Option<serde_yaml_ng::Value>,
+    }
+    match serde_yaml_ng::from_str::<Probe>(yaml) {
+        Ok(probe) => {
+            probe.scenarios.is_none() && (probe.generator.is_some() || probe.distribution.is_some())
+        }
+        Err(_) => false,
+    }
+}
+
+/// Dispatch a flat v1 single-scenario YAML to the appropriate
+/// single-signal config loader.
+///
+/// Uses the top-level `signal_type:` to pick which config variant to
+/// deserialize, defaulting to `metrics` when absent (the legacy shape
+/// in the scenario catalog). The resulting `ScenarioConfig` / etc. is
+/// wrapped in a one-element `Vec<ScenarioEntry>` for downstream
+/// `prepare_entries`.
+fn load_flat_single_scenario(yaml: &str) -> Result<Vec<ScenarioEntry>> {
+    use sonda_core::config::{
+        HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, SummaryScenarioConfig,
+    };
+
+    #[derive(serde::Deserialize)]
+    struct SignalTypeProbe {
+        #[serde(default)]
+        signal_type: Option<String>,
+    }
+
+    let signal = serde_yaml_ng::from_str::<SignalTypeProbe>(yaml)
+        .ok()
+        .and_then(|p| p.signal_type)
+        .unwrap_or_else(|| "metrics".to_string());
+
+    match signal.as_str() {
+        "metrics" => {
+            let cfg: ScenarioConfig = serde_yaml_ng::from_str(yaml)
+                .context("failed to parse flat v1 metrics scenario")?;
+            Ok(vec![ScenarioEntry::Metrics(cfg)])
+        }
+        "logs" => {
+            let cfg: LogScenarioConfig =
+                serde_yaml_ng::from_str(yaml).context("failed to parse flat v1 logs scenario")?;
+            Ok(vec![ScenarioEntry::Logs(cfg)])
+        }
+        "histogram" => {
+            let cfg: HistogramScenarioConfig = serde_yaml_ng::from_str(yaml)
+                .context("failed to parse flat v1 histogram scenario")?;
+            Ok(vec![ScenarioEntry::Histogram(cfg)])
+        }
+        "summary" => {
+            let cfg: SummaryScenarioConfig = serde_yaml_ng::from_str(yaml)
+                .context("failed to parse flat v1 summary scenario")?;
+            Ok(vec![ScenarioEntry::Summary(cfg)])
+        }
+        other => anyhow::bail!(
+            "flat v1 scenario has unsupported signal_type {other:?}; \
+             valid values: metrics, logs, histogram, summary"
+        ),
     }
 }
 
@@ -500,5 +591,127 @@ metrics:
         assert_eq!(pack.metrics.len(), 1);
 
         let _ = fs::remove_dir_all(&pack_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Flat v1 single-scenario detection + dispatch
+    // -----------------------------------------------------------------------
+
+    /// A flat v1 metrics scenario (top-level `name:` + `generator:`, no
+    /// `scenarios:`) is detected by the probe and loaded into a single
+    /// [`ScenarioEntry::Metrics`] entry.
+    #[test]
+    fn loads_flat_v1_single_scenario_metrics() {
+        let dir = temp_dir("v1-flat-metrics");
+        let path = write(
+            &dir,
+            "cpu-spike-like.yaml",
+            r#"scenario_name: cpu-spike-like
+category: test
+signal_type: metrics
+description: test
+
+name: node_cpu_usage_percent
+rate: 1
+duration: 200ms
+
+generator:
+  type: constant
+  value: 1.0
+
+labels:
+  instance: web-01
+"#,
+        );
+
+        let loaded = load_scenario_entries(&path, &empty_scenario_catalog(), &empty_pack_catalog())
+            .expect("flat v1 metrics must load");
+        assert_eq!(loaded.entries.len(), 1);
+        assert!(loaded.version.is_none(), "no version field means v1");
+        assert!(matches!(
+            &loaded.entries[0],
+            ScenarioEntry::Metrics(c) if c.base.name == "node_cpu_usage_percent"
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A flat v1 logs scenario dispatches to the logs config loader.
+    #[test]
+    fn loads_flat_v1_single_scenario_logs() {
+        let dir = temp_dir("v1-flat-logs");
+        let path = write(
+            &dir,
+            "app-logs.yaml",
+            r#"scenario_name: app-logs
+category: test
+signal_type: logs
+description: test
+
+name: app_log
+rate: 2
+duration: 200ms
+
+generator:
+  type: template
+  templates:
+    - message: "hello world"
+
+encoder:
+  type: json_lines
+"#,
+        );
+
+        let loaded = load_scenario_entries(&path, &empty_scenario_catalog(), &empty_pack_catalog())
+            .expect("flat v1 logs must load");
+        assert_eq!(loaded.entries.len(), 1);
+        assert!(matches!(&loaded.entries[0], ScenarioEntry::Logs(_)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The probe rejects a multi-scenario file — it must still route to
+    /// the `MultiScenarioConfig` loader, not the flat single-scenario
+    /// path.
+    #[test]
+    fn probe_does_not_match_multi_scenario_file() {
+        let yaml = r#"scenarios:
+  - signal_type: metrics
+    name: x
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+        assert!(!is_flat_single_scenario(yaml));
+    }
+
+    /// The probe rejects a file with neither a top-level `generator:`
+    /// nor `distribution:` — e.g. the metadata-only scenario catalog
+    /// entries that wrap their signal in `scenarios:`.
+    #[test]
+    fn probe_does_not_match_metadata_only_file() {
+        let yaml = r#"scenario_name: mypack
+category: test
+signal_type: metrics
+"#;
+        assert!(!is_flat_single_scenario(yaml));
+    }
+
+    /// The probe accepts a histogram/summary flat file (`distribution:`
+    /// at top level, no `scenarios:`).
+    #[test]
+    fn probe_matches_flat_histogram_by_distribution_field() {
+        let yaml = r#"scenario_name: hist
+category: test
+signal_type: histogram
+name: h
+rate: 1
+distribution:
+  type: normal
+  mean: 0.5
+  stddev: 0.1
+"#;
+        assert!(is_flat_single_scenario(yaml));
     }
 }

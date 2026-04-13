@@ -186,7 +186,7 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 12.1 | Run scenario file | Pass | PR 7 | `scenario_loader::load_scenario_entries` dispatches v1/v2 from `version:` |
+| 12.1 | Run scenario file | Pass | PR 7 | `scenario_loader::load_scenario_entries` dispatches v1 (flat single-scenario / multi-scenario / pack-scenario) and v2 from `version:` per spec §6.1 |
 | 12.2 | One-off metric | Pass | PR 7 | Unchanged path; subprocess-tested via existing `quiet_flag.rs` etc. |
 | 12.3 | One-off logs | Pass | PR 7 | Unchanged |
 | 12.4 | One-off histogram | Pass | PR 7 | Unchanged |

@@ -132,6 +132,80 @@ fn run_v2_dry_run_json_format_emits_stable_dto() {
     assert_eq!(json["scenarios"][0]["signal"], "metrics");
 }
 
+/// A flat v1 single-scenario file (top-level `name:` + `generator:`,
+/// no `scenarios:` list) runs end-to-end. Spec §6.1 requires `sonda run
+/// --scenario` to handle v1 single-scenario, multi-scenario, and
+/// pack-scenario layouts transparently; PR 7's unified loader originally
+/// only handled the multi and pack shapes.
+#[test]
+fn run_flat_v1_single_scenario_succeeds() {
+    let fixture = cli_fixtures_dir().join("flat-v1-metrics.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["--quiet", "run", "--scenario"])
+        .arg(&fixture)
+        .output()
+        .expect("must spawn sonda");
+
+    assert!(
+        output.status.success(),
+        "flat v1 run failed: {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("flat_v1_metric"),
+        "expected flat v1 metric name in stdout, got:\n{stdout}"
+    );
+}
+
+/// `sonda catalog run <builtin-scenario>` resolves a flat v1 built-in
+/// scenario like `cpu-spike` end-to-end. This is the end-to-end flow
+/// the docs describe (`sonda catalog run cpu-spike`). The catalog
+/// search path is pointed at the repo's `scenarios/` tree so the test
+/// runs against the real built-in YAMLs.
+#[test]
+fn catalog_run_cpu_spike_builtin_succeeds() {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("sonda crate has a parent")
+        .to_path_buf();
+    let scenarios_dir = repo_root.join("scenarios");
+    if !scenarios_dir.exists() {
+        // Defensive: should always exist in the workspace. Skip
+        // silently if a stripped-down checkout removed it.
+        eprintln!("skipping: {} missing", scenarios_dir.display());
+        return;
+    }
+
+    let output = Command::new(sonda_bin())
+        .args(["--quiet", "--scenario-path"])
+        .arg(&scenarios_dir)
+        .args([
+            "catalog",
+            "run",
+            "cpu-spike",
+            "--duration",
+            "300ms",
+            "--rate",
+            "1",
+        ])
+        .output()
+        .expect("must spawn sonda");
+
+    assert!(
+        output.status.success(),
+        "catalog run cpu-spike failed: {:?}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("node_cpu_usage_percent"),
+        "expected cpu-spike metric name in stdout, got:\n{stdout}"
+    );
+}
+
 /// v2 compile errors surface with actionable diagnostics: non-zero exit
 /// plus stderr containing the source path or a typed error marker.
 #[test]
