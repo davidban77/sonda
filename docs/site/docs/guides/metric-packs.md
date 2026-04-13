@@ -103,6 +103,18 @@ sonda catalog run telegraf_snmp_interface \
   --sink remote_write --endpoint http://localhost:8428/api/v1/write
 ```
 
+Capture the expanded output to a file with `-o` (shorthand for `--sink file --endpoint <path>`).
+Every metric in the pack writes to the same file:
+
+```bash
+sonda catalog run telegraf_snmp_interface \
+  --rate 1 --duration 10s \
+  --label device=rtr-edge-01 \
+  --label ifName=Gi0/0/0 \
+  --label ifIndex=1 \
+  -o /tmp/snmp.prom
+```
+
 Use `--dry-run` to see the expanded config without emitting data:
 
 ```bash

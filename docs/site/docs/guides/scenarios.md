@@ -59,18 +59,12 @@ For machine-readable output, add `--json` to get a stable JSON array. See
 
 ## Run a scenario
 
-Use `sonda run --scenario @<name>` with the `@name` shorthand to execute a built-in scenario:
+The fastest path is `sonda catalog run <name>`, which works for every scenario in the catalog
+regardless of layout (flat single-signal, multi-scenario, or v2):
 
 ```bash
-sonda run --scenario @interface-flap --duration 30s
-```
-
-For flat single-signal built-ins like `cpu-spike`, use the matching signal subcommand:
-
-```bash
-sonda metrics --scenario @cpu-spike --duration 10s --rate 5
-sonda logs    --scenario @log-storm --duration 20s
-sonda histogram --scenario @histogram-latency
+sonda catalog run cpu-spike --rate 5 --duration 10s
+sonda catalog run interface-flap --duration 30s
 ```
 
 ```text title="Output"
@@ -81,8 +75,17 @@ node_cpu_usage_percent{cpu="0",instance="web-01",job="node_exporter"} 95 1775589
 ■ node_cpu_usage_percent  completed in 10.0s | events: 50 | bytes: 4350 B | errors: 0
 ```
 
-Any flag available on the signal subcommand (`--label`, `--precision`, `--sink`, `--output`,
-etc.) composes with `@name`:
+The `@name` shorthand also works on `sonda run` and any signal subcommand:
+
+```bash
+sonda run --scenario @interface-flap --duration 30s
+sonda metrics --scenario @cpu-spike --duration 10s --rate 5
+sonda logs    --scenario @log-storm --duration 20s
+sonda histogram --scenario @histogram-latency
+```
+
+Use the signal subcommand when you need a per-signal flag like `--precision`, `--value`, or
+`--label` that `catalog run` does not expose:
 
 ```bash
 sonda metrics --scenario @cpu-spike \
@@ -95,15 +98,9 @@ sonda metrics --scenario @cpu-spike \
     Use `--dry-run` to validate what a scenario *would* do without emitting any data:
 
     ```bash
+    sonda --dry-run catalog run cpu-spike
     sonda --dry-run metrics --scenario @cpu-spike
     ```
-
-!!! info "Why `sonda run --scenario @name` does not always work"
-    `sonda run` expects a multi-scenario file (top-level `scenarios:` list), a `pack:`
-    shorthand, or a [v2 file](../configuration/v2-scenarios.md). Most built-in single-signal
-    scenarios use the flat v1 format, so they run through the signal subcommand
-    (`sonda metrics`, `sonda logs`, `sonda histogram`) instead. Multi-signal built-ins like
-    `interface-flap` work with `sonda run` because they already use the `scenarios:` list form.
 
 ## Inspect the YAML
 
@@ -201,8 +198,7 @@ scenario YAML. For example, `--duration 10s` overrides whatever duration the bui
     Use `@name` on a signal subcommand when you want the full set of per-signal flags
     (`--label`, `--precision`, `--value`). Use `catalog run` for a focused, cross-type surface
     (scenarios and packs) with a small override set. See
-    [`catalog run`](../configuration/cli-reference.md#catalog-run) for the limitations
-    on flat v1 scenarios.
+    [`catalog run`](../configuration/cli-reference.md#catalog-run) for the full flag list.
 
 ## Scenario catalog
 

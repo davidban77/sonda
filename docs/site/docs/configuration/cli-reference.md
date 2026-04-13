@@ -234,7 +234,7 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
       duration:      30s
       generator:     template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
       encoder:       json_lines
-      sink:          file: /tmp/sonda-logs.json
+      sink:          file (/tmp/sonda-logs.json)
 
     Validation: OK (2 scenarios)
     ```
@@ -309,7 +309,8 @@ sonda run --scenario link-failover.v2.yaml --dry-run --format=json
       "sink": "stdout",
       "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/0/0" },
       "phase_offset": null,
-      "clock_group": "chain_backup_util"
+      "clock_group": "chain_backup_util",
+      "clock_group_is_auto": true
     },
     {
       "index": 2,
@@ -322,7 +323,8 @@ sonda run --scenario link-failover.v2.yaml --dry-run --format=json
       "sink": "stdout",
       "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/1/0" },
       "phase_offset": "1m",
-      "clock_group": "chain_backup_util"
+      "clock_group": "chain_backup_util",
+      "clock_group_is_auto": true
     }
   ]
 }
@@ -343,6 +345,7 @@ sonda run --scenario link-failover.v2.yaml --dry-run --format=json
 | `scenarios[].labels` | object | Sorted key-value map of resolved static labels. |
 | `scenarios[].phase_offset` | string or null | Delay before start, e.g. `"1m"`. |
 | `scenarios[].clock_group` | string or null | Clock group name (no `(auto)` suffix). |
+| `scenarios[].clock_group_is_auto` | bool | `true` when the compiler assigned the group from an `after:` chain; `false` for explicit `clock_group:` values. |
 
 !!! note
     `--format=json` is ignored for v1 files. The v1 dry-run output stays text-only and goes to
@@ -818,10 +821,11 @@ sonda run --scenario <FILE | @name> [OPTIONS]
 
 ### v1 vs v2 files
 
-`sonda run` accepts four shapes:
+`sonda run` accepts every supported scenario shape:
 
 | Shape | Top-level form | Docs |
 |-------|----------------|------|
+| **v1 flat single-scenario** | `name:` + `generator:` (no `scenarios:` list) | [Scenario Files](scenario-file.md) |
 | **v1 multi-scenario** | `scenarios:` list (no `version:` field) | [Scenario Files -- Multi-scenario files](scenario-file.md#multi-scenario-files) |
 | **v1 pack shorthand** | `pack: <name>` at the top | [Pack scenario files](scenario-file.md#pack-scenario-files) |
 | **v2** | `version: 2` + `defaults:` + `scenarios:` | [v2 Scenario Files](v2-scenarios.md) |
@@ -835,18 +839,22 @@ same runtime shape.
 # v2 file with after: chain
 sonda run --scenario scenarios/link-failover.v2.yaml
 
-# v1 multi-scenario file (unchanged behavior)
+# v1 multi-scenario file
 sonda run --scenario examples/multi-scenario.yaml
 
-# @name shorthand against the built-in catalog
+# v1 flat single-scenario file
+sonda run --scenario examples/basic-metrics.yaml
+
+# @name shorthand against the built-in catalog (works for any shape)
 sonda run --scenario @interface-flap
+sonda run --scenario @cpu-spike
 ```
 
-!!! warning "Single-signal flat v1 files"
-    Flat single-scenario v1 files (a top-level `name:` + `generator:` with no `scenarios:` list)
-    are not accepted by `sonda run`. Use the matching signal subcommand instead:
-    `sonda metrics --scenario file.yaml`, `sonda logs --scenario file.yaml`, etc. The `@name`
-    shorthand on those subcommands also reads the catalog.
+!!! tip "Picking the right command"
+    `sonda run --scenario <file>` is the unified entry point and accepts every layout above.
+    The signal-specific subcommands (`sonda metrics`, `sonda logs`, `sonda histogram`,
+    `sonda summary`) still take `--scenario` for flat single-signal files when you want
+    per-signal flags like `--label`, `--precision`, or `--value`.
 
 ### Aggregate summary
 
@@ -1023,36 +1031,34 @@ sonda catalog run <NAME> [OPTIONS]
 | `--encoder <FORMAT>` | string | Override the encoder. |
 | `--sink <TYPE>` | string | Override the sink. |
 | `--endpoint <URL>` | string | Sink endpoint (required for network sinks). |
-| `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. |
+| `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. Works for both scenarios and packs. |
 | `--label <KEY=VALUE>` | string | Add a label (repeatable, required for most pack runs). |
 
 ```bash
-# Run a pack with required labels
+# Run a flat single-scenario built-in (cpu-spike, memory-leak, log-storm, ...)
+sonda catalog run cpu-spike --rate 1 --duration 10s
+
+# Run a multi-scenario built-in
+sonda catalog run interface-flap --duration 30s
+
+# Run a pack with required labels and write to a file
 sonda catalog run telegraf_snmp_interface \
   --rate 1 --duration 10s \
   --label device=rtr-edge-01 \
   --label ifName=GigabitEthernet0/0/0 \
-  --label ifIndex=1
+  --label ifIndex=1 \
+  -o /tmp/snmp.prom
 
 # Validate a scenario without emitting events
 sonda --dry-run catalog run interface-flap
 ```
 
-!!! warning "Flat single-signal scenarios need the signal subcommand"
-    `sonda catalog run` accepts v2 scenarios and v1 multi-scenario files (anything with a
-    top-level `scenarios:` list). Flat single-scenario v1 files -- which most of the built-in
-    scenarios use today -- are not yet accepted by `catalog run`. For those, use the
-    `@name` shorthand on the signal subcommand instead:
-
-    ```bash
-    # Flat v1 built-in: use the signal subcommand
-    sonda metrics --scenario @cpu-spike --duration 10s --rate 5
-    sonda logs    --scenario @log-storm --sink loki --endpoint http://localhost:3100
-    sonda run     --scenario @interface-flap       # multi-scenario built-ins work via run
-    ```
-
-    This limitation will close as the built-in scenarios migrate to
-    [v2 format](v2-scenarios.md).
+!!! info "All scenario layouts are accepted"
+    `sonda catalog run` dispatches through the same loader as `sonda run --scenario`, so it
+    handles flat single-scenario v1 files, multi-scenario v1 files, pack shorthand files, and
+    v2 files transparently. Use the `@name` shorthand on a signal subcommand
+    (`sonda metrics --scenario @cpu-spike`) when you need a per-signal flag like `--precision`
+    or `--value` that `catalog run` doesn't surface.
 
 !!! tip "CLI overrides vs YAML `overrides:` block"
     For per-metric generator overrides inside a pack, use a
@@ -1069,7 +1075,7 @@ hidden from `sonda --help`. Everything they did is now available under `sonda ca
 |----------------|-------------|
 | `sonda scenarios list` | `sonda catalog list --type scenario` |
 | `sonda scenarios show <n>` | `sonda catalog show <n>` |
-| `sonda scenarios run <n>` | `sonda catalog run <n>` (or `sonda metrics --scenario @<n>` for flat v1) |
+| `sonda scenarios run <n>` | `sonda catalog run <n>` |
 | `sonda packs list` | `sonda catalog list --type pack` |
 | `sonda packs show <n>` | `sonda catalog show <n>` |
 | `sonda packs run <n>` | `sonda catalog run <n>` |
