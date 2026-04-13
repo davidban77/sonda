@@ -1,0 +1,23 @@
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: http_requests_errors_total
+    rate: 2
+    duration: 1s
+    generator:
+      type: spike
+      baseline: 2.0
+      magnitude: 48.0
+      duration_secs: 5
+      interval_secs: 20
+    labels:
+      instance: api-server-01
+      job: app
+      status: "500"
+      method: POST
+      handler: "/api/v1/ingest"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

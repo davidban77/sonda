@@ -1,0 +1,104 @@
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+               0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-primary
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/1
+      ifAlias: uplink-backup
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_in_octets
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [200000000, 210000000, 220000000, 215000000, 225000000,
+               230000000, 220000000, 210000000, 215000000, 225000000,
+               0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               100000000, 140000000, 180000000, 200000000, 210000000,
+               220000000, 215000000, 225000000, 230000000, 220000000]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-primary
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_in_octets
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [100000000, 110000000, 105000000, 115000000, 108000000,
+               112000000, 106000000, 110000000, 108000000, 115000000,
+               300000000, 320000000, 340000000, 330000000, 350000000,
+               340000000, 335000000, 345000000, 330000000, 350000000,
+               200000000, 170000000, 140000000, 115000000, 110000000,
+               105000000, 108000000, 112000000, 110000000, 115000000]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/1
+      ifAlias: uplink-backup
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+
+  - signal_type: metrics
+    name: interface_errors
+    rate: 1
+    duration: 1s
+    generator:
+      type: sequence
+      values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               45, 38, 52, 41, 47, 39, 50, 44, 36, 48,
+               3, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: uplink-primary
+      job: snmp
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

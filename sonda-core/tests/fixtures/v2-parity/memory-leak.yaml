@@ -1,0 +1,20 @@
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: process_memory_usage_percent
+    rate: 1
+    duration: 1s
+    generator:
+      type: leak
+      baseline: 40.0
+      ceiling: 95.0
+      time_to_ceiling: "120s"
+    labels:
+      instance: app-server-01
+      job: process_exporter
+      process: "leaky-service"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
