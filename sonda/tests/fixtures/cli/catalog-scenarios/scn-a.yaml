@@ -1,0 +1,17 @@
+scenario_name: scn-a
+category: network
+signal_type: metrics
+description: "Catalog test scenario A"
+
+scenarios:
+  - signal_type: metrics
+    name: scn_a_metric
+    rate: 1
+    duration: 300ms
+    generator:
+      type: constant
+      value: 1.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

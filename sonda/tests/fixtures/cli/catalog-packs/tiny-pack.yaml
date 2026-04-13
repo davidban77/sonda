@@ -1,0 +1,16 @@
+name: tiny_pack
+description: "Catalog test pack"
+category: network
+
+shared_labels:
+  device: ""
+
+metrics:
+  - name: pack_metric_a
+    generator:
+      type: constant
+      value: 1.0
+  - name: pack_metric_b
+    generator:
+      type: constant
+      value: 2.0
