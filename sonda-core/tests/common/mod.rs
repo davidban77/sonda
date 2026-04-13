@@ -263,6 +263,71 @@ pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
     result
 }
 
+/// Normalize timestamps embedded in encoded metric / log output so that
+/// two runs can be compared byte-for-byte.
+///
+/// Every encoder emits a wall-clock timestamp: Prometheus text encodes
+/// it as an integer `ms-since-epoch` trailing each sample line, while JSON
+/// Lines embeds an RFC 3339 `"timestamp":"..."` field. This helper rewrites
+/// all such tokens to fixed sentinels so parity tests do not fail on
+/// clock-drift between v1 and v2 runs.
+///
+/// The replacement is intentionally aggressive — it normalizes:
+///
+/// - any run of 11–19 digits immediately followed by `\n` (Prometheus text
+///   millisecond epoch timestamps) to `___TS___\n`,
+/// - any `"timestamp":"...Z"` JSON field to `"timestamp":"___TS___"`.
+///
+/// Non-timestamp substrings that match these shapes do not appear in
+/// sonda's encoder output; see the unit tests for the encoders in
+/// `src/encoder/` for the exact byte patterns.
+pub fn normalize_timestamps(bytes: &[u8]) -> Vec<u8> {
+    // Phase 1: replace Prometheus ` <ts_ms>\n` trailers.
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        // Look for ` <digits>\n` pattern (Prometheus trailing timestamp).
+        if rest[0] == b' ' {
+            let after_space = &rest[1..];
+            let mut digit_end = 0;
+            while digit_end < after_space.len() && after_space[digit_end].is_ascii_digit() {
+                digit_end += 1;
+            }
+            if digit_end >= 11 && digit_end <= 19 && after_space.get(digit_end) == Some(&b'\n') {
+                out.extend_from_slice(b" ___TS___\n");
+                i += 1 + digit_end + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+
+    // Phase 2: normalize JSON `"timestamp":"...Z"` fields.
+    let bytes = out;
+    let mut out = Vec::with_capacity(bytes.len());
+    let needle = b"\"timestamp\":\"";
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes.len() - i >= needle.len() && &bytes[i..i + needle.len()] == needle {
+            // Emit the needle, then scan ahead for the closing quote.
+            out.extend_from_slice(b"\"timestamp\":\"___TS___\"");
+            let scan_start = i + needle.len();
+            let mut j = scan_start;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+            // Skip past the closing `"`.
+            i = j.saturating_add(1);
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Dispatch a single `ScenarioEntry` to the runner matching its variant.
 ///
 /// The runner is driven with `shutdown: None` (the scenario's own
