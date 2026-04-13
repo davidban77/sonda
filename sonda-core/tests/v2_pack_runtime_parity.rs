@@ -36,22 +36,20 @@ use common::{
 /// `duration` to `override_duration` so the runtime-parity harness stays
 /// fast.
 fn v2_entries_with_duration(fixture: &str, override_duration: &str) -> Vec<ScenarioEntry> {
-    let yaml = parity_fixture(fixture);
-    let resolver = {
-        let pack_file = match fixture {
-            "telegraf-snmp-interface.yaml" => "telegraf-snmp-interface.yaml",
-            "node-exporter-cpu.yaml" => "node-exporter-cpu.yaml",
-            "node-exporter-memory.yaml" => "node-exporter-memory.yaml",
-            other => panic!("unknown parity fixture {other}"),
-        };
-        let pack_name = match fixture {
-            "telegraf-snmp-interface.yaml" => "telegraf_snmp_interface",
-            "node-exporter-cpu.yaml" => "node_exporter_cpu",
-            "node-exporter-memory.yaml" => "node_exporter_memory",
-            _ => unreachable!(),
-        };
-        resolver_with(pack_name, load_repo_pack(pack_file))
+    // Single source of truth for the (fixture-file -> pack-yaml-file,
+    // resolver-name) mapping. Adding a new pack-runtime-parity row is now a
+    // one-line addition to this match; the previous two-arm split forced an
+    // unreachable!() guard to keep the second arm exhaustive.
+    let (pack_file, pack_name): (&str, &str) = match fixture {
+        "telegraf-snmp-interface.yaml" => {
+            ("telegraf-snmp-interface.yaml", "telegraf_snmp_interface")
+        }
+        "node-exporter-cpu.yaml" => ("node-exporter-cpu.yaml", "node_exporter_cpu"),
+        "node-exporter-memory.yaml" => ("node-exporter-memory.yaml", "node_exporter_memory"),
+        other => panic!("unknown parity fixture {other}"),
     };
+    let resolver = resolver_with(pack_name, load_repo_pack(pack_file));
+    let yaml = parity_fixture(fixture);
     let mut entries =
         sonda_core::compile_scenario_file(&yaml, &resolver).expect("v2 compile must succeed");
     for entry in &mut entries {
