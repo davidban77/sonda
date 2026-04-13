@@ -1,0 +1,276 @@
+#![cfg(feature = "config")]
+//! Translator semantic tests for v2 fields not naturally covered by the
+//! runtime parity suite.
+//!
+//! Each test compiles a hand-written v2 YAML through
+//! [`sonda_core::compile_scenario_file`] and asserts the resulting
+//! [`ScenarioEntry`] shape matches a v1-equivalent reference. These are
+//! **compile-time** assertions on the translator — fast and deterministic
+//! — for matrix rows where the cost of running the full scheduler is not
+//! worth the additional coverage over the translator's output shape.
+//!
+//! Rows covered:
+//!
+//! - 1.6 — mixed signal types in one file (metrics + logs + histogram).
+//! - 2.9 — csv_replay with auto column discovery (multi-column fan-out).
+//! - 2.10 — csv_replay with per-column labels.
+//! - 4.1–4.8 — summary signal type (distribution, quantiles, seed, drift).
+//! - 5.2 — influx_lp encoder with explicit `field_key`.
+//! - 5.7 — `precision` field on text encoders.
+//! - 6.12 — retry/backoff config passes through a TCP sink.
+//! - 7.1 — recurring gap window on a metrics scenario.
+//! - 7.2 — recurring burst window on a logs scenario.
+//! - 7.3 — gap + burst overlapping on the same scenario (gap takes
+//!   priority at runtime; this test asserts both fields carry through).
+
+use sonda_core::compiler::expand::InMemoryPackResolver;
+use sonda_core::config::ScenarioEntry;
+use sonda_core::encoder::EncoderConfig;
+use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
+use sonda_core::sink::SinkConfig;
+
+mod common;
+
+use common::parity_fixture;
+
+/// Compile a v2 YAML fixture and return the translated `Vec<ScenarioEntry>`.
+fn compile(fixture: &str) -> Vec<ScenarioEntry> {
+    let yaml = parity_fixture(fixture);
+    let resolver = InMemoryPackResolver::new();
+    sonda_core::compile_scenario_file(&yaml, &resolver)
+        .unwrap_or_else(|e| panic!("{fixture} v2 compile failed: {e}"))
+}
+
+// =============================================================================
+// 1.6 — mixed signal types in one file
+// =============================================================================
+
+/// A single v2 file can carry metrics, logs, and histogram entries — each
+/// flows through the translator into its matching `ScenarioEntry` variant.
+#[test]
+fn row_1_6_mixed_signal_types_translate_to_matching_variants() {
+    let entries = compile("mixed-signal-types.yaml");
+    assert_eq!(entries.len(), 3);
+    assert!(matches!(entries[0], ScenarioEntry::Metrics(_)));
+    assert!(matches!(entries[1], ScenarioEntry::Logs(_)));
+    assert!(matches!(entries[2], ScenarioEntry::Histogram(_)));
+}
+
+// =============================================================================
+// 2.9 — csv_replay auto column discovery (multi-column fan-out)
+// =============================================================================
+
+/// A csv_replay entry with a `columns:` list expands via `prepare_entries`
+/// into one `ScenarioEntry` per column. The translator itself carries the
+/// single pre-fan-out entry through; the fan-out happens in
+/// `prepare_entries` which is out of scope here — this test proves the
+/// translator preserves the csv_replay columns shape end-to-end.
+#[test]
+fn row_2_9_csv_replay_per_column_carries_through() {
+    let entries = compile("csv-replay-columns.yaml");
+    assert_eq!(
+        entries.len(),
+        1,
+        "csv_replay stays a single entry pre-expand"
+    );
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => match &c.generator {
+            GeneratorConfig::CsvReplay {
+                columns: Some(cols),
+                ..
+            } => {
+                let names: Vec<&str> = cols.iter().map(|s| s.name.as_str()).collect();
+                assert_eq!(names, vec!["cpu_usage", "mem_usage"]);
+            }
+            other => panic!("expected CsvReplay with columns, got {other:?}"),
+        },
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 2.10 — csv_replay per-column labels carry through
+// =============================================================================
+
+/// Per-column `labels:` inside a csv_replay column spec survive the
+/// translator unchanged.
+#[test]
+fn row_2_10_csv_replay_per_column_labels_carry_through() {
+    let entries = compile("csv-replay-columns.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => match &c.generator {
+            GeneratorConfig::CsvReplay {
+                columns: Some(cols),
+                ..
+            } => {
+                let first = &cols[0];
+                assert_eq!(first.name, "cpu_usage");
+                let labels = first
+                    .labels
+                    .as_ref()
+                    .expect("per-column labels must carry through");
+                assert_eq!(labels.get("kind").map(String::as_str), Some("cpu"));
+            }
+            _ => panic!("expected CsvReplay with columns"),
+        },
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 4.1–4.8 — summary signal type
+// =============================================================================
+
+/// A summary entry translates with distribution, quantiles, seed,
+/// observations_per_tick, and mean_shift_per_sec all preserved.
+#[test]
+fn row_4_1_to_4_8_summary_signal_fields_carry_through() {
+    let entries = compile("summary-latency.yaml");
+    assert_eq!(entries.len(), 1);
+    match &entries[0] {
+        ScenarioEntry::Summary(c) => {
+            assert_eq!(c.base.name, "rpc_duration_seconds");
+            assert_eq!(c.base.rate, 1.0);
+            assert_eq!(
+                c.quantiles.as_deref(),
+                Some(&[0.5, 0.9, 0.95, 0.99][..]),
+                "quantiles must carry through"
+            );
+            assert_eq!(c.observations_per_tick, Some(100u64));
+            assert_eq!(c.seed, Some(42));
+            assert!(c.mean_shift_per_sec.is_some());
+        }
+        other => panic!("expected Summary, got {other:?}"),
+    }
+}
+
+// =============================================================================
+// 5.2 — influx_lp with explicit field_key
+// =============================================================================
+
+/// The `field_key` field on the influx_lp encoder survives the translator
+/// unchanged.
+#[test]
+fn row_5_2_influx_lp_field_key_carries_through() {
+    let entries = compile("influx-field-key.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => match &c.encoder {
+            EncoderConfig::InfluxLineProtocol {
+                field_key,
+                precision: _,
+            } => {
+                assert_eq!(
+                    field_key.as_deref(),
+                    Some("v"),
+                    "field_key must carry through verbatim"
+                );
+            }
+            other => panic!("expected InfluxLineProtocol encoder, got {other:?}"),
+        },
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 5.7 — `precision` on text encoders
+// =============================================================================
+
+/// `precision: 3` on a prometheus_text encoder survives the translator.
+#[test]
+fn row_5_7_encoder_precision_carries_through() {
+    let entries = compile("encoder-precision.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => match &c.encoder {
+            EncoderConfig::PrometheusText { precision } => {
+                assert_eq!(*precision, Some(3));
+            }
+            other => panic!("expected PrometheusText, got {other:?}"),
+        },
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 6.12 — retry/backoff config on a TCP sink
+// =============================================================================
+
+/// A TCP sink's `retry` block (max_attempts, initial_backoff, max_backoff)
+/// survives the translator unchanged.
+#[test]
+fn row_6_12_retry_backoff_on_tcp_sink_carries_through() {
+    let entries = compile("tcp-retry.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => match &c.base.sink {
+            SinkConfig::Tcp {
+                address,
+                retry: Some(retry),
+            } => {
+                assert_eq!(address, "127.0.0.1:9999");
+                assert_eq!(retry.max_attempts, 5);
+                assert_eq!(retry.initial_backoff, "100ms");
+                assert_eq!(retry.max_backoff, "5s");
+            }
+            other => panic!("expected TCP sink with retry, got {other:?}"),
+        },
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 7.1 — recurring gap window on a metrics scenario
+// =============================================================================
+
+/// A scenario-level `gaps:` window (every, for) survives the translator.
+#[test]
+fn row_7_1_gap_window_carries_through() {
+    let entries = compile("gap-only.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => {
+            let gaps = c.base.gaps.as_ref().expect("gaps must carry through");
+            assert_eq!(gaps.every, "30s");
+            assert_eq!(gaps.r#for, "5s");
+        }
+        _ => panic!("expected metrics entry"),
+    }
+}
+
+// =============================================================================
+// 7.2 — recurring burst window on a logs scenario
+// =============================================================================
+
+/// A scenario-level `bursts:` window (every, for, multiplier) survives
+/// the translator.
+#[test]
+fn row_7_2_burst_window_carries_through() {
+    let entries = compile("burst-only.yaml");
+    match &entries[0] {
+        ScenarioEntry::Logs(c) => {
+            let bursts = c.base.bursts.as_ref().expect("bursts must carry through");
+            assert_eq!(bursts.every, "20s");
+            assert_eq!(bursts.r#for, "5s");
+            assert!((bursts.multiplier - 10.0).abs() < f64::EPSILON);
+            assert!(matches!(c.generator, LogGeneratorConfig::Template { .. }));
+        }
+        _ => panic!("expected logs entry"),
+    }
+}
+
+// =============================================================================
+// 7.3 — gap + burst both present (runtime prioritizes gap; translator
+//       preserves both fields)
+// =============================================================================
+
+/// When `gaps:` and `bursts:` are both present on a single entry, both
+/// configurations carry through unchanged. Runtime behavior (gap wins on
+/// overlap) is out of scope for a translator test.
+#[test]
+fn row_7_3_gap_and_burst_both_carry_through() {
+    let entries = compile("gap-and-burst.yaml");
+    match &entries[0] {
+        ScenarioEntry::Metrics(c) => {
+            assert!(c.base.gaps.is_some(), "gaps must survive translator");
+            assert!(c.base.bursts.is_some(), "bursts must survive translator");
+        }
+        _ => panic!("expected metrics entry"),
+    }
+}

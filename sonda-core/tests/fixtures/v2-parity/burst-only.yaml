@@ -1,0 +1,21 @@
+version: 2
+
+scenarios:
+  - signal_type: logs
+    name: burst_logs
+    rate: 5
+    duration: 2m
+    log_generator:
+      type: template
+      templates:
+        - message: "event"
+          field_pools: {}
+      seed: 0
+    bursts:
+      every: 20s
+      for: 5s
+      multiplier: 10.0
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout

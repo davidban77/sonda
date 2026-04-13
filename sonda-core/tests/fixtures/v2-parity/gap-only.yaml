@@ -1,0 +1,17 @@
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: gap_metric
+    rate: 10
+    duration: 2m
+    generator:
+      type: constant
+      value: 1.0
+    gaps:
+      every: 30s
+      for: 5s
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

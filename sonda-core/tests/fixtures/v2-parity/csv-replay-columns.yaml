@@ -1,0 +1,27 @@
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: system_metrics
+    rate: 1
+    duration: 1s
+    generator:
+      type: csv_replay
+      file: /tmp/fake-for-translator-semantic-test.csv
+      columns:
+        - index: 1
+          name: cpu_usage
+          labels:
+            kind: cpu
+        - index: 2
+          name: mem_usage
+          labels:
+            kind: memory
+      repeat: true
+    labels:
+      instance: prod-server-42
+      job: node
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
