@@ -72,6 +72,7 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
             c.duration.as_deref(),
         ),
     };
+    let clock_group = entry.clock_group();
 
     let arrow = "\u{25b6}".if_supports_color(Stderr, |t| t.green());
     let pos_prefix = format_position_prefix(position);
@@ -89,19 +90,36 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
     let encoder_value = encoder.if_supports_color(Stderr, |t| t.cyan());
     let sink_value = sink.if_supports_color(Stderr, |t| t.cyan());
 
-    match duration {
-        Some(dur) => {
-            let dur_label = "duration:".if_supports_color(Stderr, |t| t.dimmed());
-            let dur_value = dur.if_supports_color(Stderr, |t| t.cyan());
-            eprintln!(
-                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value} {pipe} {dur_label} {dur_value}"
-            );
-        }
-        None => {
-            eprintln!(
-                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
-            );
-        }
+    // Duration, encoder, sink, signal are always rendered. Duration and
+    // clock_group are optional trailing sections; build the line in two
+    // steps so both can be omitted cleanly.
+    let mut line = format!(
+        "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
+    );
+    if let Some(dur) = duration {
+        let dur_label = "duration:".if_supports_color(Stderr, |t| t.dimmed());
+        let dur_value = dur.if_supports_color(Stderr, |t| t.cyan());
+        line.push_str(&format!(" {pipe} {dur_label} {dur_value}"));
+    }
+    if let Some(cg) = clock_group {
+        let cg_label = "clock_group:".if_supports_color(Stderr, |t| t.dimmed());
+        let cg_display = format_clock_group(cg);
+        let cg_value = cg_display.if_supports_color(Stderr, |t| t.cyan());
+        line.push_str(&format!(" {pipe} {cg_label} {cg_value}"));
+    }
+    eprintln!("{line}");
+}
+
+/// Render a clock group string for the banner.
+///
+/// Auto-assigned groups (prefix `chain_`, per the compiler's naming
+/// convention) get a trailing ` (auto)` marker so users can distinguish
+/// them from explicit assignments. Spec §5 format: `link_failover (auto)`.
+pub fn format_clock_group(group: &str) -> String {
+    if group.starts_with("chain_") {
+        format!("{group} (auto)")
+    } else {
+        group.to_string()
     }
 }
 
@@ -546,6 +564,80 @@ pub struct AggregateStats {
     pub total_bytes: u64,
     /// Total errors across all scenarios.
     pub total_errors: u64,
+}
+
+/// Per-clock-group aggregate row for the clock-group-aware summary.
+///
+/// One [`ClockGroupStats`] per distinct `clock_group` observed across
+/// launched scenarios. `group` is `None` for scenarios with no clock
+/// group assignment — those get a synthetic "ungrouped" bucket.
+pub struct ClockGroupStats {
+    /// Clock group name, or `None` for scenarios without one.
+    pub group: Option<String>,
+    /// Number of scenarios in this group.
+    pub scenario_count: usize,
+    /// Total events across scenarios in this group.
+    pub total_events: u64,
+    /// Total bytes emitted across scenarios in this group.
+    pub total_bytes: u64,
+    /// Total errors across scenarios in this group.
+    pub total_errors: u64,
+}
+
+/// Print an aggregate summary grouped by `clock_group` to stderr.
+///
+/// Emits one line per group (in the order supplied by the caller, which
+/// is deterministic source order from the compiler), followed by the
+/// cross-group totals from [`print_summary`]. Returns immediately if
+/// verbosity is [`Verbosity::Quiet`] or if no groups are provided.
+///
+/// The caller is responsible for deciding when to invoke this vs. the
+/// flat summary — the convention is "2+ distinct groups, at least one
+/// of which is non-None".
+pub fn print_summary_by_clock_group(
+    groups: &[ClockGroupStats],
+    total: &AggregateStats,
+    total_elapsed: Duration,
+    verbosity: Verbosity,
+) {
+    if verbosity == Verbosity::Quiet || groups.is_empty() {
+        return;
+    }
+
+    let header_bar = "\u{2501}\u{2501}".if_supports_color(Stderr, |t| t.bold());
+    let header_label = "run complete (by clock_group)".if_supports_color(Stderr, |t| t.bold());
+    eprintln!("{header_bar} {header_label}");
+
+    let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
+    for g in groups {
+        let group_label = match g.group {
+            Some(ref name) => format_clock_group(name),
+            None => "(ungrouped)".to_string(),
+        };
+        let bold_group = group_label.if_supports_color(Stderr, |t| t.bold());
+        let has_errors = g.total_errors > 0;
+        let scenarios_value = format!("{}", g.scenario_count);
+        let events_value = if has_errors {
+            format!("{}", g.total_events)
+        } else {
+            format!(
+                "{}",
+                g.total_events.if_supports_color(Stderr, |t| t.green())
+            )
+        };
+        let bytes_str = format_bytes(g.total_bytes);
+        let bytes_value = bytes_str.if_supports_color(Stderr, |t| t.cyan());
+        let errors_value = if has_errors {
+            format!("{}", g.total_errors.if_supports_color(Stderr, |t| t.red()))
+        } else {
+            format!("{}", g.total_errors)
+        };
+        eprintln!(
+            "  {bold_group}  scenarios: {scenarios_value} {pipe} events: {events_value} {pipe} bytes: {bytes_value} {pipe} errors: {errors_value}"
+        );
+    }
+
+    print_summary(total, total_elapsed, verbosity);
 }
 
 /// Print an aggregate summary line for the `run` subcommand to stderr.

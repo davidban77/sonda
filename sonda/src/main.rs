@@ -4,12 +4,15 @@
 //! `sonda-core` scenario runner. All signal-generation logic lives in
 //! `sonda-core`; this file is pure orchestration.
 
+mod catalog;
 mod cli;
 mod config;
+mod dry_run;
 mod import;
 mod init;
 mod packs;
 mod progress;
+mod scenario_loader;
 mod scenarios;
 mod status;
 mod story;
@@ -129,15 +132,29 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-summary".to_string(), p, &running, verbosity)?;
         }
         Commands::Run(ref args) => {
-            // Read the YAML first to detect pack configs before parsing.
-            let yaml = config::resolve_scenario_source(&args.scenario, &scenario_catalog)?;
+            // Resolve source + dispatch on version: v2 → compile_scenario_file;
+            // otherwise → v1 pack/multi loaders. Both branches land here with
+            // the same Vec<ScenarioEntry> shape.
+            let loaded = scenario_loader::load_scenario_entries(
+                &args.scenario,
+                &scenario_catalog,
+                &pack_catalog,
+            )?;
 
-            let entries = if config::is_pack_config(&yaml) {
-                config::load_pack_from_yaml(&yaml, &pack_catalog)?
-            } else {
-                let multi = config::load_multi_config(args, &scenario_catalog)?;
-                multi.scenarios
-            };
+            // Apply CLI overrides (duration, rate, sink/endpoint/output,
+            // encoder, labels) uniformly to every resolved entry.
+            let mut entries = loaded.entries;
+            config::apply_run_overrides(&mut entries, args)?;
+
+            // v2 files get the enhanced dry-run formatter (spec §5) when
+            // `--dry-run` is set. v1 files keep the legacy print_config path
+            // routed through `handle_pre_launch` below.
+            if cli.dry_run && loaded.version == Some(2) {
+                let format = dry_run::parse_format(cli.format.as_deref())?;
+                let label = args.scenario.display().to_string();
+                dry_run::print_v2_dry_run(&label, &entries, format)?;
+                return Ok(());
+            }
 
             let prepared =
                 sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -147,6 +164,16 @@ fn run() -> anyhow::Result<()> {
             }
 
             launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
+        }
+        Commands::Catalog(ref args) => {
+            run_catalog_command(
+                args,
+                &cli,
+                verbosity,
+                &running,
+                &scenario_catalog,
+                &pack_catalog,
+            )?;
         }
         Commands::Scenarios(ref args) => {
             run_scenarios_command(args, &cli, verbosity, &running, &scenario_catalog)?;
@@ -172,6 +199,261 @@ fn run() -> anyhow::Result<()> {
         }
         Commands::Story(ref args) => {
             run_story_command(args, &cli, verbosity, &running)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the unified `catalog` subcommand (spec §6.3).
+///
+/// Dispatches on the action:
+/// - `list` — filter merged rows by `--type` / `--category`, emit table
+///   or JSON.
+/// - `show` — look up by name, print the source YAML with a metadata
+///   header (reusing the existing `print_show_header`).
+/// - `run` — route scenarios through `scenario_loader` (so v2 files get
+///   the v2 pipeline) and packs through `load_pack_from_catalog` with
+///   label overrides applied.
+fn run_catalog_command(
+    args: &cli::CatalogArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+    scenario_catalog: &scenarios::ScenarioCatalog,
+    pack_catalog: &packs::PackCatalog,
+) -> anyhow::Result<()> {
+    use cli::CatalogAction;
+
+    match args.action {
+        CatalogAction::List(ref list_args) => {
+            let type_filter = match list_args.kind {
+                Some(ref k) => Some(catalog::CatalogTypeFilter::parse(k)?),
+                None => None,
+            };
+            let rows = catalog::catalog_rows(
+                scenario_catalog,
+                pack_catalog,
+                type_filter,
+                list_args.category.as_deref(),
+            );
+
+            if list_args.json {
+                let dto = catalog::to_list_dto(&rows);
+                let serialized = serde_json::to_string_pretty(&dto)
+                    .expect("JSON serialization of catalog entries cannot fail");
+                println!("{serialized}");
+            } else {
+                print_catalog_table(&rows, list_args.category.as_deref());
+            }
+        }
+        CatalogAction::Show(ref show_args) => {
+            run_catalog_show(show_args, scenario_catalog, pack_catalog)?;
+        }
+        CatalogAction::Run(ref run_args) => {
+            run_catalog_run(
+                run_args,
+                cli_opts,
+                verbosity,
+                running,
+                scenario_catalog,
+                pack_catalog,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Render the catalog list as a styled table on stdout.
+///
+/// Column widths are tuned for the widest names/categories in the built-in
+/// catalog; longer strings pad past their column (no truncation). The
+/// footer line reports the row count.
+fn print_catalog_table(rows: &[catalog::CatalogRow<'_>], category: Option<&str>) {
+    use owo_colors::OwoColorize;
+    use owo_colors::Stream::Stdout;
+
+    if rows.is_empty() {
+        if let Some(cat) = category {
+            eprintln!("no catalog entries found in category {cat:?}");
+        } else {
+            eprintln!("no catalog entries found (search path has no YAML files)");
+        }
+        return;
+    }
+
+    let header_name = format!("{:<32}", "NAME");
+    let header_name = header_name.if_supports_color(Stdout, |t| t.bold());
+    let header_type = format!("{:<10}", "TYPE");
+    let header_type = header_type.if_supports_color(Stdout, |t| t.bold());
+    let header_cat = format!("{:<16}", "CATEGORY");
+    let header_cat = header_cat.if_supports_color(Stdout, |t| t.bold());
+    let header_signal = format!("{:<10}", "SIGNAL");
+    let header_signal = header_signal.if_supports_color(Stdout, |t| t.bold());
+    let header_run = format!("{:<10}", "RUNNABLE");
+    let header_run = header_run.if_supports_color(Stdout, |t| t.bold());
+    let header_desc = "DESCRIPTION".if_supports_color(Stdout, |t| t.bold());
+    println!("{header_name} {header_type} {header_cat} {header_signal} {header_run} {header_desc}");
+
+    for row in rows {
+        let kind_padded = format!("{:<10}", row.kind.as_str());
+        let kind_styled = kind_padded.if_supports_color(Stdout, |t| t.magenta());
+        let cat_padded = format!("{:<16}", row.category);
+        let cat_styled = cat_padded.if_supports_color(Stdout, |t| t.dimmed());
+        let signal_padded = format!("{:<10}", row.signal);
+        let signal_styled = signal_padded.if_supports_color(Stdout, |t| t.cyan());
+        let runnable_str = if row.runnable { "yes" } else { "no" };
+        let run_padded = format!("{:<10}", runnable_str);
+        let run_styled = if row.runnable {
+            format!("{}", run_padded.if_supports_color(Stdout, |t| t.green()))
+        } else {
+            format!("{}", run_padded.if_supports_color(Stdout, |t| t.dimmed()))
+        };
+        println!(
+            "{:<32} {kind_styled} {cat_styled} {signal_styled} {run_styled} {}",
+            row.name, row.description
+        );
+    }
+
+    let count = rows.len();
+    let noun = if count == 1 { "entry" } else { "entries" };
+    let footer = match category {
+        Some(cat) => format!("{count} {noun} in category \"{cat}\""),
+        None => format!("{count} {noun}"),
+    };
+    let footer = footer.if_supports_color(Stdout, |t| t.dimmed());
+    println!("{footer}");
+}
+
+/// Execute `sonda catalog show <name>`: print the source YAML for a
+/// scenario or pack with a styled metadata header.
+fn run_catalog_show(
+    args: &cli::CatalogShowArgs,
+    scenario_catalog: &scenarios::ScenarioCatalog,
+    pack_catalog: &packs::PackCatalog,
+) -> anyhow::Result<()> {
+    let row = catalog::find_row(scenario_catalog, pack_catalog, &args.name).ok_or_else(|| {
+        let mut names: Vec<&str> = scenario_catalog.available_names();
+        names.extend(pack_catalog.available_names());
+        let suggestion = find_closest_name(&args.name, &names);
+        let base_msg = format!(
+            "unknown catalog entry {:?}; available entries: {}",
+            args.name,
+            names.join(", ")
+        );
+        if let Some(closest) = suggestion {
+            anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+        } else {
+            anyhow::anyhow!("{}", base_msg)
+        }
+    })?;
+
+    match row.kind {
+        catalog::CatalogKind::Scenario => {
+            let yaml = scenario_catalog
+                .read_yaml(&args.name)
+                .expect("scenario must exist after find_row succeeded")
+                .map_err(|e| anyhow::anyhow!("failed to read scenario {}: {}", args.name, e))?;
+            status::print_show_header(row.name, row.category, row.signal);
+            print!("{yaml}");
+        }
+        catalog::CatalogKind::Pack => {
+            let yaml = pack_catalog
+                .read_yaml(&args.name)
+                .expect("pack must exist after find_row succeeded")
+                .map_err(|e| anyhow::anyhow!("failed to read pack {}: {}", args.name, e))?;
+            status::print_show_header(row.name, row.category, "pack");
+            print!("{yaml}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute `sonda catalog run <name>`: dispatch to the scenario loader
+/// (v1/v2 dispatch, preserves `--dry-run` enhanced output) or to the
+/// pack-expansion path with CLI overrides applied.
+fn run_catalog_run(
+    args: &cli::CatalogRunArgs,
+    cli_opts: &Cli,
+    verbosity: Verbosity,
+    running: &Arc<AtomicBool>,
+    scenario_catalog: &scenarios::ScenarioCatalog,
+    pack_catalog: &packs::PackCatalog,
+) -> anyhow::Result<()> {
+    let row = catalog::find_row(scenario_catalog, pack_catalog, &args.name).ok_or_else(|| {
+        let mut names: Vec<&str> = scenario_catalog.available_names();
+        names.extend(pack_catalog.available_names());
+        let suggestion = find_closest_name(&args.name, &names);
+        let base_msg = format!(
+            "unknown catalog entry {:?}; available entries: {}",
+            args.name,
+            names.join(", ")
+        );
+        if let Some(closest) = suggestion {
+            anyhow::anyhow!("{base_msg}\n\n  hint: did you mean `{closest}`?")
+        } else {
+            anyhow::anyhow!("{}", base_msg)
+        }
+    })?;
+
+    // Convert CatalogRunArgs into the equivalent RunArgs shape so we can
+    // reuse `apply_run_overrides` and the v1/v2 dispatch.
+    let run_args = cli::RunArgs {
+        scenario: std::path::PathBuf::from(format!("@{}", args.name)),
+        duration: args.duration.clone(),
+        rate: args.rate,
+        sink: args.sink.clone(),
+        endpoint: args.endpoint.clone(),
+        encoder: args.encoder.clone(),
+        output: args.output.clone(),
+        labels: args.labels.clone(),
+    };
+
+    match row.kind {
+        catalog::CatalogKind::Scenario => {
+            let loaded = scenario_loader::load_scenario_entries(
+                &run_args.scenario,
+                scenario_catalog,
+                pack_catalog,
+            )?;
+            let mut entries = loaded.entries;
+            config::apply_run_overrides(&mut entries, &run_args)?;
+
+            if cli_opts.dry_run && loaded.version == Some(2) {
+                let format = dry_run::parse_format(cli_opts.format.as_deref())?;
+                dry_run::print_v2_dry_run(&args.name, &entries, format)?;
+                return Ok(());
+            }
+
+            let prepared =
+                sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if handle_pre_launch(&prepared, verbosity, cli_opts.dry_run) {
+                return Ok(());
+            }
+
+            let id_prefix = format!("catalog-{}", args.name);
+            if prepared.len() == 1 {
+                let p = prepared.into_iter().next().expect("len checked above");
+                run_single_scenario(id_prefix, p, running, verbosity)?;
+            } else {
+                launch_and_join_prepared(&id_prefix, prepared, running, verbosity)?;
+            }
+        }
+        catalog::CatalogKind::Pack => {
+            // Reuse the existing pack-run helper.
+            let pack_args = cli::PacksRunArgs {
+                name: args.name.clone(),
+                duration: args.duration.clone(),
+                rate: args.rate,
+                sink: args.sink.clone(),
+                endpoint: args.endpoint.clone(),
+                encoder: args.encoder.clone(),
+                labels: args.labels.clone(),
+            };
+            run_pack(&pack_args, cli_opts, verbosity, running, pack_catalog)?;
         }
     }
 
@@ -545,43 +827,23 @@ fn run_import_command(
 /// so that `--pack-path` is respected.
 fn run_init_scenario(
     yaml: String,
-    scenario_type: init::yaml_gen::InitScenarioType,
+    _scenario_type: init::yaml_gen::InitScenarioType,
     pack_catalog: &packs::PackCatalog,
     verbosity: Verbosity,
     dry_run: bool,
     running: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    use init::yaml_gen::InitScenarioType;
-
     eprintln!(
         "  {}",
         "Running scenario...".if_supports_color(Stderr, |t| t.dimmed())
     );
 
-    let entries: Vec<sonda_core::ScenarioEntry> = match scenario_type {
-        InitScenarioType::Pack => crate::config::load_pack_from_yaml(&yaml, pack_catalog)?,
-        InitScenarioType::Logs => {
-            let config: sonda_core::config::LogScenarioConfig = serde_yaml_ng::from_str(&yaml)
-                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            vec![sonda_core::ScenarioEntry::Logs(config)]
-        }
-        InitScenarioType::SingleMetric => {
-            let config: sonda_core::config::ScenarioConfig = serde_yaml_ng::from_str(&yaml)
-                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            vec![sonda_core::ScenarioEntry::Metrics(config)]
-        }
-        InitScenarioType::Histogram => {
-            let config: sonda_core::config::HistogramScenarioConfig =
-                serde_yaml_ng::from_str(&yaml)
-                    .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            vec![sonda_core::ScenarioEntry::Histogram(config)]
-        }
-        InitScenarioType::Summary => {
-            let config: sonda_core::config::SummaryScenarioConfig = serde_yaml_ng::from_str(&yaml)
-                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            vec![sonda_core::ScenarioEntry::Summary(config)]
-        }
-    };
+    // `sonda init` now emits v2 YAML for every scenario kind. Route through
+    // the v2 compiler unconditionally — the filesystem pack resolver
+    // honors `--pack-path` via the caller-supplied pack catalog.
+    let resolver = scenario_loader::FilesystemPackResolver::new(pack_catalog);
+    let entries = sonda_core::compile_scenario_file(&yaml, &resolver)
+        .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
@@ -735,6 +997,15 @@ fn maybe_start_progress_multi(
     Some(progress::ProgressDisplay::start(scenarios))
 }
 
+/// Per-scenario stop info captured after `handle.join()`. Small internal
+/// record used by [`launch_and_join_prepared`] to keep stop-banner data
+/// alongside the stats that feed the aggregate / clock-group summaries.
+struct StopInfo {
+    name: String,
+    elapsed: std::time::Duration,
+    stats: sonda_core::schedule::stats::ScenarioStats,
+}
+
 /// Launch multiple prepared scenarios concurrently, join them, print
 /// per-scenario stop banners in launch order, print an aggregate summary,
 /// and return an error if any failed.
@@ -751,10 +1022,15 @@ fn launch_and_join_prepared(
     let run_start = Instant::now();
     let scenario_count = prepared.len();
     let mut handles = Vec::with_capacity(scenario_count);
+    // Capture each entry's `clock_group` before consuming the entry into
+    // `launch_scenario` — we'll pair each group with its stats later to
+    // build the clock-group-grouped summary (spec §5 / matrix 8.6).
+    let mut clock_groups: Vec<Option<String>> = Vec::with_capacity(scenario_count);
 
     for (i, p) in prepared.into_iter().enumerate() {
         let position = Some((i + 1, scenario_count));
         status::print_start(&p.entry, verbosity, position);
+        clock_groups.push(p.entry.clock_group().map(|s| s.to_string()));
         let id = format!("{id_prefix}-{i}");
         let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -769,12 +1045,6 @@ fn launch_and_join_prepared(
     let mut total_events: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut total_errors: u64 = 0;
-
-    struct StopInfo {
-        name: String,
-        elapsed: std::time::Duration,
-        stats: sonda_core::schedule::stats::ScenarioStats,
-    }
 
     let mut stop_infos: Vec<StopInfo> = Vec::with_capacity(scenario_count);
 
@@ -812,13 +1082,78 @@ fn launch_and_join_prepared(
         total_bytes,
         total_errors,
     };
-    status::print_summary(&agg, total_elapsed, verbosity);
+
+    // When two or more distinct clock_group values are present, render the
+    // clock-group-grouped summary. Degenerate cases (single group or all
+    // `None`) fall back to the flat summary.
+    let grouped = build_clock_group_stats(&clock_groups, &stop_infos_for_groups(&stop_infos));
+    if distinct_group_count(&clock_groups) >= 2 {
+        status::print_summary_by_clock_group(&grouped, &agg, total_elapsed, verbosity);
+    } else {
+        status::print_summary(&agg, total_elapsed, verbosity);
+    }
 
     if !errors.is_empty() {
         return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
 
     Ok(())
+}
+
+/// Project `stop_infos` into the lightweight tuple shape that
+/// [`build_clock_group_stats`] consumes. Avoids an extra allocation per
+/// entry by borrowing stats instead of cloning.
+fn stop_infos_for_groups(
+    infos: &[StopInfo],
+) -> Vec<(&sonda_core::schedule::stats::ScenarioStats,)> {
+    infos.iter().map(|i| (&i.stats,)).collect()
+}
+
+/// Bin per-scenario stats into [`status::ClockGroupStats`] entries, one
+/// per distinct `clock_group` (or one `None` bucket for ungrouped
+/// scenarios). Stable order: first-seen insertion order.
+fn build_clock_group_stats(
+    clock_groups: &[Option<String>],
+    stop_infos: &[(&sonda_core::schedule::stats::ScenarioStats,)],
+) -> Vec<status::ClockGroupStats> {
+    debug_assert_eq!(clock_groups.len(), stop_infos.len());
+
+    let mut order: Vec<Option<String>> = Vec::new();
+    let mut bins: std::collections::HashMap<Option<String>, status::ClockGroupStats> =
+        std::collections::HashMap::new();
+
+    for (group, (stats,)) in clock_groups.iter().zip(stop_infos.iter()) {
+        let key = group.clone();
+        let entry = bins
+            .entry(key.clone())
+            .or_insert_with(|| status::ClockGroupStats {
+                group: key.clone(),
+                scenario_count: 0,
+                total_events: 0,
+                total_bytes: 0,
+                total_errors: 0,
+            });
+        if entry.scenario_count == 0 {
+            order.push(key);
+        }
+        entry.scenario_count += 1;
+        entry.total_events += stats.total_events;
+        entry.total_bytes += stats.bytes_emitted;
+        entry.total_errors += stats.errors;
+    }
+
+    order
+        .into_iter()
+        .map(|k| bins.remove(&k).expect("bin exists for key in order list"))
+        .collect()
+}
+
+/// Count the number of distinct `clock_group` values, treating `None` as
+/// its own "ungrouped" bucket. Used to decide whether the grouped
+/// aggregate summary applies.
+fn distinct_group_count(groups: &[Option<String>]) -> usize {
+    let set: std::collections::BTreeSet<&Option<String>> = groups.iter().collect();
+    set.len()
 }
 
 /// Find the closest matching name from a list of candidates.
