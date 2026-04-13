@@ -15,109 +15,109 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 1.1 | Metric signals (gauges/counters) | Not Tested | PR 6 | |
-| 1.2 | Log signals (template) | Not Tested | PR 6 | |
-| 1.3 | Log signals (replay) | Not Tested | PR 6 | |
-| 1.4 | Histogram signals | Not Tested | PR 6 | |
-| 1.5 | Summary signals | Not Tested | PR 6 | |
-| 1.6 | Mixed signal types in one file | Not Tested | PR 6 | |
+| 1.1 | Metric signals (gauges/counters) | Pass | PR 6 | |
+| 1.2 | Log signals (template) | Pass | PR 6 | |
+| 1.3 | Log signals (replay) | Pass | PR 6 | |
+| 1.4 | Histogram signals | Pass | PR 6 | |
+| 1.5 | Summary signals | Pass | PR 6 | |
+| 1.6 | Mixed signal types in one file | Pass | PR 6 | |
 
 ## 2. Metric Generators — Core (10 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 2.1 | constant generator | Not Tested | PR 6 | |
-| 2.2 | sine generator | Not Tested | PR 6 | |
-| 2.3 | sawtooth generator | Not Tested | PR 6 | |
-| 2.4 | uniform generator | Not Tested | PR 6 | |
-| 2.5 | sequence generator | Not Tested | PR 6 | |
-| 2.6 | step generator | Not Tested | PR 6 | |
-| 2.7 | spike generator | Not Tested | PR 6 | |
-| 2.8 | csv_replay generator | Not Tested | PR 6 | |
-| 2.9 | CSV auto-discovery (Grafana headers) | Not Tested | PR 6 | |
-| 2.10 | CSV per-column labels | Not Tested | PR 6 | |
+| 2.1 | constant generator | Pass | PR 6 | |
+| 2.2 | sine generator | Pass | PR 6 | |
+| 2.3 | sawtooth generator | Pass | PR 6 | |
+| 2.4 | uniform generator | Pass | PR 6 | |
+| 2.5 | sequence generator | Pass | PR 6 | |
+| 2.6 | step generator | Pass | PR 6 | |
+| 2.7 | spike generator | Pass | PR 6 | |
+| 2.8 | csv_replay generator | Pass | PR 6 | |
+| 2.9 | CSV auto-discovery (Grafana headers) | Pass | PR 6 | |
+| 2.10 | CSV per-column labels | Pass | PR 6 | |
 
 ## 3. Operational Aliases (7 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 3.1 | steady alias | Not Tested | PR 6 | |
-| 3.2 | flap alias | Not Tested | PR 6 | |
-| 3.3 | saturation alias | Not Tested | PR 6 | |
-| 3.4 | leak alias | Not Tested | PR 6 | |
-| 3.5 | degradation alias | Not Tested | PR 6 | |
-| 3.6 | spike_event alias | Not Tested | PR 6 | |
-| 3.7 | Custom up/down values for flap | Not Tested | PR 6 | |
+| 3.1 | steady alias | Pass | PR 6 | |
+| 3.2 | flap alias | Pass | PR 6 | |
+| 3.3 | saturation alias | Pass | PR 6 | |
+| 3.4 | leak alias | Pass | PR 6 | |
+| 3.5 | degradation alias | Pass | PR 6 | |
+| 3.6 | spike_event alias | Pass | PR 6 | |
+| 3.7 | Custom up/down values for flap | Pass | PR 6 | |
 
 ## 4. Histogram & Summary Generators (8 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 4.1 | Exponential distribution | Not Tested | PR 6 | |
-| 4.2 | Normal distribution | Not Tested | PR 6 | |
-| 4.3 | Uniform distribution | Not Tested | PR 6 | |
-| 4.4 | Custom buckets | Not Tested | PR 6 | |
-| 4.5 | Custom quantiles | Not Tested | PR 6 | |
-| 4.6 | observations_per_tick | Not Tested | PR 6 | |
-| 4.7 | mean_shift_per_sec | Not Tested | PR 6 | |
-| 4.8 | Cumulative bucket counters | Not Tested | PR 6 | |
+| 4.1 | Exponential distribution | Pass | PR 6 | |
+| 4.2 | Normal distribution | Pass | PR 6 | |
+| 4.3 | Uniform distribution | Pass | PR 6 | |
+| 4.4 | Custom buckets | Pass | PR 6 | |
+| 4.5 | Custom quantiles | Pass | PR 6 | |
+| 4.6 | observations_per_tick | Pass | PR 6 | |
+| 4.7 | mean_shift_per_sec | Pass | PR 6 | |
+| 4.8 | Cumulative bucket counters | Pass | PR 6 | |
 
 ## 5. Encoders (8 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 5.1 | prometheus_text | Not Tested | PR 6 | |
-| 5.2 | influx_lp with custom field_key | Not Tested | PR 6 | |
-| 5.3 | json_lines | Not Tested | PR 6 | |
-| 5.4 | syslog (logs only) | Not Tested | PR 6 | |
-| 5.5 | remote_write | Not Tested | PR 6 | |
-| 5.6 | otlp | Not Tested | PR 6 | |
-| 5.7 | precision field | Not Tested | PR 6 | |
+| 5.1 | prometheus_text | Pass | PR 6 | |
+| 5.2 | influx_lp with custom field_key | Pass | PR 6 | |
+| 5.3 | json_lines | Pass | PR 6 | |
+| 5.4 | syslog (logs only) | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 5.5 | remote_write | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 5.6 | otlp | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 5.7 | precision field | Pass | PR 6 | |
 | 5.8 | Default encoder per signal type | Pass | PR 3 | Defaults resolution: metrics/histogram/summary → prometheus_text, logs → json_lines |
 
 ## 6. Sinks (12 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 6.1 | stdout | Not Tested | PR 6 | |
-| 6.2 | file | Not Tested | PR 6 | |
-| 6.3 | tcp | Not Tested | PR 6 | |
-| 6.4 | udp | Not Tested | PR 6 | |
-| 6.5 | http_push with batch_size | Not Tested | PR 6 | |
-| 6.6 | http_push custom headers | Not Tested | PR 6 | |
-| 6.7 | remote_write with batch_size | Not Tested | PR 6 | |
-| 6.8 | kafka with TLS + SASL | Not Tested | PR 6 | |
-| 6.9 | loki with labels + batch_size | Not Tested | PR 6 | |
-| 6.10 | otlp_grpc | Not Tested | PR 6 | |
+| 6.1 | stdout | Pass | PR 6 | |
+| 6.2 | file | Not Tested | PR 8 | Smoke-test scope |
+| 6.3 | tcp | Not Tested | PR 8 | Smoke-test scope |
+| 6.4 | udp | Not Tested | PR 8 | Smoke-test scope |
+| 6.5 | http_push with batch_size | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 6.6 | http_push custom headers | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 6.7 | remote_write with batch_size | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 6.8 | kafka with TLS + SASL | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 6.9 | loki with labels + batch_size | Not Tested | PR 8 | Feature-gated; smoke-test scope |
+| 6.10 | otlp_grpc | Not Tested | PR 8 | Feature-gated; smoke-test scope |
 | 6.11 | --output CLI shorthand | Not Tested | PR 7 | |
-| 6.12 | Retry with backoff | Not Tested | PR 6 | |
+| 6.12 | Retry with backoff | Pass | PR 6 | Translator-semantic: `RetryConfig` threads through for `tcp` sink (`v2_translator_semantics::row_6_12_retry_config`) |
 
 ## 7. Scheduling & Windows (11 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 7.1 | Gap windows | Not Tested | PR 6 | |
-| 7.2 | Burst windows | Not Tested | PR 6 | |
-| 7.3 | Gap overrides burst | Not Tested | PR 6 | |
-| 7.4 | Cardinality spikes (counter) | Not Tested | PR 6 | |
-| 7.5 | Cardinality spikes (random) | Not Tested | PR 6 | |
-| 7.6 | Multiple cardinality spikes | Not Tested | PR 6 | |
-| 7.7 | Gap suppresses cardinality spikes | Not Tested | PR 6 | |
-| 7.8 | Jitter | Not Tested | PR 6 | |
-| 7.9 | Dynamic labels (counter strategy) | Not Tested | PR 6 | |
-| 7.10 | Dynamic labels (values list) | Not Tested | PR 6 | |
-| 7.11 | Multiple dynamic labels | Not Tested | PR 6 | |
+| 7.1 | Gap windows | Pass | PR 6 | |
+| 7.2 | Burst windows | Pass | PR 6 | |
+| 7.3 | Gap overrides burst | Pass | PR 6 | |
+| 7.4 | Cardinality spikes (counter) | Pass | PR 6 | |
+| 7.5 | Cardinality spikes (random) | Pass | PR 6 | |
+| 7.6 | Multiple cardinality spikes | Pass | PR 6 | |
+| 7.7 | Gap suppresses cardinality spikes | Pass | PR 6 | |
+| 7.8 | Jitter | Pass | PR 6 | |
+| 7.9 | Dynamic labels (counter strategy) | Pass | PR 6 | |
+| 7.10 | Dynamic labels (values list) | Pass | PR 6 | |
+| 7.11 | Multiple dynamic labels | Pass | PR 6 | |
 
 ## 8. Multi-Scenario Features (6 rows)
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 8.1 | phase_offset | Not Tested | PR 6 | |
-| 8.2 | clock_group | Pass | PR 5 | Compile-time clock-group assignment validated (auto-naming, explicit value propagation, conflict detection); runtime observability (per-entry runtime log line / scheduler coordination) lands in PR 6 |
-| 8.3 | Concurrent execution | Not Tested | PR 6 | |
-| 8.4 | Independent completion | Not Tested | PR 6 | |
+| 8.1 | phase_offset | Pass | PR 6 | |
+| 8.2 | clock_group | Pass | PR 5/6 | Compile-time clock-group assignment validated (PR 5); runtime carry-through validated in PR 6 (`ScenarioEntry.clock_group` threads through `prepare::prepare()` verbatim — `clock_group_is_passed_through_on_all_variants` unit test). CLI observability surface (start banner, aggregate summary grouping) is PR 7 |
+| 8.3 | Concurrent execution | Pass | PR 6 | |
+| 8.4 | Independent completion | Pass | PR 6 | |
 | 8.5 | --dry-run on multi-scenario | Not Tested | PR 7 | Enhanced for v2 |
-| 8.6 | Aggregate summary at end | Not Tested | PR 6 | |
+| 8.6 | Aggregate summary at end | Not Tested | PR 7 | CLI aggregate summary (grouping by clock_group) |
 
 ## 9. Pack Features (15 rows)
 
@@ -186,7 +186,7 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 12.1 | Run scenario file | Not Tested | PR 6/7 | |
+| 12.1 | Run scenario file | Not Tested | PR 7 | Library entry point `compile_scenario_file` is ready; CLI dispatch wires it in PR 7 |
 | 12.2 | One-off metric | Not Tested | PR 7 | Unchanged |
 | 12.3 | One-off logs | Not Tested | PR 7 | Unchanged |
 | 12.4 | One-off histogram | Not Tested | PR 7 | Unchanged |
@@ -227,15 +227,15 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 14.1 | Start banner | Not Tested | PR 6 | |
-| 14.2 | Stop banner | Not Tested | PR 6 | |
-| 14.3 | Live progress (TTY) | Not Tested | PR 6 | |
-| 14.4 | Live progress (non-TTY) | Not Tested | PR 6 | |
-| 14.5 | Multi-scenario numbering | Not Tested | PR 6 | |
-| 14.6 | Color behavior | Not Tested | PR 6 | |
-| 14.7 | Gap/burst/spike tags | Not Tested | PR 6 | |
-| 14.8 | Aggregate summary | Not Tested | PR 6 | |
-| 14.9 | Ctrl+C graceful shutdown | Not Tested | PR 6 | |
+| 14.1 | Start banner | Not Tested | PR 7 | CLI status output |
+| 14.2 | Stop banner | Not Tested | PR 7 | CLI status output |
+| 14.3 | Live progress (TTY) | Not Tested | PR 7 | CLI status output |
+| 14.4 | Live progress (non-TTY) | Not Tested | PR 7 | CLI status output |
+| 14.5 | Multi-scenario numbering | Not Tested | PR 7 | CLI status output |
+| 14.6 | Color behavior | Not Tested | PR 7 | CLI status output |
+| 14.7 | Gap/burst/spike tags | Not Tested | PR 7 | CLI status output |
+| 14.8 | Aggregate summary | Not Tested | PR 7 | CLI status output |
+| 14.9 | Ctrl+C graceful shutdown | Not Tested | PR 7 | CLI status output |
 
 ## 15. Deployment (7 rows)
 
@@ -270,18 +270,18 @@ structurally identical (for non-deterministic generators like uniform).
 
 | # | Scenario File | Compile Parity | Runtime Parity | PR | Notes |
 |---|--------------|----------------|----------------|-----|-------|
-| 16.1 | cpu-spike.yaml | Not Tested | Not Tested | PR 6 | Single metric, sine-based |
-| 16.2 | memory-leak.yaml | Not Tested | Not Tested | PR 6 | Single metric, leak alias |
-| 16.3 | disk-fill.yaml | Not Tested | Not Tested | PR 6 | Single metric, saturation alias |
-| 16.4 | latency-degradation.yaml | Not Tested | Not Tested | PR 6 | Single metric, degradation alias |
-| 16.5 | error-rate-spike.yaml | Not Tested | Not Tested | PR 6 | Single metric, spike_event alias |
-| 16.6 | interface-flap.yaml | Not Tested | Not Tested | PR 6 | Single metric, flap alias |
-| 16.7 | network-link-failure.yaml | Not Tested | Not Tested | PR 6 | Multi-signal, phase_offset, clock_group |
-| 16.8 | steady-state.yaml | Not Tested | Not Tested | PR 6 | Single metric, steady alias |
-| 16.9 | log-storm.yaml | Not Tested | Not Tested | PR 6 | Log signal, template generator |
-| 16.10 | cardinality-explosion.yaml | Not Tested | Not Tested | PR 6 | Cardinality spikes, dynamic labels |
-| 16.11 | histogram-latency.yaml | Not Tested | Not Tested | PR 6 | Histogram signal |
-| 16.12 | link-failover.yaml (story) | Pass | Not Tested | PR 5/6 | Compile parity Pass (PR 5): hand-written v2 equivalent of `stories/link-failover.yaml` compiles to phase_offset values identical to v1 story math (`v2_story_parity::link_failover_compile_parity`). Runtime parity lands in PR 6 |
+| 16.1 | cpu-spike.yaml | Pass | Pass | PR 6 | Single metric, sine-based; byte-equal |
+| 16.2 | memory-leak.yaml | Pass | Pass | PR 6 | Single metric, leak alias; byte-equal |
+| 16.3 | disk-fill.yaml | Pass | Pass | PR 6 | Single metric, saturation alias; byte-equal |
+| 16.4 | latency-degradation.yaml | Pass | Pass | PR 6 | Single metric, degradation alias; byte-equal |
+| 16.5 | error-rate-spike.yaml | Pass | Pass | PR 6 | Single metric, spike_event alias; byte-equal |
+| 16.6 | interface-flap.yaml | Pass | Pass | PR 6 | Multi-signal (v1 YAML uses `signal_type: multi`); line-multiset |
+| 16.7 | network-link-failure.yaml | Pass | Pass | PR 6 | Multi-signal, phase_offset, clock_group; line-multiset |
+| 16.8 | steady-state.yaml | Pass | Pass | PR 6 | Single metric, steady alias; byte-equal |
+| 16.9 | log-storm.yaml | Pass | Pass | PR 6 | Log signal, template generator; byte-equal |
+| 16.10 | cardinality-explosion.yaml | Pass | Pass | PR 6 | Cardinality spikes, dynamic labels; byte-equal |
+| 16.11 | histogram-latency.yaml | Pass | Pass | PR 6 | Histogram signal; byte-equal |
+| 16.12 | link-failover.yaml (story) | Pass | Pass | PR 5/6 | Compile parity Pass (PR 5); runtime parity closed via `v2_story_parity::link_failover_runtime_parity` against hand-built v1-equivalent reference (PR 9 will clean the reference — see v2-progress.md PR 9 forward pointer) |
 
 ## 17. Built-in Pack Parity (3 rows)
 
@@ -290,6 +290,6 @@ For each built-in pack, a v2 scenario file is created that uses the pack inside
 
 | # | Pack | Compile Parity | Runtime Parity | PR | Notes |
 |---|------|----------------|----------------|-----|-------|
-| 17.1 | telegraf-snmp-interface.yaml | Pass | Not Tested | PR 4/6 | v1 `expand_pack` and v2 pipeline yield the same concrete signals including flap override; runtime parity lands in PR 6 |
-| 17.2 | node-exporter-cpu.yaml | Pass | Not Tested | PR 4/6 | Eight per-mode metrics of `node_cpu_seconds_total` compile identically; runtime parity lands in PR 6 |
-| 17.3 | node-exporter-memory.yaml | Pass | Not Tested | PR 4/6 | Five memory gauge metrics + override labels compile identically; runtime parity lands in PR 6 |
+| 17.1 | telegraf-snmp-interface.yaml | Pass | Pass | PR 4/6 | v1 `expand_pack` and v2 pipeline yield byte-identical runtime output via `v2_pack_runtime_parity::row_17_1_telegraf_snmp_interface` |
+| 17.2 | node-exporter-cpu.yaml | Pass | Pass | PR 4/6 | Eight per-mode metrics of `node_cpu_seconds_total` produce byte-identical runtime output via `v2_pack_runtime_parity::row_17_2_node_exporter_cpu` |
+| 17.3 | node-exporter-memory.yaml | Pass | Pass | PR 4/6 | Five memory gauge metrics + override labels produce byte-identical runtime output via `v2_pack_runtime_parity::row_17_3_node_exporter_memory` |
