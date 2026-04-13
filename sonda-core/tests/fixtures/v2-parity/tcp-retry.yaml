@@ -1,3 +1,6 @@
+# Hand-written translator probe (no v1 built-in mirrors it); covers matrix
+# row 6.12 — TCP sink `retry` block (max_attempts + initial_backoff +
+# max_backoff) must round-trip unchanged through the v2 translator.
 version: 2
 
 scenarios:

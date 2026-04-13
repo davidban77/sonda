@@ -1,3 +1,6 @@
+# Parity equivalent of `scenarios/interface-flap.yaml`; closes matrix row 16.6.
+# Three-signal SNMP scenario compared via line-multiset equality (runner
+# threads interleave bytes non-deterministically).
 version: 2
 
 scenarios:

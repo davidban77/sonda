@@ -1,3 +1,5 @@
+# Parity equivalent of `scenarios/disk-fill.yaml`; closes matrix row 16.3.
+# Drives `step` to mimic monotonically growing disk usage.
 version: 2
 
 scenarios:

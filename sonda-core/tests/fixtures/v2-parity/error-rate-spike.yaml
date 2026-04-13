@@ -1,3 +1,5 @@
+# Parity equivalent of `scenarios/error-rate-spike.yaml`; closes matrix
+# row 16.5. Uses the `spike` core generator (not the `spike_event` alias).
 version: 2
 
 scenarios:

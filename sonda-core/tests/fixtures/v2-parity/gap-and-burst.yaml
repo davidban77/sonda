@@ -1,3 +1,6 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 7.3 — when both `gaps` and `bursts` are set, `gaps` overrides `bursts`
+# during the gap window (runtime contract preserved by the v2 translator).
 version: 2
 
 scenarios:

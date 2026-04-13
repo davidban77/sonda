@@ -1,3 +1,5 @@
+# Parity equivalent of `scenarios/histogram-latency.yaml`; closes matrix
+# row 16.11. Seeded Normal distribution so bucket counts are deterministic.
 version: 2
 
 scenarios:

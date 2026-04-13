@@ -1,3 +1,6 @@
+# Parity equivalent of `scenarios/log-storm.yaml`; closes matrix row 16.9.
+# Template-based logs with seeded generators so the JSON output is
+# byte-identical between v1 and v2 on a 500ms window.
 version: 2
 
 scenarios:

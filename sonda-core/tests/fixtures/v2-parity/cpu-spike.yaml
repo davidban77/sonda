@@ -1,3 +1,6 @@
+# Parity equivalent of `scenarios/cpu-spike.yaml`; closes matrix row 16.1.
+# Runtime parity harness in `v2_runtime_parity.rs` asserts byte-equal stdout
+# between v1 load and v2 compile on a 1s window.
 version: 2
 
 scenarios:

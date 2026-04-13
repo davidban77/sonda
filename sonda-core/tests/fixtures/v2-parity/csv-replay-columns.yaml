@@ -1,3 +1,8 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# rows 2.9 + 2.10 — `csv_replay` multi-column spec (per-column index, name,
+# labels) must thread unchanged through the v2 translator. The `file:` path
+# is intentionally a non-existent stub: the translator-semantic test only
+# inspects compiled shape and never opens the file.
 version: 2
 
 scenarios:

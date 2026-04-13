@@ -1,3 +1,7 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# rows 4.1-4.8 on the summary signal path — distribution, quantiles,
+# observations_per_tick, mean_shift_per_sec, seed, and labels must all
+# round-trip unchanged through the v2 translator.
 version: 2
 
 scenarios:

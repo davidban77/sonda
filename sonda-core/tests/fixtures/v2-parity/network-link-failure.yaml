@@ -1,3 +1,6 @@
+# Parity equivalent of `scenarios/network-link-failure.yaml`; closes matrix
+# row 16.7. Five-signal primary/backup uplink simulation; line-multiset
+# comparison is required (concurrent runner thread interleaving).
 version: 2
 
 scenarios:

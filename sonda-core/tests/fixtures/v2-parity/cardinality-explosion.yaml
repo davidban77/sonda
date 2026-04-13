@@ -1,3 +1,6 @@
+# Parity equivalent of `scenarios/cardinality-explosion.yaml`; closes
+# matrix row 16.10. Exercises a cardinality_spike window on a sine-driven
+# container CPU metric.
 version: 2
 
 scenarios:

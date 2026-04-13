@@ -1,3 +1,5 @@
+# Parity equivalent of `scenarios/latency-degradation.yaml`; closes matrix
+# row 16.4. Exercises the `degradation` alias with noise for the parity harness.
 version: 2
 
 scenarios:

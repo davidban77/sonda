@@ -1,3 +1,6 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 1.6 — multiple signal types (metrics + logs + histogram) in one file
+# must translate side-by-side without cross-contamination between entries.
 version: 2
 
 defaults:
