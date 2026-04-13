@@ -755,20 +755,50 @@ mod tests {
         }
     }
 
+    /// Which `PrepareError` variant a missing-required-field shape must
+    /// produce. Indexes the rstest matrix below: `metrics` -> generator,
+    /// `logs` -> log_generator, `histogram`/`summary` -> distribution.
+    #[derive(Debug, Clone, Copy)]
+    enum ExpectedMissing {
+        Generator,
+        LogGenerator,
+        Distribution,
+    }
+
     /// Rstest matrix covering every signal_type whose shape-invariant can
     /// fail when the required generator/distribution field is absent.
+    /// Each case asserts the exact `PrepareError` variant — strengthening
+    /// the previous `is_err()` smoke check.
     #[rustfmt::skip]
     #[rstest]
-    #[case::metrics("metrics")]
-    #[case::logs("logs")]
-    #[case::histogram("histogram")]
-    #[case::summary("summary")]
-    fn missing_required_field_fails_per_signal_type(#[case] signal_type: &str) {
+    #[case::metrics("metrics", ExpectedMissing::Generator)]
+    #[case::logs("logs", ExpectedMissing::LogGenerator)]
+    #[case::histogram("histogram", ExpectedMissing::Distribution)]
+    #[case::summary("summary", ExpectedMissing::Distribution)]
+    fn missing_required_field_fails_per_signal_type(
+        #[case] signal_type: &str,
+        #[case] expected: ExpectedMissing,
+    ) {
         let entry = bare(signal_type, "empty_shape");
-        let res = prepare(file_with(entry));
+        let err = prepare(file_with(entry)).err().unwrap_or_else(|| {
+            panic!("signal_type '{signal_type}' missing required field must error")
+        });
+        let matched = match expected {
+            ExpectedMissing::Generator => {
+                matches!(err, PrepareError::MissingGenerator { ref entry_label } if entry_label == "empty_shape")
+            }
+            ExpectedMissing::LogGenerator => {
+                matches!(err, PrepareError::MissingLogGenerator { ref entry_label } if entry_label == "empty_shape")
+            }
+            ExpectedMissing::Distribution => matches!(
+                err,
+                PrepareError::MissingDistribution { ref entry_label, signal_type: ref st }
+                if entry_label == "empty_shape" && st == signal_type
+            ),
+        };
         assert!(
-            res.is_err(),
-            "signal_type '{signal_type}' missing required field must error"
+            matched,
+            "signal_type '{signal_type}': expected {expected:?}, got {err:?}"
         );
     }
 
