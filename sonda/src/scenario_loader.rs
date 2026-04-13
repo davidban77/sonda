@@ -73,29 +73,19 @@ pub fn load_scenario_entries(
     let version = detect_version(&yaml);
 
     let entries = match version {
-        Some(2) => compile_v2(&yaml, pack_catalog, scenario_ref)?,
+        Some(2) => {
+            let resolver = FilesystemPackResolver::new(pack_catalog);
+            compile_scenario_file(&yaml, &resolver).with_context(|| {
+                format!(
+                    "failed to compile v2 scenario file {}",
+                    scenario_ref.display()
+                )
+            })?
+        }
         _ => load_v1(&yaml, pack_catalog)?,
     };
 
     Ok(LoadedScenario { entries, version })
-}
-
-/// Compile a v2 YAML string into runtime entries.
-///
-/// The `source_ref` parameter is used only to decorate error context; the
-/// compiler never reads from disk.
-fn compile_v2(
-    yaml: &str,
-    pack_catalog: &PackCatalog,
-    source_ref: &Path,
-) -> Result<Vec<ScenarioEntry>> {
-    let resolver = FilesystemPackResolver::new(pack_catalog);
-    compile_scenario_file(yaml, &resolver).with_context(|| {
-        format!(
-            "failed to compile v2 scenario file {}",
-            source_ref.display()
-        )
-    })
 }
 
 /// Load v1 entries: either the legacy `pack:` shorthand or the

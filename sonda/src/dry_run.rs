@@ -44,7 +44,7 @@ pub fn parse_format(value: Option<&str>) -> anyhow::Result<DryRunFormat> {
     }
 }
 
-/// Print the v2 dry-run output for the given scenario source.
+/// Print the spec §5 dry-run output for a list of compiled scenario entries.
 ///
 /// - `source_label` is a user-facing identifier for the scenario file
 ///   (typically the path string or `@name`); it is shown verbatim in the
@@ -55,7 +55,7 @@ pub fn parse_format(value: Option<&str>) -> anyhow::Result<DryRunFormat> {
 ///
 /// Text output goes to stderr; JSON output goes to stdout. This matches the
 /// CLI convention of "data on stdout, diagnostics on stderr".
-pub fn print_v2_dry_run(
+pub fn print_dry_run(
     source_label: &str,
     entries: &[ScenarioEntry],
     format: DryRunFormat,
@@ -79,7 +79,7 @@ pub fn print_v2_dry_run(
 
 /// Write the spec §5 pretty output.
 ///
-/// Separated from [`print_v2_dry_run`] so tests can capture the output
+/// Separated from [`print_dry_run`] so tests can capture the output
 /// into a `Vec<u8>` for snapshot assertions without mocking stderr.
 pub fn write_text<W: Write>(
     out: &mut W,

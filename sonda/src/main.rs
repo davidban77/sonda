@@ -153,7 +153,7 @@ fn run() -> anyhow::Result<()> {
             if cli.dry_run && loaded.version == Some(2) {
                 let format = dry_run::parse_format(cli.format.as_deref())?;
                 let label = args.scenario.display().to_string();
-                dry_run::print_v2_dry_run(&label, &entries, format)?;
+                dry_run::print_dry_run(&label, &entries, format)?;
                 return Ok(());
             }
 
@@ -424,7 +424,7 @@ fn run_catalog_run(
 
             if cli_opts.dry_run && loaded.version == Some(2) {
                 let format = dry_run::parse_format(cli_opts.format.as_deref())?;
-                dry_run::print_v2_dry_run(&args.name, &entries, format)?;
+                dry_run::print_dry_run(&args.name, &entries, format)?;
                 return Ok(());
             }
 
