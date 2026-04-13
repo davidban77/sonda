@@ -69,8 +69,8 @@ Define reusable scenarios in YAML for anything beyond quick one-offs --
 | **Signals** | metrics, logs (template and replay modes), histograms, summaries |
 | **CSV import** | Analyze CSVs, detect patterns, generate portable scenario YAML |
 | **Interactive scaffolding** | `sonda init` -- guided wizard, non-interactive mode, `--from` prefill |
-| **Built-in scenarios** | 11 curated patterns you can run instantly -- no YAML needed |
-| **Stories** | Multi-signal scenarios with temporal causality (`after` clauses compile to phase offsets) |
+| **Built-in scenarios** | Curated patterns you can run instantly -- browse with `sonda catalog list` |
+| **v2 scenario files** | `version: 2` format with shared `defaults:`, inline packs, and `after:` temporal chains |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## What next
@@ -79,9 +79,10 @@ Ready to dive in? **[Get started in 5 minutes -->](getting-started.md)**
 
 Or jump straight to what you need:
 
-- [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- scaffold a scenario YAML interactively, non-interactively with flags, or pre-filled from a built-in or CSV
+- [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- scaffold a v2 scenario YAML interactively, non-interactively with flags, or pre-filled from a built-in or CSV
+- [**`sonda catalog`**](configuration/cli-reference.md#sonda-catalog) -- unified browse/show/run for scenarios and metric packs
 - [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
-- [**Stories**](guides/stories.md) -- multi-signal scenarios with temporal causality (link failover, cascading failures)
+- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- multi-signal scenarios with shared defaults, `after:` temporal chains, and inline packs
 - [**CSV Import**](guides/csv-import.md) -- turn Grafana exports into portable, parameterized scenarios
 - [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference
 - [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API

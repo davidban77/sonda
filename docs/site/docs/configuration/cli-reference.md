@@ -1,9 +1,9 @@
 # CLI Reference
 
 Sonda provides subcommands for generating metrics, logs, histograms, and summaries, running
-multi-scenario files, browsing a library of built-in scenario patterns, importing CSV data
-into parameterized scenarios, interactively scaffolding new scenario files, and running
-multi-signal stories with temporal causality.
+scenario YAML files (v1 or [v2](v2-scenarios.md)), browsing the unified
+[`catalog`](#sonda-catalog) of scenarios and packs, importing CSV data into parameterized
+scenarios, and interactively scaffolding new scenario files.
 
 ## Global options
 
@@ -16,6 +16,7 @@ sonda [--quiet | --verbose] [--dry-run] [--scenario-path <DIR>] [--pack-path <DI
 | `--quiet` | `-q` | Suppress start/stop banners and live progress. Errors still print to stderr. |
 | `--verbose` | `-v` | Print resolved scenario config at startup, then run normally. Mutually exclusive with `--quiet`. |
 | `--dry-run` | -- | Parse and validate the scenario config, print it, then exit without emitting events. |
+| `--format <FORMAT>` | -- | Output format for `--dry-run` on v2 scenario files: `text` (default) or `json`. Ignored for v1 files. |
 | `--scenario-path <DIR>` | -- | Directory containing scenario YAML files. Overrides `SONDA_SCENARIO_PATH` and default paths. |
 | `--pack-path <DIR>` | -- | Directory containing metric pack YAML files. Overrides `SONDA_PACK_PATH` and default paths. |
 | `--help` | `-h` | Print help information. |
@@ -159,11 +160,11 @@ sonda -q metrics --name up --rate 5 --duration 5s > /tmp/data.txt
 
 ### Dry run
 
-Use `--dry-run` to validate a scenario without emitting any events. Sonda parses the
-configuration, prints the resolved settings, and exits. This is useful for catching YAML
-errors and confirming what Sonda *would* do before committing to a long run.
+Use `--dry-run` to validate a scenario without emitting any events. Sonda parses (and, for v2,
+compiles) the configuration, prints the resolved settings, and exits. This is useful for
+catching YAML errors and confirming what Sonda *would* do before committing to a long run.
 
-=== "Metrics"
+=== "Metrics (v1)"
 
     ```bash
     sonda --dry-run metrics --name cpu --rate 10 --duration 30s \
@@ -185,7 +186,7 @@ errors and confirming what Sonda *would* do before committing to a long run.
     Validation: OK (1 scenario)
     ```
 
-=== "Logs"
+=== "Logs (v1)"
 
     ```bash
     sonda --dry-run logs --mode template --rate 5 --duration 10s \
@@ -207,7 +208,7 @@ errors and confirming what Sonda *would* do before committing to a long run.
     Validation: OK (1 scenario)
     ```
 
-=== "Run (multi-scenario)"
+=== "Run (v1 multi-scenario)"
 
     ```bash
     sonda --dry-run run --scenario examples/multi-scenario.yaml
@@ -233,12 +234,124 @@ errors and confirming what Sonda *would* do before committing to a long run.
       duration:      30s
       generator:     template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
       encoder:       json_lines
-      sink:          file: /tmp/sonda-logs.json
+      sink:          file (/tmp/sonda-logs.json)
 
     Validation: OK (2 scenarios)
     ```
 
-`--dry-run` works with scenario files too -- handy for validating YAML before deploying:
+=== "Run (v2)"
+
+    For [v2 scenario files](v2-scenarios.md), `--dry-run` shows the fully compiled
+    configuration: resolved defaults, expanded packs, computed `phase_offset` values from
+    `after:` clauses, and auto-assigned `clock_group` names.
+
+    ```bash
+    sonda run --scenario link-failover.v2.yaml --dry-run
+    ```
+
+    ```text title="Output"
+    [config] file: link-failover.v2.yaml (version: 2, 2 scenarios)
+
+    [config] [1/2] interface_oper_state
+
+        name:           interface_oper_state
+        signal:         metrics
+        rate:           1/s
+        duration:       5m
+        generator:      flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)
+        encoder:        prometheus_text
+        sink:           stdout
+        labels:         device=rtr-edge-01, interface=GigabitEthernet0/0/0
+        clock_group:    chain_backup_util (auto)
+    ---
+
+    [config] [2/2] backup_link_utilization
+
+        name:           backup_link_utilization
+        signal:         metrics
+        rate:           1/s
+        duration:       5m
+        generator:      saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)
+        encoder:        prometheus_text
+        sink:           stdout
+        labels:         device=rtr-edge-01, interface=GigabitEthernet0/1/0
+        phase_offset:   1m
+        clock_group:    chain_backup_util (auto)
+
+    Validation: OK (2 scenarios)
+    ```
+
+    The `phase_offset:` line shows the concrete delay Sonda computed from the `after:` clause.
+    The `(auto)` suffix on `clock_group:` marks groups assigned by the compiler.
+
+#### JSON dry-run for v2 files
+
+For scripting and CI use, add `--format=json` to get a stable JSON DTO on stdout instead of
+the pretty text on stderr. The flag is only consulted for v2 scenario files.
+
+```bash
+sonda run --scenario link-failover.v2.yaml --dry-run --format=json
+```
+
+```json title="Output (abridged)"
+{
+  "file": "link-failover.v2.yaml",
+  "version": 2,
+  "scenarios": [
+    {
+      "index": 1,
+      "name": "interface_oper_state",
+      "signal": "metrics",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": "flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)",
+      "encoder": "prometheus_text",
+      "sink": "stdout",
+      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/0/0" },
+      "phase_offset": null,
+      "clock_group": "chain_backup_util",
+      "clock_group_is_auto": true
+    },
+    {
+      "index": 2,
+      "name": "backup_link_utilization",
+      "signal": "metrics",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": "saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)",
+      "encoder": "prometheus_text",
+      "sink": "stdout",
+      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/1/0" },
+      "phase_offset": "1m",
+      "clock_group": "chain_backup_util",
+      "clock_group_is_auto": true
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | The scenario source you passed to `--scenario`. |
+| `version` | integer | Always `2` in the v2 DTO. |
+| `scenarios[].index` | integer | 1-based position in the compiled output. |
+| `scenarios[].name` | string | Entry name (from `name:` or pack expansion). |
+| `scenarios[].signal` | string | `metrics`, `logs`, `histogram`, or `summary`. |
+| `scenarios[].rate` | float | Resolved events per second. |
+| `scenarios[].duration` | string or null | Duration string (e.g. `"30s"`) or `null` for indefinite. |
+| `scenarios[].generator` | string | Display form of the generator config. |
+| `scenarios[].encoder` | string | Encoder name. |
+| `scenarios[].sink` | string | Sink display form (includes URL / path / address). |
+| `scenarios[].labels` | object | Sorted key-value map of resolved static labels. |
+| `scenarios[].phase_offset` | string or null | Delay before start, e.g. `"1m"`. |
+| `scenarios[].clock_group` | string or null | Clock group name (no `(auto)` suffix). |
+| `scenarios[].clock_group_is_auto` | bool | `true` when the compiler assigned the group from an `after:` chain; `false` for explicit `clock_group:` values. |
+
+!!! note
+    `--format=json` is ignored for v1 files. The v1 dry-run output stays text-only and goes to
+    stderr.
+
+`--dry-run` also works with individual signal subcommands for validating YAML before deploying:
 
 ```bash
 sonda --dry-run metrics --scenario examples/basic-metrics.yaml
@@ -687,201 +800,288 @@ Validation: OK (1 scenario)
 
 ## sonda run
 
-Run multiple scenarios concurrently from a multi-scenario YAML file.
+Run one or more scenarios from a scenario YAML file. `sonda run` is the single entry point for
+both v1 multi-scenario files and the newer [v2 scenario format](v2-scenarios.md). Sonda detects
+the format automatically by looking at the top-level `version:` field.
 
 ```bash
-sonda run --scenario <FILE | @name>
+sonda run --scenario <FILE | @name> [OPTIONS]
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE \| @name>` | path or `@name` | Multi-scenario YAML file, or a `@name` [built-in scenario](../guides/scenarios.md) (e.g. `@interface-flap`). Required. |
+| `--scenario <FILE \| @name>` | path or `@name` | Scenario YAML file, or a `@name` [built-in scenario](../guides/scenarios.md). Required. |
+| `--duration <DURATION>` | string | Override the duration for every entry (e.g. `10s`, `2m`). |
+| `--rate <RATE>` | float | Override the event rate for every entry. |
+| `--encoder <FORMAT>` | string | Override the encoder (e.g. `prometheus_text`, `json_lines`). |
+| `--sink <TYPE>` | string | Override the sink type (e.g. `stdout`, `file`). |
+| `--endpoint <URL>` | string | Override the sink endpoint (URL, file path, `host:port`). |
+| `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. Mutually exclusive with `--sink`. |
+| `--label <KEY=VALUE>` | string | Additional label merged into every entry (repeatable). |
 
-The file (or built-in) must have a top-level `scenarios:` list. Each entry includes a `signal_type`
-field: `metrics`, `logs`, `histogram`, or `summary`. See
-[Scenario Files - Multi-scenario files](scenario-file.md#multi-scenario-files).
+### v1 vs v2 files
+
+`sonda run` accepts every supported scenario shape:
+
+| Shape | Top-level form | Docs |
+|-------|----------------|------|
+| **v1 flat single-scenario** | `name:` + `generator:` (no `scenarios:` list) | [Scenario Files](scenario-file.md) |
+| **v1 multi-scenario** | `scenarios:` list (no `version:` field) | [Scenario Files -- Multi-scenario files](scenario-file.md#multi-scenario-files) |
+| **v1 pack shorthand** | `pack: <name>` at the top | [Pack scenario files](scenario-file.md#pack-scenario-files) |
+| **v2** | `version: 2` + `defaults:` + `scenarios:` | [v2 Scenario Files](v2-scenarios.md) |
+| **@name** | `@<scenario>` or `@<pack>` referencing the catalog | [Built-in Scenarios](../guides/scenarios.md) |
+
+v2 files are compiled through the unified pipeline (defaults → pack expansion →
+`after:` resolution → prepare). v1 files go through the legacy loader. Both end up with the
+same runtime shape.
 
 ```bash
+# v2 file with after: chain
+sonda run --scenario scenarios/link-failover.v2.yaml
+
+# v1 multi-scenario file
 sonda run --scenario examples/multi-scenario.yaml
+
+# v1 flat single-scenario file
+sonda run --scenario examples/basic-metrics.yaml
+
+# @name shorthand against the built-in catalog (works for any shape)
+sonda run --scenario @interface-flap
+sonda run --scenario @cpu-spike
 ```
+
+!!! tip "Picking the right command"
+    `sonda run --scenario <file>` is the unified entry point and accepts every layout above.
+    The signal-specific subcommands (`sonda metrics`, `sonda logs`, `sonda histogram`,
+    `sonda summary`) still take `--scenario` for flat single-signal files when you want
+    per-signal flags like `--label`, `--precision`, or `--value`.
 
 ### Aggregate summary
 
-After all scenarios finish, `sonda run` prints a summary line that aggregates totals across
-every scenario in the file:
+After every scenario finishes, `sonda run` prints a summary line that aggregates totals:
 
 ```text
 ━━ run complete  scenarios: 2 | events: 3302 | bytes: 174.9 KB | errors: 0 | elapsed: 30.0s
 ```
 
-The summary includes the scenario count, total events emitted, total bytes written, error count,
-and wall-clock elapsed time. Each individual scenario prints its own `[N/total]`-prefixed stop
-banner in launch order before the aggregate line appears.
+The summary includes the scenario count, total events, total bytes, error count, and wall-clock
+elapsed time. Each individual scenario prints its own `[N/total]`-prefixed stop banner in launch
+order before the aggregate line appears.
 
 !!! tip
     Pipe the summary to a monitoring script to gate CI pipelines -- a non-zero `errors` count
     means at least one scenario encountered a write failure.
 
-## sonda scenarios
+### Clock groups in status output
 
-Browse, inspect, and run [built-in scenario patterns](../guides/scenarios.md) discovered from
-the filesystem. No network access needed.
+When entries carry a `clock_group:` (explicit or auto-assigned from an `after:` chain), the
+group name appears at the end of the start banner:
 
-```bash
-sonda scenarios <COMMAND>
+```text
+[1/2] ▶ interface_oper_state  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_util (auto)
+[2/2] ▶ backup_link_utilization  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_util (auto)
 ```
 
-### scenarios list
+The `(auto)` suffix marks groups that Sonda assigned automatically. Explicit groups you set in
+YAML appear without the suffix.
 
-List all available built-in scenarios in a formatted table.
+When two or more distinct clock groups are present in the run, `sonda run` adds a per-group
+breakdown above the final totals:
+
+```text
+━━ run complete (by clock_group)
+  group-a  scenarios: 2 | events: 4 | bytes: 96 B | errors: 0
+  group-b  scenarios: 1 | events: 2 | bytes: 48 B | errors: 0
+━━ run complete  scenarios: 3 | events: 6 | bytes: 144 B | errors: 0 | elapsed: 1.0s
+```
+
+Runs with a single group (or none) fall back to the flat summary shown above.
+
+## sonda catalog
+
+Browse, inspect, and run [scenarios](../guides/scenarios.md) and [metric packs](../guides/metric-packs.md)
+from a single subcommand. `sonda catalog` is the unified replacement for the legacy
+`sonda scenarios` and `sonda packs` subcommand trees.
 
 ```bash
-sonda scenarios list [--category <CATEGORY>] [--json]
+sonda catalog <COMMAND>
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| [`list`](#catalog-list) | Print the merged scenario + pack catalog |
+| [`show <name>`](#catalog-show) | Dump the raw YAML with a metadata header |
+| [`run <name>`](#catalog-run) | Execute an entry with optional overrides |
+
+### catalog list
+
+List every scenario and pack found on the search path:
+
+```bash
+sonda catalog list
+```
+
+```text title="Output"
+NAME                             TYPE       CATEGORY         SIGNAL     RUNNABLE   DESCRIPTION
+cpu-spike                        scenario   infrastructure   metrics    yes        Periodic CPU usage spikes above threshold
+memory-leak                      scenario   infrastructure   metrics    yes        Monotonically growing memory usage (sawtooth)
+interface-flap                   scenario   network          multi      yes        Network interface toggling up/down with traffic shifts
+log-storm                        scenario   application      logs       yes        Error-level log burst with template generation
+histogram-latency                scenario   application      histogram  yes        Request latency histogram (normal distribution)
+telegraf_snmp_interface          pack       network          metrics    no         Standard SNMP interface metrics (Telegraf-normalized)
+node_exporter_cpu                pack       infrastructure   metrics    no         Per-CPU mode counters (node_exporter-compatible)
+14 entries
 ```
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--category <CATEGORY>` | string | Filter by category: `infrastructure`, `network`, `application`, `observability`. |
-| `--json` | flag | Output the list as a JSON array instead of a table. Each element contains `name`, `category`, `signal_type`, and `description` fields. |
+| `--type <KIND>` | string | Restrict to a single kind: `scenario` or `pack`. |
+| `--category <NAME>` | string | Filter by category (case-sensitive). Common values: `infrastructure`, `network`, `application`, `observability`. |
+| `--json` | flag | Emit a stable JSON array on stdout instead of the table. |
+
+The `RUNNABLE` column tells you whether an entry can run without extra input. Scenarios are
+`yes` (self-contained). Packs are `no` (you must supply instance-specific `--label`s for them to
+be meaningful).
+
+Filter examples:
 
 ```bash
-sonda scenarios list
-sonda scenarios list --category application
-sonda scenarios list --json
+sonda catalog list --type pack
+sonda catalog list --category network
+sonda catalog list --type scenario --category application
 ```
 
-### scenarios show
+#### JSON output
 
-Print the raw YAML for a built-in scenario to stdout. Pipe to a file to create a customizable copy.
+`--json` produces a stable, machine-readable array. Every element has the same six fields:
 
 ```bash
-sonda scenarios show <NAME>
+sonda catalog list --json
 ```
 
-| Argument | Type | Description |
-|----------|------|-------------|
-| `<NAME>` | string | Kebab-case scenario name (e.g. `cpu-spike`). |
+```json title="Output (abridged)"
+[
+  {
+    "name": "cpu-spike",
+    "type": "scenario",
+    "category": "infrastructure",
+    "signal": "metrics",
+    "description": "Periodic CPU usage spikes above threshold",
+    "runnable": true
+  },
+  {
+    "name": "telegraf_snmp_interface",
+    "type": "pack",
+    "category": "network",
+    "signal": "metrics",
+    "description": "Standard SNMP interface metrics (Telegraf-normalized)",
+    "runnable": false
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique identifier (kebab-case for scenarios, snake_case for packs). |
+| `type` | string | `scenario` or `pack`. |
+| `category` | string | Category grouping. |
+| `signal` | string | `metrics`, `logs`, `multi`, `histogram`, `summary` -- always `metrics` for packs. |
+| `description` | string | One-line description. |
+| `runnable` | bool | `true` for scenarios, `false` for packs (labels required). |
+
+### catalog show
+
+Print the raw YAML of a scenario or pack to stdout, with a one-line metadata banner on stderr.
+Pipe to a file to create a customizable copy.
 
 ```bash
-sonda scenarios show cpu-spike
-sonda scenarios show memory-leak > my-memory-leak.yaml
+sonda catalog show <NAME>
 ```
-
-### scenarios run
-
-Execute a built-in scenario with optional overrides. Equivalent to running the scenario YAML
-directly, but with a focused set of override flags.
 
 ```bash
-sonda scenarios run <NAME> [OPTIONS]
+sonda catalog show cpu-spike
+sonda catalog show telegraf_snmp_interface
+sonda catalog show cpu-spike > my-cpu-spike.yaml
 ```
 
-| Argument / Flag | Type | Description |
-|-----------------|------|-------------|
-| `<NAME>` | string | Kebab-case scenario name (e.g. `cpu-spike`). |
-| `--duration <DURATION>` | string | Override the run duration (e.g. `10s`, `2m`). |
+```text title="Output (header on stderr, YAML on stdout)"
+scenario: cpu-spike  category: infrastructure  signal: metrics
+# CPU spike: periodic CPU usage spikes above threshold.
+...
+scenario_name: cpu-spike
+category: infrastructure
+signal_type: metrics
+...
+```
+
+### catalog run
+
+Execute a scenario or pack by name with optional overrides. Scenarios route through the v1/v2
+dispatch pipeline (the same one `sonda run` uses); packs expand into one metric scenario per
+metric and run concurrently.
+
+```bash
+sonda catalog run <NAME> [OPTIONS]
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--duration <DURATION>` | string | Override the run duration. |
 | `--rate <RATE>` | float | Override events per second. |
-| `--encoder <ENCODER>` | string | Override the encoder format (e.g. `prometheus_text`, `json_lines`). |
-| `--sink <TYPE>` | string | Override the sink type (e.g. `stdout`, `http_push`). |
-| `--endpoint <URL>` | string | Override the sink endpoint (required for network sinks). |
+| `--encoder <FORMAT>` | string | Override the encoder. |
+| `--sink <TYPE>` | string | Override the sink. |
+| `--endpoint <URL>` | string | Sink endpoint (required for network sinks). |
+| `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. Works for both scenarios and packs. |
+| `--label <KEY=VALUE>` | string | Add a label (repeatable, required for most pack runs). |
 
 ```bash
-sonda scenarios run cpu-spike --duration 10s --rate 5
-sonda scenarios run log-storm --sink loki --endpoint http://localhost:3100
-sonda --dry-run scenarios run cpu-spike
-```
+# Run a flat single-scenario built-in (cpu-spike, memory-leak, log-storm, ...)
+sonda catalog run cpu-spike --rate 1 --duration 10s
 
-!!! tip
-    For the full set of subcommand-specific flags (e.g. `--label`, `--precision`, `--value`),
-    use the `@name` shorthand with `metrics`, `logs`, or `histogram` instead:
-    `sonda metrics --scenario @cpu-spike --label env=staging`
+# Run a multi-scenario built-in
+sonda catalog run interface-flap --duration 30s
 
-## sonda packs
-
-Browse, inspect, and run [metric packs](../guides/metric-packs.md) discovered from the
-filesystem. A metric pack is a reusable bundle of metric names and label schemas that expands
-into a multi-metric scenario.
-
-```bash
-sonda packs <COMMAND>
-```
-
-### packs list
-
-List all available built-in metric packs in a formatted table.
-
-```bash
-sonda packs list [--category <CATEGORY>] [--json]
-```
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `--category <CATEGORY>` | string | Filter by category: `infrastructure`, `network`. |
-| `--json` | flag | Output the list as a JSON array. Each element contains `name`, `category`, `metric_count`, and `description` fields. |
-
-```bash
-sonda packs list
-sonda packs list --category network
-sonda packs list --json
-```
-
-### packs show
-
-Print the raw YAML definition for a built-in pack to stdout. Pipe to a file to create a
-customizable copy.
-
-```bash
-sonda packs show <NAME>
-```
-
-| Argument | Type | Description |
-|----------|------|-------------|
-| `<NAME>` | string | Snake_case pack name (e.g. `telegraf_snmp_interface`). |
-
-```bash
-sonda packs show telegraf_snmp_interface
-sonda packs show node_exporter_cpu > my-cpu-pack.yaml
-```
-
-### packs run
-
-Execute a built-in pack with optional overrides. Expands the pack into one metric scenario per
-metric and runs them concurrently.
-
-```bash
-sonda packs run <NAME> [OPTIONS]
-```
-
-| Argument / Flag | Type | Description |
-|-----------------|------|-------------|
-| `<NAME>` | string | Snake_case pack name (e.g. `telegraf_snmp_interface`). |
-| `--rate <RATE>` | float | Events per second for each metric in the pack. |
-| `--duration <DURATION>` | string | Run duration (e.g. `10s`, `2m`). |
-| `--encoder <ENCODER>` | string | Override the encoder format (e.g. `prometheus_text`, `json_lines`). |
-| `--sink <TYPE>` | string | Override the sink type (e.g. `stdout`, `http_push`). |
-| `--endpoint <URL>` | string | Override the sink endpoint (required for network sinks). |
-| `--label <KEY=VALUE>` | string | Add or override a label (repeatable). |
-
-```bash
-sonda packs run telegraf_snmp_interface \
+# Run a pack with required labels and write to a file
+sonda catalog run telegraf_snmp_interface \
   --rate 1 --duration 10s \
   --label device=rtr-edge-01 \
   --label ifName=GigabitEthernet0/0/0 \
-  --label ifIndex=1
+  --label ifIndex=1 \
+  -o /tmp/snmp.prom
 
-sonda packs run node_exporter_cpu \
-  --rate 1 --duration 30s \
-  --label instance=web-01
-
-sonda --dry-run packs run node_exporter_memory \
-  --rate 1 --duration 10s \
-  --label instance=db-01
+# Validate a scenario without emitting events
+sonda --dry-run catalog run interface-flap
 ```
 
-!!! tip
-    For per-metric generator overrides, use a [pack scenario YAML file](../guides/metric-packs.md#per-metric-overrides)
-    instead of `packs run`. The CLI does not support overrides directly -- those require the
-    `overrides:` block in YAML.
+!!! info "All scenario layouts are accepted"
+    `sonda catalog run` dispatches through the same loader as `sonda run --scenario`, so it
+    handles flat single-scenario v1 files, multi-scenario v1 files, pack shorthand files, and
+    v2 files transparently. Use the `@name` shorthand on a signal subcommand
+    (`sonda metrics --scenario @cpu-spike`) when you need a per-signal flag like `--precision`
+    or `--value` that `catalog run` doesn't surface.
+
+!!! tip "CLI overrides vs YAML `overrides:` block"
+    For per-metric generator overrides inside a pack, use a
+    [pack scenario YAML file](../guides/metric-packs.md#per-metric-overrides) with an
+    `overrides:` block. `catalog run --label` only sets labels -- it cannot replace a metric's
+    generator.
+
+### Deprecated: sonda scenarios and sonda packs
+
+The previous `sonda scenarios` and `sonda packs` subcommand trees are **still functional** but
+hidden from `sonda --help`. Everything they did is now available under `sonda catalog`:
+
+| Legacy command | Replacement |
+|----------------|-------------|
+| `sonda scenarios list` | `sonda catalog list --type scenario` |
+| `sonda scenarios show <n>` | `sonda catalog show <n>` |
+| `sonda scenarios run <n>` | `sonda catalog run <n>` |
+| `sonda packs list` | `sonda catalog list --type pack` |
+| `sonda packs show <n>` | `sonda catalog show <n>` |
+| `sonda packs run <n>` | `sonda catalog run <n>` |
+
+The legacy commands remain in place for backward compatibility and will be removed in a future
+release. New scripts should use `sonda catalog`.
 
 ## sonda import
 
@@ -942,6 +1142,10 @@ writes a commented, immediately-runnable YAML file.
 
 You can also supply CLI flags to skip prompts, pre-fill values from a built-in scenario or
 CSV file, or run fully non-interactively.
+
+!!! info "v2 output by default"
+    `sonda init` emits [v2 scenario YAML](v2-scenarios.md) (`version: 2`, `defaults:`,
+    `scenarios:`). Run the generated file with `sonda run --scenario <file>`.
 
 ```bash
 sonda init [OPTIONS]
@@ -1120,8 +1324,9 @@ If no packs match the selected domain, Sonda falls back to showing all available
 are never stuck with an empty list.
 
 !!! tip
-    Packs are loaded from the [pack search path](#sonda-packs). Use `sonda packs list` to see
-    what is available, or `--pack-path` to point at a custom directory.
+    Packs are loaded from the pack search path (see the [Metric Packs guide](../guides/metric-packs.md#pack-search-path)).
+    Use `sonda catalog list --type pack` to see what is available, or `--pack-path` to point at
+    a custom directory.
 
 ### Advanced sinks
 
@@ -1302,6 +1507,37 @@ no need to copy-paste a follow-up command.
       -o ./scenarios/memory-leak.yaml
     ```
 
+    The generated file uses the v2 format:
+
+    ```yaml title="./scenarios/memory-leak.yaml"
+    # node_memory_used_bytes: infrastructure scenario using the 'leak' pattern.
+    #
+    # Generated by `sonda init`. Run with:
+    #   sonda run --scenario <this-file>
+
+    version: 2
+
+    # Defaults inherited by every entry in scenarios: below.
+    defaults:
+      rate: 1
+      duration: 5m
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - signal_type: metrics
+        name: node_memory_used_bytes
+        generator:
+          type: leak
+          baseline: 0.0
+          ceiling: 100.0
+          time_to_ceiling: "10m"
+        labels:
+          instance: db-01
+    ```
+
 === "--from @builtin with overrides"
 
     Start from the built-in `cpu-spike` scenario, override the sink and rate:
@@ -1327,10 +1563,18 @@ no need to copy-paste a follow-up command.
     Sonda reads the first numeric column, detects the dominant pattern (e.g. spike,
     steady), and maps it to a situation. The column name becomes the default metric name.
 
-The generated YAML includes inline comments and scenario metadata, so it appears in
-`sonda scenarios list` automatically.
+The generated YAML includes inline comments. To list it in the unified catalog, add scenario
+metadata fields (`scenario_name`, `category`, `signal_type`, `description`) and drop the file
+into any directory on the [scenario search path](../guides/scenarios.md#scenario-search-path).
 
-## sonda story
+## sonda story (deprecated)
+
+!!! warning "Hidden from `--help`"
+    The `story` subcommand is retained for backward compatibility but no longer appears in
+    `sonda --help`. Write the same temporal chains directly in
+    [v2 scenario files](v2-scenarios.md) with `after:` clauses on entries, then run them with
+    `sonda run --scenario <file>`. The v2 format is the forward-compatible path and will fully
+    replace stories in a future release.
 
 Run a story file -- a multi-signal scenario format with temporal causality. Stories compile
 down to the existing multi-scenario infrastructure at parse time, resolving `after` clauses

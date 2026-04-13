@@ -379,6 +379,20 @@ pub struct CompiledEntry {
     /// auto-assigned `chain_{lowest_lex_id}` for every member of a
     /// dependency chain with no explicit group.
     pub clock_group: Option<String>,
+    /// Provenance of [`Self::clock_group`].
+    ///
+    /// `true` exactly when the compiler synthesized the
+    /// `chain_{lowest_lex_id}` name for a multi-node `after:` component
+    /// that had no user-supplied value. `false` when the value was
+    /// adopted from an explicit user assignment (including explicit
+    /// values that happen to start with `chain_`). Always `false` when
+    /// [`Self::clock_group`] is `None`.
+    ///
+    /// Downstream display code uses this to decide whether to suffix the
+    /// rendered value with `(auto)`. The `chain_` prefix alone is not a
+    /// reliable proxy because users are free to write
+    /// `clock_group: chain_alpha` themselves.
+    pub clock_group_is_auto: bool,
 
     // -- Histogram / summary fields (inline entries only) --
     /// Distribution model for histogram or summary observations.
@@ -563,9 +577,14 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             entry.phase_offset.clone()
         };
 
-        let clock_group = clock_groups[i]
-            .clone()
-            .or_else(|| entry.clock_group.clone());
+        // Resolve the clock_group + provenance:
+        // - Multi-node component: `clock_groups[i]` holds the assignment.
+        // - Single-node component (Unassigned): fall back to the entry's
+        //   own explicit value, which is by definition not auto-named.
+        let (clock_group, clock_group_is_auto) = match &clock_groups[i] {
+            ClockGroupAssignment::Resolved { name, is_auto } => (Some(name.clone()), *is_auto),
+            ClockGroupAssignment::Unassigned => (entry.clock_group.clone(), false),
+        };
 
         out.push(CompiledEntry {
             id: entry.id,
@@ -586,6 +605,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             cardinality_spikes: entry.cardinality_spikes,
             phase_offset,
             clock_group,
+            clock_group_is_auto,
             distribution: entry.distribution,
             buckets: entry.buckets,
             quantiles: entry.quantiles,
@@ -863,17 +883,33 @@ fn timing_to_error(
 // Clock-group assignment
 // ---------------------------------------------------------------------------
 
+/// Resolved clock-group assignment for one entry.
+///
+/// Carries the resolved group name alongside its provenance:
+///
+/// - `Resolved { name, is_auto: true }` — auto-named
+///   `chain_{lowest_lex_id}` for a multi-node component with no
+///   user-supplied value.
+/// - `Resolved { name, is_auto: false }` — user-supplied value adopted
+///   for the component (or, in the single-node fall-through path, the
+///   entry's own explicit value).
+/// - `Unassigned` — single-node component with no explicit value.
+///
+/// Kept private to the compiler module; downstream consumers see only
+/// the resulting `(clock_group, clock_group_is_auto)` pair on
+/// [`CompiledEntry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClockGroupAssignment {
+    Resolved { name: String, is_auto: bool },
+    Unassigned,
+}
+
 /// Assign a clock group to every entry based on the `after:` dependency
 /// graph (treated as undirected for component detection).
 ///
 /// The returned vector is indexed in parallel with `entries`. Each slot
-/// holds either:
-///
-/// - `Some(group)` — the resolved group (explicit value, or
-///   `chain_{lowest_lex_id}` auto-name) for every entry in a multi-node
-///   connected component;
-/// - `None` — for single-node components; callers should fall back to the
-///   entry's explicit `clock_group` if set.
+/// witnesses both the chosen value and whether the compiler auto-named
+/// it. See [`ClockGroupAssignment`] for the variants.
 ///
 /// # Errors
 ///
@@ -882,7 +918,7 @@ fn timing_to_error(
 fn assign_clock_groups(
     entries: &[ExpandedEntry],
     id_to_idx: &BTreeMap<&str, usize>,
-) -> Result<Vec<Option<String>>, CompileAfterError> {
+) -> Result<Vec<ClockGroupAssignment>, CompileAfterError> {
     let n = entries.len();
 
     // Build an undirected adjacency list.
@@ -921,7 +957,8 @@ fn assign_clock_groups(
         components.push(members);
     }
 
-    let mut out = vec![None; n];
+    let mut out: Vec<ClockGroupAssignment> =
+        (0..n).map(|_| ClockGroupAssignment::Unassigned).collect();
     for members in &components {
         if members.len() < 2 {
             continue;
@@ -937,11 +974,11 @@ fn assign_clock_groups(
             }
         }
 
-        let resolved = match distinct.len() {
-            0 => auto_chain_name(members, entries),
+        let (resolved, is_auto) = match distinct.len() {
+            0 => (auto_chain_name(members, entries), true),
             1 => {
                 let (&k, _) = distinct.iter().next().expect("len == 1");
-                k.to_string()
+                (k.to_string(), false)
             }
             _ => {
                 let mut iter = distinct.iter();
@@ -957,7 +994,10 @@ fn assign_clock_groups(
         };
 
         for &idx in members {
-            out[idx] = Some(resolved.clone());
+            out[idx] = ClockGroupAssignment::Resolved {
+                name: resolved.clone(),
+                is_auto,
+            };
         }
     }
 

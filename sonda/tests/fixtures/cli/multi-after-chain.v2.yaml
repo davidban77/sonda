@@ -1,0 +1,40 @@
+# v2 multi-scenario file with an `after:` chain. Exercises the spec §5
+# pretty dry-run output path — the second entry's `phase_offset:` and
+# auto-assigned `clock_group:` annotations must render.
+version: 2
+
+defaults:
+  rate: 1
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/0/0
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: backup_util
+    signal_type: metrics
+    name: backup_link_utilization
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/1/0
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: primary_link
+      op: "<"
+      value: 1

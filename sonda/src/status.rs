@@ -25,7 +25,8 @@ use sonda_core::config::{
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
 use sonda_core::schedule::stats::ScenarioStats;
-use sonda_core::sink::SinkConfig;
+
+use crate::sink_format::sink_display;
 
 /// Print a start banner for a scenario to stderr.
 ///
@@ -72,6 +73,8 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
             c.duration.as_deref(),
         ),
     };
+    let clock_group = entry.clock_group();
+    let clock_group_is_auto = entry.clock_group_is_auto();
 
     let arrow = "\u{25b6}".if_supports_color(Stderr, |t| t.green());
     let pos_prefix = format_position_prefix(position);
@@ -89,19 +92,39 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
     let encoder_value = encoder.if_supports_color(Stderr, |t| t.cyan());
     let sink_value = sink.if_supports_color(Stderr, |t| t.cyan());
 
-    match duration {
-        Some(dur) => {
-            let dur_label = "duration:".if_supports_color(Stderr, |t| t.dimmed());
-            let dur_value = dur.if_supports_color(Stderr, |t| t.cyan());
-            eprintln!(
-                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value} {pipe} {dur_label} {dur_value}"
-            );
-        }
-        None => {
-            eprintln!(
-                "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
-            );
-        }
+    // Duration, encoder, sink, signal are always rendered. Duration and
+    // clock_group are optional trailing sections; build the line in two
+    // steps so both can be omitted cleanly.
+    let mut line = format!(
+        "{pos_prefix}{arrow} {bold_name}  {signal_label} {signal_value} {pipe} {rate_label} {rate_value} {pipe} {encoder_label} {encoder_value} {pipe} {sink_label} {sink_value}"
+    );
+    if let Some(dur) = duration {
+        let dur_label = "duration:".if_supports_color(Stderr, |t| t.dimmed());
+        let dur_value = dur.if_supports_color(Stderr, |t| t.cyan());
+        line.push_str(&format!(" {pipe} {dur_label} {dur_value}"));
+    }
+    if let Some(cg) = clock_group {
+        let cg_label = "clock_group:".if_supports_color(Stderr, |t| t.dimmed());
+        let cg_display = format_clock_group(cg, clock_group_is_auto);
+        let cg_value = cg_display.if_supports_color(Stderr, |t| t.cyan());
+        line.push_str(&format!(" {pipe} {cg_label} {cg_value}"));
+    }
+    eprintln!("{line}");
+}
+
+/// Render a clock group string for the banner.
+///
+/// When `is_auto` is `Some(true)` — meaning the v2 compiler synthesized
+/// the value because the entry's `after:` component had no explicit
+/// override — append a trailing ` (auto)` marker. Explicit values
+/// (including ones that happen to start with `chain_`) and entries that
+/// never traversed the v2 compiler render bare. Matches the spec §5 dry-run
+/// output (`link_failover (auto)`) for chain-derived names.
+pub fn format_clock_group(group: &str, is_auto: Option<bool>) -> String {
+    if is_auto == Some(true) {
+        format!("{group} (auto)")
+    } else {
+        group.to_string()
     }
 }
 
@@ -548,6 +571,87 @@ pub struct AggregateStats {
     pub total_errors: u64,
 }
 
+/// Per-clock-group aggregate row for the clock-group-aware summary.
+///
+/// One [`ClockGroupStats`] per distinct `clock_group` observed across
+/// launched scenarios. `group` is `None` for scenarios with no clock
+/// group assignment — those get a synthetic "ungrouped" bucket.
+pub struct ClockGroupStats {
+    /// Clock group name, or `None` for scenarios without one.
+    pub group: Option<String>,
+    /// Compiler provenance for [`Self::group`].
+    ///
+    /// Mirrors [`sonda_core::config::ScenarioEntry::clock_group_is_auto`]:
+    /// `Some(true)` when the v2 compiler synthesized the name,
+    /// `Some(false)` for an explicit user assignment, `None` when the
+    /// entry never traversed the v2 compiler.
+    pub group_is_auto: Option<bool>,
+    /// Number of scenarios in this group.
+    pub scenario_count: usize,
+    /// Total events across scenarios in this group.
+    pub total_events: u64,
+    /// Total bytes emitted across scenarios in this group.
+    pub total_bytes: u64,
+    /// Total errors across scenarios in this group.
+    pub total_errors: u64,
+}
+
+/// Print an aggregate summary grouped by `clock_group` to stderr.
+///
+/// Emits one line per group (in the order supplied by the caller, which
+/// is deterministic source order from the compiler), followed by the
+/// cross-group totals from [`print_summary`]. Returns immediately if
+/// verbosity is [`Verbosity::Quiet`] or if no groups are provided.
+///
+/// The caller is responsible for deciding when to invoke this vs. the
+/// flat summary — the convention is "2+ distinct groups, at least one
+/// of which is non-None".
+pub fn print_summary_by_clock_group(
+    groups: &[ClockGroupStats],
+    total: &AggregateStats,
+    total_elapsed: Duration,
+    verbosity: Verbosity,
+) {
+    if verbosity == Verbosity::Quiet || groups.is_empty() {
+        return;
+    }
+
+    let header_bar = "\u{2501}\u{2501}".if_supports_color(Stderr, |t| t.bold());
+    let header_label = "run complete (by clock_group)".if_supports_color(Stderr, |t| t.bold());
+    eprintln!("{header_bar} {header_label}");
+
+    let pipe = "|".if_supports_color(Stderr, |t| t.dimmed());
+    for g in groups {
+        let group_label = match g.group {
+            Some(ref name) => format_clock_group(name, g.group_is_auto),
+            None => "(ungrouped)".to_string(),
+        };
+        let bold_group = group_label.if_supports_color(Stderr, |t| t.bold());
+        let has_errors = g.total_errors > 0;
+        let scenarios_value = format!("{}", g.scenario_count);
+        let events_value = if has_errors {
+            format!("{}", g.total_events)
+        } else {
+            format!(
+                "{}",
+                g.total_events.if_supports_color(Stderr, |t| t.green())
+            )
+        };
+        let bytes_str = format_bytes(g.total_bytes);
+        let bytes_value = bytes_str.if_supports_color(Stderr, |t| t.cyan());
+        let errors_value = if has_errors {
+            format!("{}", g.total_errors.if_supports_color(Stderr, |t| t.red()))
+        } else {
+            format!("{}", g.total_errors)
+        };
+        eprintln!(
+            "  {bold_group}  scenarios: {scenarios_value} {pipe} events: {events_value} {pipe} bytes: {bytes_value} {pipe} errors: {errors_value}"
+        );
+    }
+
+    print_summary(total, total_elapsed, verbosity);
+}
+
 /// Print an aggregate summary line for the `run` subcommand to stderr.
 ///
 /// Only printed for multi-scenario runs. Single-scenario `metrics`/`logs`
@@ -739,36 +843,6 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
     }
 }
 
-/// Format a sink config as a human-readable display string.
-fn sink_display(sink: &SinkConfig) -> String {
-    match sink {
-        SinkConfig::Stdout => "stdout".to_string(),
-        SinkConfig::File { path } => format!("file: {path}"),
-        SinkConfig::Tcp { address, .. } => format!("tcp: {address}"),
-        SinkConfig::Udp { address } => format!("udp: {address}"),
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { url, .. } => format!("http: {url}"),
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { url, .. } => format!("remote_write: {url}"),
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { topic, .. } => format!("kafka: {topic}"),
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { url, .. } => format!("loki: {url}"),
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc: {endpoint}"),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::HttpPushDisabled { .. } => "http_push (feature disabled)".to_string(),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::LokiDisabled { .. } => "loki (feature disabled)".to_string(),
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled { .. } => "remote_write (feature disabled)".to_string(),
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled { .. } => "kafka (feature disabled)".to_string(),
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc (feature disabled)".to_string(),
-    }
-}
-
 /// Format an encoder config as a human-readable display string.
 ///
 /// Includes the precision suffix when set (e.g. `"prometheus_text (precision: 2)"`).
@@ -912,104 +986,9 @@ mod tests {
         assert_eq!(format_rate(0.0), "0");
     }
 
-    // -----------------------------------------------------------------------
-    // sink_display: all SinkConfig variants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sink_display_stdout() {
-        assert_eq!(sink_display(&SinkConfig::Stdout), "stdout");
-    }
-
-    #[test]
-    fn sink_display_file() {
-        let config = SinkConfig::File {
-            path: "/tmp/out.txt".to_string(),
-        };
-        assert_eq!(sink_display(&config), "file: /tmp/out.txt");
-    }
-
-    #[test]
-    fn sink_display_tcp() {
-        let config = SinkConfig::Tcp {
-            address: "127.0.0.1:9999".to_string(),
-            retry: None,
-        };
-        assert_eq!(sink_display(&config), "tcp: 127.0.0.1:9999");
-    }
-
-    #[test]
-    fn sink_display_udp() {
-        let config = SinkConfig::Udp {
-            address: "127.0.0.1:8888".to_string(),
-        };
-        assert_eq!(sink_display(&config), "udp: 127.0.0.1:8888");
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn sink_display_http_push() {
-        let config = SinkConfig::HttpPush {
-            url: "http://localhost:9090/write".to_string(),
-            content_type: None,
-            batch_size: None,
-            headers: None,
-            retry: None,
-        };
-        assert_eq!(sink_display(&config), "http: http://localhost:9090/write");
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn sink_display_loki() {
-        let config = SinkConfig::Loki {
-            url: "http://localhost:3100/loki/api/v1/push".to_string(),
-            batch_size: None,
-            retry: None,
-        };
-        assert_eq!(
-            sink_display(&config),
-            "loki: http://localhost:3100/loki/api/v1/push"
-        );
-    }
-
-    #[cfg(feature = "remote-write")]
-    #[test]
-    fn sink_display_remote_write() {
-        let config = SinkConfig::RemoteWrite {
-            url: "http://localhost:8428/api/v1/write".to_string(),
-            batch_size: None,
-        };
-        assert_eq!(
-            sink_display(&config),
-            "remote_write: http://localhost:8428/api/v1/write"
-        );
-    }
-
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn sink_display_kafka() {
-        let config = SinkConfig::Kafka {
-            brokers: "127.0.0.1:9092".to_string(),
-            topic: "sonda-events".to_string(),
-            retry: None,
-            tls: None,
-            sasl: None,
-        };
-        assert_eq!(sink_display(&config), "kafka: sonda-events");
-    }
-
-    #[cfg(feature = "otlp")]
-    #[test]
-    fn sink_display_otlp_grpc() {
-        use sonda_core::sink::otlp_grpc::OtlpSignalType;
-        let config = SinkConfig::OtlpGrpc {
-            endpoint: "http://localhost:4317".to_string(),
-            signal_type: OtlpSignalType::Metrics,
-            batch_size: None,
-        };
-        assert_eq!(sink_display(&config), "otlp_grpc: http://localhost:4317");
-    }
+    // sink_display tests live alongside the implementation in
+    // `sonda::sink_format`. The status banner re-exports the same helper
+    // so its rendering is covered there.
 
     // -----------------------------------------------------------------------
     // encoder_display: all EncoderConfig variants
@@ -1326,6 +1305,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1349,6 +1329,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1417,6 +1398,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1573,6 +1555,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1603,6 +1586,7 @@ mod tests {
                 },
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1771,6 +1755,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: Some("alert-group".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1795,6 +1780,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("2s".to_string()),
                 clock_group: Some("log-sync".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1924,6 +1910,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1955,6 +1942,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },

@@ -404,6 +404,7 @@ pub fn load_config(
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: args.jitter,
                 jitter_seed: args.jitter_seed,
             },
@@ -945,6 +946,7 @@ pub fn load_log_config(
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: args.jitter,
                 jitter_seed: args.jitter_seed,
             },
@@ -1255,6 +1257,7 @@ fn build_log_spike_config(args: &LogsArgs) -> Result<Option<Vec<CardinalitySpike
 /// - The scenario file cannot be read.
 /// - The file is not valid YAML.
 /// - The YAML does not match the `MultiScenarioConfig` structure.
+#[allow(dead_code)] // retained for existing tests; main.rs now uses scenario_loader.
 pub fn load_multi_config(
     args: &RunArgs,
     catalog: &crate::scenarios::ScenarioCatalog,
@@ -1392,6 +1395,95 @@ pub fn parse_builtin_scenario(
     }
 
     Ok(entries)
+}
+
+/// Apply CLI overrides from the top-level `sonda run --scenario` flags to
+/// every entry in the resolved scenario list.
+///
+/// Used after v1/v2 dispatch has produced a `Vec<ScenarioEntry>` — the
+/// overrides are the same regardless of source format. Mirrors the fields
+/// exposed on [`crate::cli::RunArgs`]:
+///
+/// - `--duration` → entry `duration`
+/// - `--rate` → entry `rate`
+/// - `--sink` / `--endpoint` / `-o` / `--output` → entry sink
+/// - `--encoder` → entry encoder
+/// - `--label key=value` (repeatable) → merged into entry labels (CLI
+///   wins on key conflict)
+///
+/// When none of the override flags are set, this is a cheap no-op.
+///
+/// # Errors
+///
+/// Returns an error if sink parsing fails (missing endpoint for network
+/// sinks) or encoder parsing fails (unknown format).
+pub fn apply_run_overrides(
+    entries: &mut [sonda_core::ScenarioEntry],
+    args: &crate::cli::RunArgs,
+) -> Result<()> {
+    // --output is shorthand for --sink file --endpoint <path>. Resolve it
+    // once up-front so every entry sees the same sink.
+    let (sink_override, encoder_override) = resolve_run_overrides(args)?;
+
+    for entry in entries.iter_mut() {
+        let base = match entry {
+            sonda_core::ScenarioEntry::Metrics(ref mut c) => &mut c.base,
+            sonda_core::ScenarioEntry::Logs(ref mut c) => &mut c.base,
+            sonda_core::ScenarioEntry::Histogram(ref mut c) => &mut c.base,
+            sonda_core::ScenarioEntry::Summary(ref mut c) => &mut c.base,
+        };
+
+        if let Some(ref dur) = args.duration {
+            base.duration = Some(dur.clone());
+        }
+        if let Some(rate) = args.rate {
+            base.rate = rate;
+        }
+        if let Some(ref sink) = sink_override {
+            base.sink = sink.clone();
+        }
+        if !args.labels.is_empty() {
+            let map = base.labels.get_or_insert_with(HashMap::new);
+            for (k, v) in &args.labels {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+
+        if let Some(ref enc) = encoder_override {
+            match entry {
+                sonda_core::ScenarioEntry::Metrics(ref mut c) => c.encoder = enc.clone(),
+                sonda_core::ScenarioEntry::Logs(ref mut c) => c.encoder = enc.clone(),
+                sonda_core::ScenarioEntry::Histogram(ref mut c) => c.encoder = enc.clone(),
+                sonda_core::ScenarioEntry::Summary(ref mut c) => c.encoder = enc.clone(),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve the optional sink and encoder overrides implied by
+/// [`crate::cli::RunArgs`]. Extracted so [`apply_run_overrides`] touches
+/// each input string exactly once.
+fn resolve_run_overrides(
+    args: &crate::cli::RunArgs,
+) -> Result<(Option<SinkConfig>, Option<EncoderConfig>)> {
+    let sink = if let Some(ref path) = args.output {
+        Some(SinkConfig::File {
+            path: path.display().to_string(),
+        })
+    } else if let Some(ref s) = args.sink {
+        Some(parse_sink_override(s, args.endpoint.as_deref())?)
+    } else {
+        None
+    };
+
+    let encoder = match args.encoder {
+        Some(ref name) => Some(parse_encoder_config(name, None)?),
+        None => None,
+    };
+
+    Ok((sink, encoder))
 }
 
 /// Apply CLI overrides from `sonda scenarios run` flags to a scenario entry.
@@ -1653,9 +1745,18 @@ pub fn load_pack_from_catalog(
         labels = Some(map);
     }
 
-    let sink = match args.sink {
-        Some(ref sink_name) => parse_sink_override(sink_name, args.endpoint.as_deref())?,
-        None => sonda_core::sink::SinkConfig::Stdout,
+    // `--output` takes precedence over `--sink`/`--endpoint` because clap
+    // marks the two flags mutually exclusive on `PacksRunArgs`. Resolving
+    // the file-sink shorthand here keeps the pack entrypoint symmetric
+    // with the `sonda run` path (`resolve_run_overrides`).
+    let sink = if let Some(ref path) = args.output {
+        sonda_core::sink::SinkConfig::File {
+            path: path.display().to_string(),
+        }
+    } else if let Some(ref sink_name) = args.sink {
+        parse_sink_override(sink_name, args.endpoint.as_deref())?
+    } else {
+        sonda_core::sink::SinkConfig::Stdout
     };
 
     let encoder = match args.encoder {
@@ -3061,7 +3162,16 @@ mod tests {
     // ---- load_multi_config --------------------------------------------------
 
     fn default_run_args(path: PathBuf) -> crate::cli::RunArgs {
-        crate::cli::RunArgs { scenario: path }
+        crate::cli::RunArgs {
+            scenario: path,
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+            output: None,
+            labels: vec![],
+        }
     }
 
     #[test]
@@ -5059,6 +5169,13 @@ mod tests {
         let catalog = repo_scenario_catalog();
         let args = crate::cli::RunArgs {
             scenario: PathBuf::from("@interface-flap"),
+            duration: None,
+            rate: None,
+            sink: None,
+            endpoint: None,
+            encoder: None,
+            output: None,
+            labels: vec![],
         };
         let config =
             load_multi_config(&args, &catalog).expect("@interface-flap must load as multi config");
@@ -5479,6 +5596,7 @@ sink:
             sink: None,
             endpoint: None,
             encoder: None,
+            output: None,
             labels: vec![],
         }
     }

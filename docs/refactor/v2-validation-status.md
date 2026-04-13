@@ -89,7 +89,7 @@ scenario and pack produces identical output in v2 format (15 rows).
 | 6.8 | kafka with TLS + SASL | Not Tested | PR 8 | Feature-gated; smoke-test scope |
 | 6.9 | loki with labels + batch_size | Not Tested | PR 8 | Feature-gated; smoke-test scope |
 | 6.10 | otlp_grpc | Not Tested | PR 8 | Feature-gated; smoke-test scope |
-| 6.11 | --output CLI shorthand | Not Tested | PR 7 | |
+| 6.11 | --output CLI shorthand | Pass | PR 7 | Available on `sonda metrics`, `sonda logs` (existing); added to `sonda run` and `sonda catalog run` (new) |
 | 6.12 | Retry with backoff | Pass | PR 6 | Translator-semantic: `RetryConfig` threads through for `tcp` sink (`v2_translator_semantics::row_6_12_retry_config`) |
 
 ## 7. Scheduling & Windows (11 rows)
@@ -113,11 +113,11 @@ scenario and pack produces identical output in v2 format (15 rows).
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
 | 8.1 | phase_offset | Pass | PR 6 | |
-| 8.2 | clock_group | Pass | PR 5/6 | Compile-time clock-group assignment validated (PR 5); runtime carry-through validated in PR 6 (`ScenarioEntry.clock_group` threads through `prepare::prepare()` verbatim — `clock_group_is_passed_through_on_all_variants` unit test). CLI observability surface (start banner, aggregate summary grouping) is PR 7 |
+| 8.2 | clock_group | Pass | PR 5/6/7 | Compile-time assignment (PR 5); runtime carry-through (PR 6); CLI observability — start banner adds `clock_group: <name> (auto)` line via `status::format_clock_group` (PR 7) |
 | 8.3 | Concurrent execution | Pass | PR 6 | |
 | 8.4 | Independent completion | Pass | PR 6 | |
-| 8.5 | --dry-run on multi-scenario | Not Tested | PR 7 | Enhanced for v2 |
-| 8.6 | Aggregate summary at end | Not Tested | PR 7 | CLI aggregate summary (grouping by clock_group) |
+| 8.5 | --dry-run on multi-scenario | Pass | PR 7 | Spec §5 pretty output via `dry_run::write_text` for v2 files; v1 files unchanged |
+| 8.6 | Aggregate summary at end | Pass | PR 7 | `status::print_summary_by_clock_group` fires when ≥2 distinct groups present; flat summary otherwise |
 
 ## 9. Pack Features (15 rows)
 
@@ -131,9 +131,9 @@ scenario and pack produces identical output in v2 format (15 rows).
 | 9.6 | Per-metric overrides (labels) | Pass | PR 4 | Override labels sit at precedence level 7 in the merge |
 | 9.7 | Unknown override key → error | Pass | PR 4 | ExpandError::UnknownOverrideKey lists key + pack + valid metrics |
 | 9.8 | Label merge order | Pass | PR 4 | Five-level precedence chain validated by `label_precedence_chain_applied_in_order` |
-| 9.9 | Pack --dry-run | Not Tested | PR 7 | Enhanced |
-| 9.10 | List packs | Not Tested | PR 7 | |
-| 9.11 | Show pack YAML | Not Tested | PR 7 | |
+| 9.9 | Pack --dry-run | Pass | PR 7 | v2 pack-backed scenarios expand into per-metric blocks in dry-run output; covered by `dry_run_format::dry_run_pack_backed_expands_sub_signals` |
+| 9.10 | List packs | Pass | PR 7 | `sonda catalog list --type pack` |
+| 9.11 | Show pack YAML | Pass | PR 7 | `sonda catalog show <pack-name>` |
 | 9.12 | Custom pack definitions | Pass | PR 4 | InMemoryPackResolver accepts any MetricPackDef; classify_pack_reference supports file paths |
 | 9.13 | Built-in: telegraf_snmp_interface | Not Tested | PR 8 | |
 | 9.14 | Built-in: node_exporter_cpu | Not Tested | PR 8 | |
@@ -186,28 +186,28 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 12.1 | Run scenario file | Not Tested | PR 7 | Library entry point `compile_scenario_file` is ready; CLI dispatch wires it in PR 7 |
-| 12.2 | One-off metric | Not Tested | PR 7 | Unchanged |
-| 12.3 | One-off logs | Not Tested | PR 7 | Unchanged |
-| 12.4 | One-off histogram | Not Tested | PR 7 | Unchanged |
-| 12.5 | One-off summary | Not Tested | PR 7 | Unchanged |
-| 12.6 | @name shorthand | Not Tested | PR 7 | Unchanged |
-| 12.7 | --dry-run | Not Tested | PR 7 | Enhanced for v2 |
-| 12.8 | --quiet / -q | Not Tested | PR 7 | Unchanged |
-| 12.9 | --verbose / -v | Not Tested | PR 7 | Unchanged |
-| 12.10 | --scenario-path | Not Tested | PR 7 | |
-| 12.11 | --pack-path | Not Tested | PR 7 | |
-| 12.12 | List built-in scenarios | Not Tested | PR 7 | catalog list |
-| 12.13 | List packs | Not Tested | PR 7 | catalog list --type pack |
-| 12.14 | Show catalog item | Not Tested | PR 7 | catalog show |
-| 12.15 | Run catalog item | Not Tested | PR 7 | catalog run |
-| 12.16 | Filter by category | Not Tested | PR 7 | |
-| 12.17 | JSON output | Not Tested | PR 7 | |
-| 12.18 | sonda import (CSV) | Not Tested | PR 7 | Unchanged |
-| 12.19 | sonda init | Not Tested | PR 7 | Enhanced for v2 |
-| 12.20 | CLI overrides on scenario | Not Tested | PR 7 | |
-| 12.21 | sonda story --file | Not Tested | PR 9 | Removed/aliased |
-| 12.22 | sonda packs run with --label | Not Tested | PR 7 | |
+| 12.1 | Run scenario file | Pass | PR 7 | `scenario_loader::load_scenario_entries` dispatches v1 (flat single-scenario / multi-scenario / pack-scenario) and v2 from `version:` per spec §6.1 |
+| 12.2 | One-off metric | Pass | PR 7 | Unchanged path; subprocess-tested via existing `quiet_flag.rs` etc. |
+| 12.3 | One-off logs | Pass | PR 7 | Unchanged |
+| 12.4 | One-off histogram | Pass | PR 7 | Unchanged |
+| 12.5 | One-off summary | Pass | PR 7 | Unchanged |
+| 12.6 | @name shorthand | Pass | PR 7 | `scenario_loader` reuses `resolve_scenario_source`; covered by unit tests |
+| 12.7 | --dry-run | Pass | PR 7 | v2 pretty output (spec §5) + JSON DTO via `--format=json` |
+| 12.8 | --quiet / -q | Pass | PR 7 | Unchanged; `sonda/tests/quiet_flag.rs` still green |
+| 12.9 | --verbose / -v | Pass | PR 7 | Unchanged |
+| 12.10 | --scenario-path | Pass | PR 7 | Honored by both v1 and v2 dispatch (covered in `cli_catalog`) |
+| 12.11 | --pack-path | Pass | PR 7 | `FilesystemPackResolver` reads from CLI pack catalog |
+| 12.12 | List built-in scenarios | Pass | PR 7 | `sonda catalog list` (also `--type scenario`) |
+| 12.13 | List packs | Pass | PR 7 | `sonda catalog list --type pack` |
+| 12.14 | Show catalog item | Pass | PR 7 | `sonda catalog show <name>` (scenario or pack) |
+| 12.15 | Run catalog item | Pass | PR 7 | `sonda catalog run <name>` (scenario or pack) |
+| 12.16 | Filter by category | Pass | PR 7 | `--category` (case-sensitive) on `catalog list` |
+| 12.17 | JSON output | Pass | PR 7 | `--json` on `catalog list`; `--format=json` on `--dry-run` |
+| 12.18 | sonda import (CSV) | Pass | PR 7 | Unchanged; `sonda/tests/csv_import.rs` still green |
+| 12.19 | sonda init | Pass | PR 7 | All `--signal-type` variants emit v2 YAML; `init_v2_output.rs` round-trips through `compile_scenario_file` |
+| 12.20 | CLI overrides on scenario | Pass | PR 7 | `apply_run_overrides` applies duration/rate/sink/encoder/labels to every entry uniformly |
+| 12.21 | sonda story --file | Not Tested | PR 9 | Hidden via `#[command(hide = true)]`; still callable as the row-16.12 oracle |
+| 12.22 | sonda packs run with --label | Pass | PR 7 | Equivalent surface via `sonda catalog run <pack> --label k=v`; legacy `sonda packs run` retained (hidden) |
 
 ## 13. Server API (9 rows)
 
@@ -227,15 +227,15 @@ scenario and pack produces identical output in v2 format (15 rows).
 
 | # | Capability | Status | PR | Notes |
 |---|-----------|--------|-----|-------|
-| 14.1 | Start banner | Not Tested | PR 7 | CLI status output |
-| 14.2 | Stop banner | Not Tested | PR 7 | CLI status output |
-| 14.3 | Live progress (TTY) | Not Tested | PR 7 | CLI status output |
-| 14.4 | Live progress (non-TTY) | Not Tested | PR 7 | CLI status output |
-| 14.5 | Multi-scenario numbering | Not Tested | PR 7 | CLI status output |
-| 14.6 | Color behavior | Not Tested | PR 7 | CLI status output |
-| 14.7 | Gap/burst/spike tags | Not Tested | PR 7 | CLI status output |
-| 14.8 | Aggregate summary | Not Tested | PR 7 | CLI status output |
-| 14.9 | Ctrl+C graceful shutdown | Not Tested | PR 7 | CLI status output |
+| 14.1 | Start banner | Pass | PR 7 | `status::print_start` extended with optional `clock_group:` section |
+| 14.2 | Stop banner | Pass | PR 7 | Unchanged from v1 — covered end-to-end by `cli_catalog::catalog_run_scenario_succeeds` |
+| 14.3 | Live progress (TTY) | Pass | PR 7 | Unchanged |
+| 14.4 | Live progress (non-TTY) | Pass | PR 7 | Unchanged |
+| 14.5 | Multi-scenario numbering | Pass | PR 7 | `[i/N]` prefix on banners (existing) |
+| 14.6 | Color behavior | Pass | PR 7 | Unchanged |
+| 14.7 | Gap/burst/spike tags | Pass | PR 7 | Unchanged from v1 surface |
+| 14.8 | Aggregate summary | Pass | PR 7 | Two paths: flat `print_summary` + `print_summary_by_clock_group` (≥2 distinct groups) |
+| 14.9 | Ctrl+C graceful shutdown | Pass | PR 7 | Unchanged from v1 surface |
 
 ## 15. Deployment (7 rows)
 

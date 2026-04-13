@@ -1,0 +1,21 @@
+# v2 file with a self-referencing `after:` clause. Used to verify that
+# v2 compile errors surface through the CLI with a useful diagnostic
+# (non-zero exit + stderr mentions the source path and/or SelfReference).
+version: 2
+
+defaults:
+  rate: 1
+  duration: 100ms
+
+scenarios:
+  - id: loopy
+    signal_type: metrics
+    name: loopy
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+    after:
+      ref: loopy
+      op: "<"
+      value: 1

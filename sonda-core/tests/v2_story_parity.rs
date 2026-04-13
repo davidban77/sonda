@@ -176,6 +176,7 @@ fn v1_link_failover_entries(duration: &str) -> Vec<ScenarioEntry> {
             sink: SinkConfig::Stdout,
             phase_offset,
             clock_group: Some("chain_backup_link_utilization".to_string()),
+            clock_group_is_auto: None,
             jitter: None,
             jitter_seed: None,
         }

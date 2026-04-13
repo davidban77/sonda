@@ -400,3 +400,176 @@ fn row_7_3_gap_and_burst_both_carry_through() {
         _ => panic!("expected metrics entry"),
     }
 }
+
+// =============================================================================
+// clock_group_is_auto provenance (BLOCKER 3 fix-pass for PR 7)
+// =============================================================================
+
+/// Compile an inline v2 YAML string and return the translated entries.
+///
+/// Avoids depending on a fixture file because the cases below are
+/// purpose-built for a single test and would clutter the fixtures
+/// directory.
+fn compile_inline(yaml: &str) -> Vec<ScenarioEntry> {
+    let resolver = InMemoryPackResolver::new();
+    sonda_core::compile_scenario_file(yaml, &resolver)
+        .unwrap_or_else(|e| panic!("inline v2 compile failed: {e}"))
+}
+
+/// An auto-named chain renders `clock_group_is_auto = Some(true)` on
+/// every member of the connected component. The compiler synthesizes
+/// `chain_{lowest_lex_id}` here because the user did not supply a
+/// `clock_group:` value on either entry. Display code keys on this
+/// flag (rather than the `chain_` prefix) to decide whether to suffix
+/// with `(auto)`.
+#[test]
+fn clock_group_is_auto_true_for_synthesized_chain_name() {
+    let entries = compile_inline(
+        r#"version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: backup_util
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: primary_link
+      op: "<"
+      value: 1
+"#,
+    );
+
+    assert_eq!(entries.len(), 2);
+    for entry in &entries {
+        assert_eq!(
+            entry.clock_group(),
+            Some("chain_backup_util"),
+            "auto-name uses lowest lex id of component members",
+        );
+        assert_eq!(
+            entry.clock_group_is_auto(),
+            Some(true),
+            "synthesized chain name must report is_auto = Some(true)",
+        );
+    }
+}
+
+/// When a user writes `clock_group: <name>` explicitly on at least one
+/// member of an `after:` component — even a name that starts with
+/// `chain_` — every member of that component reports
+/// `clock_group_is_auto = Some(false)`. This is the regression that
+/// motivated the fix: the previous heuristic (`starts_with("chain_")`)
+/// flagged explicit chain-style names as auto.
+#[test]
+fn clock_group_is_auto_false_for_explicit_chain_prefix_value() {
+    let entries = compile_inline(
+        r#"version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    clock_group: chain_user_assigned
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: backup_util
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: primary_link
+      op: "<"
+      value: 1
+"#,
+    );
+
+    assert_eq!(entries.len(), 2);
+    for entry in &entries {
+        assert_eq!(
+            entry.clock_group(),
+            Some("chain_user_assigned"),
+            "explicit name propagates across the component",
+        );
+        assert_eq!(
+            entry.clock_group_is_auto(),
+            Some(false),
+            "explicit user assignment must report is_auto = Some(false), \
+             even when the value starts with `chain_`",
+        );
+    }
+}
+
+/// A standalone v2 entry with no `after:` and no `clock_group:` reports
+/// `clock_group: None` and `clock_group_is_auto: None`. The display
+/// code must render nothing for the `clock_group:` line in this case.
+#[test]
+fn clock_group_is_auto_none_for_standalone_entry_with_no_group() {
+    let entries = compile_inline(
+        r#"version: 2
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: solo
+    signal_type: metrics
+    name: solo_metric
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].clock_group(), None);
+    assert_eq!(entries[0].clock_group_is_auto(), None);
+}
+
+/// A standalone v2 entry with an explicit `clock_group:` carries the
+/// user value through and reports `is_auto = Some(false)`. The
+/// single-node case must not be overlooked by the auto/explicit
+/// dispatcher.
+#[test]
+fn clock_group_is_auto_false_for_standalone_entry_with_explicit_group() {
+    let entries = compile_inline(
+        r#"version: 2
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: solo
+    signal_type: metrics
+    name: solo_metric
+    clock_group: my_group
+    generator:
+      type: constant
+      value: 1.0
+"#,
+    );
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].clock_group(), Some("my_group"));
+    assert_eq!(entries[0].clock_group_is_auto(), Some(false));
+}
