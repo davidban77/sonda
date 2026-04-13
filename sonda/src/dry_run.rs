@@ -18,6 +18,8 @@ use sonda_core::config::{
     SummaryScenarioConfig,
 };
 
+use crate::sink_format::sink_display;
+
 /// Output format for the dry-run printer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DryRunFormat {
@@ -372,32 +374,6 @@ fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
         EncoderConfig::Otlp { .. } => "otlp".to_string(),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
-    }
-}
-
-fn sink_display(sink: &sonda_core::sink::SinkConfig) -> String {
-    use sonda_core::sink::SinkConfig;
-    match sink {
-        SinkConfig::Stdout => "stdout".to_string(),
-        SinkConfig::File { path } => format!("file ({path})"),
-        SinkConfig::Tcp { address, .. } => format!("tcp ({address})"),
-        SinkConfig::Udp { address } => format!("udp ({address})"),
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { url, .. } => format!("http_push ({url})"),
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { url, .. } => format!("loki ({url})"),
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { url, .. } => format!("remote_write ({url})"),
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled {} => "remote_write (disabled)".to_string(),
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { brokers, topic, .. } => format!("kafka ({brokers} / {topic})"),
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled {} => "kafka (disabled)".to_string(),
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc ({endpoint})"),
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc (disabled)".to_string(),
     }
 }
 

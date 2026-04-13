@@ -14,6 +14,7 @@ mod packs;
 mod progress;
 mod scenario_loader;
 mod scenarios;
+mod sink_format;
 mod status;
 mod story;
 mod yaml_helpers;

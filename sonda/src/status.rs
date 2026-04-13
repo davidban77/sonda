@@ -25,7 +25,8 @@ use sonda_core::config::{
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
 use sonda_core::schedule::stats::ScenarioStats;
-use sonda_core::sink::SinkConfig;
+
+use crate::sink_format::sink_display;
 
 /// Print a start banner for a scenario to stderr.
 ///
@@ -831,36 +832,6 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
     }
 }
 
-/// Format a sink config as a human-readable display string.
-fn sink_display(sink: &SinkConfig) -> String {
-    match sink {
-        SinkConfig::Stdout => "stdout".to_string(),
-        SinkConfig::File { path } => format!("file: {path}"),
-        SinkConfig::Tcp { address, .. } => format!("tcp: {address}"),
-        SinkConfig::Udp { address } => format!("udp: {address}"),
-        #[cfg(feature = "http")]
-        SinkConfig::HttpPush { url, .. } => format!("http: {url}"),
-        #[cfg(feature = "remote-write")]
-        SinkConfig::RemoteWrite { url, .. } => format!("remote_write: {url}"),
-        #[cfg(feature = "kafka")]
-        SinkConfig::Kafka { topic, .. } => format!("kafka: {topic}"),
-        #[cfg(feature = "http")]
-        SinkConfig::Loki { url, .. } => format!("loki: {url}"),
-        #[cfg(feature = "otlp")]
-        SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc: {endpoint}"),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::HttpPushDisabled { .. } => "http_push (feature disabled)".to_string(),
-        #[cfg(not(feature = "http"))]
-        SinkConfig::LokiDisabled { .. } => "loki (feature disabled)".to_string(),
-        #[cfg(not(feature = "remote-write"))]
-        SinkConfig::RemoteWriteDisabled { .. } => "remote_write (feature disabled)".to_string(),
-        #[cfg(not(feature = "kafka"))]
-        SinkConfig::KafkaDisabled { .. } => "kafka (feature disabled)".to_string(),
-        #[cfg(not(feature = "otlp"))]
-        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc (feature disabled)".to_string(),
-    }
-}
-
 /// Format an encoder config as a human-readable display string.
 ///
 /// Includes the precision suffix when set (e.g. `"prometheus_text (precision: 2)"`).
@@ -1004,104 +975,9 @@ mod tests {
         assert_eq!(format_rate(0.0), "0");
     }
 
-    // -----------------------------------------------------------------------
-    // sink_display: all SinkConfig variants
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn sink_display_stdout() {
-        assert_eq!(sink_display(&SinkConfig::Stdout), "stdout");
-    }
-
-    #[test]
-    fn sink_display_file() {
-        let config = SinkConfig::File {
-            path: "/tmp/out.txt".to_string(),
-        };
-        assert_eq!(sink_display(&config), "file: /tmp/out.txt");
-    }
-
-    #[test]
-    fn sink_display_tcp() {
-        let config = SinkConfig::Tcp {
-            address: "127.0.0.1:9999".to_string(),
-            retry: None,
-        };
-        assert_eq!(sink_display(&config), "tcp: 127.0.0.1:9999");
-    }
-
-    #[test]
-    fn sink_display_udp() {
-        let config = SinkConfig::Udp {
-            address: "127.0.0.1:8888".to_string(),
-        };
-        assert_eq!(sink_display(&config), "udp: 127.0.0.1:8888");
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn sink_display_http_push() {
-        let config = SinkConfig::HttpPush {
-            url: "http://localhost:9090/write".to_string(),
-            content_type: None,
-            batch_size: None,
-            headers: None,
-            retry: None,
-        };
-        assert_eq!(sink_display(&config), "http: http://localhost:9090/write");
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn sink_display_loki() {
-        let config = SinkConfig::Loki {
-            url: "http://localhost:3100/loki/api/v1/push".to_string(),
-            batch_size: None,
-            retry: None,
-        };
-        assert_eq!(
-            sink_display(&config),
-            "loki: http://localhost:3100/loki/api/v1/push"
-        );
-    }
-
-    #[cfg(feature = "remote-write")]
-    #[test]
-    fn sink_display_remote_write() {
-        let config = SinkConfig::RemoteWrite {
-            url: "http://localhost:8428/api/v1/write".to_string(),
-            batch_size: None,
-        };
-        assert_eq!(
-            sink_display(&config),
-            "remote_write: http://localhost:8428/api/v1/write"
-        );
-    }
-
-    #[cfg(feature = "kafka")]
-    #[test]
-    fn sink_display_kafka() {
-        let config = SinkConfig::Kafka {
-            brokers: "127.0.0.1:9092".to_string(),
-            topic: "sonda-events".to_string(),
-            retry: None,
-            tls: None,
-            sasl: None,
-        };
-        assert_eq!(sink_display(&config), "kafka: sonda-events");
-    }
-
-    #[cfg(feature = "otlp")]
-    #[test]
-    fn sink_display_otlp_grpc() {
-        use sonda_core::sink::otlp_grpc::OtlpSignalType;
-        let config = SinkConfig::OtlpGrpc {
-            endpoint: "http://localhost:4317".to_string(),
-            signal_type: OtlpSignalType::Metrics,
-            batch_size: None,
-        };
-        assert_eq!(sink_display(&config), "otlp_grpc: http://localhost:4317");
-    }
+    // sink_display tests live alongside the implementation in
+    // `sonda::sink_format`. The status banner re-exports the same helper
+    // so its rendering is covered there.
 
     // -----------------------------------------------------------------------
     // encoder_display: all EncoderConfig variants
