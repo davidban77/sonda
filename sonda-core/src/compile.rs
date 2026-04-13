@@ -31,28 +31,40 @@ use crate::config::ScenarioEntry;
 /// bubble up naturally via `?`.
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
-    /// YAML parsing or schema validation failed.
+    /// **Phase 1** (parse): YAML parsing or schema validation failed.
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
 
-    /// Defaults resolution failed (e.g. an entry was missing a required field
-    /// with no default available).
+    /// **Phase 2** (normalize): defaults resolution failed (e.g. an entry
+    /// was missing a required field with no default available).
     #[error("normalize error: {0}")]
     Normalize(#[from] NormalizeError),
 
-    /// Pack expansion failed (unknown pack, unknown override key, duplicate
-    /// id, or resolver I/O error).
+    /// **Phase 3** (expand): pack expansion failed (unknown pack, unknown
+    /// override key, duplicate id, or resolver I/O error).
     #[error("expand error: {0}")]
     Expand(#[from] ExpandError),
 
-    /// `after:` resolution, dependency graph, or clock-group assignment
-    /// failed.
+    /// **Phase 4+5** (compile_after): `after:` resolution, dependency
+    /// graph, or clock-group assignment failed.
     #[error("compile_after error: {0}")]
     CompileAfter(#[from] CompileAfterError),
 
-    /// Translation to the runtime input shape failed (shape invariants not
-    /// visible to earlier phases, e.g. an unknown `signal_type` on a
-    /// programmatically-constructed [`CompiledFile`][crate::compiler::compile_after::CompiledFile]).
+    /// **Phase 6** (prepare): translation to the runtime input shape
+    /// failed. Shape invariants not visible to earlier phases surface
+    /// here — e.g. an unknown `signal_type` on a programmatically-
+    /// constructed [`CompiledFile`][crate::compiler::compile_after::CompiledFile].
+    ///
+    /// Note: the [`PrepareError::UnknownSignalType`],
+    /// [`PrepareError::MissingGenerator`],
+    /// [`PrepareError::MissingLogGenerator`], and
+    /// [`PrepareError::MissingDistribution`] cases are effectively
+    /// unreachable when the input comes through
+    /// [`compile_scenario_file`] — earlier phases gate those shapes at
+    /// YAML-level. They remain reachable for programmatic callers that
+    /// build a [`CompiledFile`][crate::compiler::compile_after::CompiledFile]
+    /// in code and feed it directly to
+    /// [`prepare`][crate::compiler::prepare::prepare].
     #[error("prepare error: {0}")]
     Prepare(#[from] PrepareError),
 }
