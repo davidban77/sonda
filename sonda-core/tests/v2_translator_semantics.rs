@@ -15,6 +15,11 @@
 //! - 2.9 — csv_replay with auto column discovery (multi-column fan-out).
 //! - 2.10 — csv_replay with per-column labels.
 //! - 4.1–4.8 — summary signal type (distribution, quantiles, seed, drift).
+//!   Distribution coverage is parameterized across Exponential / Normal /
+//!   Uniform via rstest cases on the same fixture shape.
+//! - 4.4 — histogram entry with custom `buckets:` list (translator-level
+//!   assertion that the runtime parity suite's default-bucket path
+//!   complements).
 //! - 5.2 — influx_lp encoder with explicit `field_key`.
 //! - 5.7 — `precision` field on text encoders.
 //! - 6.12 — retry/backoff config passes through a TCP sink.
@@ -23,8 +28,9 @@
 //! - 7.3 — gap + burst overlapping on the same scenario (gap takes
 //!   priority at runtime; this test asserts both fields carry through).
 
+use rstest::rstest;
 use sonda_core::compiler::expand::InMemoryPackResolver;
-use sonda_core::config::ScenarioEntry;
+use sonda_core::config::{DistributionConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig};
 use sonda_core::sink::SinkConfig;
@@ -121,11 +127,57 @@ fn row_2_10_csv_replay_per_column_labels_carry_through() {
 // 4.1–4.8 — summary signal type
 // =============================================================================
 
+/// Inline-build a minimal summary v2 YAML around the supplied
+/// `distribution:` block so the rstest cases below can swap the
+/// distribution variant without authoring a fixture file per case.
+fn compile_summary_with_distribution(distribution_yaml: &str) -> Vec<ScenarioEntry> {
+    let yaml = format!(
+        "version: 2\n\n\
+         scenarios:\n\
+         \x20 - signal_type: summary\n\
+         \x20   name: rpc_duration_seconds\n\
+         \x20   rate: 1\n\
+         \x20   duration: 1s\n\
+         \x20   distribution:\n{distribution_yaml}\n\
+         \x20   quantiles: [0.5, 0.9, 0.95, 0.99]\n\
+         \x20   observations_per_tick: 100\n\
+         \x20   mean_shift_per_sec: 0.001\n\
+         \x20   seed: 42\n\
+         \x20   labels:\n\
+         \x20     service: rpc\n\
+         \x20   encoder:\n\
+         \x20     type: prometheus_text\n\
+         \x20   sink:\n\
+         \x20     type: stdout\n",
+    );
+    let resolver = InMemoryPackResolver::new();
+    sonda_core::compile_scenario_file(&yaml, &resolver)
+        .unwrap_or_else(|e| panic!("inline summary v2 compile failed: {e}"))
+}
+
 /// A summary entry translates with distribution, quantiles, seed,
-/// observations_per_tick, and mean_shift_per_sec all preserved.
-#[test]
-fn row_4_1_to_4_8_summary_signal_fields_carry_through() {
-    let entries = compile("summary-latency.yaml");
+/// observations_per_tick, and mean_shift_per_sec all preserved across
+/// every supported [`DistributionConfig`] variant — exercising rows 4.1
+/// (Exponential), 4.2 (Normal), and 4.3 (Uniform) together.
+#[rustfmt::skip]
+#[rstest]
+#[case::exponential(
+    "        type: exponential\n        rate: 10.0",
+    DistributionConfig::Exponential { rate: 10.0 },
+)]
+#[case::normal(
+    "        type: normal\n        mean: 0.1\n        stddev: 0.02",
+    DistributionConfig::Normal { mean: 0.1, stddev: 0.02 },
+)]
+#[case::uniform(
+    "        type: uniform\n        min: 0.05\n        max: 0.25",
+    DistributionConfig::Uniform { min: 0.05, max: 0.25 },
+)]
+fn row_4_1_to_4_8_summary_signal_fields_carry_through(
+    #[case] distribution_yaml: &str,
+    #[case] expected: DistributionConfig,
+) {
+    let entries = compile_summary_with_distribution(distribution_yaml);
     assert_eq!(entries.len(), 1);
     match &entries[0] {
         ScenarioEntry::Summary(c) => {
@@ -139,8 +191,82 @@ fn row_4_1_to_4_8_summary_signal_fields_carry_through() {
             assert_eq!(c.observations_per_tick, Some(100u64));
             assert_eq!(c.seed, Some(42));
             assert!(c.mean_shift_per_sec.is_some());
+            assert_distribution_eq(&c.distribution, &expected);
         }
         other => panic!("expected Summary, got {other:?}"),
+    }
+}
+
+/// Compare two [`DistributionConfig`] values by variant + parameters.
+/// `DistributionConfig` does not derive `PartialEq` (its `f64` fields
+/// have NaN semantics), so this helper does the field-level compare each
+/// rstest case needs.
+fn assert_distribution_eq(actual: &DistributionConfig, expected: &DistributionConfig) {
+    match (actual, expected) {
+        (
+            DistributionConfig::Exponential { rate: a },
+            DistributionConfig::Exponential { rate: b },
+        ) => assert!((a - b).abs() < f64::EPSILON, "rate {a} != {b}"),
+        (
+            DistributionConfig::Normal {
+                mean: am,
+                stddev: as_,
+            },
+            DistributionConfig::Normal {
+                mean: bm,
+                stddev: bs,
+            },
+        ) => {
+            assert!((am - bm).abs() < f64::EPSILON, "mean {am} != {bm}");
+            assert!((as_ - bs).abs() < f64::EPSILON, "stddev {as_} != {bs}");
+        }
+        (
+            DistributionConfig::Uniform { min: a1, max: a2 },
+            DistributionConfig::Uniform { min: b1, max: b2 },
+        ) => {
+            assert!((a1 - b1).abs() < f64::EPSILON, "min {a1} != {b1}");
+            assert!((a2 - b2).abs() < f64::EPSILON, "max {a2} != {b2}");
+        }
+        _ => panic!("distribution variant mismatch: {actual:?} vs {expected:?}"),
+    }
+}
+
+/// Row 4.4 — a histogram entry's custom `buckets:` list threads through
+/// the v2 translator into [`HistogramScenarioConfig::buckets`]
+/// unchanged. The runtime parity suite (`v2_runtime_parity::case_11_histogram_latency`)
+/// covers the default-bucket path; this is the lightweight translator-
+/// level assertion for the explicit-bucket path.
+#[test]
+fn row_4_4_histogram_custom_buckets_carry_through() {
+    let yaml = "version: 2\n\n\
+                scenarios:\n\
+                \x20 - signal_type: histogram\n\
+                \x20   name: http_request_duration_seconds\n\
+                \x20   rate: 1\n\
+                \x20   duration: 1s\n\
+                \x20   buckets: [0.01, 0.1, 1.0, 10.0]\n\
+                \x20   distribution:\n\
+                \x20     type: normal\n\
+                \x20     mean: 0.1\n\
+                \x20     stddev: 0.03\n\
+                \x20   observations_per_tick: 50\n\
+                \x20   seed: 1\n\
+                \x20   encoder:\n\
+                \x20     type: prometheus_text\n\
+                \x20   sink:\n\
+                \x20     type: stdout\n";
+    let resolver = InMemoryPackResolver::new();
+    let entries = sonda_core::compile_scenario_file(yaml, &resolver)
+        .unwrap_or_else(|e| panic!("inline histogram v2 compile failed: {e}"));
+    match &entries[0] {
+        ScenarioEntry::Histogram(c) => {
+            let buckets = c
+                .buckets
+                .as_deref()
+                .expect("custom buckets must carry through");
+            assert_eq!(buckets, &[0.01, 0.1, 1.0, 10.0][..]);
+        }
+        other => panic!("expected Histogram, got {other:?}"),
     }
 }
 
