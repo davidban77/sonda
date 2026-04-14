@@ -4,16 +4,10 @@ expression: entries
 ---
 [
   {
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "duration": "20s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "json_lines",
-      "precision": null
+      "type": "json_lines"
     },
-    "gaps": null,
     "generator": {
       "type": "template",
       "templates": [
@@ -39,11 +33,7 @@ expression: entries
       },
       "seed": 42
     },
-    "jitter": null,
-    "jitter_seed": null,
-    "labels": null,
     "name": "app_logs",
-    "phase_offset": null,
     "rate": 5.0,
     "signal_type": "logs",
     "sink": {

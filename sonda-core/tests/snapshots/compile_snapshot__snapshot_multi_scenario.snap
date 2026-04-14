@@ -4,25 +4,15 @@ expression: multi.scenarios
 ---
 [
   {
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "duration": "60s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "prometheus_text",
-      "precision": null
+      "type": "prometheus_text"
     },
-    "gaps": null,
     "generator": {
       "type": "constant",
       "value": 95.0
     },
-    "jitter": null,
-    "jitter_seed": null,
-    "labels": null,
     "name": "cpu_idle",
-    "phase_offset": null,
     "rate": 1.0,
     "signal_type": "metrics",
     "sink": {
@@ -30,24 +20,17 @@ expression: multi.scenarios
     }
   },
   {
-    "bursts": null,
-    "cardinality_spikes": null,
     "clock_group": "infra",
     "duration": "60s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "prometheus_text",
-      "precision": null
+      "type": "prometheus_text"
     },
-    "gaps": null,
     "generator": {
       "type": "sine",
       "amplitude": 20.0,
       "period_secs": 30.0,
       "offset": 50.0
     },
-    "jitter": null,
-    "jitter_seed": null,
     "labels": {
       "hostname": "web-01"
     },
@@ -60,28 +43,17 @@ expression: multi.scenarios
     }
   },
   {
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "duration": "60s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "influx_lp",
-      "field_key": null,
-      "precision": null
+      "type": "influx_lp"
     },
-    "gaps": null,
     "generator": {
       "type": "sawtooth",
       "min": 0.0,
       "max": 100.0,
       "period_secs": 120.0
     },
-    "jitter": null,
-    "jitter_seed": null,
-    "labels": null,
     "name": "disk_io",
-    "phase_offset": null,
     "rate": 1.0,
     "signal_type": "metrics",
     "sink": {

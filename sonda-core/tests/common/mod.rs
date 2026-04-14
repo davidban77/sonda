@@ -435,9 +435,31 @@ fn split_lines_preserve_empty(bytes: &[u8]) -> Vec<&[u8]> {
 /// helper centralizes that default; call
 /// `snapshot_settings().bind(|| insta::assert_json_snapshot!(value))` instead
 /// of duplicating a `with_settings!` block in every test.
+///
+/// # Null-field redaction
+///
+/// Two text filters strip `"field": null` entries from the rendered JSON
+/// before the snapshot is stored or compared.  This keeps snapshot files
+/// compact: optional fields that carry no information are noise.
+///
+/// Filter 1 removes null fields that are followed by a comma (mid-object):
+/// `^\s+"[^"]+": null,\n` → `""`.
+///
+/// Filter 2 removes null fields that are last in their object (no trailing
+/// comma) and simultaneously removes the comma that was on the preceding
+/// field: `,\n(\s+"[^"]+": null\n)` → `\n`.
+///
+/// Only null-valued JSON fields are affected.  Non-null fields, including
+/// fields whose values happen to contain the string `null`, pass through
+/// unchanged.
 pub fn snapshot_settings() -> insta::Settings {
     let mut s = insta::Settings::clone_current();
     s.set_sort_maps(true);
+    // Filter 1: null field with trailing comma (mid-object position).
+    s.add_filter(r#"(?m)^\s+"[^"]+": null,\n"#, "");
+    // Filter 2: null field without trailing comma (last in object) — also
+    // strips the comma from the preceding field to keep JSON tidy.
+    s.add_filter(r#",\n(\s+"[^"]+": null\n)"#, "\n");
     s
 }
 

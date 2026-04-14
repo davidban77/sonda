@@ -10,12 +10,10 @@ expression: expanded
       "signal_type": "metrics",
       "name": "ifOperStatus",
       "rate": 1.0,
-      "duration": null,
       "generator": {
         "type": "constant",
         "value": 1.0
       },
-      "log_generator": null,
       "labels": {
         "device": "rtr-auto",
         "ifAlias": "",
@@ -23,42 +21,23 @@ expression: expanded
         "ifName": "",
         "job": "snmp"
       },
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     },
     {
       "id": "telegraf_snmp_interface_0.ifHCInOctets",
       "signal_type": "metrics",
       "name": "ifHCInOctets",
       "rate": 1.0,
-      "duration": null,
       "generator": {
         "type": "step",
         "start": 0.0,
-        "step_size": 125000.0,
-        "max": null
+        "step_size": 125000.0
       },
-      "log_generator": null,
       "labels": {
         "device": "rtr-auto",
         "ifAlias": "",
@@ -66,42 +45,23 @@ expression: expanded
         "ifName": "",
         "job": "snmp"
       },
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     },
     {
       "id": "telegraf_snmp_interface_0.ifHCOutOctets",
       "signal_type": "metrics",
       "name": "ifHCOutOctets",
       "rate": 1.0,
-      "duration": null,
       "generator": {
         "type": "step",
         "start": 0.0,
-        "step_size": 62500.0,
-        "max": null
+        "step_size": 62500.0
       },
-      "log_generator": null,
       "labels": {
         "device": "rtr-auto",
         "ifAlias": "",
@@ -109,40 +69,22 @@ expression: expanded
         "ifName": "",
         "job": "snmp"
       },
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     },
     {
       "id": "telegraf_snmp_interface_0.ifInErrors",
       "signal_type": "metrics",
       "name": "ifInErrors",
       "rate": 1.0,
-      "duration": null,
       "generator": {
         "type": "constant",
         "value": 0.0
       },
-      "log_generator": null,
       "labels": {
         "device": "rtr-auto",
         "ifAlias": "",
@@ -150,40 +92,22 @@ expression: expanded
         "ifName": "",
         "job": "snmp"
       },
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     },
     {
       "id": "telegraf_snmp_interface_0.ifOutErrors",
       "signal_type": "metrics",
       "name": "ifOutErrors",
       "rate": 1.0,
-      "duration": null,
       "generator": {
         "type": "constant",
         "value": 0.0
       },
-      "log_generator": null,
       "labels": {
         "device": "rtr-auto",
         "ifAlias": "",
@@ -191,28 +115,12 @@ expression: expanded
         "ifName": "",
         "job": "snmp"
       },
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     }
   ]
 }

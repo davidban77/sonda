@@ -4,30 +4,21 @@ expression: entries
 ---
 [
   {
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "duration": "30s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "prometheus_text",
-      "precision": null
+      "type": "prometheus_text"
     },
-    "gaps": null,
     "generator": {
       "type": "sine",
       "amplitude": 50.0,
       "period_secs": 60.0,
       "offset": 100.0
     },
-    "jitter": null,
-    "jitter_seed": null,
     "labels": {
       "hostname": "router-01",
       "interface": "eth0"
     },
     "name": "interface_traffic",
-    "phase_offset": null,
     "rate": 10.0,
     "signal_type": "metrics",
     "sink": {
