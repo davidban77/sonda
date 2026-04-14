@@ -195,6 +195,12 @@ See [v2-validation-status.md](v2-validation-status.md) for the full 178-row chec
 
 PR 8 is **built-ins migration**. A future session starting cold on PR 8 should read this section first; everything below is the handoff context from PR 7.
 
+### Prerequisite — Stage 1 test-infra chore (lands before PR 8a)
+
+A separate `chore/test-infra-encoder-sink` PR is planned to land on the integration branch **before** PR 8a starts. It parametrizes `sonda-core/tests/encoder_sink_matrix.rs` (1,304 LOC / 54 non-parametrized tests → target ≤400 LOC with `#[rstest]` tables), adds a null-field redaction to `common::snapshot_settings()` to shrink the 24 insta snapshots (~350-400 LOC of noise), deletes the confirmed orphan fixture `tests/fixtures/v2-parity/summary-latency.yaml`, and sweeps for pair-wise fixture duplication under `v2-examples/`. Target: -20% integration-test LOC (4,621 → ~3,700).
+
+This is Stage 1 of the three-stage test consolidation plan scoped 2026-04-14. Stages 2 (fixture cleanup in PR 8a) and 3 (parity bridge collapse + rename in PR 9) follow naturally.
+
 ### What PR 7 already hands off
 
 - **`sonda run --scenario <file>`** — auto-dispatches v1 (flat single-scenario / multi-scenario / pack-scenario) or v2 transparently per spec §6.1. Once PR 8 converts `scenarios/*.yaml` and `packs/*.yaml` to v2, the same CLI surface takes them end-to-end with no caller changes.
@@ -234,6 +240,16 @@ Do NOT also:
 - `@smoke` agent runs alongside `@uat` when the changeset touches Docker Compose / Helm / sink-integration surfaces (smoke tests row 5.4–5.6 + 6.2–6.10).
 - v2-migration PRs MUST regenerate the v1 parity snapshots where the v1 built-in changes, but if the v2 migration preserves semantic parity (same compiled entries, same runtime output), no snapshot changes are needed.
 
+### Stage 2 test cleanup folded into PR 8a
+
+PR 8a is the natural home for fixture-level cleanup that the built-in migration makes obvious. This is an opportunistic pass, not a major work item:
+
+- **Prune redundant `v2-examples/` fixtures** when a migrated built-in supersedes them. Current inventory: 34 YAMLs under `tests/fixtures/v2-examples/`. The `link-failover` / `network-link-failure` dedup called out in "What PR 8 must build" item 4 is the obvious one; additional dupes should be identified during migration and removed in the same commit that lands the v2 built-in.
+- **Do NOT touch** `v2_story_parity.rs` (299 LOC, 2 tests). It still has a v1 side to compare against — the v1 `compile_story` function stays until PR 9. The story YAML moves, the test stays.
+- **Do NOT rename any `v2_*.rs`** file here (still PR 9 scope).
+
+Target for Stage 2: ~100-200 LOC deletion from `v2-examples/` YAMLs plus the associated fixture-example test functions that exercise them. No parity-test changes.
+
 ## PR 9 Forward Pointer — final cleanup
 
 Consolidated checklist for the final cleanup PR. Surface this list in the PR 9 plan.
@@ -247,18 +263,32 @@ When PR 9 removes the v1 story CLI (`sonda story --file`), the hand-built `v1_li
 
 The first option is cleaner and aligns with PR 9's remit ("remove transitional oracle code").
 
-### Rename `sonda-core/tests/v2_*.rs` parity bridge files
+### Stage 3 test consolidation — parity bridge collapse + rename
 
-Per the `feedback_no_v2_prefix` discipline, test files should not carry `v2_` prefixes. The existing parity-bridge files were tolerated during the v1→v2 transition. After PR 9 removes v1, rename to feature-named files:
+This is the **Stage 3** leg of the 2026-04-14 test consolidation plan. Stage 1 lands pre-PR 8 (encoder/sink parametrization + snapshot redaction); Stage 2 is the opportunistic fixture cleanup folded into PR 8a; Stage 3 is everything in this section. Target: ~20% additional integration-test LOC reduction on top of Stage 1.
+
+Per the `feedback_no_v2_prefix` discipline, test files should not carry `v2_` prefixes. The existing parity-bridge files were tolerated during the v1→v2 transition and persist today purely as v1-equivalence gates. When PR 9 removes v1, most of them either collapse or rename:
+
+**Collapse / delete (v1 side is gone, parity assertion is moot):**
+
+- **`v2_story_parity.rs`** (299 LOC, 2 tests) — delete outright. See the "v1 story parity oracle cleanup" subsection above for the options; `link_failover_compile_parity` is already subsumed by the timing-math unit tests in `compiler::timing::tests` once the v1 story module stops existing.
+- **`v2_pack_parity.rs` (451 LOC) + `v2_pack_runtime_parity.rs` (229 LOC)** — collapse into a single `pack_parity.rs` (~250 LOC target). With v1's `packs::expand_pack` still callable (it's part of `sonda-core`, not the binary), the choice is either (a) keep a thin sanity gate that asserts v2-compile output matches the shape v1's `expand_pack` produces, or (b) drop the v1 side and snapshot current v2 behavior. Recommended: option (b) — byte-anchor snapshots are cheaper than hand-rolled structural comparators.
+
+**Rename (drop the `v2_` prefix, content stays):**
 
 - `v2_runtime_parity.rs` → `runtime_parity.rs` (or absorb into per-scenario test files)
-- `v2_pack_parity.rs` + `v2_pack_runtime_parity.rs` → `pack_parity.rs`
-- `v2_translator_semantics.rs` → `translator_semantics.rs`
+- `v2_translator_semantics.rs` → `translator_semantics.rs` — **but first re-evaluate each of the 15 tests**. Several cases were written to guarantee v1-shape compile output from the translator; post-v1 they may be redundant with unit tests in `compiler::normalize::tests` and `compiler::expand::tests`. Delete the redundant cases; keep the ones that cover v2-only semantics (e.g., dynamic labels, cardinality spike, pack overrides).
 - `v2_compile_after_fixtures.rs` → `compile_after_fixtures.rs`
-- `v2_story_parity.rs` → delete (story oracle removed) or absorb into `link_failover_tests.rs`
-- `v2_fixture_examples.rs`, `v2_expand_fixtures.rs` → drop the `v2_` prefix
+- `v2_fixture_examples.rs` → `fixture_examples.rs`
+- `v2_expand_fixtures.rs` → `expand_fixtures.rs`
 
-Memory record: `project_pr9_test_rename.md` in auto-memory tracks this decision.
+**Net Stage 3 target:**
+
+- Delete ~500 LOC via story-parity removal + pack-parity collapse.
+- Delete ~100-200 LOC via translator-semantics pruning (depends on the per-case audit).
+- File-rename churn does not move the LOC needle but closes the `no_v2_prefix` discipline.
+
+Memory records: `project_pr9_test_rename.md` tracks the rename decision; `rollout_agent_workflow.md` / `feedback_pr_pipeline_speedups.md` track the staging choice (Stage 3 lives in PR 9 because the parity bridges are only removable once v1 is gone — rewriting them pre-PR 9 doubles the work).
 
 ### NITs carried forward from PR 7 reviewer passes
 
