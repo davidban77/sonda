@@ -4,29 +4,19 @@ expression: entries
 ---
 [
   {
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "distribution": {
       "type": "exponential",
       "rate": 10.0
     },
     "duration": "30s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "prometheus_text",
-      "precision": null
+      "type": "prometheus_text"
     },
-    "gaps": null,
-    "jitter": null,
-    "jitter_seed": null,
     "labels": {
       "service": "auth"
     },
-    "mean_shift_per_sec": null,
     "name": "rpc_duration_seconds",
     "observations_per_tick": 100,
-    "phase_offset": null,
     "quantiles": [
       0.5,
       0.9,

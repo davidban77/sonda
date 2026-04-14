@@ -17,31 +17,21 @@ expression: entries
       5.0,
       10.0
     ],
-    "bursts": null,
-    "cardinality_spikes": null,
-    "clock_group": null,
     "distribution": {
       "type": "normal",
       "mean": 0.1,
       "stddev": 0.05
     },
     "duration": "30s",
-    "dynamic_labels": null,
     "encoder": {
-      "type": "prometheus_text",
-      "precision": null
+      "type": "prometheus_text"
     },
-    "gaps": null,
-    "jitter": null,
-    "jitter_seed": null,
     "labels": {
       "handler": "/api",
       "method": "GET"
     },
-    "mean_shift_per_sec": null,
     "name": "http_request_duration_seconds",
     "observations_per_tick": 50,
-    "phase_offset": null,
     "rate": 1.0,
     "seed": 42,
     "signal_type": "histogram",

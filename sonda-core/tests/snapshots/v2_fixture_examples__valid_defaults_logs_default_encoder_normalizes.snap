@@ -6,12 +6,9 @@ expression: normalized
   "version": 2,
   "entries": [
     {
-      "id": null,
       "signal_type": "logs",
       "name": "app_logs",
       "rate": 5.0,
-      "duration": null,
-      "generator": null,
       "log_generator": {
         "type": "template",
         "templates": [
@@ -19,35 +16,14 @@ expression: normalized
             "message": "hello",
             "field_pools": {}
           }
-        ],
-        "severity_weights": null,
-        "seed": null
+        ]
       },
-      "labels": null,
-      "dynamic_labels": null,
       "encoder": {
-        "type": "json_lines",
-        "precision": null
+        "type": "json_lines"
       },
       "sink": {
         "type": "stdout"
-      },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
-      "clock_group": null,
-      "after": null,
-      "pack": null,
-      "overrides": null,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      }
     }
   ]
 }

@@ -14,33 +14,16 @@ expression: compiled
       "generator": {
         "type": "step",
         "start": 0.0,
-        "step_size": 10.0,
-        "max": null
+        "step_size": 10.0
       },
-      "log_generator": null,
-      "labels": null,
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
       },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
-      "phase_offset": null,
       "clock_group": "chain_alarm",
-      "clock_group_is_auto": true,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      "clock_group_is_auto": true
     },
     {
       "id": "alarm",
@@ -52,30 +35,15 @@ expression: compiled
         "type": "constant",
         "value": 1.0
       },
-      "log_generator": null,
-      "labels": null,
-      "dynamic_labels": null,
       "encoder": {
-        "type": "prometheus_text",
-        "precision": null
+        "type": "prometheus_text"
       },
       "sink": {
         "type": "stdout"
       },
-      "jitter": null,
-      "jitter_seed": null,
-      "gaps": null,
-      "bursts": null,
-      "cardinality_spikes": null,
       "phase_offset": "3s",
       "clock_group": "chain_alarm",
-      "clock_group_is_auto": true,
-      "distribution": null,
-      "buckets": null,
-      "quantiles": null,
-      "observations_per_tick": null,
-      "mean_shift_per_sec": null,
-      "seed": null
+      "clock_group_is_auto": true
     }
   ]
 }
