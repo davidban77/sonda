@@ -246,15 +246,21 @@ fn read_scenario_metadata(path: &Path) -> Result<BuiltinScenario, String> {
         .category
         .unwrap_or_else(|| "uncategorized".to_string());
 
-    // Fallback order for signal_type: root wins (v1 preserved) → first entry's
-    // signal_type (v2 migrations) → `"metrics"` default.
+    // Fallback order for signal_type: root wins (v1 preserved) → multi-entry
+    // v2 detection (`scenarios.len() > 1` → "multi") → first entry's
+    // signal_type (v2 single-entry migrations) → `"metrics"` default.
     let signal_type = probe
         .signal_type
         .or_else(|| {
-            probe
-                .scenarios
-                .and_then(|entries| entries.into_iter().next())
-                .and_then(|entry| entry.signal_type)
+            let entries = probe.scenarios?;
+            if entries.len() > 1 {
+                Some("multi".to_string())
+            } else {
+                entries
+                    .into_iter()
+                    .next()
+                    .and_then(|entry| entry.signal_type)
+            }
         })
         .unwrap_or_else(|| "metrics".to_string());
 
@@ -740,6 +746,125 @@ scenario_name: empty
 category: infrastructure
 description: "v2 with empty scenarios list"
 scenarios: []
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "metrics");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- signal_type fallback via multi-entry detection (v2) ------------------
+
+    #[test]
+    fn v2_scenario_three_entries_reports_multi_when_root_absent() {
+        let dir = temp_scenario_dir("v2-multi-three");
+        write_scenario(
+            &dir,
+            "link-failure.yaml",
+            r#"version: 2
+scenario_name: link-failure
+category: network
+description: "v2 multi-signal link failure"
+scenarios:
+  - name: iface_down
+    signal_type: metrics
+  - name: bgp_flap
+    signal_type: metrics
+  - name: link_recover
+    signal_type: metrics
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "multi");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_scenario_two_entries_reports_multi_at_boundary() {
+        let dir = temp_scenario_dir("v2-multi-two");
+        write_scenario(
+            &dir,
+            "interface-flap.yaml",
+            r#"version: 2
+scenario_name: interface-flap
+category: network
+description: "v2 two-entry multi boundary"
+scenarios:
+  - name: iface_up
+    signal_type: metrics
+  - name: iface_down
+    signal_type: metrics
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "multi");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_scenario_single_entry_does_not_trigger_multi() {
+        let dir = temp_scenario_dir("v2-single-not-multi");
+        write_scenario(
+            &dir,
+            "solo.yaml",
+            r#"version: 2
+scenario_name: solo
+category: infrastructure
+description: "v2 single entry falls through to first-entry branch"
+scenarios:
+  - name: solo_metric
+    signal_type: metrics
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "metrics");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_scenario_root_multi_preserved_with_multi_entry_list() {
+        let dir = temp_scenario_dir("v1-root-multi");
+        write_scenario(
+            &dir,
+            "legacy-link-failure.yaml",
+            r#"scenario_name: legacy-link-failure
+category: network
+signal_type: multi
+description: "v1 multi with explicit root"
+scenarios:
+  - name: a
+    signal_type: metrics
+  - name: b
+    signal_type: metrics
+  - name: c
+    signal_type: metrics
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "multi");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_scenario_root_metrics_wins_over_multi_entry_detection() {
+        let dir = temp_scenario_dir("v1-root-wins-over-multi");
+        write_scenario(
+            &dir,
+            "forced-metrics.yaml",
+            r#"scenario_name: forced-metrics
+category: infrastructure
+signal_type: metrics
+description: "v1 root metrics overrides multi-entry detection"
+scenarios:
+  - name: one
+    signal_type: logs
+  - name: two
+    signal_type: logs
 "#,
         );
         let catalog = ScenarioCatalog::discover(&[dir.clone()]);
