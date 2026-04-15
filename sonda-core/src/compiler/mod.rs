@@ -56,6 +56,17 @@ use crate::sink::SinkConfig;
 /// This is the top-level AST node produced by [`parse::parse`]. It captures
 /// the exact structure of the YAML input without resolving defaults, expanding
 /// packs, or compiling after-clauses.
+///
+/// # Catalog metadata
+///
+/// The three optional fields [`scenario_name`](Self::scenario_name),
+/// [`category`](Self::category), and [`description`](Self::description)
+/// mirror the v1 top-level metadata shape so the CLI catalog probe
+/// (`sonda::scenarios::read_scenario_metadata`) reads v1 and v2 files
+/// through the same `Deserialize` struct. The compiler pipeline itself
+/// (normalize → expand → compile_after → prepare) does **not** consume
+/// these fields — they are pure metadata, not compile input. See
+/// `docs/refactor/adr-v2-catalog-metadata.md` for rationale.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "config",
@@ -65,6 +76,23 @@ use crate::sink::SinkConfig;
 pub struct ScenarioFile {
     /// Schema version. Must be `2`.
     pub version: u32,
+    /// Catalog display name (kebab-case). When present it overrides the
+    /// filename-derived name in the CLI catalog probe. Pure metadata —
+    /// ignored by every compiler phase.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub scenario_name: Option<String>,
+    /// Catalog category used by `scenarios list --category <name>` and
+    /// `catalog list --category <name>`. Allowed values are enforced by
+    /// the CLI CI validation (`infrastructure`, `network`, `application`,
+    /// `observability`); the AST itself does not constrain the string.
+    /// Pure metadata — ignored by every compiler phase.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub category: Option<String>,
+    /// One-line human-readable description surfaced by
+    /// `scenarios list` / `catalog list` and `scenarios show`. Pure
+    /// metadata — ignored by every compiler phase.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub description: Option<String>,
     /// Optional shared defaults inherited by all entries.
     #[cfg_attr(feature = "config", serde(default))]
     pub defaults: Option<Defaults>,

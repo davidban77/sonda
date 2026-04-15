@@ -58,6 +58,64 @@ demo_cpu 42 1776090152619
 - **Richer validation** -- the compiler catches missing fields, cycles in `after:` chains, and
   pack references to unknown names at parse time.
 
+## Catalog metadata
+
+v2 files can carry optional top-level metadata that powers the unified catalog --
+`sonda catalog list`, `sonda catalog show`, and the `--category` filter. The fields sit at
+the root, alongside `version:` and `defaults:`:
+
+```yaml title="scenarios/steady-state.yaml"
+version: 2
+
+scenario_name: steady-state
+category: infrastructure
+description: "Normal oscillating baseline (sine + jitter)"
+
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_usage_idle_percent
+    rate: 1
+    duration: 60s
+    generator:
+      type: steady
+      center: 75.0
+      amplitude: 10.0
+      period: "60s"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. |
+| `category` | no | Catalog grouping. One of `infrastructure`, `network`, `application`, `observability`. Scenarios without a category render as `uncategorized` and drop out of `--category` filters. |
+| `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
+
+The compiler ignores these fields -- they only feed the catalog. `deny_unknown_fields` stays
+in force, so typos like `scenarioName:` or `desc:` are rejected at parse time.
+
+!!! info "Same field names as v1"
+    v1 scenario files use the same top-level field names (`scenario_name`, `category`,
+    `description`). The catalog probe reads both formats with one code path. Migrating a
+    v1 file to v2 is a matter of adding `version: 2` and reshaping the body -- the metadata
+    stays put.
+
+Drop a v2 file into any directory on the
+[scenario search path](../guides/scenarios.md#scenario-search-path) and it shows up
+immediately:
+
+```bash
+sonda catalog list --category infrastructure
+```
+
+```text
+NAME           TYPE      CATEGORY         SIGNAL    RUNNABLE   DESCRIPTION
+steady-state   scenario  infrastructure   metrics   yes        Normal oscillating baseline (sine + jitter)
+...
+```
+
 ## The `defaults:` block
 
 Every field in `defaults:` applies to every entry in `scenarios:` unless the entry overrides it.

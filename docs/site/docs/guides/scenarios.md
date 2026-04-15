@@ -252,32 +252,64 @@ sonda --scenario-path ./my-scenarios catalog list
 Custom scenario files use the same YAML format as any scenario file. The only addition is
 metadata fields at the top for catalog display:
 
-```yaml title="~/.sonda/scenarios/my-scenario.yaml"
-scenario_name: my-scenario
-category: application
-signal_type: metrics
-description: "My custom scenario pattern"
+=== "v1"
 
-name: my_metric
-rate: 1
-duration: 30s
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
-```
+    ```yaml title="~/.sonda/scenarios/my-scenario.yaml"
+    scenario_name: my-scenario
+    category: application
+    signal_type: metrics
+    description: "My custom scenario pattern"
+
+    name: my_metric
+    rate: 1
+    duration: 30s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+=== "v2"
+
+    ```yaml title="~/.sonda/scenarios/my-scenario.yaml"
+    version: 2
+
+    scenario_name: my-scenario
+    category: application
+    description: "My custom scenario pattern"
+
+    scenarios:
+      - signal_type: metrics
+        name: my_metric
+        rate: 1
+        duration: 30s
+        generator:
+          type: sine
+          amplitude: 50.0
+          period_secs: 60
+          offset: 50.0
+        encoder:
+          type: prometheus_text
+        sink:
+          type: stdout
+    ```
+
+    v2 files carry the same top-level metadata as v1, minus `signal_type` -- Sonda
+    reads it from the first entry. See
+    [v2 catalog metadata](../configuration/v2-scenarios.md#catalog-metadata) for
+    the field reference.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `scenario_name` | yes | Kebab-case identifier used with `@name` and `sonda catalog run` |
-| `category` | yes | Grouping for `--category` filter |
-| `signal_type` | yes | Signal type: `metrics`, `logs`, `histogram`, `multi` |
-| `description` | yes | One-line description shown in `sonda catalog list` |
+| `scenario_name` | no | Kebab-case identifier. Defaults to the filename if omitted. Used with `@name` and `sonda catalog run`. |
+| `category` | no | Grouping for `--category` filter. Omitted scenarios render as `uncategorized`. |
+| `signal_type` | v1 only | Signal type: `metrics`, `logs`, `histogram`, `multi`. v2 reads it from the first entry. |
+| `description` | no | One-line description shown in `sonda catalog list`. Empty if omitted. |
 
 ## What next
 
