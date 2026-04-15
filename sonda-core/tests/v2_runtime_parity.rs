@@ -146,7 +146,8 @@ fn override_duration(entries: &mut [ScenarioEntry], override_duration: &str) {
 #[case::error_rate_spike("scenarios/error-rate-spike.yaml", V1Kind::Metrics, "error-rate-spike.yaml", "1s", Comparison::ByteEqual)]
 #[case::interface_flap("scenarios/interface-flap.yaml", V1Kind::Multi, "interface-flap.yaml", "1s", Comparison::LineMultiset)]
 #[case::network_link_failure("scenarios/network-link-failure.yaml", V1Kind::Multi, "network-link-failure.yaml", "1s", Comparison::LineMultiset)]
-#[case::steady_state("scenarios/steady-state.yaml", V1Kind::Metrics, "steady-state.yaml", "1s", Comparison::ByteEqual)]
+// `steady-state.yaml` has been migrated to v2 (PR 8a sub-slice 1) — the v1↔v2
+// parity oracle no longer applies. See docs/refactor/adr-v2-catalog-metadata.md.
 #[case::log_storm("scenarios/log-storm.yaml", V1Kind::Logs, "log-storm.yaml", "500ms", Comparison::ByteEqual)]
 #[case::cardinality_explosion("scenarios/cardinality-explosion.yaml", V1Kind::Metrics, "cardinality-explosion.yaml", "500ms", Comparison::ByteEqual)]
 #[case::histogram_latency("scenarios/histogram-latency.yaml", V1Kind::Histogram, "histogram-latency.yaml", "1s", Comparison::ByteEqual)]

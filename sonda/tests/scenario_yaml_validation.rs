@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use sonda_core::compiler::parse::{detect_version, parse as parse_v2};
 use sonda_core::config::{
     HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
     SummaryScenarioConfig,
@@ -212,12 +213,38 @@ fn all_yamls_are_non_empty() {
 
 // ---------------------------------------------------------------------------
 // YAML parsing tests -- each signal type parses as the correct config type
+//
+// Dispatch: v2 files (detected via `version: 2`) are validated through the
+// v2 compiler parser (`sonda_core::compiler::parse::parse`) regardless of
+// `signal_type`, since v2 uses a single parse path for all entry kinds.
+// v1 files (no `version:` key, or `version: 1`) retain the per-signal-type
+// parse contract against the legacy `ScenarioConfig`-family types.
 // ---------------------------------------------------------------------------
+
+/// Ensure a v2 scenario YAML parses through the v2 compiler parser.
+///
+/// Panics with a descriptive message including the scenario path when the
+/// parse fails. Centralized so every signal-type test reports the same
+/// diagnostic.
+fn assert_v2_parse_ok(scenario: &DiscoveredScenario) {
+    let result = parse_v2(&scenario.content);
+    assert!(
+        result.is_ok(),
+        "v2 scenario {:?} ({}) failed to parse via compiler::parse: {:?}",
+        scenario.name,
+        scenario.path.display(),
+        result.err()
+    );
+}
 
 #[test]
 fn all_metrics_yamls_parse_as_scenario_config() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "metrics") {
+        if detect_version(&scenario.content) == Some(2) {
+            assert_v2_parse_ok(scenario);
+            continue;
+        }
         let result = serde_yaml_ng::from_str::<ScenarioConfig>(&scenario.content);
         assert!(
             result.is_ok(),
@@ -233,6 +260,10 @@ fn all_metrics_yamls_parse_as_scenario_config() {
 fn all_logs_yamls_parse_as_log_scenario_config() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "logs") {
+        if detect_version(&scenario.content) == Some(2) {
+            assert_v2_parse_ok(scenario);
+            continue;
+        }
         let result = serde_yaml_ng::from_str::<LogScenarioConfig>(&scenario.content);
         assert!(
             result.is_ok(),
@@ -248,6 +279,10 @@ fn all_logs_yamls_parse_as_log_scenario_config() {
 fn all_multi_yamls_parse_as_multi_scenario_config() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "multi") {
+        if detect_version(&scenario.content) == Some(2) {
+            assert_v2_parse_ok(scenario);
+            continue;
+        }
         let result = serde_yaml_ng::from_str::<MultiScenarioConfig>(&scenario.content);
         assert!(
             result.is_ok(),
@@ -263,6 +298,10 @@ fn all_multi_yamls_parse_as_multi_scenario_config() {
 fn all_histogram_yamls_parse_as_histogram_scenario_config() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "histogram") {
+        if detect_version(&scenario.content) == Some(2) {
+            assert_v2_parse_ok(scenario);
+            continue;
+        }
         let result = serde_yaml_ng::from_str::<HistogramScenarioConfig>(&scenario.content);
         assert!(
             result.is_ok(),
@@ -278,6 +317,10 @@ fn all_histogram_yamls_parse_as_histogram_scenario_config() {
 fn all_summary_yamls_parse_as_summary_scenario_config() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "summary") {
+        if detect_version(&scenario.content) == Some(2) {
+            assert_v2_parse_ok(scenario);
+            continue;
+        }
         let result = serde_yaml_ng::from_str::<SummaryScenarioConfig>(&scenario.content);
         assert!(
             result.is_ok(),

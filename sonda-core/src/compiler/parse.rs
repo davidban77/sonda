@@ -249,8 +249,15 @@ impl FlatFile {
             seed: self.seed,
         };
 
+        // Flat-form files deliberately do NOT expose the top-level metadata
+        // fields (`scenario_name` / `category` / `description`). The shorthand
+        // is the terse single-signal authoring shape; metadata belongs on the
+        // canonical `scenarios:` form consumed by the CLI catalog probe.
         ScenarioFile {
             version: self.version,
+            scenario_name: None,
+            category: None,
+            description: None,
             defaults: None,
             scenarios: vec![entry],
         }
@@ -1512,6 +1519,189 @@ defaults:
         assert!(
             msg.contains("defaults"),
             "error should mention 'defaults', got: {msg}"
+        );
+    }
+
+    // ======================================================================
+    // Catalog metadata roundtrip tests (Option 1 of ADR
+    // `docs/refactor/adr-v2-catalog-metadata.md`)
+    //
+    // `scenario_name`, `category`, and `description` are optional top-level
+    // fields on [`ScenarioFile`]. They are metadata consumed by the CLI
+    // catalog probe (v1↔v2 parity) and ignored by every compiler phase.
+    // The parser must preserve them verbatim.
+    // ======================================================================
+
+    #[test]
+    fn metadata_all_fields_present_roundtrip() {
+        // All three metadata fields at the root are preserved on the parsed
+        // AST exactly as written in the YAML.
+        let yaml = r#"
+version: 2
+scenario_name: steady-state
+category: infrastructure
+description: "Normal oscillating baseline (sine + jitter)"
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_usage_idle_percent
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("must parse file with full metadata");
+        assert_eq!(file.scenario_name.as_deref(), Some("steady-state"));
+        assert_eq!(file.category.as_deref(), Some("infrastructure"));
+        assert_eq!(
+            file.description.as_deref(),
+            Some("Normal oscillating baseline (sine + jitter)")
+        );
+        // Compiler input remains untouched.
+        assert_eq!(file.scenarios.len(), 1);
+        assert_eq!(file.scenarios[0].signal_type, "metrics");
+    }
+
+    #[test]
+    fn metadata_absent_leaves_fields_none() {
+        // A v2 file without any metadata fields parses cleanly and the AST
+        // reports `None` for all three. This is the shape every v2 fixture
+        // and test file written before PR 8a will continue to produce, so
+        // existing v2 callers are unaffected by the field additions.
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("must parse file without metadata");
+        assert!(file.scenario_name.is_none());
+        assert!(file.category.is_none());
+        assert!(file.description.is_none());
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::only_scenario_name(r#"
+version: 2
+scenario_name: solo-name
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#, Some("solo-name"), None,                None)]
+    #[case::only_category(r#"
+version: 2
+category: network
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#, None,              Some("network"),     None)]
+    #[case::only_description(r#"
+version: 2
+description: "terse one-liner"
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#, None,              None,                Some("terse one-liner"))]
+    #[case::name_and_category(r#"
+version: 2
+scenario_name: partial
+category: application
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#, Some("partial"),   Some("application"), None)]
+    fn metadata_partial_roundtrip(
+        #[case] yaml: &str,
+        #[case] expected_name: Option<&str>,
+        #[case] expected_category: Option<&str>,
+        #[case] expected_description: Option<&str>,
+    ) {
+        let file = parse(yaml).expect("must parse partial-metadata file");
+        assert_eq!(file.scenario_name.as_deref(), expected_name);
+        assert_eq!(file.category.as_deref(), expected_category);
+        assert_eq!(file.description.as_deref(), expected_description);
+    }
+
+    #[test]
+    fn metadata_unknown_field_is_rejected_by_deny_unknown_fields() {
+        // `deny_unknown_fields` stays on `ScenarioFile` after the metadata
+        // additions. A typo on an adjacent metadata key (e.g. `descripton`)
+        // must still surface as a YAML parse error, not silently default
+        // to `None`.
+        let yaml = r#"
+version: 2
+scenario_name: typo-test
+descripton: "misspelled — must be rejected"
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse(yaml).expect_err("unknown metadata field must fail");
+        assert!(
+            matches!(err, ParseError::Yaml(_)),
+            "expected Yaml error for unknown field, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("descripton"),
+            "error should mention the misspelled field, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn metadata_on_entry_is_rejected() {
+        // Metadata lives at the top level only. Placing `category` inside a
+        // scenario entry must be rejected by `Entry`'s
+        // `deny_unknown_fields` — metadata is not per-entry and must not
+        // silently leak through.
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    category: infrastructure
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse(yaml).expect_err("metadata on entry must fail");
+        assert!(
+            matches!(err, ParseError::Yaml(_)),
+            "expected Yaml error for entry-level metadata, got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("category"),
+            "error should mention the misplaced field, got: {msg}"
         );
     }
 }

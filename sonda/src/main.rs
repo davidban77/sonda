@@ -71,7 +71,7 @@ fn run() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Metrics(ref args) => {
-            let config = config::load_config(args, &scenario_catalog)?;
+            let config = config::load_config(args, &scenario_catalog, &pack_catalog)?;
             let entry = sonda_core::ScenarioEntry::Metrics(config);
 
             // prepare_entries handles expansion, validation, and phase offsets.
@@ -91,7 +91,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Logs(ref args) => {
-            let config = config::load_log_config(args, &scenario_catalog)?;
+            let config = config::load_log_config(args, &scenario_catalog, &pack_catalog)?;
             let entry = sonda_core::ScenarioEntry::Logs(config);
 
             let mut prepared =
@@ -105,7 +105,7 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-logs".to_string(), p, &running, verbosity)?;
         }
         Commands::Histogram(ref args) => {
-            let config = config::load_histogram_config(args, &scenario_catalog)?;
+            let config = config::load_histogram_config(args, &scenario_catalog, &pack_catalog)?;
             let entry = sonda_core::ScenarioEntry::Histogram(config);
 
             let mut prepared =
@@ -119,7 +119,7 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-histogram".to_string(), p, &running, verbosity)?;
         }
         Commands::Summary(ref args) => {
-            let config = config::load_summary_config(args, &scenario_catalog)?;
+            let config = config::load_summary_config(args, &scenario_catalog, &pack_catalog)?;
             let entry = sonda_core::ScenarioEntry::Summary(config);
 
             let mut prepared =

@@ -1563,9 +1563,11 @@ no need to copy-paste a follow-up command.
     Sonda reads the first numeric column, detects the dominant pattern (e.g. spike,
     steady), and maps it to a situation. The column name becomes the default metric name.
 
-The generated YAML includes inline comments. To list it in the unified catalog, add scenario
-metadata fields (`scenario_name`, `category`, `signal_type`, `description`) and drop the file
-into any directory on the [scenario search path](../guides/scenarios.md#scenario-search-path).
+The generated YAML includes inline comments. To list it in the unified catalog, add
+`scenario_name`, `category`, and `description` at the top level and drop the file into any
+directory on the [scenario search path](../guides/scenarios.md#scenario-search-path). v2 files
+(the default output) read `signal_type` from the first entry; v1 files need it at the top too.
+See [v2 catalog metadata](v2-scenarios.md#catalog-metadata) for the field reference.
 
 ## sonda story (deprecated)
 
