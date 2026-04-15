@@ -222,6 +222,12 @@ fn read_scenario_metadata(path: &Path) -> Result<BuiltinScenario, String> {
         category: Option<String>,
         signal_type: Option<String>,
         description: Option<String>,
+        scenarios: Option<Vec<EntrySignalProbe>>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct EntrySignalProbe {
+        signal_type: Option<String>,
     }
 
     let probe: Probe =
@@ -240,7 +246,17 @@ fn read_scenario_metadata(path: &Path) -> Result<BuiltinScenario, String> {
         .category
         .unwrap_or_else(|| "uncategorized".to_string());
 
-    let signal_type = probe.signal_type.unwrap_or_else(|| "metrics".to_string());
+    // Fallback order for signal_type: root wins (v1 preserved) → first entry's
+    // signal_type (v2 migrations) → `"metrics"` default.
+    let signal_type = probe
+        .signal_type
+        .or_else(|| {
+            probe
+                .scenarios
+                .and_then(|entries| entries.into_iter().next())
+                .and_then(|entry| entry.signal_type)
+        })
+        .unwrap_or_else(|| "metrics".to_string());
 
     let description = probe.description.unwrap_or_default();
 
@@ -589,6 +605,146 @@ sink:
         assert_eq!(entry.category, "uncategorized");
         assert_eq!(entry.signal_type, "metrics");
         assert!(entry.description.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- signal_type fallback via first scenario entry (v2) -------------------
+
+    #[test]
+    fn v2_scenario_first_entry_signal_type_logs_wins_when_root_absent() {
+        let dir = temp_scenario_dir("v2-entry-logs");
+        write_scenario(
+            &dir,
+            "log-storm.yaml",
+            r#"version: 2
+scenario_name: log-storm
+category: application
+description: "v2 log storm"
+scenarios:
+  - name: bursty_logs
+    signal_type: logs
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "logs");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_scenario_first_entry_signal_type_histogram_wins_when_root_absent() {
+        let dir = temp_scenario_dir("v2-entry-histogram");
+        write_scenario(
+            &dir,
+            "histogram-latency.yaml",
+            r#"version: 2
+scenario_name: histogram-latency
+category: application
+description: "v2 histogram latency"
+scenarios:
+  - name: latency_buckets
+    signal_type: histogram
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "histogram");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_scenario_root_signal_type_wins_over_first_entry() {
+        let dir = temp_scenario_dir("v2-root-wins");
+        write_scenario(
+            &dir,
+            "mixed.yaml",
+            r#"version: 2
+scenario_name: mixed
+category: infrastructure
+signal_type: metrics
+description: "root metrics overrides entry logs"
+scenarios:
+  - name: some_logs
+    signal_type: logs
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "metrics");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_scenario_root_signal_type_logs_preserved_without_entries() {
+        let dir = temp_scenario_dir("v1-root-logs");
+        write_scenario(
+            &dir,
+            "legacy-logs.yaml",
+            r#"scenario_name: legacy-logs
+category: application
+signal_type: logs
+description: "v1 log scenario"
+
+name: test_log
+rate: 1
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: json
+sink:
+  type: stdout
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "logs");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_scenario_without_any_signal_type_defaults_to_metrics() {
+        let dir = temp_scenario_dir("v1-no-signal");
+        write_scenario(
+            &dir,
+            "untyped.yaml",
+            r#"scenario_name: untyped
+category: uncategorized
+description: "no signal_type anywhere"
+
+name: test_metric
+rate: 1
+generator:
+  type: constant
+  value: 1.0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "metrics");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_scenario_empty_scenarios_list_defaults_to_metrics() {
+        let dir = temp_scenario_dir("v2-empty-scenarios");
+        write_scenario(
+            &dir,
+            "empty.yaml",
+            r#"version: 2
+scenario_name: empty
+category: infrastructure
+description: "v2 with empty scenarios list"
+scenarios: []
+"#,
+        );
+        let catalog = ScenarioCatalog::discover(&[dir.clone()]);
+        assert_eq!(catalog.list().len(), 1);
+        assert_eq!(catalog.list()[0].signal_type, "metrics");
         let _ = fs::remove_dir_all(&dir);
     }
 }
