@@ -209,7 +209,7 @@ fn write_labels<W: Write>(
     if let Some(ref map) = labels {
         if !map.is_empty() {
             let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            pairs.sort_by_key(|(a, _)| *a);
             let rendered: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             write_field(out, "labels:", &rendered.join(", "))?;
         }
