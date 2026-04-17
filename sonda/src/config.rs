@@ -1589,15 +1589,16 @@ pub fn load_summary_config(
 /// Parse a cataloged scenario into one or more [`ScenarioEntry`] values.
 ///
 /// Reads the scenario YAML from disk via `source_path`, then dispatches
-/// based on `signal_type`:
-/// - `"metrics"` -> parse as [`ScenarioConfig`], return one entry.
-/// - `"logs"` -> parse as [`LogScenarioConfig`], return one entry.
-/// - `"histogram"` -> parse as [`HistogramScenarioConfig`], return one entry.
-/// - `"summary"` -> parse as [`SummaryScenarioConfig`], return one entry.
-/// - `"multi"` -> parse as [`MultiScenarioConfig`], return all entries.
+/// based on format version:
 ///
-/// Applies CLI overrides from [`ScenariosRunArgs`] (duration, rate, sink,
-/// endpoint, encoder) to each entry before returning.
+/// - **v2** (`version: 2`): compiles through [`sonda_core::compile_scenario_file`]
+///   with a [`FilesystemPackResolver`](crate::scenario_loader::FilesystemPackResolver)
+///   built from the provided `pack_catalog`.
+/// - **v1** (legacy): switches on `signal_type` and deserializes into the
+///   matching single-signal config type.
+///
+/// In both cases, CLI overrides from [`ScenariosRunArgs`] (duration, rate,
+/// sink, endpoint, encoder) are applied to each entry before returning.
 ///
 /// # Errors
 ///
@@ -1606,12 +1607,8 @@ pub fn load_summary_config(
 pub fn parse_builtin_scenario(
     scenario: &sonda_core::BuiltinScenario,
     args: &ScenariosRunArgs,
+    pack_catalog: &crate::packs::PackCatalog,
 ) -> Result<Vec<sonda_core::ScenarioEntry>> {
-    use sonda_core::config::{
-        HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
-        SummaryScenarioConfig,
-    };
-
     let yaml = fs::read_to_string(&scenario.source_path).with_context(|| {
         format!(
             "failed to read scenario file {:?} for {:?}",
@@ -1620,61 +1617,82 @@ pub fn parse_builtin_scenario(
         )
     })?;
 
-    let mut entries = match scenario.signal_type.as_str() {
-        "metrics" => {
-            let config = serde_yaml_ng::from_str::<ScenarioConfig>(&yaml).with_context(|| {
-                format!(
-                    "failed to parse scenario {:?} as metrics config",
-                    scenario.name
-                )
-            })?;
-            vec![sonda_core::ScenarioEntry::Metrics(config)]
+    let version = sonda_core::compiler::parse::detect_version(&yaml);
+
+    let mut entries = if version == Some(2) {
+        use crate::scenario_loader::FilesystemPackResolver;
+
+        let resolver = FilesystemPackResolver::new(pack_catalog);
+        sonda_core::compile_scenario_file(&yaml, &resolver).with_context(|| {
+            format!(
+                "failed to compile v2 scenario {:?} from {}",
+                scenario.name,
+                scenario.source_path.display()
+            )
+        })?
+    } else {
+        use sonda_core::config::{
+            HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
+            SummaryScenarioConfig,
+        };
+
+        match scenario.signal_type.as_str() {
+            "metrics" => {
+                let config =
+                    serde_yaml_ng::from_str::<ScenarioConfig>(&yaml).with_context(|| {
+                        format!(
+                            "failed to parse scenario {:?} as metrics config",
+                            scenario.name
+                        )
+                    })?;
+                vec![sonda_core::ScenarioEntry::Metrics(config)]
+            }
+            "logs" => {
+                let config =
+                    serde_yaml_ng::from_str::<LogScenarioConfig>(&yaml).with_context(|| {
+                        format!(
+                            "failed to parse scenario {:?} as logs config",
+                            scenario.name
+                        )
+                    })?;
+                vec![sonda_core::ScenarioEntry::Logs(config)]
+            }
+            "histogram" => {
+                let config = serde_yaml_ng::from_str::<HistogramScenarioConfig>(&yaml)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse scenario {:?} as histogram config",
+                            scenario.name
+                        )
+                    })?;
+                vec![sonda_core::ScenarioEntry::Histogram(config)]
+            }
+            "summary" => {
+                let config =
+                    serde_yaml_ng::from_str::<SummaryScenarioConfig>(&yaml).with_context(|| {
+                        format!(
+                            "failed to parse scenario {:?} as summary config",
+                            scenario.name
+                        )
+                    })?;
+                vec![sonda_core::ScenarioEntry::Summary(config)]
+            }
+            "multi" => {
+                let config =
+                    serde_yaml_ng::from_str::<MultiScenarioConfig>(&yaml).with_context(|| {
+                        format!(
+                            "failed to parse scenario {:?} as multi config",
+                            scenario.name
+                        )
+                    })?;
+                config.scenarios
+            }
+            other => bail!(
+                "scenario {:?} has unsupported signal_type {:?}",
+                scenario.name,
+                other
+            ),
         }
-        "logs" => {
-            let config =
-                serde_yaml_ng::from_str::<LogScenarioConfig>(&yaml).with_context(|| {
-                    format!(
-                        "failed to parse scenario {:?} as logs config",
-                        scenario.name
-                    )
-                })?;
-            vec![sonda_core::ScenarioEntry::Logs(config)]
-        }
-        "histogram" => {
-            let config =
-                serde_yaml_ng::from_str::<HistogramScenarioConfig>(&yaml).with_context(|| {
-                    format!(
-                        "failed to parse scenario {:?} as histogram config",
-                        scenario.name
-                    )
-                })?;
-            vec![sonda_core::ScenarioEntry::Histogram(config)]
-        }
-        "summary" => {
-            let config =
-                serde_yaml_ng::from_str::<SummaryScenarioConfig>(&yaml).with_context(|| {
-                    format!(
-                        "failed to parse scenario {:?} as summary config",
-                        scenario.name
-                    )
-                })?;
-            vec![sonda_core::ScenarioEntry::Summary(config)]
-        }
-        "multi" => {
-            let config =
-                serde_yaml_ng::from_str::<MultiScenarioConfig>(&yaml).with_context(|| {
-                    format!(
-                        "failed to parse scenario {:?} as multi config",
-                        scenario.name
-                    )
-                })?;
-            config.scenarios
-        }
-        other => bail!(
-            "scenario {:?} has unsupported signal_type {:?}",
-            scenario.name,
-            other
-        ),
     };
 
     // Apply overrides to each entry.
@@ -5564,7 +5582,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0], sonda_core::ScenarioEntry::Metrics(_)));
     }
@@ -5581,7 +5600,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0], sonda_core::ScenarioEntry::Logs(_)));
     }
@@ -5598,7 +5618,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert!(
             entries.len() > 1,
             "interface-flap is multi-scenario and must have multiple entries"
@@ -5617,7 +5638,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert_eq!(entries.len(), 1);
         assert!(matches!(
             entries[0],
@@ -5637,7 +5659,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         let base = entries[0].base();
         assert_eq!(base.duration.as_deref(), Some("5s"));
     }
@@ -5654,7 +5677,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert_eq!(entries[0].base().rate, 5.0);
     }
 
@@ -5670,7 +5694,8 @@ mod tests {
             endpoint: Some("/tmp/test-output.txt".to_string()),
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         let base = entries[0].base();
         assert!(
             matches!(&base.sink, SinkConfig::File { path } if path == "/tmp/test-output.txt"),
@@ -5690,7 +5715,8 @@ mod tests {
             endpoint: None,
             encoder: Some("json_lines".to_string()),
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         match &entries[0] {
             sonda_core::ScenarioEntry::Metrics(c) => {
                 assert!(matches!(c.encoder, EncoderConfig::JsonLines { .. }));
@@ -5711,7 +5737,8 @@ mod tests {
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(scenario, &args, &empty_pack_catalog()).expect("must parse");
         for entry in &entries {
             assert_eq!(entry.base().duration.as_deref(), Some("10s"));
             assert_eq!(entry.base().rate, 2.0);
@@ -5903,7 +5930,8 @@ sink:
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(&scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(&scenario, &args, &empty_pack_catalog()).expect("must parse");
         assert_eq!(entries.len(), 1);
         assert!(
             matches!(entries[0], sonda_core::ScenarioEntry::Summary(_)),
@@ -5924,7 +5952,8 @@ sink:
             endpoint: None,
             encoder: None,
         };
-        let entries = parse_builtin_scenario(&scenario, &args).expect("must parse");
+        let entries =
+            parse_builtin_scenario(&scenario, &args, &empty_pack_catalog()).expect("must parse");
         let base = entries[0].base();
         assert_eq!(base.duration.as_deref(), Some("30s"));
         assert_eq!(base.rate, 5.0);

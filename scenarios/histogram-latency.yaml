@@ -5,31 +5,29 @@
 # count, and sum series. Useful for testing histogram-based alerting
 # (e.g., p99 latency SLOs) and Grafana heatmap panels.
 
+version: 2
+
 scenario_name: histogram-latency
 category: application
-signal_type: histogram
 description: "Request latency histogram (normal distribution)"
 
-name: http_request_duration_seconds
-rate: 1
-duration: 30s
-
-distribution:
-  type: normal
-  mean: 0.1
-  stddev: 0.03
-
-observations_per_tick: 50
-seed: 42
-
-labels:
-  instance: api-server-01
-  job: app
-  method: GET
-  handler: "/api/v1/query"
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    rate: 1
+    duration: 30s
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.03
+    observations_per_tick: 50
+    seed: 42
+    labels:
+      instance: api-server-01
+      job: app
+      method: GET
+      handler: "/api/v1/query"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

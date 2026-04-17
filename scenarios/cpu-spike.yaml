@@ -6,29 +6,28 @@
 #
 # Pattern: baseline ~35% with periodic spikes to ~95%.
 
+version: 2
+
 scenario_name: cpu-spike
 category: infrastructure
-signal_type: metrics
 description: "Periodic CPU usage spikes above threshold"
 
-name: node_cpu_usage_percent
-rate: 1
-duration: 60s
-
-generator:
-  type: spike_event
-  baseline: 35.0
-  spike_height: 60.0
-  spike_duration: "10s"
-  spike_interval: "30s"
-
-labels:
-  instance: web-01
-  job: node_exporter
-  cpu: "0"
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_usage_percent
+    rate: 1
+    duration: 60s
+    generator:
+      type: spike_event
+      baseline: 35.0
+      spike_height: 60.0
+      spike_duration: "10s"
+      spike_interval: "30s"
+    labels:
+      instance: web-01
+      job: node_exporter
+      cpu: "0"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
