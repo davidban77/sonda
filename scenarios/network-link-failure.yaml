@@ -10,9 +10,10 @@
 #   - Ticks 10-19: primary down, traffic shifts to backup, errors spike
 #   - Ticks 20-29: primary recovers, traffic rebalances
 
+version: 2
+
 scenario_name: network-link-failure
 category: network
-signal_type: multi
 description: "Link down with traffic shift to backup path"
 
 scenarios:

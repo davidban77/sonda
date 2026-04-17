@@ -4,29 +4,28 @@
 # increments by 0.5 GB each tick. At rate=1, the disk grows from 100 GB
 # to ~160 GB over 120 seconds. Useful for testing disk-full predictions.
 
+version: 2
+
 scenario_name: disk-fill
 category: infrastructure
-signal_type: metrics
 description: "Constant-rate disk consumption (step counter)"
 
-name: node_disk_used_bytes
-rate: 1
-duration: 120s
-
-generator:
-  type: step
-  start: 100000000000
-  step_size: 500000000
-  max: 500000000000
-
-labels:
-  instance: db-server-01
-  job: node_exporter
-  device: "/dev/sda1"
-  mountpoint: "/data"
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: node_disk_used_bytes
+    rate: 1
+    duration: 120s
+    generator:
+      type: step
+      start: 100000000000
+      step_size: 500000000
+      max: 500000000000
+    labels:
+      instance: db-server-01
+      job: node_exporter
+      device: "/dev/sda1"
+      mountpoint: "/data"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

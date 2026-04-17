@@ -363,7 +363,7 @@ fn print_labels_line(labels: &Option<std::collections::HashMap<String, String>>)
     if let Some(ref map) = labels {
         if !map.is_empty() {
             let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+            pairs.sort_by_key(|(a, _)| *a);
             let formatted: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             let label = format!("{:<14}", "labels:");
             let label = label.if_supports_color(Stderr, |t| t.bold());
@@ -830,7 +830,7 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
             let seed_str = seed.map(|s| format!(", seed: {s}")).unwrap_or_default();
             let weights_str = if let Some(ref w) = severity_weights {
                 let mut pairs: Vec<_> = w.iter().collect();
-                pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                pairs.sort_by_key(|(a, _)| *a);
                 let formatted: Vec<String> =
                     pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 format!(", severity: {}", formatted.join("/"))

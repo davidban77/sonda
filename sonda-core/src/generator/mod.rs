@@ -717,7 +717,7 @@ pub fn create_log_generator(
                     pairs.push((severity, *weight));
                 }
                 // Sort by severity ordinal for deterministic ordering.
-                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                pairs.sort_by_key(|a| a.0);
                 pairs
             } else {
                 vec![]

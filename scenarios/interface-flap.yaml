@@ -11,9 +11,10 @@
 #   - Ticks 20-24: interface down again, errors spike
 #   - Ticks 25-29: interface up, traffic normalized
 
+version: 2
+
 scenario_name: interface-flap
 category: network
-signal_type: multi
 description: "Network interface toggling up/down with traffic shifts"
 
 scenarios:

@@ -177,7 +177,14 @@ fn run() -> anyhow::Result<()> {
             )?;
         }
         Commands::Scenarios(ref args) => {
-            run_scenarios_command(args, &cli, verbosity, &running, &scenario_catalog)?;
+            run_scenarios_command(
+                args,
+                &cli,
+                verbosity,
+                &running,
+                &scenario_catalog,
+                &pack_catalog,
+            )?;
         }
         Commands::Packs(ref args) => {
             run_packs_command(args, &cli, verbosity, &running, &pack_catalog)?;
@@ -473,6 +480,7 @@ fn run_scenarios_command(
     verbosity: Verbosity,
     running: &Arc<AtomicBool>,
     catalog: &scenarios::ScenarioCatalog,
+    pack_catalog: &packs::PackCatalog,
 ) -> anyhow::Result<()> {
     use cli::ScenariosAction;
 
@@ -573,7 +581,14 @@ fn run_scenarios_command(
             print!("{yaml}");
         }
         ScenariosAction::Run(ref run_args) => {
-            run_builtin_scenario(run_args, cli_opts, verbosity, running, catalog)?;
+            run_builtin_scenario(
+                run_args,
+                cli_opts,
+                verbosity,
+                running,
+                catalog,
+                pack_catalog,
+            )?;
         }
     }
 
@@ -587,6 +602,7 @@ fn run_builtin_scenario(
     verbosity: Verbosity,
     running: &Arc<AtomicBool>,
     catalog: &scenarios::ScenarioCatalog,
+    pack_catalog: &packs::PackCatalog,
 ) -> anyhow::Result<()> {
     let scenario = catalog.find(&args.name).ok_or_else(|| {
         let names = catalog.available_names();
@@ -603,7 +619,7 @@ fn run_builtin_scenario(
         }
     })?;
 
-    let entries = config::parse_builtin_scenario(scenario, args)?;
+    let entries = config::parse_builtin_scenario(scenario, args, pack_catalog)?;
 
     let prepared = sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
