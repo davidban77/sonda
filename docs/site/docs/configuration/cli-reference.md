@@ -1597,56 +1597,6 @@ directory on the [scenario search path](../guides/scenarios.md#scenario-search-p
 (the default output) read `signal_type` from the first entry; v1 files need it at the top too.
 See [v2 catalog metadata](v2-scenarios.md#catalog-metadata) for the field reference.
 
-## sonda story (deprecated)
-
-!!! warning "Hidden from `--help`"
-    The `story` subcommand is retained for backward compatibility but no longer appears in
-    `sonda --help`. Write the same temporal chains directly in
-    [v2 scenario files](v2-scenarios.md) with `after:` clauses on entries, then run them with
-    `sonda run --scenario <file>`. The v2 format is the forward-compatible path and will fully
-    replace stories in a future release.
-
-Run a story file -- a multi-signal scenario format with temporal causality. Stories compile
-down to the existing multi-scenario infrastructure at parse time, resolving `after` clauses
-into concrete `phase_offset` values.
-
-```bash
-sonda story --file <FILE> [OPTIONS]
-```
-
-### Flags
-
-| Flag | Type | Description |
-|------|------|-------------|
-| `--file <FILE>` | path | **(required)** Path to a story YAML file. |
-| `--duration <DURATION>` | string | Override the story-level duration (e.g. `2m`, `30s`). |
-| `--rate <RATE>` | float | Override the story-level event rate (events/second). |
-| `--sink <TYPE>` | string | Override the story-level sink type (e.g. `stdout`, `http_push`). |
-| `--endpoint <URL>` | string | Sink endpoint URL (required for network sinks). |
-| `--encoder <FORMAT>` | string | Override the story-level encoder (e.g. `prometheus_text`, `json_lines`). |
-
-CLI flags override story-level shared fields. Per-signal overrides defined in the YAML take
-precedence over both.
-
-### Examples
-
-```bash
-# Run a story with defaults from the YAML
-sonda story --file stories/link-failover.yaml
-
-# Override duration and send to a backend
-sonda story --file stories/link-failover.yaml \
-  --duration 2m --sink remote_write \
-  --endpoint http://localhost:8428/api/v1/write \
-  --encoder remote_write
-
-# Validate without emitting data
-sonda --dry-run story --file stories/link-failover.yaml
-```
-
-See the [Stories guide](../guides/stories.md) for YAML format details, `after` clause syntax,
-and a worked example.
-
 ## Precedence rules
 
 Configuration values are resolved in this order (highest priority wins):

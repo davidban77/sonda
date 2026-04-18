@@ -145,10 +145,11 @@ impl fmt::Display for TimingError {
 /// the down state at `up_duration_secs`. The `>` operator on a standard
 /// flap is satisfied at `t=0` and therefore ambiguous.
 ///
-/// Kept on the public surface of the module because the v1 story path in
-/// `sonda::story::after_resolve` still calls it directly with alias-level
-/// parameters. In the v2 compiler, `flap` is first desugared to a
-/// [`GeneratorConfig::Sequence`] and handled by [`sequence_crossing_secs`].
+/// Kept on the public surface of the module so callers that work directly
+/// with alias-level parameters (rather than the desugared sequence form)
+/// can compute crossing times without replicating the math. In the v2
+/// compiler, `flap` is first desugared to a [`GeneratorConfig::Sequence`]
+/// and handled by [`sequence_crossing_secs`].
 ///
 /// # Errors
 ///

@@ -1172,15 +1172,10 @@ fn duration_or_default(
 /// can only arise from programmer error; the release fallback preserves
 /// the `"0s"` normalization so production code never panics.
 ///
-/// # Parity with the v1 story CLI
-///
-/// v1's `story::format_duration_secs` emits sub-second values in the
-/// `"{ms}ms"` form (`0.5s` → `"500ms"`). This v2 helper emits fractional
-/// seconds directly (`0.5s` → `"0.5s"`). Both strings round-trip through
-/// [`parse_duration`] to the same [`std::time::Duration`], so parity
-/// tests that parse the output back to seconds — like
-/// `v2_story_parity::link_failover_compile_parity` — continue to agree.
-/// Call sites that need byte-identical output to v1 must format locally.
+/// Sub-second values are emitted as fractional seconds (`0.5s` →
+/// `"0.5s"`) rather than milliseconds; callers that need a specific
+/// display form should format locally. All emitted strings round-trip
+/// cleanly through [`parse_duration`] to the same [`std::time::Duration`].
 pub fn format_duration_secs(secs: f64) -> String {
     debug_assert!(
         secs.is_finite() && secs >= 0.0,

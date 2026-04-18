@@ -120,9 +120,9 @@ src/
 │   │                      (sawtooth, step, sequence, spike, flap, saturation,
 │   │                      leak, degradation, spike_event, constant). Returns
 │   │                      crossing time in seconds or a typed TimingError
-│   │                      (OutOfRange | Ambiguous | Unsupported). Shared with
-│   │                      the v1 story CLI path. No features — compiles in
-│   │                      `no-config` builds as well.
+│   │                      (OutOfRange | Ambiguous | Unsupported). Used by the
+│   │                      v2 compiler's Phase 4 `after` resolution. No
+│   │                      features — compiles in `no-config` builds as well.
 │   └── compile_after.rs ← Phase 4+5 compilation: after-clause resolution,
 │                          dependency graph, cycle detection (Kahn + DFS),
 │                          clock-group auto-assignment. compile_after(),
