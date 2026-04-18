@@ -216,7 +216,7 @@ scenario YAML. For example, `--duration 10s` overrides whatever duration the bui
 | Name | Signal | Generator | What it models |
 |------|--------|-----------|----------------|
 | `interface-flap` | multi | sequence | Router interface toggling up/down with matching traffic counters and error spikes. 3 correlated metrics. |
-| `network-link-failure` | multi | sequence | Primary link going down with traffic shifting to a backup path. Multi-metric correlation. |
+| `link-failover` | multi | `flap` + `saturation` + `degradation` | Edge router primary link flaps, backup link saturates as it absorbs traffic, latency degrades as backup fills. 3-signal causal chain wired with `after:`. |
 
 ### Application
 

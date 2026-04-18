@@ -339,6 +339,15 @@ t=0s         t=60s        t=152s       t=300s
                           |-- latency: ramps 5->150ms over 3m -->
 ```
 
+!!! tip "Same scenario, v2 form"
+    The same three-signal cascade also ships as a v2 scenario at
+    `scenarios/link-failover.yaml` and in the built-in catalog. Run it with
+    `sonda catalog run link-failover` or `sonda run --scenario scenarios/link-failover.yaml`.
+    The v2 form uses the same compile-time `after:` resolution you see here and is the
+    recommended surface for new work. See
+    [v2 temporal chains](../configuration/v2-scenarios.md#temporal-chains-with-after) for
+    the field reference.
+
 ---
 
 ## Limitations
