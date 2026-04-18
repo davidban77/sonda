@@ -137,12 +137,19 @@ See [Pipeline Validation](pipeline-validation.md) for usage patterns.
 | File | Signal | Description |
 |------|--------|-------------|
 | `network-device-baseline.yaml` | metrics | Router with 2 uplinks: traffic counters, state, CPU, memory (9 scenarios) |
-| `network-link-failure.yaml` | metrics | Link failure cascade: interface down, traffic shift, error spike (6 scenarios) |
+| `scenarios/link-failover.yaml` | multi | Edge router link failover: primary flaps, backup saturates, latency degrades (3-signal `after:` chain) |
 
 Run with `sonda run`:
 
 ```bash
 sonda run --scenario examples/network-device-baseline.yaml
+sonda run --scenario scenarios/link-failover.yaml
+```
+
+The `link-failover` scenario also ships in the built-in catalog:
+
+```bash
+sonda catalog run link-failover
 ```
 
 See [Network Device Telemetry](network-device-telemetry.md) for the full walkthrough.

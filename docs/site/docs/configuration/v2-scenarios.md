@@ -165,8 +165,15 @@ Use `after:` to express "this scenario starts when that one crosses a threshold"
 the timing at parse time -- no runtime reactivity -- by computing concrete `phase_offset` values
 from each generator's shape.
 
-```yaml title="link-failover.v2.yaml"
+The built-in `link-failover` scenario is a worked example: a primary interface flaps, a backup
+link saturates once the primary drops, and latency degrades once the backup fills.
+
+```yaml title="scenarios/link-failover.yaml"
 version: 2
+
+scenario_name: link-failover
+category: network
+description: "Edge router link failure with traffic shift to backup"
 
 defaults:
   rate: 1
@@ -175,50 +182,68 @@ defaults:
     type: prometheus_text
   sink:
     type: stdout
+  labels:
+    device: rtr-edge-01
+    job: network
 
 scenarios:
-  - id: primary_link
+  - id: interface_oper_state
     signal_type: metrics
     name: interface_oper_state
-    labels:
-      device: rtr-edge-01
-      interface: GigabitEthernet0/0/0
     generator:
       type: flap
       up_duration: 60s
       down_duration: 30s
+    labels:
+      interface: GigabitEthernet0/0/0
 
-  - id: backup_util
+  - id: backup_link_utilization
     signal_type: metrics
     name: backup_link_utilization
-    labels:
-      device: rtr-edge-01
-      interface: GigabitEthernet0/1/0
     generator:
       type: saturation
       baseline: 20
       ceiling: 85
       time_to_saturate: 2m
+    labels:
+      interface: GigabitEthernet0/1/0
     after:
-      ref: primary_link
+      ref: interface_oper_state
       op: "<"
       value: 1
+
+  - id: latency_ms
+    signal_type: metrics
+    name: latency_ms
+    generator:
+      type: degradation
+      baseline: 5
+      ceiling: 150
+      time_to_degrade: 3m
+    labels:
+      path: backup
+    after:
+      ref: backup_link_utilization
+      op: ">"
+      value: 70
 ```
 
-The `primary_link` flap signal drops below `1` at `t=60s` (its `up_duration`), so `backup_util`
-starts at that same moment via an auto-computed `phase_offset`. Scenarios linked by `after:`
-get an auto-assigned `clock_group` so their timers share a start reference.
+The `interface_oper_state` flap signal drops below `1` at `t=60s` (its `up_duration`), so
+`backup_link_utilization` starts at that same moment via an auto-computed `phase_offset`. The
+backup ramp crosses 70% a little over two minutes later, which is when `latency_ms` begins to
+degrade. Scenarios linked by `after:` get an auto-assigned `clock_group` so their timers share a
+start reference.
 
 Use `--dry-run` to see the resolved timing:
 
 ```bash
-sonda run --scenario link-failover.v2.yaml --dry-run
+sonda run --scenario scenarios/link-failover.yaml --dry-run
 ```
 
 ```text
-[config] file: link-failover.v2.yaml (version: 2, 2 scenarios)
+[config] file: scenarios/link-failover.yaml (version: 2, 3 scenarios)
 
-[config] [1/2] interface_oper_state
+[config] [1/3] interface_oper_state
 
     name:           interface_oper_state
     signal:         metrics
@@ -227,11 +252,11 @@ sonda run --scenario link-failover.v2.yaml --dry-run
     generator:      flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)
     encoder:        prometheus_text
     sink:           stdout
-    labels:         device=rtr-edge-01, interface=GigabitEthernet0/0/0
-    clock_group:    chain_backup_util (auto)
+    labels:         device=rtr-edge-01, interface=GigabitEthernet0/0/0, job=network
+    clock_group:    chain_backup_link_utilization (auto)
 ---
 
-[config] [2/2] backup_link_utilization
+[config] [2/3] backup_link_utilization
 
     name:           backup_link_utilization
     signal:         metrics
@@ -240,16 +265,34 @@ sonda run --scenario link-failover.v2.yaml --dry-run
     generator:      saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)
     encoder:        prometheus_text
     sink:           stdout
-    labels:         device=rtr-edge-01, interface=GigabitEthernet0/1/0
+    labels:         device=rtr-edge-01, interface=GigabitEthernet0/1/0, job=network
     phase_offset:   1m
-    clock_group:    chain_backup_util (auto)
+    clock_group:    chain_backup_link_utilization (auto)
+---
 
-Validation: OK (2 scenarios)
+[config] [3/3] latency_ms
+
+    name:           latency_ms
+    signal:         metrics
+    rate:           1/s
+    duration:       5m
+    generator:      degradation (baseline: 5, ceiling: 150, time_to_degrade: 3m)
+    encoder:        prometheus_text
+    sink:           stdout
+    labels:         device=rtr-edge-01, job=network, path=backup
+    phase_offset:   152.308s
+    clock_group:    chain_backup_link_utilization (auto)
+
+Validation: OK (3 scenarios)
 ```
 
-The `phase_offset: 1m` on `backup_link_utilization` is the value Sonda computed from the
-threshold-crossing math. The `(auto)` suffix on `clock_group` indicates Sonda assigned the group
-automatically because of the `after:` relationship.
+The `phase_offset` lines show the concrete delays Sonda computed from the threshold-crossing
+math. The `(auto)` suffix on `clock_group` indicates Sonda assigned the group automatically
+because of the `after:` relationship. The scenario also ships in the built-in catalog:
+
+```bash
+sonda catalog run link-failover
+```
 
 !!! tip "Supported generators in `after:`"
     The `after:` clause resolves against the target generator's trajectory. Supported shapes:

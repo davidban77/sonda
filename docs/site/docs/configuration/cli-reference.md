@@ -246,13 +246,13 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
     `after:` clauses, and auto-assigned `clock_group` names.
 
     ```bash
-    sonda run --scenario link-failover.v2.yaml --dry-run
+    sonda run --scenario scenarios/link-failover.yaml --dry-run
     ```
 
-    ```text title="Output"
-    [config] file: link-failover.v2.yaml (version: 2, 2 scenarios)
+    ```text title="Output (abridged)"
+    [config] file: scenarios/link-failover.yaml (version: 2, 3 scenarios)
 
-    [config] [1/2] interface_oper_state
+    [config] [1/3] interface_oper_state
 
         name:           interface_oper_state
         signal:         metrics
@@ -261,11 +261,11 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
         generator:      flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)
         encoder:        prometheus_text
         sink:           stdout
-        labels:         device=rtr-edge-01, interface=GigabitEthernet0/0/0
-        clock_group:    chain_backup_util (auto)
+        labels:         device=rtr-edge-01, interface=GigabitEthernet0/0/0, job=network
+        clock_group:    chain_backup_link_utilization (auto)
     ---
 
-    [config] [2/2] backup_link_utilization
+    [config] [2/3] backup_link_utilization
 
         name:           backup_link_utilization
         signal:         metrics
@@ -274,14 +274,28 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
         generator:      saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)
         encoder:        prometheus_text
         sink:           stdout
-        labels:         device=rtr-edge-01, interface=GigabitEthernet0/1/0
+        labels:         device=rtr-edge-01, interface=GigabitEthernet0/1/0, job=network
         phase_offset:   1m
-        clock_group:    chain_backup_util (auto)
+        clock_group:    chain_backup_link_utilization (auto)
+    ---
 
-    Validation: OK (2 scenarios)
+    [config] [3/3] latency_ms
+
+        name:           latency_ms
+        signal:         metrics
+        rate:           1/s
+        duration:       5m
+        generator:      degradation (baseline: 5, ceiling: 150, time_to_degrade: 3m)
+        encoder:        prometheus_text
+        sink:           stdout
+        labels:         device=rtr-edge-01, job=network, path=backup
+        phase_offset:   152.308s
+        clock_group:    chain_backup_link_utilization (auto)
+
+    Validation: OK (3 scenarios)
     ```
 
-    The `phase_offset:` line shows the concrete delay Sonda computed from the `after:` clause.
+    The `phase_offset:` lines show the concrete delays Sonda computed from each `after:` clause.
     The `(auto)` suffix on `clock_group:` marks groups assigned by the compiler.
 
 #### JSON dry-run for v2 files
@@ -290,12 +304,12 @@ For scripting and CI use, add `--format=json` to get a stable JSON DTO on stdout
 the pretty text on stderr. The flag is only consulted for v2 scenario files.
 
 ```bash
-sonda run --scenario link-failover.v2.yaml --dry-run --format=json
+sonda run --scenario scenarios/link-failover.yaml --dry-run --format=json
 ```
 
 ```json title="Output (abridged)"
 {
-  "file": "link-failover.v2.yaml",
+  "file": "scenarios/link-failover.yaml",
   "version": 2,
   "scenarios": [
     {
@@ -307,9 +321,9 @@ sonda run --scenario link-failover.v2.yaml --dry-run --format=json
       "generator": "flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)",
       "encoder": "prometheus_text",
       "sink": "stdout",
-      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/0/0" },
+      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/0/0", "job": "network" },
       "phase_offset": null,
-      "clock_group": "chain_backup_util",
+      "clock_group": "chain_backup_link_utilization",
       "clock_group_is_auto": true
     },
     {
@@ -321,9 +335,23 @@ sonda run --scenario link-failover.v2.yaml --dry-run --format=json
       "generator": "saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)",
       "encoder": "prometheus_text",
       "sink": "stdout",
-      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/1/0" },
+      "labels": { "device": "rtr-edge-01", "interface": "GigabitEthernet0/1/0", "job": "network" },
       "phase_offset": "1m",
-      "clock_group": "chain_backup_util",
+      "clock_group": "chain_backup_link_utilization",
+      "clock_group_is_auto": true
+    },
+    {
+      "index": 3,
+      "name": "latency_ms",
+      "signal": "metrics",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": "degradation (baseline: 5, ceiling: 150, time_to_degrade: 3m)",
+      "encoder": "prometheus_text",
+      "sink": "stdout",
+      "labels": { "device": "rtr-edge-01", "job": "network", "path": "backup" },
+      "phase_offset": "152.308s",
+      "clock_group": "chain_backup_link_utilization",
       "clock_group_is_auto": true
     }
   ]
@@ -837,7 +865,7 @@ same runtime shape.
 
 ```bash
 # v2 file with after: chain
-sonda run --scenario scenarios/link-failover.v2.yaml
+sonda run --scenario scenarios/link-failover.yaml
 
 # v1 multi-scenario file
 sonda run --scenario examples/multi-scenario.yaml
@@ -878,8 +906,8 @@ When entries carry a `clock_group:` (explicit or auto-assigned from an `after:` 
 group name appears at the end of the start banner:
 
 ```text
-[1/2] ▶ interface_oper_state  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_util (auto)
-[2/2] ▶ backup_link_utilization  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_util (auto)
+[1/2] ▶ interface_oper_state  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_link_utilization (auto)
+[2/2] ▶ backup_link_utilization  signal_type: metrics | rate: 1/s | ... | clock_group: chain_backup_link_utilization (auto)
 ```
 
 The `(auto)` suffix marks groups that Sonda assigned automatically. Explicit groups you set in
