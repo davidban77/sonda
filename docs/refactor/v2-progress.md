@@ -256,6 +256,22 @@ Target for Stage 2: ~100-200 LOC deletion from `v2-examples/` YAMLs plus the ass
 
 Consolidated checklist for the final cleanup PR. Surface this list in the PR 9 plan.
 
+### PR 9 split (decided 2026-04-18)
+
+PR 9 is split into three sub-PRs that land sequentially on `refactor/unified-scenarios-v2`, mirroring the PR 8a split pattern. Rationale: smaller review surface, each sub-PR re-establishes a green baseline before the next.
+
+| Sub-PR | Scope | Class | Dogfood |
+|---|---|---|---|
+| **9a — v1 story retirement** | Delete `sonda/src/story/*`, `Commands::Story` CLI variant + `StoryArgs`, `stories/` directory, `sonda-core/tests/v2_story_parity.rs`, `docs/site/docs/guides/stories.md`. Update CLI reference + CLAUDE.md. Closes validation row 12.21. | user-visible | reviewer-quick + UAT + doc |
+| **9b — v1 loader removal (full retirement)** | Delete `MultiScenarioConfig`, `is_flat_single_scenario`, `load_flat_single_scenario`, v1 branches in `load_config`/`load_log_config`/`load_histogram_config`/`load_summary_config`/`parse_builtin_scenario`. Delete dead `load_multi_config` + its tests. **Full v1 retirement — users must use v2.** Breaking change. | architectural | Opus reviewer direct + UAT + doc |
+| **9c — test file renames + translator-semantics prune** | Rename `v2_translator_semantics.rs` → `translator_semantics.rs` (with per-case audit), `v2_compile_after_fixtures.rs` → `compile_after_fixtures.rs`, `v2_fixture_examples.rs` → `fixture_examples.rs`, `v2_expand_fixtures.rs` → `expand_fixtures.rs`. Closes `feedback_no_v2_prefix` discipline. | mechanical (prune pieces may bump to internal-fix) | reviewer-quick only |
+
+**9d — Server API v2** (accept v2 YAML in `sonda-server` endpoints, close rows 13.1–13.9) is **deferred to a dedicated PR** after the PR 9 arc. Too large to bundle.
+
+**Order**: 9a → 9b → 9c, sequential.
+
+**Full v1 retirement decision**: confirmed 2026-04-18 in orchestrator/user dialog. External users with v1 YAML files must migrate. No phased deprecation, no v1-compat shim. Aligns with the 2026-04-15 direction ("our focus is v2").
+
 ### v1 story parity oracle cleanup
 
 When PR 9 removes the v1 story CLI (`sonda story --file`), the hand-built `v1_link_failover_entries` helper in `sonda-core/tests/v2_story_parity.rs` becomes a relic. It exists only because `sonda-core` tests cannot dev-dep the binary crate that owns `compile_story`. Once the v1 story module is gone, there is no "v1 side" to mirror, so PR 9 should either:

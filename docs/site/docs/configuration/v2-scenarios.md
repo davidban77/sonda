@@ -447,10 +447,12 @@ You have three options, from least to most invasive:
         generator: { type: constant, value: 2 }
     ```
 
-=== "Promote a story to v2"
+=== "Multi-signal temporal scenarios"
 
-    If you have a [story file](../guides/stories.md), the v2 format expresses the same
-    temporal relationships directly with `after:` clauses. See the
+    If your v1 file chained signals together with hand-tuned `phase_offset` values, v2
+    expresses the same temporal relationships declaratively with `after:` clauses. Each
+    entry says *when it starts relative to another entry's shape* and the compiler resolves
+    the offsets at parse time. See the
     [`after:` section](#temporal-chains-with-after) above for the shape.
 
 ## What next
