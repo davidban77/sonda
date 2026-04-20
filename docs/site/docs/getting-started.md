@@ -123,34 +123,40 @@ in detail.
 
 ## Using a scenario file
 
-For repeatable configurations, define a scenario in YAML. Here is `examples/basic-metrics.yaml`
-from the repository:
+For repeatable configurations, define a scenario in a [v2 YAML file](configuration/v2-scenarios.md):
 
 ```yaml title="basic-metrics.yaml"
-name: interface_oper_state
-rate: 1000
-duration: 30s
-generator:
-  type: sine
-  amplitude: 5.0
-  period_secs: 30
-  offset: 10.0
-gaps:
-  every: 2m
-  for: 20s
-labels:
-  hostname: t0-a1
-  zone: eu1
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 1000
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    hostname: t0-a1
+    zone: eu1
+
+scenarios:
+  - id: interface_oper_state
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: sine
+      amplitude: 5.0
+      period_secs: 30
+      offset: 10.0
+    gaps:
+      every: 2m
+      for: 20s
 ```
 
 Run it:
 
 ```bash
-sonda metrics --scenario examples/basic-metrics.yaml --duration 3s
+sonda run --scenario basic-metrics.yaml --duration 3s
 ```
 
 ```text title="Output"
@@ -215,7 +221,8 @@ portable scenario YAML.
 
 When you need specific details:
 
-- [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario fields
+- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains, and migration from v1
+- [**Scenario Fields**](configuration/scenario-file.md) -- per-entry field reference (generators, schedules, labels)
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
 - [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
 - [**Troubleshooting**](guides/troubleshooting.md) -- common issues and how to fix them

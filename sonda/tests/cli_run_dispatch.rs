@@ -1,8 +1,8 @@
-//! Integration tests for `sonda run --scenario` v1/v2 dispatch (PR 7).
+//! Integration tests for `sonda run --scenario` v2-only dispatch.
 //!
-//! Verifies that `sonda run` accepts both v1 and v2 scenario files
-//! transparently, that `--dry-run` on v2 files emits the spec §5 pretty
-//! output, and that `--format=json` emits a stable JSON DTO.
+//! Verifies that `sonda run` accepts v2 scenario files, rejects v1 shapes
+//! with a migration hint, that `--dry-run` on v2 files emits the spec §5
+//! pretty output, and that `--format=json` emits a stable JSON DTO.
 
 mod common;
 
@@ -10,12 +10,10 @@ use std::process::Command;
 
 use common::{cli_fixtures_dir, sonda_bin};
 
-/// v1 single-scenario file (no `version:`) runs end-to-end.
-///
-/// Uses the `inline-v1.yaml` fixture with a 300ms duration so the test
-/// completes quickly.
+/// A v1 multi-scenario file (top-level `scenarios:` without `version: 2`)
+/// is rejected with a non-zero exit and a v2 migration hint.
 #[test]
-fn run_v1_scenario_succeeds() {
+fn run_v1_scenario_is_rejected_with_migration_hint() {
     let fixture = cli_fixtures_dir().join("inline-v1.yaml");
     let output = Command::new(sonda_bin())
         .args(["--quiet", "run", "--scenario"])
@@ -24,16 +22,14 @@ fn run_v1_scenario_succeeds() {
         .expect("must spawn sonda");
 
     assert!(
-        output.status.success(),
-        "v1 run failed: {:?}\nstderr:\n{}",
-        output.status.code(),
+        !output.status.success(),
+        "v1 multi-scenario must not succeed; stderr:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
-    // stdout should contain Prometheus text output for the v1 metric.
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("v1_inline_metric"),
-        "expected v1 metric name in stdout, got:\n{stdout}"
+        stderr.contains("v2"),
+        "rejection must mention v2 requirement, got:\n{stderr}"
     );
 }
 
@@ -133,12 +129,11 @@ fn run_v2_dry_run_json_format_emits_stable_dto() {
 }
 
 /// A flat v1 single-scenario file (top-level `name:` + `generator:`,
-/// no `scenarios:` list) runs end-to-end. Spec §6.1 requires `sonda run
-/// --scenario` to handle v1 single-scenario, multi-scenario, and
-/// pack-scenario layouts transparently; PR 7's unified loader originally
-/// only handled the multi and pack shapes.
+/// no `scenarios:` list) is rejected with a non-zero exit and a v2
+/// migration hint. Post-v1 removal, `sonda run --scenario` only accepts
+/// v2 YAML.
 #[test]
-fn run_flat_v1_single_scenario_succeeds() {
+fn run_flat_v1_single_scenario_is_rejected_with_migration_hint() {
     let fixture = cli_fixtures_dir().join("flat-v1-metrics.yaml");
     let output = Command::new(sonda_bin())
         .args(["--quiet", "run", "--scenario"])
@@ -147,23 +142,26 @@ fn run_flat_v1_single_scenario_succeeds() {
         .expect("must spawn sonda");
 
     assert!(
-        output.status.success(),
-        "flat v1 run failed: {:?}\nstderr:\n{}",
-        output.status.code(),
+        !output.status.success(),
+        "flat v1 file must not succeed; stderr:\n{}",
         String::from_utf8_lossy(&output.stderr),
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("flat_v1_metric"),
-        "expected flat v1 metric name in stdout, got:\n{stdout}"
+        stderr.contains("v2"),
+        "rejection must mention v2 requirement, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("v2-scenarios.md") || stderr.contains("Migrate"),
+        "rejection must point at migration guide, got:\n{stderr}"
     );
 }
 
-/// `sonda catalog run <builtin-scenario>` resolves a flat v1 built-in
-/// scenario like `cpu-spike` end-to-end. This is the end-to-end flow
-/// the docs describe (`sonda catalog run cpu-spike`). The catalog
-/// search path is pointed at the repo's `scenarios/` tree so the test
-/// runs against the real built-in YAMLs.
+/// `sonda catalog run <builtin-scenario>` resolves a v2 built-in scenario
+/// like `cpu-spike` end-to-end. This is the end-to-end flow the docs
+/// describe (`sonda catalog run cpu-spike`). The catalog search path is
+/// pointed at the repo's `scenarios/` tree so the test runs against the
+/// real built-in YAMLs.
 #[test]
 fn catalog_run_cpu_spike_builtin_succeeds() {
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

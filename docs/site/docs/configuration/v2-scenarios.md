@@ -1,16 +1,20 @@
 # v2 Scenario Files
 
-The v2 scenario format is Sonda's unified way to describe one or many signals in a single
-YAML file. One top-level block declares shared defaults; another lists the scenarios. Packs,
-`after:` temporal dependencies, and clock groups all compose inside the same file.
+The v2 scenario format is Sonda's way to describe one or many signals in a single YAML file.
+One top-level block declares shared defaults; another lists the scenarios. Packs, `after:`
+temporal dependencies, and clock groups all compose inside the same file.
 
-You opt in by adding `version: 2` at the top. Everything else you already know about scenarios
--- generators, encoders, sinks, labels -- still applies.
+Every scenario file must declare `version: 2` at the top. Everything else you already know
+about scenarios -- generators, encoders, sinks, labels -- still applies.
 
-!!! info "Backward compatible"
-    v1 scenario files keep working unchanged. `sonda run --scenario <file>` detects the
-    `version:` field at the top of the YAML and dispatches to the right loader. You can
-    migrate files one at a time.
+!!! warning "v1 YAML is no longer accepted"
+    Sonda only accepts v2 scenario YAML. The CLI (`sonda run`, `sonda metrics`,
+    `sonda catalog run`, every `--scenario` consumer) and the HTTP server (`POST /scenarios`)
+    both refuse files or bodies without `version: 2` at the top and print a migration hint
+    pointing at this page.
+
+    If you are upgrading from a Sonda release before this change, jump straight to
+    [Migrating from v1](#migrating-from-v1).
 
 ## Minimal example
 
@@ -96,11 +100,10 @@ scenarios:
 The compiler ignores these fields -- they only feed the catalog. `deny_unknown_fields` stays
 in force, so typos like `scenarioName:` or `desc:` are rejected at parse time.
 
-!!! info "Same field names as v1"
-    v1 scenario files use the same top-level field names (`scenario_name`, `category`,
-    `description`). The catalog probe reads both formats with one code path. Migrating a
-    v1 file to v2 is a matter of adding `version: 2` and reshaping the body -- the metadata
-    stays put.
+!!! info "Same field names as legacy v1"
+    The retired v1 format used the same top-level field names (`scenario_name`, `category`,
+    `description`). Migrating a v1 file to v2 keeps the metadata as-is -- you add
+    `version: 2` and reshape the body around `defaults:` + `scenarios:`.
 
 Drop a v2 file into any directory on the
 [scenario search path](../guides/scenarios.md#scenario-search-path) and it shows up
@@ -119,8 +122,8 @@ steady-state   scenario  infrastructure   metrics   yes        Normal oscillatin
 ## The `defaults:` block
 
 Every field in `defaults:` applies to every entry in `scenarios:` unless the entry overrides it.
-This is the main ergonomic win over v1 multi-scenario files, where you typed the same `encoder:`,
-`sink:`, and `rate:` for every entry.
+This is the main ergonomic win over legacy multi-scenario files, where you typed the same
+`encoder:`, `sink:`, and `rate:` for every entry.
 
 ```yaml title="defaults-example.yaml"
 version: 2
@@ -399,34 +402,116 @@ Run the generated file with `sonda run --scenario`. For the full guided scaffold
 
 ## Migrating from v1
 
-You have three options, from least to most invasive:
+Every legacy v1 shape maps cleanly to v2. Pick the tab that matches the file you have.
 
-=== "Keep v1"
+### How Sonda rejects v1
 
-    Your existing v1 files keep working. `sonda run` auto-detects the version. No migration
-    needed unless you want the new features.
+When Sonda encounters a file or request body without `version: 2`, it stops before running
+anything and prints the error alongside a pointer to this guide.
 
-=== "Add `version: 2` to a multi-scenario file"
+=== "CLI (`sonda run`, `sonda metrics`, ...)"
 
-    If you already use the v1 multi-scenario format (`scenarios:` list at the top), add
-    `version: 2` and move shared fields into `defaults:`:
+    ```text title="stderr"
+    error: scenario file /path/to/legacy.yaml is not a v2 scenario. Sonda only accepts v2 YAML (`version: 2` at the top level). Migrate this file to v2 — see docs/configuration/v2-scenarios.md for the migration guide.
+    ```
 
-    ```yaml title="Before (v1)"
+    Exit code: `1`. Applies to `sonda run`, `sonda metrics`, `sonda logs`,
+    `sonda histogram`, `sonda summary`, and `sonda catalog run` -- every `--scenario`
+    consumer.
+
+=== "Server (`POST /scenarios`)"
+
+    ```http
+    HTTP/1.1 400 Bad Request
+    Content-Type: application/json
+
+    {
+      "error": "bad_request",
+      "detail": "body is not a v2 scenario. Sonda only accepts v2 scenario bodies (`version: 2` at the top level). Migrate this body to v2 — see docs/configuration/v2-scenarios.md for the migration guide."
+    }
+    ```
+
+    The server returns `400 Bad Request` (not `422`) because a non-v2 body is ill-formed by
+    contract, not a semantic validation failure. See
+    [Server API -- Start a Scenario](../deployment/sonda-server.md#start-a-scenario).
+
+### Shape-by-shape migration
+
+=== "Flat single-signal"
+
+    The legacy "flat" layout put `name:`, `rate:`, `generator:`, `encoder:`, and `sink:` at the
+    top level with no `scenarios:` wrapper. Wrap them in a single-entry v2 file:
+
+    ```yaml title="Before (v1, flat single-signal)"
+    name: cpu_usage
+    rate: 100
+    duration: 30s
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    labels:
+      zone: us-east-1
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    ```yaml title="After (v2)"
+    version: 2
+
+    defaults:
+      rate: 100
+      duration: 30s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - id: cpu_usage
+        signal_type: metrics
+        name: cpu_usage
+        generator:
+          type: sine
+          amplitude: 50.0
+          period_secs: 60
+          offset: 50.0
+        labels:
+          zone: us-east-1
+    ```
+
+    Two things changed:
+
+    - `version: 2` at the top, with shared `rate` / `duration` / `encoder` / `sink` moved into
+      `defaults:`.
+    - One entry under `scenarios:` with an explicit `signal_type: metrics`. The `id:` is
+      free-form; it's what `after:` clauses and `clock_group:` references use.
+
+=== "Top-level `scenarios:` list"
+
+    The legacy multi-scenario layout already had a `scenarios:` list, but each entry repeated
+    `encoder:`, `sink:`, `rate:`, and `duration:`. Add `version: 2`, move the shared fields
+    into `defaults:`, and drop the repetition:
+
+    ```yaml title="Before (v1, multi-scenario)"
     scenarios:
       - signal_type: metrics
         name: cpu
         rate: 10
         duration: 60s
+        generator: { type: constant, value: 1 }
         encoder: { type: prometheus_text }
         sink: { type: stdout }
-        generator: { type: constant, value: 1 }
       - signal_type: metrics
         name: mem
         rate: 10
         duration: 60s
+        generator: { type: constant, value: 2 }
         encoder: { type: prometheus_text }
         sink: { type: stdout }
-        generator: { type: constant, value: 2 }
     ```
 
     ```yaml title="After (v2)"
@@ -439,25 +524,200 @@ You have three options, from least to most invasive:
       sink: { type: stdout }
 
     scenarios:
-      - signal_type: metrics
+      - id: cpu
+        signal_type: metrics
         name: cpu
         generator: { type: constant, value: 1 }
-      - signal_type: metrics
+      - id: mem
+        signal_type: metrics
         name: mem
         generator: { type: constant, value: 2 }
     ```
 
-=== "Multi-signal temporal scenarios"
+    Any per-entry field (`rate`, `labels`, `gaps`, `encoder`, ...) still wins over `defaults:`.
 
-    If your v1 file chained signals together with hand-tuned `phase_offset` values, v2
-    expresses the same temporal relationships declaratively with `after:` clauses. Each
-    entry says *when it starts relative to another entry's shape* and the compiler resolves
-    the offsets at parse time. See the
-    [`after:` section](#temporal-chains-with-after) above for the shape.
+=== "Logs"
+
+    Log entries move into a `scenarios:` entry with `signal_type: logs` and `log_generator:`
+    (note the `log_` prefix -- v2 log entries use `log_generator:` to keep the discriminated
+    union unambiguous):
+
+    ```yaml title="Before (v1, flat logs)"
+    name: app_logs
+    rate: 10
+    duration: 60s
+    generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2"]
+            endpoint: ["/api", "/health"]
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+      seed: 42
+    labels:
+      job: sonda
+      env: dev
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+    ```
+
+    ```yaml title="After (v2)"
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 60s
+      encoder:
+        type: json_lines
+      sink:
+        type: stdout
+      labels:
+        job: sonda
+        env: dev
+
+    scenarios:
+      - id: app_logs
+        signal_type: logs
+        name: app_logs
+        log_generator:
+          type: template
+          templates:
+            - message: "Request from {ip} to {endpoint}"
+              field_pools:
+                ip: ["10.0.0.1", "10.0.0.2"]
+                endpoint: ["/api", "/health"]
+          severity_weights:
+            info: 0.7
+            warn: 0.2
+            error: 0.1
+          seed: 42
+    ```
+
+=== "Histogram / Summary"
+
+    Histogram and summary entries do not use `generator:` at all -- they use
+    `distribution:`, `observations_per_tick:`, and (optionally) `buckets:` or `quantiles:`.
+    Wrap them in a v2 entry with `signal_type: histogram` or `signal_type: summary`:
+
+    ```yaml title="Before (v1, flat histogram)"
+    name: http_request_duration_seconds
+    rate: 1
+    duration: 60s
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      job: api
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    ```yaml title="After (v2)"
+    version: 2
+
+    defaults:
+      rate: 1
+      duration: 60s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - id: http_request_duration_seconds
+        signal_type: histogram
+        name: http_request_duration_seconds
+        distribution:
+          type: exponential
+          rate: 10.0
+        observations_per_tick: 100
+        seed: 42
+        labels:
+          job: api
+    ```
+
+    The `distribution`, `observations_per_tick`, `buckets`, and `quantiles` fields stay on the
+    entry. See [Generators -- histogram and summary](generators.md#histogram-and-summary-generators)
+    for the full field reference.
+
+=== "`pack:` shorthand"
+
+    The legacy `pack: <name>` shorthand file (a top-level `pack:` with `rate:` / `duration:` /
+    `labels:`) becomes a single v2 entry whose body is `pack: <name>`:
+
+    ```yaml title="Before (v1, pack shorthand)"
+    pack: telegraf_snmp_interface
+    rate: 1
+    duration: 60s
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifIndex: "1"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    ```
+
+    ```yaml title="After (v2)"
+    version: 2
+
+    defaults:
+      rate: 1
+      duration: 60s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - id: edge_router_snmp
+        signal_type: metrics
+        pack: telegraf_snmp_interface
+        labels:
+          device: rtr-edge-01
+          ifName: GigabitEthernet0/0/0
+          ifIndex: "1"
+    ```
+
+    See [Pack-backed entries](#pack-backed-entries) above for how the compiler expands
+    `pack:` into one entry per metric.
+
+=== "Hand-tuned `phase_offset`"
+
+    If a legacy file chained signals with hand-tuned `phase_offset` values, v2 expresses the
+    same temporal relationships declaratively with `after:` clauses. Each entry says *when it
+    starts relative to another entry's shape* and the compiler resolves the offsets at parse
+    time. See the [`after:` section](#temporal-chains-with-after) above.
+
+### Common gotchas
+
+- **`signal_type` is per-entry in v2.** Legacy files let you put `signal_type:` at the top
+  level; v2 reads it from the first entry (`metrics`, `logs`, `histogram`, `summary`). Every
+  entry in a multi-signal file carries its own `signal_type:`.
+- **Log entries use `log_generator:`, not `generator:`.** Metrics use `generator:`;
+  histograms and summaries use `distribution:`; logs use `log_generator:`. Mismatched keys
+  trigger a v2 compile error.
+- **`deny_unknown_fields` is strict.** Typos like `scenarioName:` or `desc:` at the top of a
+  v2 file are rejected at parse time with the offending field name in the error. Fix the
+  typo and re-run.
+- **`sonda import` already emits v2.** Regenerate any imported scenarios with
+  [`sonda import`](cli-reference.md#sonda-import) if you kept older output around.
 
 ## What next
 
-- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- full flag reference for running v1 and v2 files
+- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- flag reference for running v2 files
 - [**CLI Reference -- dry run**](cli-reference.md#dry-run) -- validate and preview a v2 file before running
-- [**Scenario Files**](scenario-file.md) -- v1 reference and field-by-field schema
+- [**Scenario Fields**](scenario-file.md) -- per-entry field reference (generators, labels, schedules)
+- [**Server API**](../deployment/sonda-server.md) -- `POST /scenarios` accepts v2 YAML or JSON
 - [**Metric Packs**](../guides/metric-packs.md) -- the pack catalog you can reference from v2 entries

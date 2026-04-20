@@ -139,7 +139,7 @@ src/
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      HistogramScenarioConfig, SummaryScenarioConfig, DistributionConfig,
     │                      ScenarioEntry (Metrics|Logs|Histogram|Summary, with base() accessor),
-    │                      MultiScenarioConfig, CardinalitySpikeConfig, SpikeStrategy,
+    │                      CardinalitySpikeConfig, SpikeStrategy,
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_entry (entry-level wrapper for expand_scenario)

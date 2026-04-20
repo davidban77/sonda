@@ -1,71 +1,76 @@
-# Scenario Files
+# Scenario Fields
 
-Scenario files define everything about a Sonda run: what to generate, how to encode it, and where
-to send it. They are YAML files that you pass with `--scenario`.
+This page is the per-entry field reference. It describes every field you can set on a
+`scenarios:` entry inside a [v2 scenario file](v2-scenarios.md) -- generators, schedules,
+labels, encoders, sinks, and multi-scenario timing controls.
 
-!!! info "Two supported formats"
-    This page covers the **v1** scenario format, which `sonda metrics`, `sonda logs`,
-    `sonda histogram`, `sonda summary`, and `sonda run` all accept. For the newer
-    [**v2 format**](v2-scenarios.md) -- with `version: 2`, shared `defaults:`, `after:` chains,
-    and inline pack references -- see the v2 reference. Both formats run through
-    `sonda run --scenario` and coexist freely.
+!!! info "Start with the v2 guide"
+    For the file shape (`version: 2`, `defaults:`, `scenarios:`), catalog metadata,
+    pack-backed entries, and `after:` temporal chains, see
+    [**v2 Scenario Files**](v2-scenarios.md). Every field below sits inside a v2
+    `scenarios:` entry -- Sonda only accepts `version: 2` YAML.
 
 ## Complete example
 
-This scenario touches every available field:
+A single v2 entry touching every available field:
 
 ```yaml title="full-example.yaml"
-name: cpu_usage
-rate: 100
-duration: 30s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 100
+  duration: 30s
+  encoder:
+    type: prometheus_text
+    precision: 2          # optional: limit values to 2 decimal places
+  sink:
+    type: stdout
 
-gaps:
-  every: 2m
-  for: 20s
+scenarios:
+  - id: cpu_usage
+    signal_type: metrics
+    name: cpu_usage
 
-bursts:
-  every: 10s
-  for: 2s
-  multiplier: 5.0
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
 
-cardinality_spikes:
-  - label: pod_name
-    every: 2m
-    for: 30s
-    cardinality: 500
-    strategy: counter
-    prefix: "pod-"
+    gaps:
+      every: 2m
+      for: 20s
 
-dynamic_labels:
-  - key: hostname
-    prefix: "host-"
-    cardinality: 10
+    bursts:
+      every: 10s
+      for: 2s
+      multiplier: 5.0
 
-labels:
-  zone: us-east-1
+    cardinality_spikes:
+      - label: pod_name
+        every: 2m
+        for: 30s
+        cardinality: 500
+        strategy: counter
+        prefix: "pod-"
 
-encoder:
-  type: prometheus_text
-  precision: 2          # optional: limit values to 2 decimal places
+    dynamic_labels:
+      - key: hostname
+        prefix: "host-"
+        cardinality: 10
 
-sink:
-  type: stdout
+    labels:
+      zone: us-east-1
 
-jitter: 2.5
-jitter_seed: 42
+    jitter: 2.5
+    jitter_seed: 42
 
-phase_offset: "5s"
-clock_group: alert-test
+    phase_offset: "5s"
+    clock_group: alert-test
 ```
 
 ```bash
-sonda metrics --scenario full-example.yaml
+sonda run --scenario full-example.yaml
 ```
 
 ## Field reference
@@ -245,18 +250,19 @@ request_count{hostname="web-0",region="eu-west-1",...} 3
     collides with a static label key, the dynamic value wins. Dynamic labels work identically
     for both metric and log scenarios.
 
-### Multi-scenario fields
+### Temporal fields
 
-These fields are only meaningful in multi-scenario mode (via `sonda run` or
-[`POST /scenarios`](../deployment/sonda-server.md#multi-scenario-batch)). They control temporal
-correlation between scenarios.
+These fields control when and how entries coordinate inside a multi-entry v2 file (including
+bodies POSTed to [`POST /scenarios`](../deployment/sonda-server.md#start-a-scenario)).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `phase_offset` | string | no | none | Delay before starting this scenario. Supports `ms`, `s`, `m`, `h`. |
-| `clock_group` | string | no | none | Scenarios with the same clock group share a start time reference. |
+| `id` | string | no | auto | Entry identifier. `after:` and explicit `clock_group:` references target other entries by `id`. Defaults to the entry's `name` when omitted. |
+| `phase_offset` | string | no | none | Explicit delay before starting this scenario. Supports `ms`, `s`, `m`, `h`. Mutually exclusive with `after:` (the compiler computes `phase_offset` from `after:`). |
+| `clock_group` | string | no | none | Entries with the same clock group share a start-time reference. Auto-assigned when you use `after:`. |
+| `after` | object | no | none | Start this entry when another entry's generator crosses a threshold. See [Temporal chains](v2-scenarios.md#temporal-chains-with-after). |
 
-See [Multi-scenario files](#multi-scenario-files) below for a working example.
+See [Multi-signal files](#multi-signal-files) below for a working example.
 
 ### Duration format
 
@@ -273,133 +279,139 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds
 and `0.5m` means 30 seconds.
 
-## Log scenario files
+## Log entries
 
-Log scenarios use a different generator section but share the same structure for gaps, bursts,
-encoder, and sink. The key differences:
-
-- The `generator` uses log-specific types (`template` or `replay`).
-- The default encoder is `json_lines` instead of `prometheus_text`.
-- The optional `labels` and `dynamic_labels` fields work the same way as for metrics. Static
-  labels are key-value pairs attached to every event; dynamic labels rotate values per tick.
-  Both appear in JSON Lines output and are used as Loki stream labels when sending to a Loki sink.
+A log entry uses `signal_type: logs` and puts the generator configuration under `log_generator:`
+(not `generator:`). The default encoder is `json_lines`, but any encoder that accepts log events
+works.
 
 ```yaml title="log-scenario.yaml"
-name: app_logs
-rate: 10
-duration: 60s
+version: 2
 
-generator:
-  type: template
-  templates:
-    - message: "Request from {ip} to {endpoint}"
-      field_pools:
-        ip: ["10.0.0.1", "10.0.0.2"]
-        endpoint: ["/api", "/health"]
-  severity_weights:
-    info: 0.7
-    warn: 0.2
-    error: 0.1
-  seed: 42
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
+  labels:
+    job: sonda
+    env: dev
 
-labels:
-  job: sonda
-  env: dev
-encoder:
-  type: json_lines
-sink:
-  type: stdout
+scenarios:
+  - id: app_logs
+    signal_type: logs
+    name: app_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2"]
+            endpoint: ["/api", "/health"]
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1
+      seed: 42
 ```
 
 ```bash
-sonda logs --scenario log-scenario.yaml
+sonda run --scenario log-scenario.yaml
 ```
 
-## Multi-scenario files
+The `labels` / `dynamic_labels` fields work the same way as for metric entries. Static labels
+attach a fixed key-value to every event; dynamic labels rotate values per tick. Both appear in
+JSON Lines output and become Loki stream labels when the sink is `loki`.
 
-Run multiple scenarios concurrently from a single file using `sonda run` or by POSTing to the
-[Server API](../deployment/sonda-server.md#multi-scenario-batch). Each entry in the `scenarios`
-list must include a `signal_type` field.
+## Multi-signal files
 
-| `signal_type` | Description | Config format |
-|---------------|-------------|---------------|
-| `metrics` | Gauge/counter metrics via a [generator](generators.md#metric-generators) or [operational alias](generators.md#operational-aliases) | `generator.type` + standard fields |
-| `logs` | Structured log events | `generator.type: template` or `replay` |
-| `histogram` | Prometheus-style histogram (bucket, count, sum) | `distribution` + histogram fields |
-| `summary` | Prometheus-style summary (quantile, count, sum) | `distribution` + summary fields |
+Each entry in a v2 `scenarios:` list declares its own `signal_type`. The compiler routes the
+entry to the matching generator family at compile time.
+
+| `signal_type` | Description | Body shape |
+|---------------|-------------|------------|
+| `metrics` | Gauge / counter metrics via a [generator](generators.md#metric-generators) or [operational alias](generators.md#operational-aliases) | `generator:` + standard fields |
+| `logs` | Structured log events | `log_generator:` (`template` or `replay`) |
+| `histogram` | Prometheus-style histogram (bucket, count, sum) | `distribution:` + histogram fields |
+| `summary` | Prometheus-style summary (quantile, count, sum) | `distribution:` + summary fields |
+
+Two metric entries correlated with `phase_offset` + a shared `clock_group:`:
 
 ```yaml title="multi-scenario.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    instance: server-01
+    job: node
+
 scenarios:
-  - signal_type: metrics
+  - id: cpu_usage
+    signal_type: metrics
     name: cpu_usage
-    rate: 1
-    duration: 120s
     phase_offset: "0s"
     clock_group: alert-test
     generator:
       type: sequence
       values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
       repeat: true
-    labels:
-      instance: server-01
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
-  - signal_type: metrics
+  - id: memory_usage
+    signal_type: metrics
     name: memory_usage_percent
-    rate: 1
-    duration: 120s
     phase_offset: "3s"
     clock_group: alert-test
     generator:
       type: sequence
       values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
       repeat: true
-    labels:
-      instance: server-01
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 ```
 
 ```bash
 sonda run --scenario multi-scenario.yaml
 ```
 
-The `phase_offset` on `memory_usage_percent` delays it by 3 seconds, so CPU spikes first and
-memory follows. Both scenarios share the `alert-test` clock group for synchronized timing.
+The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU spikes first and memory
+follows. Both entries share the `alert-test` clock group for synchronized timing. For
+declarative chains, use [`after:`](v2-scenarios.md#temporal-chains-with-after) instead of
+hand-tuned offsets.
 
 ### Mixing all four signal types
 
-You can combine metrics, logs, histograms, and summaries in one file. Each entry uses its own
-config format based on `signal_type`:
-
 ```yaml title="mixed-signals.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
-  - signal_type: metrics
+  - id: http_requests_total
+    signal_type: metrics
     name: http_requests_total
     rate: 10
-    duration: 60s
     generator:
       type: step
       start: 0
       step_size: 1.0
     labels:
       job: api
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
-  - signal_type: histogram
+  - id: http_request_duration_seconds
+    signal_type: histogram
     name: http_request_duration_seconds
-    rate: 1
-    duration: 60s
     distribution:
       type: exponential
       rate: 10.0
@@ -407,15 +419,10 @@ scenarios:
     seed: 42
     labels:
       job: api
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
-  - signal_type: summary
+  - id: rpc_duration_seconds
+    signal_type: summary
     name: rpc_duration_seconds
-    rate: 1
-    duration: 60s
     distribution:
       type: normal
       mean: 0.1
@@ -423,25 +430,19 @@ scenarios:
     observations_per_tick: 100
     labels:
       service: auth
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
-  - signal_type: logs
+  - id: app_logs
+    signal_type: logs
     name: app_logs
     rate: 5
-    duration: 60s
-    generator:
+    encoder:
+      type: json_lines
+    log_generator:
       type: template
       templates:
         - message: "Request processed in {duration}ms"
           field_pools:
             duration: ["12", "45", "120", "500"]
-    encoder:
-      type: json_lines
-    sink:
-      type: stdout
 ```
 
 ```bash
@@ -449,65 +450,69 @@ sonda run --scenario mixed-signals.yaml
 ```
 
 !!! info "Histogram and summary entries use different fields"
-    Histogram and summary entries do not have a `generator` block. Instead, they use
-    `distribution`, `buckets`/`quantiles`, and `observations_per_tick` at the top level.
+    Histogram and summary entries do not have a `generator:` block. Instead, they use
+    `distribution:`, `buckets:` / `quantiles:`, and `observations_per_tick:` on the entry.
     See [Generators -- histogram and summary](generators.md#histogram-and-summary-generators)
     for the full field reference.
 
-## Pack scenario files
+## Pack-backed entries
 
-A YAML file with a `pack:` field instead of `name:` and `generator:` references a
-[metric pack](../guides/metric-packs.md) -- a reusable bundle of metric names and label schemas.
-Sonda expands the pack into one scenario per metric before running.
+A `scenarios:` entry with `pack: <name>` replaces the `name:` + `generator:` combo with a
+reference to a [metric pack](../guides/metric-packs.md). The compiler expands the pack into
+one entry per metric at compile time:
 
 ```yaml title="pack-scenario.yaml"
-pack: telegraf_snmp_interface
-rate: 1
-duration: 10s
+version: 2
 
-labels:
-  device: rtr-edge-01
-  ifName: GigabitEthernet0/0/0
-  ifIndex: "1"
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-sink:
-  type: stdout
-encoder:
-  type: prometheus_text
+scenarios:
+  - id: edge_router_snmp
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifIndex: "1"
 ```
 
 ```bash
 sonda run --scenario pack-scenario.yaml
 ```
 
-Pack scenario files support per-metric `overrides` and all the same `sink`, `encoder`, and
-`labels` fields as standard scenarios. See the [Metric Packs guide](../guides/metric-packs.md)
-for the full reference.
+Any `labels`, `rate`, `duration`, `encoder`, or `sink` you set on the entry applies to every
+expanded metric. Per-metric `overrides:` let you tune individual metrics inside the pack --
+see the [Metric Packs guide](../guides/metric-packs.md) for the full reference.
 
 ## CLI overrides
 
-Any field in the scenario file can be overridden from the command line. CLI flags always take
+Any field in a scenario file can be overridden from the command line. CLI flags always take
 precedence over YAML values:
 
 ```bash
-sonda metrics --scenario scenario.yaml --duration 5s --rate 2
+sonda run --scenario scenario.yaml --duration 5s --rate 2
 ```
 
-This loads the file but overrides `duration` and `rate` with the CLI values.
+This loads the file but overrides `duration` and `rate` (applied to every entry) with the CLI
+values.
 
-Encoder options like `--precision` also work as overrides. You can add precision to a YAML
-scenario without editing the file:
+Per-signal flags like `--precision` also work when using the signal subcommands:
 
 ```bash
-sonda metrics --scenario examples/basic-metrics.yaml --precision 2
+sonda metrics --scenario @cpu-spike --precision 2
 ```
 
 ## What next
 
-- [**v2 Scenario Files**](v2-scenarios.md) -- the newer format with `version: 2`, shared
-  `defaults:`, temporal `after:` chains, and inline pack references. Recommended for multi-signal
-  scenarios.
-- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- dispatches both v1 and v2 files
-  based on the `version:` field.
+- [**v2 Scenario Files**](v2-scenarios.md) -- file shape, `defaults:`, `after:` chains, catalog
+  metadata, and migration notes.
+- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- the unified entry point for
+  v2 scenario files.
 - [**Metric Packs**](../guides/metric-packs.md) -- reusable metric name + label schemas you can
   reference via `pack:`.

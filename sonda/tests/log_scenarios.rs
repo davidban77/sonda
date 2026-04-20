@@ -305,16 +305,27 @@ fn dynamic_labels_logs_yaml_sink_factory_succeeds() {
 // ---------------------------------------------------------------------------
 
 /// A log scenario YAML fixture stored alongside other test fixtures.
+///
+/// Post-v1 removal the fixture is a v2 scenario; route it through
+/// `compile_scenario_file` and assert on the single compiled entry rather
+/// than serde-deserializing it as a v1 `LogScenarioConfig`.
 #[test]
-fn log_scenario_fixture_template_mode_deserializes() {
+fn log_scenario_fixture_template_mode_compiles_via_v2() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let config: LogScenarioConfig = serde_yaml_ng::from_str(&contents)
-        .unwrap_or_else(|e| panic!("log-template fixture failed to deserialize: {e}"));
-    assert_eq!(config.rate, 10.0, "fixture rate must be 10");
-    assert!(
-        matches!(config.generator, LogGeneratorConfig::Template { .. }),
-        "fixture generator must be Template"
-    );
+    let resolver = sonda_core::compiler::expand::InMemoryPackResolver::new();
+    let entries = sonda_core::compile_scenario_file(&contents, &resolver)
+        .unwrap_or_else(|e| panic!("log-template fixture failed to compile: {e}"));
+    assert_eq!(entries.len(), 1);
+    match &entries[0] {
+        sonda_core::ScenarioEntry::Logs(cfg) => {
+            assert_eq!(cfg.rate, 10.0, "fixture rate must be 10");
+            assert!(
+                matches!(cfg.generator, LogGeneratorConfig::Template { .. }),
+                "fixture generator must be Template"
+            );
+        }
+        other => panic!("fixture must compile to a Logs entry, got: {other:?}"),
+    }
 }

@@ -182,72 +182,39 @@ fn format_duration(secs: f64) -> String {
 
 /// Render a complete scenario YAML string from a list of scenario specs.
 ///
-/// When `specs` has a single entry, produces a flat scenario YAML (no
-/// `scenarios:` wrapper). When multiple entries exist, produces a
-/// `scenarios:` list suitable for `sonda run --scenario`.
+/// Always produces a v2 scenario file (`version: 2`) with a `defaults:`
+/// block carrying the shared rate/duration/encoder/sink plus a
+/// `scenarios:` list where each entry is a `metrics` signal. v1 shapes
+/// are never emitted — the unified loader only accepts v2.
 pub fn render_yaml(specs: &[ScenarioSpec], rate: f64, duration: &str) -> String {
     if specs.is_empty() {
         return String::new();
     }
 
-    if specs.len() == 1 {
-        render_single_scenario(&specs[0], rate, duration)
-    } else {
-        render_multi_scenario(specs, rate, duration)
-    }
-}
-
-/// Render a single flat scenario YAML.
-fn render_single_scenario(spec: &ScenarioSpec, rate: f64, duration: &str) -> String {
-    let mut out = String::with_capacity(512);
-
-    out.push_str(&format!("name: {}\n", spec.name));
-    out.push_str(&format!("rate: {}\n", format_rate(rate)));
-    out.push_str(&format!("duration: {duration}\n"));
+    let mut out = String::with_capacity(specs.len() * 512 + 256);
+    out.push_str("version: 2\n");
     out.push('\n');
-
-    render_generator(&mut out, spec, 0);
+    out.push_str("defaults:\n");
+    out.push_str(&format!("  rate: {}\n", format_rate(rate)));
+    out.push_str(&format!("  duration: {duration}\n"));
+    out.push_str("  encoder:\n");
+    out.push_str("    type: prometheus_text\n");
+    out.push_str("  sink:\n");
+    out.push_str("    type: stdout\n");
     out.push('\n');
-
-    if !spec.labels.is_empty() {
-        render_labels(&mut out, &spec.labels, 0);
-        out.push('\n');
-    }
-
-    out.push_str("encoder:\n");
-    out.push_str("  type: prometheus_text\n");
-    out.push('\n');
-    out.push_str("sink:\n");
-    out.push_str("  type: stdout\n");
-
-    out
-}
-
-/// Render a multi-scenario YAML with `scenarios:` wrapper.
-fn render_multi_scenario(specs: &[ScenarioSpec], rate: f64, duration: &str) -> String {
-    let mut out = String::with_capacity(specs.len() * 512);
     out.push_str("scenarios:\n");
 
     for spec in specs {
-        out.push_str("  - signal_type: metrics\n");
+        out.push_str(&format!("  - id: {}\n", spec.name));
+        out.push_str("    signal_type: metrics\n");
         out.push_str(&format!("    name: {}\n", spec.name));
-        out.push_str(&format!("    rate: {}\n", format_rate(rate)));
-        out.push_str(&format!("    duration: {duration}\n"));
-        out.push('\n');
 
         render_generator(&mut out, spec, 4);
-        out.push('\n');
 
         if !spec.labels.is_empty() {
             render_labels(&mut out, &spec.labels, 4);
-            out.push('\n');
         }
 
-        out.push_str("    encoder:\n");
-        out.push_str("      type: prometheus_text\n");
-        out.push('\n');
-        out.push_str("    sink:\n");
-        out.push_str("      type: stdout\n");
         out.push('\n');
     }
 
@@ -413,7 +380,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn render_single_scenario_produces_valid_yaml() {
+    fn render_single_scenario_produces_valid_v2_yaml() {
         let spec = ScenarioSpec {
             name: "cpu_usage".to_string(),
             generator_type: "steady".to_string(),
@@ -425,14 +392,19 @@ mod tests {
             labels: HashMap::new(),
         };
         let yaml = render_yaml(&[spec], 1.0, "60s");
+        assert!(
+            yaml.starts_with("version: 2\n"),
+            "v2 output must begin with `version: 2`, got: {yaml}"
+        );
+        assert!(yaml.contains("defaults:"));
+        assert!(yaml.contains("scenarios:"));
+        assert!(yaml.contains("id: cpu_usage"));
         assert!(yaml.contains("name: cpu_usage"));
         assert!(yaml.contains("rate: 1"));
         assert!(yaml.contains("type: steady"));
         assert!(yaml.contains("center: 50.0"));
         assert!(yaml.contains("type: prometheus_text"));
         assert!(yaml.contains("type: stdout"));
-        // Single scenario should NOT have a scenarios: wrapper.
-        assert!(!yaml.contains("scenarios:"));
     }
 
     // -----------------------------------------------------------------------
@@ -440,7 +412,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn render_multi_scenario_has_wrapper() {
+    fn render_multi_scenario_has_v2_header_and_defaults() {
         let specs = vec![
             ScenarioSpec {
                 name: "cpu".to_string(),
@@ -456,8 +428,12 @@ mod tests {
             },
         ];
         let yaml = render_yaml(&specs, 1.0, "60s");
+        assert!(yaml.starts_with("version: 2\n"));
+        assert!(yaml.contains("defaults:"));
         assert!(yaml.contains("scenarios:"));
         assert!(yaml.contains("signal_type: metrics"));
+        assert!(yaml.contains("id: cpu"));
+        assert!(yaml.contains("id: mem"));
         assert!(yaml.contains("name: cpu"));
         assert!(yaml.contains("name: mem"));
     }

@@ -4,9 +4,8 @@
 //! `expand`, `compile_after`, and `prepare` — behind a single callable so that
 //! library consumers can go from YAML text to `Vec<ScenarioEntry>` in one step.
 //!
-//! The CLI still drives the runtime through the v1 loader; this entry point
-//! is for library consumers (tests, the server, and future CLI wiring) that
-//! want a turnkey v2 compile.
+//! Every caller (CLI, server, tests) goes through this entry point — the
+//! runtime accepts `Vec<ScenarioEntry>` directly and there is no v1 fallback.
 //!
 //! # Phase boundaries
 //!
@@ -81,7 +80,9 @@ pub enum CompileError {
 /// # Parameters
 ///
 /// * `yaml` — raw v2 scenario YAML source. Version 2 is mandatory; v1
-///   scenarios are not accepted here — route those through the v1 loader.
+///   scenario shapes (flat single-entry, `pack:` shorthand, top-level
+///   `scenarios:` list without `version: 2`) are rejected by
+///   [`parse`][crate::compiler::parse::parse] with a clear error.
 /// * `resolver` — pack-reference resolver used by
 ///   [`expand`][crate::compiler::expand::expand]. Pass an
 ///   [`InMemoryPackResolver`][crate::compiler::expand::InMemoryPackResolver]

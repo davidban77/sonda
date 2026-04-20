@@ -801,16 +801,15 @@ fn run_import_command(
         let yaml =
             import::run_generate_and_execute(&args.file, column_slice, args.rate, &args.duration)?;
 
-        // Parse the generated YAML as a scenario and run it.
-        let entries: Vec<sonda_core::ScenarioEntry> = if yaml.contains("scenarios:") {
-            let multi: sonda_core::MultiScenarioConfig = serde_yaml_ng::from_str(&yaml)
-                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            multi.scenarios
-        } else {
-            let config: sonda_core::config::ScenarioConfig = serde_yaml_ng::from_str(&yaml)
-                .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
-            vec![sonda_core::ScenarioEntry::Metrics(config)]
-        };
+        // `sonda import` now emits v2 YAML unconditionally — compile through
+        // the v2 pipeline. The filesystem pack resolver is wired in for
+        // symmetry with other CLI entry points even though the generated
+        // YAML never references packs today.
+        let pack_search_path = packs::build_search_path(cli_opts.pack_path.as_deref());
+        let pack_catalog_for_import = packs::PackCatalog::discover(&pack_search_path);
+        let resolver = scenario_loader::FilesystemPackResolver::new(&pack_catalog_for_import);
+        let entries = sonda_core::compile_scenario_file(&yaml, &resolver)
+            .map_err(|e| anyhow::anyhow!("generated YAML is invalid: {e}"))?;
 
         let prepared =
             sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;

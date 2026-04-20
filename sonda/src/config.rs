@@ -14,14 +14,14 @@ use std::fs;
 use anyhow::{bail, Context, Result};
 use sonda_core::config::{
     BaseScheduleConfig, BurstConfig, CardinalitySpikeConfig, GapConfig, LogScenarioConfig,
-    MultiScenarioConfig, ScenarioConfig, SpikeStrategy,
+    ScenarioConfig, SpikeStrategy,
 };
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
 use sonda_core::sink::retry::RetryConfig;
 use sonda_core::sink::SinkConfig;
 
-use crate::cli::{LogsArgs, MetricsArgs, PacksRunArgs, RunArgs, ScenariosRunArgs};
+use crate::cli::{LogsArgs, MetricsArgs, PacksRunArgs, ScenariosRunArgs};
 
 /// Validate CLI flag combinations that are invalid regardless of the scenario
 /// file contents.
@@ -357,10 +357,9 @@ fn build_sink_config(
 
 /// Load and return a [`ScenarioConfig`] from the provided [`MetricsArgs`].
 ///
-/// If `--scenario` is given the file is loaded through
-/// [`crate::scenario_loader::load_scenario_entries`] — both v1 flat /
-/// multi / pack shapes and v2 (`version: 2`) files are accepted, and
-/// pack references resolve against the supplied
+/// If `--scenario` is given the file is compiled through
+/// [`sonda_core::compile_scenario_file`]; v1 YAML shapes are rejected
+/// with a migration hint. Pack references resolve against the supplied
 /// [`PackCatalog`](crate::packs::PackCatalog). The compiled entries
 /// must consist of exactly one `metrics` entry; anything else (a
 /// multi-entry compilation or a non-metrics signal) is rejected with a
@@ -557,24 +556,20 @@ fn scenario_entry_signal_label(entry: &sonda_core::ScenarioEntry) -> &'static st
 /// Load exactly one scenario entry from a file for a single-signal
 /// subcommand (`metrics`, `logs`, `histogram`, `summary`).
 ///
-/// Dispatches on [`detect_version`][sonda_core::compiler::parse::detect_version]:
+/// The file is compiled via
+/// [`sonda_core::compile_scenario_file`] with a
+/// [`FilesystemPackResolver`](crate::scenario_loader::FilesystemPackResolver)
+/// backed by the CLI's [`PackCatalog`](crate::packs::PackCatalog), so
+/// `pack: node_exporter_cpu` resolves identically from every entry
+/// point (notably `sonda run --scenario`). Compilations producing more
+/// than one entry (e.g. a pack-backed v2 file) are rejected with a
+/// pointer to `sonda run --scenario`.
 ///
-/// - **v2 files** are compiled via
-///   [`sonda_core::compile_scenario_file`] with a
-///   [`FilesystemPackResolver`](crate::scenario_loader::FilesystemPackResolver)
-///   backed by the CLI's [`PackCatalog`](crate::packs::PackCatalog), so
-///   `pack: node_exporter_cpu` resolves identically from every entry
-///   point (notably `sonda run --scenario`). Compilations producing more
-///   than one entry (e.g. a pack-backed v2 file) are rejected with a
-///   pointer to `sonda run --scenario`.
-/// - **v1 files** are deserialized directly into the expected single-signal
-///   config type. This preserves legacy behavior where a flat v1 log
-///   scenario file (without an explicit top-level `signal_type:`) parses
-///   as the subcommand's signal type without relying on a fallible
-///   `signal_type:` probe.
+/// v1 YAML shapes are rejected via [`sonda_core::compiler::parse::parse`]
+/// with a migration hint — route migration through `docs/configuration/
+/// v2-scenarios.md`.
 ///
-/// When the single v2 entry produced is not of the expected [`SignalKind`]
-/// — v1 parsing is already type-locked by the deserialization target —
+/// When the single v2 entry produced is not of the expected [`SignalKind`],
 /// the caller gets a signal-type mismatch error naming the correct
 /// subcommand.
 ///
@@ -583,8 +578,8 @@ fn scenario_entry_signal_label(entry: &sonda_core::ScenarioEntry) -> &'static st
 ///
 /// # Errors
 ///
-/// - YAML parse / compilation errors are wrapped with the scenario path
-///   via [`anyhow::Context`].
+/// - v1-shaped YAML is rejected with a migration hint (wrapped with the
+///   scenario path via [`anyhow::Context`]).
 /// - v2 compilations producing zero or more than one entry fail with a
 ///   multi-entry diagnostic.
 /// - A v2 single entry with the wrong [`SignalKind`] fails with a
@@ -596,67 +591,23 @@ fn load_single_entry_from_scenario_file(
     kind: SignalKind,
     subcommand: &str,
 ) -> Result<LoadedSingleEntry> {
+    use crate::scenario_loader::FilesystemPackResolver;
+
     let yaml = resolve_scenario_source(path, scenario_catalog)?;
     let version = sonda_core::compiler::parse::detect_version(&yaml);
 
-    if version == Some(2) {
-        load_single_entry_from_v2(&yaml, path, pack_catalog, kind, subcommand)
-    } else {
-        load_single_entry_from_v1(&yaml, path, kind)
+    if version != Some(2) {
+        bail!(
+            "scenario file {} is not a v2 scenario. \
+             Sonda only accepts v2 YAML (`version: 2` at the top level). \
+             Migrate this file to v2 — see docs/configuration/v2-scenarios.md \
+             for the migration guide.",
+            path.display()
+        );
     }
-}
-
-/// v1 path: deserialize directly into the expected single-signal config
-/// type. Preserves the pre-v2-dispatch semantics of `load_log_config` /
-/// `load_histogram_config` / `load_summary_config`, which treated every
-/// YAML field as belonging to their declared signal type.
-fn load_single_entry_from_v1(
-    yaml: &str,
-    path: &std::path::Path,
-    kind: SignalKind,
-) -> Result<LoadedSingleEntry> {
-    match kind {
-        SignalKind::Metrics => {
-            let cfg: ScenarioConfig = serde_yaml_ng::from_str(yaml)
-                .with_context(|| format!("failed to parse scenario file {}", path.display()))?;
-            Ok(LoadedSingleEntry::Metrics(cfg))
-        }
-        SignalKind::Logs => {
-            let cfg: LogScenarioConfig = serde_yaml_ng::from_str(yaml)
-                .with_context(|| format!("failed to parse scenario file {}", path.display()))?;
-            Ok(LoadedSingleEntry::Logs(cfg))
-        }
-        SignalKind::Histogram => {
-            let cfg: sonda_core::config::HistogramScenarioConfig = serde_yaml_ng::from_str(yaml)
-                .with_context(|| {
-                    format!("failed to parse histogram scenario file {}", path.display())
-                })?;
-            Ok(LoadedSingleEntry::Histogram(cfg))
-        }
-        SignalKind::Summary => {
-            let cfg: sonda_core::config::SummaryScenarioConfig = serde_yaml_ng::from_str(yaml)
-                .with_context(|| {
-                    format!("failed to parse summary scenario file {}", path.display())
-                })?;
-            Ok(LoadedSingleEntry::Summary(cfg))
-        }
-    }
-}
-
-/// v2 path: compile via the scenario-loader pipeline (with the CLI pack
-/// catalog backing pack references), then enforce single-entry +
-/// expected-kind invariants.
-fn load_single_entry_from_v2(
-    yaml: &str,
-    path: &std::path::Path,
-    pack_catalog: &crate::packs::PackCatalog,
-    kind: SignalKind,
-    subcommand: &str,
-) -> Result<LoadedSingleEntry> {
-    use crate::scenario_loader::FilesystemPackResolver;
 
     let resolver = FilesystemPackResolver::new(pack_catalog);
-    let mut entries = sonda_core::compile_scenario_file(yaml, &resolver)
+    let mut entries = sonda_core::compile_scenario_file(&yaml, &resolver)
         .with_context(|| format!("failed to compile v2 scenario file {}", path.display()))?;
 
     if entries.len() != 1 {
@@ -1510,35 +1461,11 @@ fn build_log_spike_config(args: &LogsArgs) -> Result<Option<Vec<CardinalitySpike
     }
 }
 
-/// Load and return a [`MultiScenarioConfig`] from the provided [`RunArgs`].
-///
-/// The scenario file is read and deserialized. The YAML must have a top-level
-/// `scenarios:` list where each entry carries a `signal_type` field of either
-/// `metrics` or `logs`.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The scenario file cannot be read.
-/// - The file is not valid YAML.
-/// - The YAML does not match the `MultiScenarioConfig` structure.
-#[allow(dead_code)] // retained for existing tests; main.rs now uses scenario_loader.
-pub fn load_multi_config(
-    args: &RunArgs,
-    catalog: &crate::scenarios::ScenarioCatalog,
-) -> Result<MultiScenarioConfig> {
-    let path = &args.scenario;
-    let contents = resolve_scenario_source(path, catalog)?;
-    serde_yaml_ng::from_str::<MultiScenarioConfig>(&contents)
-        .with_context(|| format!("failed to parse multi-scenario file {}", path.display()))
-}
-
 /// Load a histogram scenario from a YAML file.
 ///
-/// Routes through [`crate::scenario_loader::load_scenario_entries`] so
-/// both v1 flat-file scenarios and v2 compiled files are accepted. Files
-/// that compile to more than one entry are rejected with a pointer to
-/// `sonda run --scenario`.
+/// Routes through [`sonda_core::compile_scenario_file`]; v1 YAML shapes
+/// are rejected with a migration hint. Files that compile to more than
+/// one entry are rejected with a pointer to `sonda run --scenario`.
 ///
 /// # Errors
 ///
@@ -1562,9 +1489,8 @@ pub fn load_histogram_config(
 
 /// Load a summary scenario from a YAML file.
 ///
-/// Routes through [`crate::scenario_loader::load_scenario_entries`] so
-/// both v1 and v2 files are accepted. See [`load_histogram_config`] for
-/// the dispatch contract.
+/// Routes through [`sonda_core::compile_scenario_file`]; v1 YAML shapes
+/// are rejected. See [`load_histogram_config`] for the dispatch contract.
 ///
 /// # Errors
 ///
@@ -1588,22 +1514,19 @@ pub fn load_summary_config(
 
 /// Parse a cataloged scenario into one or more [`ScenarioEntry`] values.
 ///
-/// Reads the scenario YAML from disk via `source_path`, then dispatches
-/// based on format version:
+/// Reads the scenario YAML from disk via `source_path` and compiles it
+/// through [`sonda_core::compile_scenario_file`] with a
+/// [`FilesystemPackResolver`](crate::scenario_loader::FilesystemPackResolver)
+/// built from the provided `pack_catalog`. v1 YAML shapes are rejected
+/// with a migration hint.
 ///
-/// - **v2** (`version: 2`): compiles through [`sonda_core::compile_scenario_file`]
-///   with a [`FilesystemPackResolver`](crate::scenario_loader::FilesystemPackResolver)
-///   built from the provided `pack_catalog`.
-/// - **v1** (legacy): switches on `signal_type` and deserializes into the
-///   matching single-signal config type.
-///
-/// In both cases, CLI overrides from [`ScenariosRunArgs`] (duration, rate,
-/// sink, endpoint, encoder) are applied to each entry before returning.
+/// CLI overrides from [`ScenariosRunArgs`] (duration, rate, sink,
+/// endpoint, encoder) are applied to each entry before returning.
 ///
 /// # Errors
 ///
-/// Returns an error if the file cannot be read, the YAML fails to parse,
-/// or if override values are invalid.
+/// Returns an error if the file cannot be read, the YAML is not v2, the
+/// v2 compilation fails, or if override values are invalid.
 pub fn parse_builtin_scenario(
     scenario: &sonda_core::BuiltinScenario,
     args: &ScenariosRunArgs,
@@ -1619,81 +1542,27 @@ pub fn parse_builtin_scenario(
 
     let version = sonda_core::compiler::parse::detect_version(&yaml);
 
-    let mut entries = if version == Some(2) {
-        use crate::scenario_loader::FilesystemPackResolver;
+    if version != Some(2) {
+        bail!(
+            "cataloged scenario {:?} at {} is not a v2 scenario. \
+             Sonda only accepts v2 YAML (`version: 2` at the top level). \
+             Migrate this file to v2 — see docs/configuration/v2-scenarios.md \
+             for the migration guide.",
+            scenario.name,
+            scenario.source_path.display(),
+        );
+    }
 
-        let resolver = FilesystemPackResolver::new(pack_catalog);
-        sonda_core::compile_scenario_file(&yaml, &resolver).with_context(|| {
-            format!(
-                "failed to compile v2 scenario {:?} from {}",
-                scenario.name,
-                scenario.source_path.display()
-            )
-        })?
-    } else {
-        use sonda_core::config::{
-            HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
-            SummaryScenarioConfig,
-        };
+    use crate::scenario_loader::FilesystemPackResolver;
 
-        match scenario.signal_type.as_str() {
-            "metrics" => {
-                let config =
-                    serde_yaml_ng::from_str::<ScenarioConfig>(&yaml).with_context(|| {
-                        format!(
-                            "failed to parse scenario {:?} as metrics config",
-                            scenario.name
-                        )
-                    })?;
-                vec![sonda_core::ScenarioEntry::Metrics(config)]
-            }
-            "logs" => {
-                let config =
-                    serde_yaml_ng::from_str::<LogScenarioConfig>(&yaml).with_context(|| {
-                        format!(
-                            "failed to parse scenario {:?} as logs config",
-                            scenario.name
-                        )
-                    })?;
-                vec![sonda_core::ScenarioEntry::Logs(config)]
-            }
-            "histogram" => {
-                let config = serde_yaml_ng::from_str::<HistogramScenarioConfig>(&yaml)
-                    .with_context(|| {
-                        format!(
-                            "failed to parse scenario {:?} as histogram config",
-                            scenario.name
-                        )
-                    })?;
-                vec![sonda_core::ScenarioEntry::Histogram(config)]
-            }
-            "summary" => {
-                let config =
-                    serde_yaml_ng::from_str::<SummaryScenarioConfig>(&yaml).with_context(|| {
-                        format!(
-                            "failed to parse scenario {:?} as summary config",
-                            scenario.name
-                        )
-                    })?;
-                vec![sonda_core::ScenarioEntry::Summary(config)]
-            }
-            "multi" => {
-                let config =
-                    serde_yaml_ng::from_str::<MultiScenarioConfig>(&yaml).with_context(|| {
-                        format!(
-                            "failed to parse scenario {:?} as multi config",
-                            scenario.name
-                        )
-                    })?;
-                config.scenarios
-            }
-            other => bail!(
-                "scenario {:?} has unsupported signal_type {:?}",
-                scenario.name,
-                other
-            ),
-        }
-    };
+    let resolver = FilesystemPackResolver::new(pack_catalog);
+    let mut entries = sonda_core::compile_scenario_file(&yaml, &resolver).with_context(|| {
+        format!(
+            "failed to compile v2 scenario {:?} from {}",
+            scenario.name,
+            scenario.source_path.display()
+        )
+    })?;
 
     // Apply overrides to each entry.
     for entry in &mut entries {
@@ -2082,103 +1951,6 @@ pub fn load_pack_from_catalog(
 
     let entries =
         sonda_core::packs::expand_pack(&def, &pack_config).map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    Ok(entries)
-}
-
-/// Resolve a pack reference that may be a catalog name or a file path.
-///
-/// If the pack string contains `/` or starts with `.`, or ends with
-/// `.yaml`/`.yml`, it is treated as a file path and the YAML is read from
-/// disk. Otherwise, the string is looked up in the [`PackCatalog`].
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The string is a catalog name that does not exist.
-/// - The file path cannot be read from disk.
-///
-/// [`PackCatalog`]: crate::packs::PackCatalog
-pub fn resolve_pack_source(pack_ref: &str, catalog: &crate::packs::PackCatalog) -> Result<String> {
-    let looks_like_file = pack_ref.contains('/')
-        || pack_ref.starts_with('.')
-        || pack_ref.ends_with(".yaml")
-        || pack_ref.ends_with(".yml");
-    if looks_like_file {
-        // File path.
-        fs::read_to_string(pack_ref).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!(
-                    "failed to read pack file {:?}: {}\n\n  hint: use a pack name on the search path (e.g. `telegraf_snmp_interface`) or a valid file path",
-                    pack_ref, e
-                )
-            } else {
-                anyhow::anyhow!("failed to read pack file {:?}: {}", pack_ref, e)
-            }
-        })
-    } else {
-        // Catalog name.
-        catalog
-            .read_yaml(pack_ref)
-            .ok_or_else(|| {
-                let names = catalog.available_names();
-                anyhow::anyhow!(
-                    "unknown pack {:?}; available packs: {}",
-                    pack_ref,
-                    names.join(", ")
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("failed to read pack {:?} from disk: {}", pack_ref, e))
-    }
-}
-
-/// Detect whether a YAML string contains a `pack:` field, indicating it
-/// should be loaded as a [`PackScenarioConfig`] rather than a standard
-/// scenario config.
-///
-/// Uses a lightweight YAML pre-parse to check for the presence of a `pack`
-/// key at the top level.
-pub fn is_pack_config(yaml: &str) -> bool {
-    #[derive(serde::Deserialize)]
-    struct PackProbe {
-        #[allow(dead_code)]
-        pack: Option<String>,
-    }
-
-    serde_yaml_ng::from_str::<PackProbe>(yaml)
-        .ok()
-        .and_then(|p| p.pack)
-        .is_some()
-}
-
-/// Load a pack scenario from a YAML string (from a file or inline).
-///
-/// Parses the YAML as [`PackScenarioConfig`], resolves the pack definition
-/// (catalog name or file path), and expands it into scenario entries.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The YAML fails to parse as a pack config.
-/// - The pack reference cannot be resolved.
-/// - The pack definition fails to parse.
-/// - The expansion fails.
-pub fn load_pack_from_yaml(
-    yaml: &str,
-    catalog: &crate::packs::PackCatalog,
-) -> Result<Vec<sonda_core::ScenarioEntry>> {
-    use sonda_core::packs::{MetricPackDef, PackScenarioConfig};
-
-    let config: PackScenarioConfig =
-        serde_yaml_ng::from_str(yaml).context("failed to parse YAML as pack scenario config")?;
-
-    let pack_yaml = resolve_pack_source(&config.pack, catalog)?;
-
-    let def: MetricPackDef = serde_yaml_ng::from_str(&pack_yaml)
-        .with_context(|| format!("failed to parse pack definition for {:?}", config.pack))?;
-
-    let entries =
-        sonda_core::packs::expand_pack(&def, &config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(entries)
 }
@@ -3501,93 +3273,6 @@ mod tests {
             labels.get("device").map(String::as_str),
             Some("eth0"),
             "CLI --label must override YAML label with same key"
-        );
-    }
-
-    // ---- load_multi_config --------------------------------------------------
-
-    fn default_run_args(path: PathBuf) -> crate::cli::RunArgs {
-        crate::cli::RunArgs {
-            scenario: path,
-            duration: None,
-            rate: None,
-            sink: None,
-            endpoint: None,
-            encoder: None,
-            output: None,
-            labels: vec![],
-        }
-    }
-
-    #[test]
-    fn load_multi_config_from_example_file_returns_ok() {
-        // The example multi-scenario file ships with the repo. Verify it parses.
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/multi-scenario.yaml");
-        let args = default_run_args(path);
-        let config = load_multi_config(&args, &empty_catalog())
-            .expect("example multi-scenario.yaml must load");
-        assert_eq!(config.scenarios.len(), 2, "example must have 2 scenarios");
-    }
-
-    #[test]
-    fn load_multi_config_metrics_entry_has_correct_signal_type() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/multi-scenario.yaml");
-        let args = default_run_args(path);
-        let config = load_multi_config(&args, &empty_catalog()).unwrap();
-        assert!(
-            matches!(
-                config.scenarios[0],
-                sonda_core::config::ScenarioEntry::Metrics(_)
-            ),
-            "first entry should be Metrics"
-        );
-    }
-
-    #[test]
-    fn load_multi_config_logs_entry_has_correct_signal_type() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/multi-scenario.yaml");
-        let args = default_run_args(path);
-        let config = load_multi_config(&args, &empty_catalog()).unwrap();
-        assert!(
-            matches!(
-                config.scenarios[1],
-                sonda_core::config::ScenarioEntry::Logs(_)
-            ),
-            "second entry should be Logs"
-        );
-    }
-
-    #[test]
-    fn load_multi_config_from_missing_file_returns_error() {
-        let args = default_run_args(PathBuf::from("/nonexistent/multi.yaml"));
-        let err = load_multi_config(&args, &empty_catalog()).expect_err("missing file must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("scenario") || msg.contains("nonexistent"),
-            "error must mention the missing file, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn load_multi_config_from_invalid_yaml_returns_error() {
-        use std::io::Write;
-        // Write a temp file with invalid YAML for a MultiScenarioConfig.
-        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile must be created");
-        writeln!(tmp, "not_scenarios_key: true").unwrap();
-        let args = default_run_args(tmp.path().to_path_buf());
-        let result = load_multi_config(&args, &empty_catalog());
-        assert!(
-            result.is_err(),
-            "invalid multi-scenario YAML should return error"
         );
     }
 
@@ -5537,27 +5222,6 @@ mod tests {
     }
 
     #[test]
-    fn load_multi_config_with_at_name_shorthand() {
-        let catalog = repo_scenario_catalog();
-        let args = crate::cli::RunArgs {
-            scenario: PathBuf::from("@interface-flap"),
-            duration: None,
-            rate: None,
-            sink: None,
-            endpoint: None,
-            encoder: None,
-            output: None,
-            labels: vec![],
-        };
-        let config =
-            load_multi_config(&args, &catalog).expect("@interface-flap must load as multi config");
-        assert!(
-            !config.scenarios.is_empty(),
-            "interface-flap must have at least one scenario entry"
-        );
-    }
-
-    #[test]
     fn load_histogram_config_with_at_name_shorthand() {
         let catalog = repo_scenario_catalog();
         let args = crate::cli::HistogramArgs {
@@ -5877,29 +5541,30 @@ mod tests {
     /// Write a summary scenario YAML to a temp file and return a BuiltinScenario
     /// pointing at it. Each call gets a unique directory keyed by `suffix`.
     fn temp_summary_scenario(suffix: &str) -> (sonda_core::BuiltinScenario, std::path::PathBuf) {
-        let yaml = r#"scenario_name: test-summary
+        let yaml = r#"version: 2
+scenario_name: test-summary
 category: test
-signal_type: summary
 description: Test summary scenario
 
-name: rpc_duration_seconds
-rate: 1
-duration: 10s
-generator:
-  type: uniform
-  min: 0.01
-  max: 2.0
-quantiles: [0.5, 0.9, 0.99]
-observations_per_tick: 50
-seed: 42
-distribution:
-  type: uniform
-  min: 0.01
-  max: 2.0
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: rpc_duration_seconds
+    signal_type: summary
+    name: rpc_duration_seconds
+    distribution:
+      type: uniform
+      min: 0.01
+      max: 2.0
+    quantiles: [0.5, 0.9, 0.99]
+    observations_per_tick: 50
+    seed: 42
 "#;
         let dir = std::env::temp_dir().join(format!(
             "sonda-summary-test-{suffix}-{}",
@@ -6074,173 +5739,15 @@ sink:
         }
     }
 
-    // ---- resolve_pack_source tests ----------------------------------------------
-
-    #[test]
-    fn resolve_pack_source_catalog_name_returns_yaml() {
-        let catalog = test_pack_catalog();
-        let yaml = resolve_pack_source("telegraf_snmp_interface", &catalog).expect("must succeed");
-        assert!(yaml.contains("name:"));
-    }
-
-    #[test]
-    fn resolve_pack_source_unknown_name_returns_error() {
-        let catalog = test_pack_catalog();
-        let err = resolve_pack_source("nonexistent", &catalog).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown pack"),
-            "error must mention unknown pack, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn resolve_pack_source_file_path_not_found() {
-        let catalog = test_pack_catalog();
-        let err = resolve_pack_source("./nonexistent/pack.yaml", &catalog).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("failed to read"),
-            "error must mention failed read, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn resolve_pack_source_bare_yaml_filename_treated_as_file() {
-        let catalog = test_pack_catalog();
-        let err = resolve_pack_source("my_pack.yaml", &catalog).expect_err("must fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("failed to read"),
-            "bare .yaml filename must be treated as file path, got: {msg}"
-        );
-    }
-
-    // ---- is_pack_config tests ---------------------------------------------------
-
-    #[test]
-    fn is_pack_config_detects_pack_field() {
-        let yaml = "pack: telegraf_snmp_interface\nrate: 1\n";
-        assert!(is_pack_config(yaml));
-    }
-
-    #[test]
-    fn is_pack_config_rejects_normal_scenario() {
-        let yaml = "name: cpu_usage\nrate: 1\ngenerator:\n  type: constant\n  value: 1.0\n";
-        assert!(!is_pack_config(yaml));
-    }
-
-    #[test]
-    fn is_pack_config_rejects_multi_scenario() {
-        let yaml = "scenarios:\n  - signal_type: metrics\n    name: test\n    rate: 1\n";
-        assert!(!is_pack_config(yaml));
-    }
-
-    // ---- load_pack_from_yaml tests ----------------------------------------------
-
-    #[test]
-    fn load_pack_from_yaml_expands_pack() {
-        let catalog = test_pack_catalog();
-        let yaml = r#"
-pack: telegraf_snmp_interface
-rate: 1
-duration: 10s
-labels:
-  device: rtr-01
-sink:
-  type: stdout
-encoder:
-  type: prometheus_text
-"#;
-        let entries = load_pack_from_yaml(yaml, &catalog).expect("must succeed");
-        assert_eq!(entries.len(), 5);
-    }
-
-    #[test]
-    fn load_pack_from_yaml_with_overrides() {
-        let catalog = test_pack_catalog();
-        let yaml = r#"
-pack: telegraf_snmp_interface
-rate: 1
-duration: 10s
-labels:
-  device: rtr-01
-overrides:
-  ifOperStatus:
-    generator:
-      type: constant
-      value: 0.0
-sink:
-  type: stdout
-encoder:
-  type: prometheus_text
-"#;
-        let entries = load_pack_from_yaml(yaml, &catalog).expect("must succeed");
-        assert_eq!(entries.len(), 5);
-
-        // ifOperStatus should have the overridden generator.
-        let if_oper = entries
-            .iter()
-            .find(|e| e.base().name == "ifOperStatus")
-            .expect("must find ifOperStatus");
-        match if_oper {
-            sonda_core::ScenarioEntry::Metrics(c) => {
-                assert!(
-                    matches!(c.generator, GeneratorConfig::Constant { value } if value.abs() < f64::EPSILON),
-                    "override generator must be constant(0.0), got {:?}",
-                    c.generator
-                );
-            }
-            _ => panic!("expected Metrics"),
-        }
-    }
-
-    #[test]
-    fn load_pack_from_yaml_example_file() {
-        let catalog = test_pack_catalog();
-        let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/pack-scenario.yaml");
-        let yaml = std::fs::read_to_string(&example_path)
-            .expect("example pack-scenario.yaml must be readable");
-        let entries = load_pack_from_yaml(&yaml, &catalog).expect("example file must expand");
-        assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
-    }
-
-    #[test]
-    fn load_pack_from_yaml_example_with_overrides() {
-        let catalog = test_pack_catalog();
-        let example_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/pack-with-overrides.yaml");
-        let yaml = std::fs::read_to_string(&example_path)
-            .expect("example pack-with-overrides.yaml must be readable");
-        let entries = load_pack_from_yaml(&yaml, &catalog).expect("example file must expand");
-        assert_eq!(entries.len(), 5, "telegraf_snmp_interface has 5 metrics");
-    }
-
-    #[test]
-    fn load_pack_from_yaml_invalid_yaml_returns_error() {
-        let catalog = test_pack_catalog();
-        let yaml = "not: valid: pack: yaml: :::";
-        let result = load_pack_from_yaml(yaml, &catalog);
-        assert!(result.is_err(), "invalid YAML must return error");
-    }
-
     // =========================================================================
-    // load_single_entry_from_scenario_file: v1/v2 dispatch for single-signal
+    // load_single_entry_from_scenario_file: v2-only dispatch for single-signal
     // subcommands (metrics, logs, histogram, summary).
     //
-    // These tests exercise the shared helper that replaced the per-subcommand
-    // v2-dispatch branches. The behaviors covered:
+    // The behaviors covered:
     //
     // - v2 files route through `FilesystemPackResolver` so pack references
     //   resolve against the CLI's pack catalog (BLOCKER 1 regression guard).
-    // - v1 flat files deserialize directly into the expected config type
-    //   (preserves the legacy log-scenario fixture behavior — no
-    //   signal_type="metrics" default misroute).
+    // - v1 YAML shapes are rejected with a migration hint.
     // - Multi-entry v2 compilations are rejected with a pointer to
     //   `sonda run --scenario`.
     // - Signal-type mismatches surface actionable diagnostics.
@@ -6262,16 +5769,12 @@ encoder:
         dir
     }
 
-    /// A v1 flat log scenario file (no top-level `signal_type:`) loads
-    /// through the logs subcommand without being misrouted as metrics.
-    ///
-    /// Regression guard: an earlier iteration of the consolidation
-    /// routed every v1 flat file through a shared probe that defaulted
-    /// missing `signal_type:` to `"metrics"`, breaking log fixtures that
-    /// use `generator.type: template` (not a valid metrics generator).
+    /// A v1 flat log scenario file is rejected with a migration hint when
+    /// loaded through `sonda logs --scenario`. Post-v1-removal guard: the
+    /// CLI must not silently swallow legacy YAML shapes.
     #[test]
-    fn v1_flat_log_file_without_signal_type_loads_as_logs() {
-        let dir = scoped_temp_dir("v1-flat-log");
+    fn v1_flat_log_file_is_rejected_with_migration_hint() {
+        let dir = scoped_temp_dir("v1-flat-log-reject");
         let path = dir.join("log.yaml");
         std::fs::write(
             &path,
@@ -6292,9 +5795,13 @@ encoder:
             scenario: Some(path),
             ..default_logs_args()
         };
-        let cfg = load_log_config(&args, &empty_catalog(), &empty_pack_catalog())
-            .expect("v1 flat log file must load through logs subcommand");
-        assert_eq!(cfg.name, "app_log");
+        let err = load_log_config(&args, &empty_catalog(), &empty_pack_catalog())
+            .expect_err("v1 flat log file must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("v2"),
+            "error must mention v2 requirement, got: {msg}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
