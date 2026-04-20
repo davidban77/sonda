@@ -7,7 +7,7 @@
 //!
 //! Normalization fixtures go one step further and compare the resolved entries
 //! against [`insta`] JSON snapshots under `tests/snapshots/`. Run
-//! `INSTA_UPDATE=always cargo test -p sonda-core --test v2_fixture_examples`
+//! `INSTA_UPDATE=always cargo test -p sonda-core --test fixture_examples`
 //! (or `cargo insta accept`) to regenerate them after a schema change.
 
 mod common;

@@ -1,25 +1,20 @@
 ---
-source: sonda-core/tests/v2_compile_after_fixtures.rs
+source: sonda-core/tests/compile_after_fixtures.rs
 expression: compiled
 ---
 {
   "version": 2,
   "entries": [
     {
-      "id": "seq",
+      "id": "counter",
       "signal_type": "metrics",
-      "name": "health_probe",
+      "name": "req_total",
       "rate": 2.0,
-      "duration": "1m",
+      "duration": "2m",
       "generator": {
-        "type": "sequence",
-        "values": [
-          10.0,
-          5.0,
-          2.0,
-          1.0
-        ],
-        "repeat": false
+        "type": "step",
+        "start": 0.0,
+        "step_size": 10.0
       },
       "encoder": {
         "type": "prometheus_text"
@@ -27,15 +22,15 @@ expression: compiled
       "sink": {
         "type": "stdout"
       },
-      "clock_group": "chain_alert",
+      "clock_group": "chain_alarm",
       "clock_group_is_auto": true
     },
     {
-      "id": "alert",
+      "id": "alarm",
       "signal_type": "metrics",
-      "name": "alert",
+      "name": "alarm_flag",
       "rate": 2.0,
-      "duration": "1m",
+      "duration": "2m",
       "generator": {
         "type": "constant",
         "value": 1.0
@@ -46,8 +41,8 @@ expression: compiled
       "sink": {
         "type": "stdout"
       },
-      "phase_offset": "1s",
-      "clock_group": "chain_alert",
+      "phase_offset": "3s",
+      "clock_group": "chain_alarm",
       "clock_group_is_auto": true
     }
   ]

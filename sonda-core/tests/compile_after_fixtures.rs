@@ -1,13 +1,13 @@
 #![cfg(feature = "config")]
 //! Integration tests for Phase 4 `after` clause compilation on YAML fixtures.
 //!
-//! Mirrors the pattern established by `v2_expand_fixtures.rs`: every fixture
+//! Mirrors the pattern established by `expand_fixtures.rs`: every fixture
 //! under `tests/fixtures/v2-examples/` starting with `valid-compile-` is
 //! parsed, normalized, expanded, and compiled, with the output compared
 //! against an [`insta`] JSON snapshot under `tests/snapshots/`. Invalid
 //! fixtures assert the expected [`CompileAfterError`] variant.
 //!
-//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test v2_compile_after_fixtures`
+//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test compile_after_fixtures`
 //! (or `cargo insta accept`) to regenerate snapshots after a schema change.
 
 mod common;
