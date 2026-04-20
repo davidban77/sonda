@@ -1,5 +1,5 @@
 ---
-source: sonda-core/tests/v2_fixture_examples.rs
+source: sonda-core/tests/fixture_examples.rs
 expression: normalized
 ---
 {

@@ -1,13 +1,13 @@
 #![cfg(feature = "config")]
 //! Integration tests for Phase 3 pack expansion on YAML fixtures.
 //!
-//! Mirrors the pattern established by `v2_fixture_examples.rs`: every
+//! Mirrors the pattern established by `fixture_examples.rs`: every
 //! fixture under `tests/fixtures/v2-examples/` starting with
 //! `valid-expand-` is parsed, normalized, and expanded, with the output
 //! compared against an [`insta`] JSON snapshot under `tests/snapshots/`.
 //! Invalid fixtures assert the expected [`ExpandError`] variant.
 //!
-//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test v2_expand_fixtures`
+//! Run `INSTA_UPDATE=always cargo test -p sonda-core --test expand_fixtures`
 //! (or `cargo insta accept`) to regenerate snapshots after a schema change.
 
 mod common;

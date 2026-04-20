@@ -6,8 +6,8 @@
 //!
 //! This module consolidates the fixture-loading, pack-loading, and
 //! compilation-chaining helpers that were previously duplicated across
-//! `v2_fixture_examples.rs`, `v2_expand_fixtures.rs`,
-//! `v2_compile_after_fixtures.rs`, and `v2_pack_parity.rs`.
+//! `fixture_examples.rs`, `expand_fixtures.rs`,
+//! `compile_after_fixtures.rs`, and `pack_parity.rs`.
 //!
 //! Snapshot assertions are handled by [`insta`] directly — this module only
 //! produces the value that the caller feeds into `insta::assert_json_snapshot!`.
