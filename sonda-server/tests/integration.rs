@@ -10,33 +10,43 @@ mod common;
 
 use std::time::Duration;
 
-/// Minimal metrics scenario YAML that runs at a low rate with stdout sink.
+/// Minimal v2 metrics scenario YAML that runs at a low rate with stdout sink.
 const METRICS_YAML: &str = r#"
-name: test_metric
-rate: 10
-duration: 30s
-generator:
-  type: constant
-  value: 42.0
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: test_metric
+    signal_type: metrics
+    name: test_metric
+    generator:
+      type: constant
+      value: 42.0
 "#;
 
-/// Minimal logs scenario YAML that runs at a low rate with stdout sink.
+/// Minimal v2 logs scenario YAML that runs at a low rate with stdout sink.
 const LOGS_YAML: &str = r#"
-name: test_log
-rate: 10
-duration: 30s
-generator:
-  type: template
-  templates:
-    - message: "integration test log line"
-encoder:
-  type: json_lines
-sink:
-  type: stdout
+version: 2
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
+scenarios:
+  - id: test_log
+    signal_type: logs
+    name: test_log
+    log_generator:
+      type: template
+      templates:
+        - message: "integration test log line"
 "#;
 
 /// Full lifecycle integration test exercising both metrics and logs scenarios.

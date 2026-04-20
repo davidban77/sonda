@@ -25,7 +25,7 @@ use std::time::Duration;
 use common::snapshot_settings;
 use serde::Serialize;
 use sonda_core::config::{
-    HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig, ScenarioEntry,
+    HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry,
     SummaryScenarioConfig,
 };
 use sonda_core::schedule::launch::{prepare_entries, PreparedEntry};
@@ -141,29 +141,6 @@ fn snapshot_single_log_template_prepared() {
     let entries = vec![ScenarioEntry::Logs(config)];
 
     let prepared = prepare_entries(entries).expect("preparation must succeed");
-    snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
-}
-
-// ---------------------------------------------------------------------------
-// Multi-scenario: three metrics with different generators
-// ---------------------------------------------------------------------------
-
-#[test]
-fn snapshot_multi_scenario() {
-    let yaml = read_fixture("multi-scenario.yaml");
-    let multi: MultiScenarioConfig =
-        serde_yaml_ng::from_str(&yaml).expect("fixture must parse as MultiScenarioConfig");
-
-    snapshot_settings().bind(|| insta::assert_json_snapshot!(multi.scenarios));
-}
-
-#[test]
-fn snapshot_multi_scenario_prepared() {
-    let yaml = read_fixture("multi-scenario.yaml");
-    let multi: MultiScenarioConfig =
-        serde_yaml_ng::from_str(&yaml).expect("fixture must parse as MultiScenarioConfig");
-
-    let prepared = prepare_entries(multi.scenarios).expect("preparation must succeed");
     snapshot_settings().bind(|| insta::assert_json_snapshot!(prepared_view(&prepared)));
 }
 

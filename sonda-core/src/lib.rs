@@ -24,7 +24,6 @@ pub use config::DynamicLabelConfig;
 pub use config::DynamicLabelStrategy;
 pub use config::HistogramScenarioConfig;
 pub use config::LogScenarioConfig;
-pub use config::MultiScenarioConfig;
 pub use config::ScenarioEntry;
 pub use config::SpikeStrategy;
 pub use config::SummaryScenarioConfig;

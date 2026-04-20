@@ -24,10 +24,12 @@ src/
 │                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand,
 │                          PacksArgs/PacksAction for the `packs` subcommand,
 │                          --pack-path and --scenario-path global flags
-├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig,
-│                          resolve_scenario_source (@name shorthand via ScenarioCatalog),
-│                          parse_builtin_scenario, load_pack_from_catalog, resolve_pack_source,
-│                          is_pack_config, load_pack_from_yaml
+├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig.
+│                          Every scenario file is compiled through the v2 pipeline
+│                          (`sonda_core::compile_scenario_file`); v1 YAML shapes are
+│                          rejected with a migration hint. Includes resolve_scenario_source
+│                          (@name shorthand via ScenarioCatalog), parse_builtin_scenario,
+│                          load_pack_from_catalog.
 ├── packs.rs            ← filesystem-based metric pack discovery: PackCatalog, PackEntry,
 │                          build_search_path(). Scans directories for pack YAML files and
 │                          caches results for the CLI invocation.
@@ -127,8 +129,11 @@ The `--scenario` flag accepts either a filesystem path or a `@name` shorthand th
 a scenario from the filesystem catalog discovered via the scenario search path. Example:
 `sonda metrics --scenario @cpu-spike`.
 
-The `run --scenario` path also detects YAML files with a `pack:` field and expands them
-via `sonda_core::packs::expand_pack` before feeding into `prepare_entries()`.
+Every `--scenario` file must be a **v2 scenario** (`version: 2` at the top level). v1 YAML
+shapes — flat single-signal configs, top-level `scenarios:` lists without `version: 2`, and
+`pack:` shorthand files — are rejected with a migration hint. Pack references inside v2
+files (`pack: <name>` under a `scenarios:` entry) are resolved by the `FilesystemPackResolver`
+backed by the CLI's `PackCatalog`.
 
 ### Global Flags
 
@@ -145,9 +150,10 @@ from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-r
 
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
 Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
-multiple scenarios concurrently from a single YAML file whose `scenarios:` list carries
-`signal_type: metrics`, `logs`, `histogram`, or `summary` entries -- or from a YAML file with a
-`pack:` field that references a metric pack. `scenarios` discovers scenario YAML files from the
+multiple scenarios concurrently from a single v2 YAML file whose `scenarios:` list carries
+`signal_type: metrics`, `logs`, `histogram`, or `summary` entries. Pack references inside a v2
+entry (`pack: <name>`) expand to one runtime entry per pack metric via the v2 compiler's
+expand phase. `scenarios` discovers scenario YAML files from the
 search path (`--scenario-path`, `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`):
 `list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to metric pack
 files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duration/sink/encoder

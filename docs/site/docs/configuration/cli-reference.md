@@ -1,9 +1,15 @@
 # CLI Reference
 
 Sonda provides subcommands for generating metrics, logs, histograms, and summaries, running
-scenario YAML files (v1 or [v2](v2-scenarios.md)), browsing the unified
+[v2 scenario YAML files](v2-scenarios.md), browsing the unified
 [`catalog`](#sonda-catalog) of scenarios and packs, importing CSV data into parameterized
 scenarios, and interactively scaffolding new scenario files.
+
+!!! warning "v2 scenarios only"
+    Every `--scenario` consumer expects a v2 YAML file (`version: 2` at the top). Legacy v1
+    files are rejected with a migration hint. See
+    [Migrating from v1](v2-scenarios.md#migrating-from-v1) if you are upgrading from an
+    earlier Sonda release.
 
 ## Global options
 
@@ -16,7 +22,7 @@ sonda [--quiet | --verbose] [--dry-run] [--scenario-path <DIR>] [--pack-path <DI
 | `--quiet` | `-q` | Suppress start/stop banners and live progress. Errors still print to stderr. |
 | `--verbose` | `-v` | Print resolved scenario config at startup, then run normally. Mutually exclusive with `--quiet`. |
 | `--dry-run` | -- | Parse and validate the scenario config, print it, then exit without emitting events. |
-| `--format <FORMAT>` | -- | Output format for `--dry-run` on v2 scenario files: `text` (default) or `json`. Ignored for v1 files. |
+| `--format <FORMAT>` | -- | Output format for `--dry-run`: `text` (default) or `json`. |
 | `--scenario-path <DIR>` | -- | Directory containing scenario YAML files. Overrides `SONDA_SCENARIO_PATH` and default paths. |
 | `--pack-path <DIR>` | -- | Directory containing metric pack YAML files. Overrides `SONDA_PACK_PATH` and default paths. |
 | `--help` | `-h` | Print help information. |
@@ -164,7 +170,7 @@ Use `--dry-run` to validate a scenario without emitting any events. Sonda parses
 compiles) the configuration, prints the resolved settings, and exits. This is useful for
 catching YAML errors and confirming what Sonda *would* do before committing to a long run.
 
-=== "Metrics (v1)"
+=== "Metrics (CLI flags)"
 
     ```bash
     sonda --dry-run metrics --name cpu --rate 10 --duration 30s \
@@ -186,7 +192,7 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
     Validation: OK (1 scenario)
     ```
 
-=== "Logs (v1)"
+=== "Logs (CLI flags)"
 
     ```bash
     sonda --dry-run logs --mode template --rate 5 --duration 10s \
@@ -208,42 +214,47 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
     Validation: OK (1 scenario)
     ```
 
-=== "Run (v1 multi-scenario)"
+=== "Run (v2 multi-signal)"
+
+    For a [v2 scenario file](v2-scenarios.md), `--dry-run` shows the fully compiled
+    configuration: resolved defaults, expanded packs, computed `phase_offset` values, and
+    auto-assigned `clock_group` names.
 
     ```bash
     sonda --dry-run run --scenario examples/multi-scenario.yaml
     ```
 
     ```text title="Output"
+    [config] file: examples/multi-scenario.yaml (version: 2, 2 scenarios)
+
     [config] [1/2] cpu_usage
 
-      name:          cpu_usage
-      signal:        metrics
-      rate:          100/s
-      duration:      30s
-      generator:     sine (amplitude: 50, period: 60s, offset: 50)
-      encoder:       prometheus_text
-      sink:          stdout
+        name:           cpu_usage
+        signal:         metrics
+        rate:           100/s
+        duration:       30s
+        generator:      sine (amplitude: 50, period_secs: 60, offset: 50)
+        encoder:        prometheus_text
+        sink:           stdout
+    ---
 
-    ───
     [config] [2/2] app_logs
 
-      name:          app_logs
-      signal:        logs
-      rate:          10/s
-      duration:      30s
-      generator:     template (1 template(s), severity: error=0.1/info=0.7/warn=0.2, seed: 42)
-      encoder:       json_lines
-      sink:          file (/tmp/sonda-logs.json)
+        name:           app_logs
+        signal:         logs
+        rate:           10/s
+        duration:       30s
+        generator:      template (1 templates)
+        encoder:        json_lines
+        sink:           file (/tmp/sonda-logs.json)
 
     Validation: OK (2 scenarios)
     ```
 
-=== "Run (v2)"
+=== "Run (after: chain)"
 
-    For [v2 scenario files](v2-scenarios.md), `--dry-run` shows the fully compiled
-    configuration: resolved defaults, expanded packs, computed `phase_offset` values from
-    `after:` clauses, and auto-assigned `clock_group` names.
+    For v2 files with `after:` clauses, `--dry-run` also shows the compiler-resolved
+    `phase_offset:` for each dependent entry.
 
     ```bash
     sonda run --scenario scenarios/link-failover.yaml --dry-run
@@ -298,10 +309,10 @@ catching YAML errors and confirming what Sonda *would* do before committing to a
     The `phase_offset:` lines show the concrete delays Sonda computed from each `after:` clause.
     The `(auto)` suffix on `clock_group:` marks groups assigned by the compiler.
 
-#### JSON dry-run for v2 files
+#### JSON dry-run
 
 For scripting and CI use, add `--format=json` to get a stable JSON DTO on stdout instead of
-the pretty text on stderr. The flag is only consulted for v2 scenario files.
+the pretty text on stderr.
 
 ```bash
 sonda run --scenario scenarios/link-failover.yaml --dry-run --format=json
@@ -376,8 +387,9 @@ sonda run --scenario scenarios/link-failover.yaml --dry-run --format=json
 | `scenarios[].clock_group_is_auto` | bool | `true` when the compiler assigned the group from an `after:` chain; `false` for explicit `clock_group:` values. |
 
 !!! note
-    `--format=json` is ignored for v1 files. The v1 dry-run output stays text-only and goes to
-    stderr.
+    `--format=json` is only consulted for the `sonda run` subcommand (which loads a v2
+    scenario file). The single-signal subcommands (`sonda metrics`, `sonda logs`, ...) emit
+    text-only dry-run output on stderr.
 
 `--dry-run` also works with individual signal subcommands for validating YAML before deploying:
 
@@ -828,9 +840,9 @@ Validation: OK (1 scenario)
 
 ## sonda run
 
-Run one or more scenarios from a scenario YAML file. `sonda run` is the single entry point for
-both v1 multi-scenario files and the newer [v2 scenario format](v2-scenarios.md). Sonda detects
-the format automatically by looking at the top-level `version:` field.
+Run one or more scenarios from a [v2 scenario YAML file](v2-scenarios.md). `sonda run` is the
+unified entry point for every scenario shape: single-signal, multi-signal, pack-backed, and
+`after:`-chained.
 
 ```bash
 sonda run --scenario <FILE | @name> [OPTIONS]
@@ -838,7 +850,7 @@ sonda run --scenario <FILE | @name> [OPTIONS]
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--scenario <FILE \| @name>` | path or `@name` | Scenario YAML file, or a `@name` [built-in scenario](../guides/scenarios.md). Required. |
+| `--scenario <FILE \| @name>` | path or `@name` | v2 scenario YAML file, or a `@name` [built-in scenario](../guides/scenarios.md). Required. |
 | `--duration <DURATION>` | string | Override the duration for every entry (e.g. `10s`, `2m`). |
 | `--rate <RATE>` | float | Override the event rate for every entry. |
 | `--encoder <FORMAT>` | string | Override the encoder (e.g. `prometheus_text`, `json_lines`). |
@@ -847,42 +859,39 @@ sonda run --scenario <FILE | @name> [OPTIONS]
 | `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. Mutually exclusive with `--sink`. |
 | `--label <KEY=VALUE>` | string | Additional label merged into every entry (repeatable). |
 
-### v1 vs v2 files
+### Accepted scenario shapes
 
-`sonda run` accepts every supported scenario shape:
+`sonda run` only accepts v2 YAML (`version: 2` at the top). Every shape fits inside that
+envelope:
 
 | Shape | Top-level form | Docs |
 |-------|----------------|------|
-| **v1 flat single-scenario** | `name:` + `generator:` (no `scenarios:` list) | [Scenario Files](scenario-file.md) |
-| **v1 multi-scenario** | `scenarios:` list (no `version:` field) | [Scenario Files -- Multi-scenario files](scenario-file.md#multi-scenario-files) |
-| **v1 pack shorthand** | `pack: <name>` at the top | [Pack scenario files](scenario-file.md#pack-scenario-files) |
-| **v2** | `version: 2` + `defaults:` + `scenarios:` | [v2 Scenario Files](v2-scenarios.md) |
+| **Single-signal v2** | `version: 2` + `scenarios:` with one entry | [v2 Scenario Files](v2-scenarios.md#minimal-example) |
+| **Multi-signal v2** | `version: 2` + `scenarios:` with N entries | [Multi-signal files](scenario-file.md#multi-signal-files) |
+| **v2 pack-backed entry** | `version: 2` with one or more `pack: <name>` entries under `scenarios:` | [Pack-backed entries](v2-scenarios.md#pack-backed-entries) |
+| **v2 after: chain** | `version: 2` + `after:` clauses linking entries | [Temporal chains](v2-scenarios.md#temporal-chains-with-after) |
 | **@name** | `@<scenario>` or `@<pack>` referencing the catalog | [Built-in Scenarios](../guides/scenarios.md) |
 
-v2 files are compiled through the unified pipeline (defaults → pack expansion →
-`after:` resolution → prepare). v1 files go through the legacy loader. Both end up with the
-same runtime shape.
+Files without `version: 2` are rejected up front. See
+[Migrating from v1](v2-scenarios.md#migrating-from-v1) for the side-by-side shape conversions.
 
 ```bash
-# v2 file with after: chain
+# v2 file with an after: chain
 sonda run --scenario scenarios/link-failover.yaml
 
-# v1 multi-scenario file
+# v2 multi-signal file
 sonda run --scenario examples/multi-scenario.yaml
 
-# v1 flat single-scenario file
-sonda run --scenario examples/basic-metrics.yaml
-
-# @name shorthand against the built-in catalog (works for any shape)
+# @name shorthand against the built-in catalog
 sonda run --scenario @interface-flap
 sonda run --scenario @cpu-spike
 ```
 
 !!! tip "Picking the right command"
-    `sonda run --scenario <file>` is the unified entry point and accepts every layout above.
-    The signal-specific subcommands (`sonda metrics`, `sonda logs`, `sonda histogram`,
-    `sonda summary`) still take `--scenario` for flat single-signal files when you want
-    per-signal flags like `--label`, `--precision`, or `--value`.
+    `sonda run --scenario <file>` is the unified entry point and accepts every v2 layout
+    above. The signal-specific subcommands (`sonda metrics`, `sonda logs`, `sonda histogram`,
+    `sonda summary`) also take `--scenario` when you want per-signal flags like `--label`,
+    `--precision`, or `--value` to override the file.
 
 ### Aggregate summary
 
@@ -1044,9 +1053,9 @@ signal_type: metrics
 
 ### catalog run
 
-Execute a scenario or pack by name with optional overrides. Scenarios route through the v1/v2
-dispatch pipeline (the same one `sonda run` uses); packs expand into one metric scenario per
-metric and run concurrently.
+Execute a scenario or pack by name with optional overrides. Scenarios route through the same
+v2 compiler `sonda run` uses; packs expand into one metric scenario per metric and run
+concurrently.
 
 ```bash
 sonda catalog run <NAME> [OPTIONS]
@@ -1063,10 +1072,10 @@ sonda catalog run <NAME> [OPTIONS]
 | `--label <KEY=VALUE>` | string | Add a label (repeatable, required for most pack runs). |
 
 ```bash
-# Run a flat single-scenario built-in (cpu-spike, memory-leak, log-storm, ...)
+# Run a single-signal built-in (cpu-spike, memory-leak, log-storm, ...)
 sonda catalog run cpu-spike --rate 1 --duration 10s
 
-# Run a multi-scenario built-in
+# Run a multi-signal built-in
 sonda catalog run interface-flap --duration 30s
 
 # Run a pack with required labels and write to a file
@@ -1081,10 +1090,10 @@ sonda catalog run telegraf_snmp_interface \
 sonda --dry-run catalog run interface-flap
 ```
 
-!!! info "All scenario layouts are accepted"
-    `sonda catalog run` dispatches through the same loader as `sonda run --scenario`, so it
-    handles flat single-scenario v1 files, multi-scenario v1 files, pack shorthand files, and
-    v2 files transparently. Use the `@name` shorthand on a signal subcommand
+!!! info "All v2 scenario layouts are accepted"
+    `sonda catalog run` dispatches through the same v2 compiler as `sonda run --scenario`, so
+    it handles single-signal files, multi-signal files, pack-backed entries, and `after:`
+    chains transparently. Use the `@name` shorthand on a signal subcommand
     (`sonda metrics --scenario @cpu-spike`) when you need a per-signal flag like `--precision`
     or `--value` that `catalog run` doesn't surface.
 
@@ -1591,11 +1600,11 @@ no need to copy-paste a follow-up command.
     Sonda reads the first numeric column, detects the dominant pattern (e.g. spike,
     steady), and maps it to a situation. The column name becomes the default metric name.
 
-The generated YAML includes inline comments. To list it in the unified catalog, add
+The generated YAML is a v2 file with inline comments. To list it in the unified catalog, add
 `scenario_name`, `category`, and `description` at the top level and drop the file into any
 directory on the [scenario search path](../guides/scenarios.md#scenario-search-path). v2 files
-(the default output) read `signal_type` from the first entry; v1 files need it at the top too.
-See [v2 catalog metadata](v2-scenarios.md#catalog-metadata) for the field reference.
+read `signal_type` from the first entry. See
+[v2 catalog metadata](v2-scenarios.md#catalog-metadata) for the field reference.
 
 ## Precedence rules
 

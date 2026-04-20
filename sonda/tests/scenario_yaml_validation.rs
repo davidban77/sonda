@@ -20,8 +20,7 @@ use std::path::PathBuf;
 
 use sonda_core::compiler::parse::{detect_version, parse as parse_v2};
 use sonda_core::config::{
-    HistogramScenarioConfig, LogScenarioConfig, MultiScenarioConfig, ScenarioConfig,
-    SummaryScenarioConfig,
+    HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, SummaryScenarioConfig,
 };
 
 /// Return the path to the repo-root `scenarios/` directory.
@@ -276,21 +275,18 @@ fn all_logs_yamls_parse_as_log_scenario_config() {
 }
 
 #[test]
-fn all_multi_yamls_parse_as_multi_scenario_config() {
+fn all_multi_yamls_parse_through_v2_compiler() {
     let scenarios = discover_all_scenarios();
     for scenario in scenarios.iter().filter(|s| s.signal_type == "multi") {
-        if detect_version(&scenario.content) == Some(2) {
-            assert_v2_parse_ok(scenario);
-            continue;
-        }
-        let result = serde_yaml_ng::from_str::<MultiScenarioConfig>(&scenario.content);
-        assert!(
-            result.is_ok(),
-            "multi scenario {:?} ({}) failed to parse as MultiScenarioConfig: {:?}",
+        assert_eq!(
+            detect_version(&scenario.content),
+            Some(2),
+            "multi scenario {:?} ({}) must declare `version: 2` — v1 multi \
+             YAML is no longer accepted",
             scenario.name,
-            scenario.path.display(),
-            result.err()
+            scenario.path.display()
         );
+        assert_v2_parse_ok(scenario);
     }
 }
 

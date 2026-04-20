@@ -24,18 +24,23 @@ src/
 │   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*)
 │                         sub-routers; applies auth middleware via route_layer on protected routes
 │   ├── health.rs       ← GET /health → {"status": "ok"}
-│   └── scenarios.rs    ← POST /scenarios (create single or multi-scenario batch),
+│   └── scenarios.rs    ← POST /scenarios (create single or multi-scenario batch from v2 YAML/JSON),
 │                         GET /scenarios (list),
 │                         GET /scenarios/{id} (inspect with stats),
 │                         GET /scenarios/{id}/stats (detailed live stats),
 │                         GET /scenarios/{id}/metrics (Prometheus text scrape),
-│                         DELETE /scenarios/{id} (stop, return final stats, remove from map)
-│                         parse_body() → ParsedBody (Single|Multi),
-│                         parse_yaml_body(), parse_json_body(),
-│                         post_scenario() → dispatches to post_single_scenario()
+│                         DELETE /scenarios/{id} (stop, return final stats, remove from map).
+│                         parse_body() compiles v2 YAML/JSON via
+│                         `sonda_core::compile_scenario_file` (empty
+│                         `InMemoryPackResolver` — packs over HTTP deferred)
+│                         and returns ParsedBody::Single or ParsedBody::Multi
+│                         depending on how many entries the compilation produced.
+│                         v1 YAML shapes are rejected up front with a migration hint
+│                         (HTTP 400 + v2-scenarios.md pointer).
+│                         post_scenario() dispatches to post_single_scenario()
 │                         or post_multi_scenario(), list_scenarios(),
 │                         get_scenario(), get_scenario_stats(),
-│                         get_scenario_metrics(), delete_scenario()
+│                         get_scenario_metrics(), delete_scenario().
 └── state.rs            ← AppState: Arc<RwLock<HashMap<String, ScenarioHandle>>> + optional api_key
 
 tests/
@@ -54,7 +59,7 @@ tests/
 | Method | Path                    | Description                                             |
 |--------|-------------------------|---------------------------------------------------------|
 | GET    | /health                 | Health check — always returns 200 OK                    |
-| POST   | /scenarios              | Start scenario(s) from YAML or JSON body. Accepts both single-scenario and multi-scenario (`scenarios:` array) bodies. Single returns `{id, name, status}`, multi returns `{scenarios: [{id, name, status}, ...]}`. |
+| POST   | /scenarios              | Start scenario(s) from a v2 YAML or JSON body. Every body is compiled through `sonda_core::compile_scenario_file`; v1 YAML shapes are rejected with a 400 + migration hint. When the compilation produces exactly one entry the response is `{id, name, status}`; otherwise it is `{scenarios: [{id, name, status}, ...]}`. |
 | GET    | /scenarios              | List all scenarios with id, name, status, elapsed       |
 | GET    | /scenarios/{id}         | Inspect a scenario: detail + live stats                 |
 | GET    | /scenarios/{id}/stats   | Detailed live stats: rate, target_rate, events, gap/burst state, uptime |

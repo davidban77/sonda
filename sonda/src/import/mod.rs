@@ -384,7 +384,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn generate_yaml_from_csv_produces_valid_output() {
+    fn generate_yaml_from_csv_produces_valid_v2_output() {
         let csv = "timestamp,cpu,mem\n1000,50.1,80.0\n2000,49.9,79.5\n3000,50.2,80.1\n4000,49.8,79.9\n5000,50.0,80.2\n";
         let f = write_temp_csv(csv);
         let out = tempfile::NamedTempFile::new().expect("create output file");
@@ -393,15 +393,19 @@ mod tests {
 
         let content = std::fs::read_to_string(out.path()).expect("read output");
         assert!(
+            content.starts_with("version: 2\n"),
+            "v2 output must begin with `version: 2`, got: {content}"
+        );
+        assert!(
             content.contains("scenarios:"),
-            "multi-column should use scenarios wrapper"
+            "multi-column v2 output must have scenarios list"
         );
         assert!(content.contains("name: cpu"));
         assert!(content.contains("name: mem"));
     }
 
     #[test]
-    fn generate_single_column_produces_flat_yaml() {
+    fn generate_single_column_produces_v2_yaml() {
         let csv = "timestamp,cpu\n1000,50.0\n2000,50.1\n3000,49.9\n";
         let f = write_temp_csv(csv);
         let out = tempfile::NamedTempFile::new().expect("create output file");
@@ -410,8 +414,12 @@ mod tests {
 
         let content = std::fs::read_to_string(out.path()).expect("read output");
         assert!(
-            !content.contains("scenarios:"),
-            "single-column should be flat YAML"
+            content.starts_with("version: 2\n"),
+            "v2 output must begin with `version: 2`, got: {content}"
+        );
+        assert!(
+            content.contains("scenarios:"),
+            "single-column v2 output still uses scenarios list"
         );
         assert!(content.contains("name: cpu"));
     }

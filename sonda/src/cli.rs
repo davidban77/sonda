@@ -115,12 +115,14 @@ pub enum Commands {
     /// Requires a `--scenario` file with summary-specific configuration
     /// (distribution model, quantile targets, observations per tick).
     Summary(SummaryArgs),
-    /// Run multiple scenarios concurrently from a multi-scenario YAML file.
+    /// Run multiple scenarios concurrently from a v2 scenario YAML file.
     ///
-    /// The scenario file must contain a top-level `scenarios:` list. Each
-    /// entry specifies a `signal_type` of either `metrics`, `logs`,
-    /// `histogram`, or `summary`, plus the scenario-specific configuration
-    /// fields.
+    /// The scenario file must declare `version: 2` at the top level and
+    /// carry a `scenarios:` list. Each entry specifies a `signal_type` of
+    /// `metrics`, `logs`, `histogram`, or `summary` plus the scenario-specific
+    /// configuration fields. Pack references (`pack: <name>`) resolve against
+    /// the `--pack-path` / `SONDA_PACK_PATH` catalog and expand to one runtime
+    /// entry per pack metric. v1 YAML shapes are rejected with a migration hint.
     Run(RunArgs),
     /// Browse, inspect, and run scenarios and metric packs from the
     /// filesystem search paths.
@@ -128,8 +130,8 @@ pub enum Commands {
     /// Unified replacement for `sonda scenarios` + `sonda packs`. Use
     /// `list` to discover entries (filter with `--type scenario|pack` or
     /// `--category`), `show <name>` to dump YAML with a metadata header,
-    /// and `run <name>` to execute a scenario (v1 or v2) or expand a
-    /// pack with `--label key=value` overrides.
+    /// and `run <name>` to execute a v2 scenario or expand a pack with
+    /// `--label key=value` overrides.
     Catalog(CatalogArgs),
     /// (Hidden) Legacy scenario subcommand. Use `sonda catalog` instead.
     #[command(hide = true)]
