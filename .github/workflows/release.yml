@@ -104,6 +104,15 @@ jobs:
       - name: Generate SHA256SUMS
         run: sha256sum sonda-*.tar.gz > SHA256SUMS
 
+      # docker/metadata-action emits tags without the `v` prefix via
+      # `type=semver,pattern={{version}}`, so the Docker registry has
+      # `ghcr.io/davidban77/sonda:1.0.0`, not `:v1.0.0`. Strip the prefix
+      # for the docs/install snippet so users can copy-paste the correct
+      # pull command.
+      - name: Compute Docker tag (strip leading v)
+        id: docker_tag
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -123,7 +132,7 @@ jobs:
 
             **Docker:**
             ```
-            docker pull ghcr.io/davidban77/sonda:${{ github.ref_name }}
+            docker pull ghcr.io/davidban77/sonda:${{ steps.docker_tag.outputs.value }}
             ```
 
             See the [README](https://github.com/davidban77/sonda#installation) for all installation methods.
