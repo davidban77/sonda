@@ -1,0 +1,24 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: log_src
+    signal_type: logs
+    name: lg
+    log_generator:
+      type: template
+      templates:
+        - message: "hi"
+
+  - id: follower
+    signal_type: metrics
+    name: follower
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: log_src
+      op: ">"
+      value: 0

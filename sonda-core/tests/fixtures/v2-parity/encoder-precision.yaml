@@ -1,0 +1,18 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 5.7 — the optional encoder `precision:` field must round-trip unchanged
+# through the v2 translator.
+version: 2
+
+scenarios:
+  - signal_type: metrics
+    name: rounded_value
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 3.141592653589793
+    encoder:
+      type: prometheus_text
+      precision: 3
+    sink:
+      type: stdout

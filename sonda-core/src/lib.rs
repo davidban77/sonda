@@ -4,6 +4,7 @@
 //! schedulers, encoders, and sinks. The CLI and HTTP server are thin layers
 //! that call into this library.
 
+pub mod compiler;
 pub mod config;
 pub mod encoder;
 pub mod generator;
@@ -23,7 +24,6 @@ pub use config::DynamicLabelConfig;
 pub use config::DynamicLabelStrategy;
 pub use config::HistogramScenarioConfig;
 pub use config::LogScenarioConfig;
-pub use config::MultiScenarioConfig;
 pub use config::ScenarioEntry;
 pub use config::SpikeStrategy;
 pub use config::SummaryScenarioConfig;
@@ -37,6 +37,15 @@ pub use scenarios::BuiltinScenario;
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::ScenarioStats;
+
+#[cfg(feature = "config")]
+pub use compiler::prepare::PrepareError;
+
+#[cfg(feature = "config")]
+pub use compile::{compile_scenario_file, CompileError};
+
+#[cfg(feature = "config")]
+mod compile;
 
 /// Top-level error type for sonda-core.
 ///
@@ -560,6 +569,7 @@ mod tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },

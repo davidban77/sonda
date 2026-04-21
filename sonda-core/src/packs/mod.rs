@@ -16,8 +16,9 @@
 //! files on the filesystem, discovered by the CLI via a search path. See the
 //! `sonda` CLI crate for catalog/discovery logic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::compiler::AfterClause;
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
@@ -138,19 +139,37 @@ pub struct PackScenarioConfig {
     pub overrides: Option<HashMap<String, MetricOverride>>,
 }
 
-/// Per-metric override within a [`PackScenarioConfig`].
+/// Per-metric override within a [`PackScenarioConfig`] or a v2 pack-backed
+/// scenario entry.
 ///
-/// Allows the user to customize the generator or add extra labels for a
-/// specific metric without modifying the pack definition.
+/// Allows the user to customize the generator, add extra labels, or attach a
+/// causal dependency (`after:`) for a specific metric without modifying the
+/// pack definition. The v1 expansion path ([`expand_pack`]) consumes only
+/// `generator` and `labels`; the v2 compiler additionally propagates `after`
+/// onto the expanded signal (see
+/// [`crate::compiler::expand`]).
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct MetricOverride {
     /// Replacement generator for this metric.
     #[cfg_attr(feature = "config", serde(default))]
     pub generator: Option<GeneratorConfig>,
     /// Additional labels merged on top of all other label sources.
+    ///
+    /// Uses `BTreeMap` for deterministic serialization order, consistent with
+    /// the v2 AST label types.
     #[cfg_attr(feature = "config", serde(default))]
-    pub labels: Option<HashMap<String, String>>,
+    pub labels: Option<BTreeMap<String, String>>,
+    /// Optional causal dependency (`after:`) attached specifically to this
+    /// expanded metric.
+    ///
+    /// Per spec §2.4, a per-metric `after:` on a pack override sets a
+    /// causal dependency for that specific expanded signal, overriding
+    /// any entry-level `after` on the parent pack entry. The v2 compiler
+    /// propagates this onto the resulting signal in Phase 3; v1 pack
+    /// expansion ignores the field.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub after: Option<AfterClause>,
 }
 
 #[cfg(feature = "config")]
@@ -284,6 +303,7 @@ pub fn expand_pack(
                 sink: config.sink.clone(),
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -432,6 +452,7 @@ mod tests {
             MetricOverride {
                 generator: Some(GeneratorConfig::Constant { value: 42.0 }),
                 labels: None,
+                after: None,
             },
         );
 
@@ -616,6 +637,7 @@ mod tests {
             MetricOverride {
                 generator: None,
                 labels: None,
+                after: None,
             },
         );
 
@@ -654,7 +676,7 @@ mod tests {
             }],
         };
 
-        let mut override_labels = HashMap::new();
+        let mut override_labels = BTreeMap::new();
         override_labels.insert("extra".to_string(), "value".to_string());
         override_labels.insert("job".to_string(), "overridden".to_string());
 
@@ -664,6 +686,7 @@ mod tests {
             MetricOverride {
                 generator: None,
                 labels: Some(override_labels),
+                after: None,
             },
         );
 

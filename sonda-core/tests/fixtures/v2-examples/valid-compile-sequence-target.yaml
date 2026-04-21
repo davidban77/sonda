@@ -1,0 +1,25 @@
+version: 2
+
+defaults:
+  rate: 2
+  duration: 1m
+
+scenarios:
+  - id: seq
+    signal_type: metrics
+    name: health_probe
+    generator:
+      type: sequence
+      values: [10, 5, 2, 1]
+      repeat: false
+
+  - id: alert
+    signal_type: metrics
+    name: alert
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: seq
+      op: "<"
+      value: 3

@@ -78,13 +78,19 @@ fn import_output_generates_loadable_single_scenario_yaml() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Verify the generated YAML can be parsed by sonda-core.
+    // Verify the generated YAML is v2 and compiles cleanly.
     let yaml = std::fs::read_to_string(out_file.path()).expect("read output YAML");
-    let config: sonda_core::config::ScenarioConfig =
-        serde_yaml_ng::from_str(&yaml).expect("generated YAML must parse as ScenarioConfig");
+    assert!(
+        yaml.starts_with("version: 2\n"),
+        "sonda import must emit v2 YAML, got: {yaml}"
+    );
 
-    assert_eq!(config.base.name, "cpu");
-    assert!(config.base.rate > 0.0);
+    let resolver = sonda_core::compiler::expand::InMemoryPackResolver::new();
+    let entries = sonda_core::compile_scenario_file(&yaml, &resolver)
+        .expect("generated v2 YAML must compile cleanly");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].base().name, "cpu");
+    assert!(entries[0].base().rate > 0.0);
 }
 
 #[test]
@@ -110,12 +116,17 @@ fn import_output_generates_loadable_multi_scenario_yaml() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Verify the generated YAML can be parsed as a multi-scenario config.
+    // Verify the generated YAML is v2 and compiles into two entries.
     let yaml = std::fs::read_to_string(out_file.path()).expect("read output YAML");
-    let multi: sonda_core::MultiScenarioConfig =
-        serde_yaml_ng::from_str(&yaml).expect("generated YAML must parse as MultiScenarioConfig");
+    assert!(
+        yaml.starts_with("version: 2\n"),
+        "sonda import must emit v2 YAML, got: {yaml}"
+    );
 
-    assert_eq!(multi.scenarios.len(), 2);
+    let resolver = sonda_core::compiler::expand::InMemoryPackResolver::new();
+    let entries = sonda_core::compile_scenario_file(&yaml, &resolver)
+        .expect("generated v2 YAML must compile cleanly");
+    assert_eq!(entries.len(), 2);
 }
 
 // -----------------------------------------------------------------------

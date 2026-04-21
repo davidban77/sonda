@@ -1,0 +1,10 @@
+# ERROR: entry 0: must have either 'generator' or 'pack', not both
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    rate: 1
+    generator:
+      type: constant
+      value: 42.0
+    pack: telegraf_snmp_interface

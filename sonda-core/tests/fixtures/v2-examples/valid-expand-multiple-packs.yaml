@@ -1,0 +1,16 @@
+# Two pack entries in the same file, both referencing the same pack
+# definition. The auto-ID scheme disambiguates them by zero-based entry
+# index, producing `{pack_name}_0.{metric}` and `{pack_name}_1.{metric}`
+# sub-signal IDs. No entry-level `id` is set on either.
+version: 2
+defaults:
+  rate: 1
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-01
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-02

@@ -13,30 +13,32 @@
 #
 # For Prometheus (with remote write receiver enabled):
 #   change url to: http://localhost:9090/api/v1/write
-name: node_cpu_seconds_total
-rate: 100
-duration: 30s
 
-generator:
-  type: sine
-  amplitude: 5.0
-  period_secs: 30
-  offset: 50.0
+version: 2
 
-gaps:
-  every: 15s
-  for: 3s
+defaults:
+  rate: 100
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:9090/api/v1/import/prometheus"
+    content_type: "text/plain; version=0.0.4"
+    batch_size: 65536
 
-labels:
-  instance: node-01
-  job: node-exporter
-  mode: user
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: http_push
-  url: "http://localhost:9090/api/v1/import/prometheus"
-  content_type: "text/plain; version=0.0.4"
-  batch_size: 65536
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_seconds_total
+    generator:
+      type: sine
+      amplitude: 5.0
+      period_secs: 30
+      offset: 50.0
+    gaps:
+      every: 15s
+      for: 3s
+    labels:
+      instance: node-01
+      job: node-exporter
+      mode: user

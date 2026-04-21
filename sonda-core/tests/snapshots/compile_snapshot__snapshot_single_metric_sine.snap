@@ -1,0 +1,28 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: entries
+---
+[
+  {
+    "duration": "30s",
+    "encoder": {
+      "type": "prometheus_text"
+    },
+    "generator": {
+      "type": "sine",
+      "amplitude": 50.0,
+      "period_secs": 60.0,
+      "offset": 100.0
+    },
+    "labels": {
+      "hostname": "router-01",
+      "interface": "eth0"
+    },
+    "name": "interface_traffic",
+    "rate": 10.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

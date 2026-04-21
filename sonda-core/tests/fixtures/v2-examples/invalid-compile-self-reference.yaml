@@ -1,0 +1,18 @@
+version: 2
+
+defaults:
+  rate: 1
+
+scenarios:
+  - id: loop_entry
+    signal_type: metrics
+    name: a
+    generator:
+      type: saturation
+      baseline: 0
+      ceiling: 100
+      time_to_saturate: 60s
+    after:
+      ref: loop_entry
+      op: ">"
+      value: 50

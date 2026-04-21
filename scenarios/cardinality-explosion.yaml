@@ -6,36 +6,34 @@
 # every 60 seconds for 20 seconds. Useful for testing TSDB cardinality
 # limits and cost alerting.
 
+version: 2
+
 scenario_name: cardinality-explosion
 category: observability
-signal_type: metrics
 description: "Pod label cardinality explosion with spike windows"
 
-name: container_cpu_usage_seconds_total
-rate: 5
-duration: 120s
-
-generator:
-  type: sine
-  amplitude: 0.3
-  period_secs: 60
-  offset: 0.5
-
-labels:
-  namespace: production
-  container: worker
-  job: kubelet
-
-cardinality_spikes:
-  - label: pod_name
-    every: 60s
-    for: 20s
-    cardinality: 500
-    strategy: counter
-    prefix: "worker-"
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: container_cpu_usage_seconds_total
+    rate: 5
+    duration: 120s
+    generator:
+      type: sine
+      amplitude: 0.3
+      period_secs: 60
+      offset: 0.5
+    labels:
+      namespace: production
+      container: worker
+      job: kubelet
+    cardinality_spikes:
+      - label: pod_name
+        every: 60s
+        for: 20s
+        cardinality: 500
+        strategy: counter
+        prefix: "worker-"
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout

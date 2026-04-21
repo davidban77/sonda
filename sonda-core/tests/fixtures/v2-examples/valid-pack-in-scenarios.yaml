@@ -1,0 +1,21 @@
+# Pack used inside a scenarios list with overrides.
+# The id field creates dotted sub-signal IDs like primary_uplink.ifOperStatus
+# that can be referenced by after: clauses.
+version: 2
+defaults:
+  rate: 1
+  duration: 10m
+scenarios:
+  - id: primary_uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-core-01
+      ifName: GigabitEthernet0/0/0
+      ifIndex: "1"
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 30s

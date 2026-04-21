@@ -1,0 +1,26 @@
+# Flat v1 single-scenario file (spec §6.1: "single-scenario").
+# Mirrors the shape used by built-in catalog entries like
+# `scenarios/cpu-spike.yaml` — schedule fields live at the top level,
+# no `scenarios:` list. Used by the CLI dispatch regression tests to
+# prove `sonda run --scenario` accepts this layout transparently.
+scenario_name: flat-v1-metrics
+category: test
+signal_type: metrics
+description: "flat v1 fixture used by CLI regression tests"
+
+name: flat_v1_metric
+rate: 5
+duration: 300ms
+
+generator:
+  type: constant
+  value: 1.0
+
+labels:
+  instance: test-01
+
+encoder:
+  type: prometheus_text
+
+sink:
+  type: stdout

@@ -52,6 +52,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub scenario_path: Option<PathBuf>,
 
+    /// Output format for `--dry-run` on v2 scenario files: `text` (default)
+    /// or `json`.
+    ///
+    /// Only consulted in combination with `--dry-run` on v2 files. Text
+    /// output goes to stderr (spec §5 pretty format); JSON output goes to
+    /// stdout with a stable DTO shape.
+    #[arg(long, global = true, value_name = "FORMAT")]
+    pub format: Option<String>,
+
     /// The operation to perform.
     #[command(subcommand)]
     pub command: Commands,
@@ -106,28 +115,29 @@ pub enum Commands {
     /// Requires a `--scenario` file with summary-specific configuration
     /// (distribution model, quantile targets, observations per tick).
     Summary(SummaryArgs),
-    /// Run multiple scenarios concurrently from a multi-scenario YAML file.
+    /// Run multiple scenarios concurrently from a v2 scenario YAML file.
     ///
-    /// The scenario file must contain a top-level `scenarios:` list. Each
-    /// entry specifies a `signal_type` of either `metrics`, `logs`,
-    /// `histogram`, or `summary`, plus the scenario-specific configuration
-    /// fields.
+    /// The scenario file must declare `version: 2` at the top level and
+    /// carry a `scenarios:` list. Each entry specifies a `signal_type` of
+    /// `metrics`, `logs`, `histogram`, or `summary` plus the scenario-specific
+    /// configuration fields. Pack references (`pack: <name>`) resolve against
+    /// the `--pack-path` / `SONDA_PACK_PATH` catalog and expand to one runtime
+    /// entry per pack metric. v1 YAML shapes are rejected with a migration hint.
     Run(RunArgs),
-    /// Browse, inspect, and run pre-built scenario patterns.
+    /// Browse, inspect, and run scenarios and metric packs from the
+    /// filesystem search paths.
     ///
-    /// The `scenarios` subcommand provides access to scenario YAML files
-    /// discovered from the search path (`--scenario-path`,
-    /// `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`).
-    /// Use `list` to discover available scenarios, `show` to view the raw
-    /// YAML, and `run` to execute one directly.
+    /// Unified replacement for `sonda scenarios` + `sonda packs`. Use
+    /// `list` to discover entries (filter with `--type scenario|pack` or
+    /// `--category`), `show <name>` to dump YAML with a metadata header,
+    /// and `run <name>` to execute a v2 scenario or expand a pack with
+    /// `--label key=value` overrides.
+    Catalog(CatalogArgs),
+    /// (Hidden) Legacy scenario subcommand. Use `sonda catalog` instead.
+    #[command(hide = true)]
     Scenarios(ScenariosArgs),
-    /// Browse, inspect, and run metric packs from the filesystem.
-    ///
-    /// A metric pack is a reusable bundle of metric names and label schemas
-    /// that expands into a multi-metric scenario. Packs are discovered from
-    /// the search path (`--pack-path`, `SONDA_PACK_PATH`, `./packs/`,
-    /// `~/.sonda/packs/`). Use `list` to discover available packs, `show`
-    /// to view the raw YAML, and `run` to execute one with overrides.
+    /// (Hidden) Legacy pack subcommand. Use `sonda catalog` instead.
+    #[command(hide = true)]
     Packs(PacksArgs),
     /// Import a CSV file: detect time-series patterns and generate a scenario.
     ///
@@ -147,14 +157,6 @@ pub enum Commands {
     ///
     /// The generated YAML can be immediately run with `sonda run --scenario`.
     Init(InitArgs),
-    /// Run a story — a multi-signal scenario with temporal causality.
-    ///
-    /// Stories are a concise YAML format that compiles down to the existing
-    /// multi-scenario infrastructure at parse time. Signals can use `after`
-    /// clauses to express temporal sequencing (e.g., "backup saturates after
-    /// primary link drops"). There is no runtime reactivity — `after` clauses
-    /// resolve to concrete `phase_offset` values via deterministic timing math.
-    Story(StoryArgs),
 }
 
 /// Arguments for the `histogram` subcommand.
@@ -679,21 +681,53 @@ pub struct LogsArgs {
     pub retry_max_backoff: Option<String>,
 }
 
-/// Arguments for the `run` subcommand (multi-scenario).
+/// Arguments for the `run` subcommand (multi-scenario / v2).
 ///
-/// Accepts a YAML file that defines multiple concurrent scenarios under a
-/// top-level `scenarios:` key. Each entry carries a `signal_type` field
-/// (`metrics`, `logs`, `histogram`, or `summary`) along with the full
-/// scenario configuration.
+/// Accepts any scenario YAML file — v1 single-scenario, v1 multi-scenario,
+/// v1 `pack:` shorthand, or v2 (`version: 2`). Dispatch is based on the
+/// top-level `version:` field detected at the top of the YAML.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Path to a multi-scenario YAML file.
+    /// Path or `@name` reference to a scenario YAML file.
     ///
-    /// The file must have a top-level `scenarios:` list. Each list entry must
-    /// include a `signal_type` field (`metrics`, `logs`, `histogram`, or
-    /// `summary`), followed by the scenario-specific configuration fields.
+    /// v2 files are compiled via the full v2 pipeline (defaults →
+    /// pack expansion → `after:` resolution → prepare). v1 files go
+    /// through the legacy multi-scenario loader. Both produce the same
+    /// runtime shape.
     #[arg(long)]
     pub scenario: PathBuf,
+
+    /// Override the scenario duration (e.g. `"10s"`, `"2m"`).
+    ///
+    /// Applied after compile/expand at the entry level.
+    #[arg(long)]
+    pub duration: Option<String>,
+
+    /// Override the event rate in events per second.
+    #[arg(long)]
+    pub rate: Option<f64>,
+
+    /// Override the sink type (e.g. `stdout`, `file`, `tcp`).
+    #[arg(long, help_heading = "Sink")]
+    pub sink: Option<String>,
+
+    /// Override the sink endpoint (URL, file path, host:port).
+    #[arg(long, help_heading = "Sink")]
+    pub endpoint: Option<String>,
+
+    /// Override the encoder format.
+    #[arg(long, help_heading = "Encoder")]
+    pub encoder: Option<String>,
+
+    /// Write output to a file (shorthand for `--sink file --endpoint <path>`).
+    ///
+    /// Mutually exclusive with `--sink`.
+    #[arg(short = 'o', long, conflicts_with = "sink", help_heading = "Sink")]
+    pub output: Option<PathBuf>,
+
+    /// Additional labels merged into every entry (format: `key=value`).
+    #[arg(long = "label", value_parser = parse_label, help_heading = "Scenario")]
+    pub labels: Vec<(String, String)>,
 }
 
 /// Arguments for the `scenarios` subcommand.
@@ -853,6 +887,14 @@ pub struct PacksRunArgs {
     /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
     #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
+
+    /// Write output to a file (shorthand for `--sink file --endpoint <path>`).
+    ///
+    /// Mutually exclusive with `--sink`. Matches the shape of
+    /// [`RunArgs::output`] so `sonda catalog run <pack> -o <path>` and
+    /// `sonda packs run <pack> -o <path>` share a single code path.
+    #[arg(short = 'o', long, conflicts_with = "sink", help_heading = "Sink")]
+    pub output: Option<PathBuf>,
 
     /// Add or override a label (format: `key=value`). Can be specified
     /// multiple times to set multiple labels.
@@ -1016,47 +1058,89 @@ pub struct InitArgs {
     pub otlp_signal_type: Option<String>,
 }
 
-/// Arguments for the `story` subcommand.
+/// Arguments for the unified `catalog` subcommand (spec §6.3).
 ///
-/// Runs a story file — a concise multi-signal format with temporal causality.
-/// CLI flags override story-level shared fields (not per-signal overrides).
+/// Replaces `sonda scenarios` + `sonda packs` with a single tree that
+/// lists, shows, and runs either kind.
 #[derive(Debug, Args)]
-pub struct StoryArgs {
-    /// Path to a story YAML file.
-    ///
-    /// The file must have a top-level `story:` field and a `signals:` list.
-    /// Each signal specifies a `metric`, `behavior`, and optional `after`
-    /// clause for temporal sequencing.
-    #[arg(long)]
-    pub file: std::path::PathBuf,
+pub struct CatalogArgs {
+    /// Which catalog action to perform.
+    #[command(subcommand)]
+    pub action: CatalogAction,
+}
 
-    /// Override the story duration (e.g. `"2m"`, `"30s"`).
-    ///
-    /// Applies to all signals that do not have a per-signal duration override.
+/// Actions available under `sonda catalog`.
+#[derive(Debug, Subcommand)]
+pub enum CatalogAction {
+    /// List available scenarios and packs from the search path.
+    List(CatalogListArgs),
+    /// Show the raw YAML for a scenario or pack by name.
+    Show(CatalogShowArgs),
+    /// Run a scenario or pack by name.
+    Run(CatalogRunArgs),
+}
+
+/// Arguments for `sonda catalog list`.
+#[derive(Debug, Args)]
+pub struct CatalogListArgs {
+    /// Filter by category (case-sensitive). Example:
+    /// `--category infrastructure`.
+    #[arg(long)]
+    pub category: Option<String>,
+
+    /// Restrict output to a single kind: `scenario` or `pack`.
+    #[arg(long = "type", value_name = "KIND")]
+    pub kind: Option<String>,
+
+    /// Emit the list as a stable JSON array on stdout.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `sonda catalog show`.
+#[derive(Debug, Args)]
+pub struct CatalogShowArgs {
+    /// Name of the scenario or pack to show.
+    pub name: String,
+}
+
+/// Arguments for `sonda catalog run`.
+///
+/// Dispatches internally: scenarios route through the v1/v2 loader
+/// pipeline; packs route through the existing pack-expansion path with
+/// CLI overrides applied.
+#[derive(Debug, Args)]
+pub struct CatalogRunArgs {
+    /// Name of the scenario or pack to run.
+    pub name: String,
+
+    /// Override the duration (e.g. `"10s"`, `"2m"`).
     #[arg(long)]
     pub duration: Option<String>,
 
     /// Override the event rate in events per second.
-    ///
-    /// Applies to all signals that do not have a per-signal rate override.
     #[arg(long)]
     pub rate: Option<f64>,
 
-    /// Override the sink type (e.g. `stdout`, `http_push`, `file`).
-    ///
-    /// Applies to all signals that do not have a per-signal sink override.
+    /// Override the sink type (e.g. `stdout`, `file`).
     #[arg(long, help_heading = "Sink")]
     pub sink: Option<String>,
 
-    /// Override the sink endpoint (required for network sinks).
+    /// Override the sink endpoint (URL, file path, host:port).
     #[arg(long, help_heading = "Sink")]
     pub endpoint: Option<String>,
 
-    /// Override the encoder format (e.g. `prometheus_text`, `json_lines`).
-    ///
-    /// Applies to all signals that do not have a per-signal encoder override.
+    /// Override the encoder format.
     #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
+
+    /// Write output to a file (shorthand for `--sink file --endpoint <path>`).
+    #[arg(short = 'o', long, conflicts_with = "sink", help_heading = "Sink")]
+    pub output: Option<PathBuf>,
+
+    /// Additional labels (format: `key=value`). Required for pack runs.
+    #[arg(long = "label", value_parser = parse_label)]
+    pub labels: Vec<(String, String)>,
 }
 
 /// Build clap help styling for the CLI.

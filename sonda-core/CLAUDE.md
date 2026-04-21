@@ -85,6 +85,52 @@ src/
 │   ├── kafka.rs        ← Kafka producer (rskafka, feature = "kafka")
 │   └── otlp_grpc.rs    ← OTLP/gRPC sink: batches Metric/LogRecord, sends via tonic gRPC
 │                          unary call to OTEL Collector (feature = "otlp")
+├── compiler/
+│   ├── mod.rs          ← Scenario format AST types, parser, and validation:
+│   │                      ScenarioFile, Defaults, Entry, AfterClause, AfterOp.
+│   │                      Pre-compilation representation of scenario YAML files.
+│   │                      No runtime integration — parsing only.
+│   ├── parse.rs        ← YAML parser and structural validation.
+│   │                      parse(), detect_version(), ParseError.
+│   │                      Single-signal shorthand support. Feature-gated (config).
+│   ├── normalize.rs    ← Phase 2 compilation: defaults resolution.
+│   │                      normalize(), NormalizedFile, NormalizedEntry,
+│   │                      NormalizeError. Flattens defaults: into every entry,
+│   │                      applies built-in encoder/sink fallbacks, merges
+│   │                      defaults.labels for inline entries (deferred for
+│   │                      pack entries so Phase 3 can interleave pack
+│   │                      shared/per-metric labels), and enforces rate
+│   │                      presence. Feature-gated (config).
+│   ├── expand.rs       ← Phase 3 compilation: pack expansion inside scenarios:.
+│   │                      expand(), ExpandedFile, ExpandedEntry, ExpandError.
+│   │                      PackResolver trait (name vs file-path classification)
+│   │                      plus InMemoryPackResolver test impl. Pack entries are
+│   │                      materialized into one signal per pack metric with the
+│   │                      spec §2.2 five-level label precedence chain
+│   │                      (defaults → shared → per-metric → entry → override)
+│   │                      and entry-level after propagation. Auto-ID scheme is
+│   │                      `{pack_def_name}_{entry_index}` for anonymous pack
+│   │                      entries; sub-signal IDs are `{entry_id}.{metric}`
+│   │                      (bare) or `{entry_id}.{metric}#{spec_index}` when
+│   │                      the pack ships duplicate metric names. Post-
+│   │                      expansion uniqueness check rejects user/auto id
+│   │                      collisions via ExpandError::DuplicateEntryId.
+│   │                      Feature-gated (config).
+│   ├── timing.rs       ← Pure threshold-crossing math per generator
+│   │                      (sawtooth, step, sequence, spike, flap, saturation,
+│   │                      leak, degradation, spike_event, constant). Returns
+│   │                      crossing time in seconds or a typed TimingError
+│   │                      (OutOfRange | Ambiguous | Unsupported). Used by the
+│   │                      v2 compiler's Phase 4 `after` resolution. No
+│   │                      features — compiles in `no-config` builds as well.
+│   └── compile_after.rs ← Phase 4+5 compilation: after-clause resolution,
+│                          dependency graph, cycle detection (Kahn + DFS),
+│                          clock-group auto-assignment. compile_after(),
+│                          CompiledFile, CompiledEntry, CompileAfterError.
+│                          Total offset = user_phase_offset + Σ crossing_time
+│                          + Σ delay; clock_group is auto-named
+│                          `chain_{lowest_lex_id}` per connected component
+│                          when none is explicit. Feature-gated (config).
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
@@ -93,7 +139,7 @@ src/
     │                      LogScenarioConfig (embeds BaseScheduleConfig + generator + encoder, Deref/DerefMut),
     │                      HistogramScenarioConfig, SummaryScenarioConfig, DistributionConfig,
     │                      ScenarioEntry (Metrics|Logs|Histogram|Summary, with base() accessor),
-    │                      MultiScenarioConfig, CardinalitySpikeConfig, SpikeStrategy,
+    │                      CardinalitySpikeConfig, SpikeStrategy,
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
     │                      expand_entry (entry-level wrapper for expand_scenario)
@@ -223,8 +269,41 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 
 ## Testing
 
+### Unit tests (embedded in source files)
+
 - Every generator: test at tick=0, tick=1, tick at period boundary, tick at large values.
 - Every encoder: test with known MetricEvent → assert exact byte output.
 - Schedule logic: test gap window math, burst window transitions, rate calculation.
 - Use `#[cfg(test)] mod tests` at the bottom of each file.
 - Seed all RNG-based generators for deterministic tests.
+
+### Parametrized tests — use `rstest`
+
+For test families that share a shape and differ only by input/expected output, use `rstest`:
+
+- Each `#[case::<descriptive_name>(...)]` row reports as a distinct test in `cargo test` output
+  — failure location is preserved per case. Use descriptive labels, not anonymous cases.
+- Apply `#[rustfmt::skip]` on the rstest fn so `#[case(...)]` rows stay column-aligned.
+- Do NOT force-fit singleton or semantically-unique cases into tables just to reduce line count.
+  A standalone `#[test]` fn is better than a table with heterogeneous payloads.
+- Example patterns: `compiler::timing::tests` (crossing math across generator families),
+  `compiler::parse::tests` (invalid-YAML rejection variants).
+
+### Integration tests (`sonda-core/tests/*.rs`)
+
+- Start every file with `mod common;` to pull in shared helpers from `tests/common/mod.rs`:
+  `example_fixture`, `parity_fixture`, `load_repo_pack`, `builtin_pack_resolver`, `resolver_with`,
+  `compile_to_expanded`, `compile_to_compiled`, `snapshot_settings`.
+- Add new helpers to `tests/common/mod.rs` — do not duplicate across test files.
+
+### Golden-file snapshots — use `insta`
+
+- Snapshots live under `sonda-core/tests/snapshots/*.snap` and are updated via
+  `cargo insta review` (interactive) or `INSTA_UPDATE=always cargo test` (batch).
+- The hand-rolled harness previously at `src/config/snapshot.rs` was replaced by insta — do not
+  reintroduce it.
+- Structured outputs (compiled/expanded/normalized): wrap `insta::assert_json_snapshot!(value, ...)`
+  in `common::snapshot_settings().bind(|| ...)` for the shared `sort_maps = true` determinism config.
+- Text outputs (stdout bytes, log lines): `insta::assert_snapshot!(text)`.
+- Parametrized families: combine rstest + insta — each `#[case(...)]` generates its own snapshot
+  name automatically.

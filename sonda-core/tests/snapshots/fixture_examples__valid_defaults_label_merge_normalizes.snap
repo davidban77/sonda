@@ -1,0 +1,57 @@
+---
+source: sonda-core/tests/fixture_examples.rs
+expression: normalized
+---
+{
+  "version": 2,
+  "defaults_labels": {
+    "device": "rtr-edge-01",
+    "region": "us-west-2"
+  },
+  "entries": [
+    {
+      "id": "link_state",
+      "signal_type": "metrics",
+      "name": "interface_oper_state",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "flap",
+        "up_duration": "60s",
+        "down_duration": "30s"
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "interface": "Gi0/0/0",
+        "region": "us-east-1"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    },
+    {
+      "id": "fast_metric",
+      "signal_type": "metrics",
+      "name": "cpu",
+      "rate": 10.0,
+      "duration": "5m",
+      "generator": {
+        "type": "constant",
+        "value": 42.0
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "region": "us-west-2"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+---
+source: sonda-core/tests/compile_after_fixtures.rs
+expression: compiled
+---
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "primary_uplink.ifOperStatus",
+      "signal_type": "metrics",
+      "name": "ifOperStatus",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "flap",
+        "up_duration": "60s",
+        "down_duration": "30s"
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group": "chain_backup_signal",
+      "clock_group_is_auto": true
+    },
+    {
+      "id": "primary_uplink.ifHCInOctets",
+      "signal_type": "metrics",
+      "name": "ifHCInOctets",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "step",
+        "start": 0.0,
+        "step_size": 125000.0
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group_is_auto": false
+    },
+    {
+      "id": "primary_uplink.ifHCOutOctets",
+      "signal_type": "metrics",
+      "name": "ifHCOutOctets",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "step",
+        "start": 0.0,
+        "step_size": 62500.0
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group_is_auto": false
+    },
+    {
+      "id": "primary_uplink.ifInErrors",
+      "signal_type": "metrics",
+      "name": "ifInErrors",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group_is_auto": false
+    },
+    {
+      "id": "primary_uplink.ifOutErrors",
+      "signal_type": "metrics",
+      "name": "ifOutErrors",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "labels": {
+        "device": "rtr-edge-01",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group_is_auto": false
+    },
+    {
+      "id": "backup_signal",
+      "signal_type": "metrics",
+      "name": "backup_link_utilization",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "saturation",
+        "baseline": 20.0,
+        "ceiling": 85.0,
+        "time_to_saturate": "2m"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "phase_offset": "1m",
+      "clock_group": "chain_backup_signal",
+      "clock_group_is_auto": true
+    }
+  ]
+}

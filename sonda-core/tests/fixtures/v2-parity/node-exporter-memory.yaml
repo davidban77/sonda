@@ -1,0 +1,17 @@
+# Parity fixture: v2 scenario using the node_exporter_memory pack (5
+# memory gauge metrics). Has a per-metric label override to exercise the
+# label-merge parity path.
+version: 2
+defaults:
+  rate: 1
+  duration: 30s
+scenarios:
+  - id: host_memory
+    signal_type: metrics
+    pack: node_exporter_memory
+    labels:
+      instance: web-01:9100
+    overrides:
+      node_memory_MemFree_bytes:
+        labels:
+          owner: platform

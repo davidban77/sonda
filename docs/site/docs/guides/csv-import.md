@@ -76,50 +76,46 @@ sonda import examples/sample-multi-column.csv -o scenario.yaml
 wrote scenario to scenario.yaml
 ```
 
-The generated file is a valid multi-scenario YAML, ready for `sonda run --scenario`:
+The generated file is a valid [v2 scenario YAML](../configuration/v2-scenarios.md), ready for
+`sonda run --scenario`:
 
 ```yaml title="scenario.yaml (generated)"
-scenarios:
-  - signal_type: metrics
-    name: cpu_percent
-    rate: 1
-    duration: 60s
+version: 2
 
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: cpu_percent
+    signal_type: metrics
+    name: cpu_percent
     generator:
       type: steady
       center: 46.27
       amplitude: 41.9
       period: "60s"
 
-    encoder:
-      type: prometheus_text
-
-    sink:
-      type: stdout
-
-  - signal_type: metrics
+  - id: mem_percent
+    signal_type: metrics
     name: mem_percent
-    rate: 1
-    duration: 60s
-
     generator:
       type: steady
       center: 59.88
       amplitude: 20.5
       period: "60s"
 
-    encoder:
-      type: prometheus_text
-
-    sink:
-      type: stdout
-
   # ... (one entry per column)
 ```
 
-!!! tip "Single-column CSVs produce flat YAML"
-    When the CSV has only one data column, the output is a flat scenario (no `scenarios:` wrapper).
-    Multi-column CSVs always produce the `scenarios:` list format for use with `sonda run`.
+!!! info "Output is always v2"
+    `sonda import` emits v2 YAML regardless of column count. Single-column CSVs produce a
+    one-entry `scenarios:` list; multi-column CSVs produce one entry per column. Shared
+    `rate`, `duration`, `encoder`, and `sink` live in `defaults:`.
 
 ### Step 3: Run
 
@@ -172,27 +168,28 @@ sonda import examples/grafana-export.csv -o grafana-scenario.yaml
 ```
 
 ```yaml title="grafana-scenario.yaml (generated, first entry)"
-scenarios:
-  - signal_type: metrics
-    name: up
-    rate: 1
-    duration: 60s
+version: 2
 
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: up
+    signal_type: metrics
+    name: up
     generator:
       type: sawtooth
       min: 0.0
       max: 1.0
       period_secs: 4.0
-
     labels:
       instance: "localhost:9090"
       job: prometheus
-
-    encoder:
-      type: prometheus_text
-
-    sink:
-      type: stdout
 ```
 
 For details on exporting from Grafana, see the

@@ -204,26 +204,29 @@ The scenario pushes `docker_alert_cpu` at a constant `95.0` for 30 seconds. This
 both the warning threshold (70) and the critical threshold (90) defined in the alert rules.
 
 ```yaml title="examples/ci-alert-validation.yaml"
-name: docker_alert_cpu
-rate: 1
-duration: 30s
+version: 2
 
-generator:
-  type: constant
-  value: 95.0
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  host: ci-test-node
-  region: us-east-1
-  service: payment-service
-  env: ci
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: ci-test-node
+      region: us-east-1
+      service: payment-service
+      env: ci
 ```
 
 The constant generator is ideal here -- you need the value to stay above threshold for long
@@ -363,24 +366,27 @@ validation as one scenario per rule (or rule group), each pushing the specific m
 that should trigger it.
 
 ```yaml title="examples/ci-high-memory-alert.yaml"
-name: node_memory_usage_percent
-rate: 1
-duration: 30s
+version: 2
 
-generator:
-  type: constant
-  value: 92.0
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  host: ci-test-node
-  env: ci
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: node_memory_usage_percent
+    generator:
+      type: constant
+      value: 92.0
+    labels:
+      host: ci-test-node
+      env: ci
 ```
 
 Then run them sequentially or use `sonda run` with a multi-scenario file to push all metrics

@@ -1,0 +1,43 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: entries
+---
+[
+  {
+    "duration": "20s",
+    "encoder": {
+      "type": "json_lines"
+    },
+    "generator": {
+      "type": "template",
+      "templates": [
+        {
+          "message": "Request from {ip} to {endpoint} completed",
+          "field_pools": {
+            "endpoint": [
+              "/api/v1/health",
+              "/api/v1/metrics"
+            ],
+            "ip": [
+              "10.0.0.1",
+              "10.0.0.2",
+              "10.0.0.3"
+            ]
+          }
+        }
+      ],
+      "severity_weights": {
+        "error": 0.1,
+        "info": 0.7,
+        "warn": 0.2
+      },
+      "seed": 42
+    },
+    "name": "app_logs",
+    "rate": 5.0,
+    "signal_type": "logs",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

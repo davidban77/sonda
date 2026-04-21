@@ -12,3 +12,6 @@ tests/e2e/.docker-volumes/
 # MkDocs site build output and Python venv
 docs/site/.venv/
 docs/site/site/
+
+# v2 refactor planning docs (local only)
+docs/v2/

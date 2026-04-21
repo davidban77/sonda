@@ -1,0 +1,22 @@
+# Parity fixture: v2 scenario that uses the telegraf_snmp_interface pack.
+# Expanded through the v2 compiler it must produce the same concrete set
+# of signals as the v1 `expand_pack` path given equivalent user-provided
+# config.
+version: 2
+defaults:
+  rate: 1
+  duration: 60s
+scenarios:
+  - id: primary_uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifIndex: "1"
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 30s

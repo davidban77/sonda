@@ -14,27 +14,29 @@
 # Usage:
 #   sonda metrics --scenario examples/kafka-tls.yaml
 
-name: kafka_tls_example
-rate: 10.0
-duration: 30s
+version: 2
 
-generator:
-  type: constant
-  value: 42.0
+defaults:
+  rate: 10.0
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: kafka
+    brokers: "broker.example.com:9093"
+    topic: sonda-metrics
+    tls:
+      enabled: true
+    sasl:
+      mechanism: PLAIN
+      username: sonda
+      password: changeme
 
-labels:
-  env: staging
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: kafka
-  brokers: "broker.example.com:9093"
-  topic: sonda-metrics
-  tls:
-    enabled: true
-  sasl:
-    mechanism: PLAIN
-    username: sonda
-    password: changeme
+scenarios:
+  - signal_type: metrics
+    name: kafka_tls_example
+    generator:
+      type: constant
+      value: 42.0
+    labels:
+      env: staging

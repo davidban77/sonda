@@ -1,0 +1,29 @@
+---
+source: sonda-core/tests/fixture_examples.rs
+expression: normalized
+---
+{
+  "version": 2,
+  "entries": [
+    {
+      "signal_type": "logs",
+      "name": "app_logs",
+      "rate": 5.0,
+      "log_generator": {
+        "type": "template",
+        "templates": [
+          {
+            "message": "hello",
+            "field_pools": {}
+          }
+        ]
+      },
+      "encoder": {
+        "type": "json_lines"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    }
+  ]
+}

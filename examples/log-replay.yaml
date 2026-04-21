@@ -1,13 +1,16 @@
-name: app_logs_replay
-rate: 5
-duration: 30s
+version: 2
 
-generator:
-  type: replay
-  file: examples/sample-app.log
+defaults:
+  rate: 5
+  duration: 30s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
 
-encoder:
-  type: json_lines
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: logs
+    name: app_logs_replay
+    log_generator:
+      type: replay
+      file: examples/sample-app.log

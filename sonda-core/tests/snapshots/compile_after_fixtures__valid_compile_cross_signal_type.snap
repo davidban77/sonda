@@ -1,0 +1,55 @@
+---
+source: sonda-core/tests/compile_after_fixtures.rs
+expression: compiled
+---
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "error_rate",
+      "signal_type": "metrics",
+      "name": "http_error_rate",
+      "rate": 1.0,
+      "duration": "3m",
+      "generator": {
+        "type": "saturation",
+        "baseline": 1.0,
+        "ceiling": 30.0,
+        "time_to_saturate": "90s"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group": "chain_error_logs",
+      "clock_group_is_auto": true
+    },
+    {
+      "id": "error_logs",
+      "signal_type": "logs",
+      "name": "app_error_logs",
+      "rate": 1.0,
+      "duration": "3m",
+      "log_generator": {
+        "type": "template",
+        "templates": [
+          {
+            "message": "upstream timeout",
+            "field_pools": {}
+          }
+        ]
+      },
+      "encoder": {
+        "type": "json_lines"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "phase_offset": "27.931s",
+      "clock_group": "chain_error_logs",
+      "clock_group_is_auto": true
+    }
+  ]
+}

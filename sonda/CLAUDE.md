@@ -24,10 +24,12 @@ src/
 │                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand,
 │                          PacksArgs/PacksAction for the `packs` subcommand,
 │                          --pack-path and --scenario-path global flags
-├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig,
-│                          resolve_scenario_source (@name shorthand via ScenarioCatalog),
-│                          parse_builtin_scenario, load_pack_from_catalog, resolve_pack_source,
-│                          is_pack_config, load_pack_from_yaml
+├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig.
+│                          Every scenario file is compiled through the v2 pipeline
+│                          (`sonda_core::compile_scenario_file`); v1 YAML shapes are
+│                          rejected with a migration hint. Includes resolve_scenario_source
+│                          (@name shorthand via ScenarioCatalog), parse_builtin_scenario,
+│                          load_pack_from_catalog.
 ├── packs.rs            ← filesystem-based metric pack discovery: PackCatalog, PackEntry,
 │                          build_search_path(). Scans directories for pack YAML files and
 │                          caches results for the CLI invocation.
@@ -92,16 +94,6 @@ src/
 ├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),
 │                          escape_yaml_double_quoted(), format_float(), format_rate().
 │                          Used by both init/yaml_gen and import/yaml_gen.
-├── story/
-│   ├── mod.rs          ← `sonda story` subcommand: StoryConfig, SignalConfig, compile_story(),
-│   │                      signal→ScenarioEntry expansion. Stories are a concise YAML format
-│   │                      for multi-signal temporal scenarios that compiles to
-│   │                      Vec<ScenarioEntry> + phase_offset at parse time.
-│   ├── after_resolve.rs ← AfterClause parsing, dependency graph, topological sort (Kahn's
-│   │                      algorithm), cycle detection, and phase_offset computation.
-│   └── timing.rs       ← Pure timing functions per behavior alias (flap, saturation, leak,
-│                          degradation, spike_event). Computes threshold-crossing time in
-│                          seconds. Rejects steady (ambiguous sine crossings).
 ├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
 │                          polls ScenarioStats via shared RwLock, all output to stderr)
 └── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
@@ -131,15 +123,17 @@ sonda import <file.csv> --analyze
 sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
 sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs|histogram|summary>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
-sonda [--quiet | --verbose] [--dry-run] story --file <story.yaml> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>]
 ```
 
 The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
 a scenario from the filesystem catalog discovered via the scenario search path. Example:
 `sonda metrics --scenario @cpu-spike`.
 
-The `run --scenario` path also detects YAML files with a `pack:` field and expands them
-via `sonda_core::packs::expand_pack` before feeding into `prepare_entries()`.
+Every `--scenario` file must be a **v2 scenario** (`version: 2` at the top level). v1 YAML
+shapes — flat single-signal configs, top-level `scenarios:` lists without `version: 2`, and
+`pack:` shorthand files — are rejected with a migration hint. Pack references inside v2
+files (`pack: <name>` under a `scenarios:` entry) are resolved by the `FilesystemPackResolver`
+backed by the CLI's `PackCatalog`.
 
 ### Global Flags
 
@@ -156,9 +150,10 @@ from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-r
 
 The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
 Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
-multiple scenarios concurrently from a single YAML file whose `scenarios:` list carries
-`signal_type: metrics`, `logs`, `histogram`, or `summary` entries -- or from a YAML file with a
-`pack:` field that references a metric pack. `scenarios` discovers scenario YAML files from the
+multiple scenarios concurrently from a single v2 YAML file whose `scenarios:` list carries
+`signal_type: metrics`, `logs`, `histogram`, or `summary` entries. Pack references inside a v2
+entry (`pack: <name>`) expand to one runtime entry per pack metric via the v2 compiler's
+expand phase. `scenarios` discovers scenario YAML files from the
 search path (`--scenario-path`, `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`):
 `list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to metric pack
 files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duration/sink/encoder
@@ -179,14 +174,11 @@ defaults when the situation is prefilled. Log-specific prompts (message template
 and sink-specific extra fields (kafka brokers/topic, OTLP signal type) are also prefillable.
 Rate and duration are validated; invalid values warn and fall through.
 
-`story` runs a story file -- a multi-signal format with temporal causality. Stories
-compile down to `Vec<ScenarioEntry>` + `phase_offset` at parse time (no runtime reactivity).
-Signals use `after` clauses (e.g., `after: metric_name < 1`) that resolve to concrete
-`phase_offset` values via deterministic timing math. Supported behaviors for `after`
-resolution: `flap`, `saturation`, `leak`, `degradation`, `spike_event`. `steady` is
-rejected (ambiguous sine crossings). Story files live in `stories/` at the repo root.
-CLI flags (`--duration`, `--rate`, `--sink`, `--endpoint`, `--encoder`) override story-level
-shared fields but not per-signal overrides.
+Multi-signal temporal scenarios (formerly delivered via the retired `story` subcommand) are
+now expressed directly as v2 scenario YAML files with `after:` clauses on entries, run through
+`sonda run --scenario <file>` or `sonda catalog run <name>`. The v2 compiler resolves `after`
+clauses into concrete `phase_offset` values via the shared timing math in
+`sonda_core::compiler::timing`.
 
 All subcommands go through the unified `sonda_core::prepare_entries` +
 `sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.

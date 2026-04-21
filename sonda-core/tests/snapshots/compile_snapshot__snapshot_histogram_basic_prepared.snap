@@ -1,0 +1,42 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: prepared_view(&prepared)
+---
+[
+  {
+    "buckets": [
+      0.005,
+      0.01,
+      0.025,
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      1.0,
+      2.5,
+      5.0,
+      10.0
+    ],
+    "distribution": {
+      "type": "normal",
+      "mean": 0.1,
+      "stddev": 0.05
+    },
+    "duration": "30s",
+    "encoder": {
+      "type": "prometheus_text"
+    },
+    "labels": {
+      "handler": "/api",
+      "method": "GET"
+    },
+    "name": "http_request_duration_seconds",
+    "observations_per_tick": 50,
+    "rate": 1.0,
+    "seed": 42,
+    "signal_type": "histogram",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

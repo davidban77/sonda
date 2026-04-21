@@ -1,0 +1,37 @@
+---
+source: sonda-core/tests/fixture_examples.rs
+expression: normalized
+---
+{
+  "version": 2,
+  "defaults_labels": {
+    "env": "prod",
+    "job": "web"
+  },
+  "entries": [
+    {
+      "id": "primary_uplink",
+      "signal_type": "metrics",
+      "rate": 1.0,
+      "duration": "10m",
+      "labels": {
+        "device": "rtr-01"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "pack": "telegraf_snmp_interface",
+      "overrides": {
+        "ifOperStatus": {
+          "generator": {
+            "type": "constant",
+            "value": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

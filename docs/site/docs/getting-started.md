@@ -123,34 +123,40 @@ in detail.
 
 ## Using a scenario file
 
-For repeatable configurations, define a scenario in YAML. Here is `examples/basic-metrics.yaml`
-from the repository:
+For repeatable configurations, define a scenario in a [v2 YAML file](configuration/v2-scenarios.md):
 
 ```yaml title="basic-metrics.yaml"
-name: interface_oper_state
-rate: 1000
-duration: 30s
-generator:
-  type: sine
-  amplitude: 5.0
-  period_secs: 30
-  offset: 10.0
-gaps:
-  every: 2m
-  for: 20s
-labels:
-  hostname: t0-a1
-  zone: eu1
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 1000
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    hostname: t0-a1
+    zone: eu1
+
+scenarios:
+  - id: interface_oper_state
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: sine
+      amplitude: 5.0
+      period_secs: 30
+      offset: 10.0
+    gaps:
+      every: 2m
+      for: 20s
 ```
 
 Run it:
 
 ```bash
-sonda metrics --scenario examples/basic-metrics.yaml --duration 3s
+sonda run --scenario basic-metrics.yaml --duration 3s
 ```
 
 ```text title="Output"
@@ -202,12 +208,12 @@ You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every 
 encoder, sink, and advanced feature step by step.
 
 Don't want to write YAML by hand? Run **`sonda init`** -- an interactive wizard that walks
-you through building a scenario step by step and writes the YAML for you. Pass CLI flags
+you through building a scenario step by step and writes v2 YAML for you. Pass CLI flags
 (e.g. `--signal-type`, `--situation`, `--rate`) to skip prompts, or use
 `--from @builtin` to start from an existing scenario (see
 [CLI Reference](configuration/cli-reference.md#sonda-init)). Or try the
-**[Built-in Scenarios](guides/scenarios.md)** -- 11 curated patterns you can run instantly
-with `sonda scenarios run cpu-spike`. Explore
+**[Built-in Scenarios](guides/scenarios.md)** -- curated patterns you can browse with
+`sonda catalog list` and run instantly with `sonda metrics --scenario @cpu-spike`. Explore
 **[Metric Packs](guides/metric-packs.md)** -- pre-built metric bundles for Telegraf SNMP
 and node_exporter that match real-world schemas. Have existing CSV data?
 **[CSV Import](guides/csv-import.md)** analyzes it, detects patterns, and generates a
@@ -215,7 +221,8 @@ portable scenario YAML.
 
 When you need specific details:
 
-- [**Scenario Files**](configuration/scenario-file.md) -- full YAML reference for all scenario fields
+- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains, and migration from v1
+- [**Scenario Fields**](configuration/scenario-file.md) -- per-entry field reference (generators, schedules, labels)
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
 - [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
 - [**Troubleshooting**](guides/troubleshooting.md) -- common issues and how to fix them

@@ -1,0 +1,126 @@
+---
+source: sonda-core/tests/expand_fixtures.rs
+expression: expanded
+---
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "telegraf_snmp_interface_0.ifOperStatus",
+      "signal_type": "metrics",
+      "name": "ifOperStatus",
+      "rate": 1.0,
+      "generator": {
+        "type": "constant",
+        "value": 1.0
+      },
+      "labels": {
+        "device": "rtr-auto",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    },
+    {
+      "id": "telegraf_snmp_interface_0.ifHCInOctets",
+      "signal_type": "metrics",
+      "name": "ifHCInOctets",
+      "rate": 1.0,
+      "generator": {
+        "type": "step",
+        "start": 0.0,
+        "step_size": 125000.0
+      },
+      "labels": {
+        "device": "rtr-auto",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    },
+    {
+      "id": "telegraf_snmp_interface_0.ifHCOutOctets",
+      "signal_type": "metrics",
+      "name": "ifHCOutOctets",
+      "rate": 1.0,
+      "generator": {
+        "type": "step",
+        "start": 0.0,
+        "step_size": 62500.0
+      },
+      "labels": {
+        "device": "rtr-auto",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    },
+    {
+      "id": "telegraf_snmp_interface_0.ifInErrors",
+      "signal_type": "metrics",
+      "name": "ifInErrors",
+      "rate": 1.0,
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "labels": {
+        "device": "rtr-auto",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    },
+    {
+      "id": "telegraf_snmp_interface_0.ifOutErrors",
+      "signal_type": "metrics",
+      "name": "ifOutErrors",
+      "rate": 1.0,
+      "generator": {
+        "type": "constant",
+        "value": 0.0
+      },
+      "labels": {
+        "device": "rtr-auto",
+        "ifAlias": "",
+        "ifIndex": "",
+        "ifName": "",
+        "job": "snmp"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      }
+    }
+  ]
+}

@@ -12,22 +12,24 @@
 # Usage:
 #   sonda metrics --scenario examples/kafka-sink.yaml
 
-name: kafka_constant
-rate: 100.0
-duration: 30s
+version: 2
 
-generator:
-  type: constant
-  value: 1.0
+defaults:
+  rate: 100.0
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: kafka
+    brokers: "localhost:9094"
+    topic: sonda-metrics
 
-labels:
-  hostname: localhost
-  env: dev
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: kafka
-  brokers: "localhost:9094"
-  topic: sonda-metrics
+scenarios:
+  - signal_type: metrics
+    name: kafka_constant
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      hostname: localhost
+      env: dev

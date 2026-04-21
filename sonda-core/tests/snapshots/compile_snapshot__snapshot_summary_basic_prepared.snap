@@ -1,0 +1,33 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: prepared_view(&prepared)
+---
+[
+  {
+    "distribution": {
+      "type": "exponential",
+      "rate": 10.0
+    },
+    "duration": "30s",
+    "encoder": {
+      "type": "prometheus_text"
+    },
+    "labels": {
+      "service": "auth"
+    },
+    "name": "rpc_duration_seconds",
+    "observations_per_tick": 100,
+    "quantiles": [
+      0.5,
+      0.9,
+      0.95,
+      0.99
+    ],
+    "rate": 1.0,
+    "seed": 7,
+    "signal_type": "summary",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

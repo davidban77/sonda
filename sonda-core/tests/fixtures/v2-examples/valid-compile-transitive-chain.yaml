@@ -1,0 +1,40 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 10m
+
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: util
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    after:
+      ref: link
+      op: "<"
+      value: 1
+
+  - id: latency
+    signal_type: metrics
+    name: latency_ms
+    generator:
+      type: degradation
+      baseline: 5
+      ceiling: 150
+      time_to_degrade: 3m
+    after:
+      ref: util
+      op: ">"
+      value: 70

@@ -11,13 +11,21 @@
 # VictoriaMetrics or another backend, change the sink in each scenario
 # entry to http_push or remote_write.
 
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
   # --- Interface traffic counters (sawtooth = monotonic ramp) ---
 
   - signal_type: metrics
     name: interface_in_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -30,15 +38,9 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: interface_in_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -51,15 +53,9 @@ scenarios:
       ifName: GigabitEthernet0/0/1
       ifAlias: uplink-isp-b
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: interface_out_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -72,15 +68,9 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: interface_out_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -93,17 +83,11 @@ scenarios:
       ifName: GigabitEthernet0/0/1
       ifAlias: uplink-isp-b
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # --- Interface operational state (1 = up) ---
 
   - signal_type: metrics
     name: interface_oper_state
-    rate: 1
-    duration: 120s
     generator:
       type: constant
       value: 1.0
@@ -112,15 +96,9 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: interface_oper_state
-    rate: 1
-    duration: 120s
     generator:
       type: constant
       value: 1.0
@@ -129,17 +107,11 @@ scenarios:
       ifName: GigabitEthernet0/0/1
       ifAlias: uplink-isp-b
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # --- Interface errors (low baseline with periodic spikes) ---
 
   - signal_type: metrics
     name: interface_errors
-    rate: 1
-    duration: 120s
     generator:
       type: spike
       baseline: 0.0
@@ -151,17 +123,11 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # --- System health (sine waves for CPU/memory) ---
 
   - signal_type: metrics
     name: device_cpu_percent
-    rate: 1
-    duration: 120s
     generator:
       type: sine
       amplitude: 15.0
@@ -172,15 +138,9 @@ scenarios:
     labels:
       device: rtr-core-01
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: device_memory_percent
-    rate: 1
-    duration: 120s
     generator:
       type: sine
       amplitude: 10.0
@@ -191,7 +151,3 @@ scenarios:
     labels:
       device: rtr-core-01
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout

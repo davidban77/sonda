@@ -132,7 +132,7 @@ impl<T: Message + Default + 'static> Decoder for OtlpProstDecoder<T> {
 ///
 /// Determines both the gRPC path and the parsing/batching strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
 pub enum OtlpSignalType {
     /// Metric signal — data is parsed as OTLP `Metric` messages and sent

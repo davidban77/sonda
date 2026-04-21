@@ -1,0 +1,49 @@
+---
+source: sonda-core/tests/compile_after_fixtures.rs
+expression: compiled
+---
+{
+  "version": 2,
+  "entries": [
+    {
+      "id": "link",
+      "signal_type": "metrics",
+      "name": "interface_oper_state",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "flap",
+        "up_duration": "60s",
+        "down_duration": "30s"
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "clock_group": "chain_backup",
+      "clock_group_is_auto": true
+    },
+    {
+      "id": "backup",
+      "signal_type": "metrics",
+      "name": "backup_util",
+      "rate": 1.0,
+      "duration": "5m",
+      "generator": {
+        "type": "constant",
+        "value": 1.0
+      },
+      "encoder": {
+        "type": "prometheus_text"
+      },
+      "sink": {
+        "type": "stdout"
+      },
+      "phase_offset": "85s",
+      "clock_group": "chain_backup",
+      "clock_group_is_auto": true
+    }
+  ]
+}

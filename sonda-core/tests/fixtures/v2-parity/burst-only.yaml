@@ -1,0 +1,24 @@
+# Hand-written translator probe (no v1 built-in mirrors it); closes matrix
+# row 7.2 — `bursts` window settings (every/for/multiplier) must round-trip
+# unchanged through the v2 translator on a log-signal entry.
+version: 2
+
+scenarios:
+  - signal_type: logs
+    name: burst_logs
+    rate: 5
+    duration: 2m
+    log_generator:
+      type: template
+      templates:
+        - message: "event"
+          field_pools: {}
+      seed: 0
+    bursts:
+      every: 20s
+      for: 5s
+      multiplier: 10.0
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout

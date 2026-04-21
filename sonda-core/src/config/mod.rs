@@ -1,8 +1,9 @@
 //! Scenario configuration types and validation.
 //!
-//! The `Deserialize` impls on all config types are available only when the
-//! `config` Cargo feature is enabled (active by default). Without the feature,
-//! configs can still be constructed in code — only YAML/JSON parsing is gated.
+//! The `Serialize` and `Deserialize` impls on all config types are available
+//! only when the `config` Cargo feature is enabled (active by default). Without
+//! the feature, configs can still be constructed in code — only YAML/JSON
+//! serialization and parsing are gated.
 
 pub mod aliases;
 pub mod validate;
@@ -19,7 +20,7 @@ use crate::{ConfigError, SondaError};
 /// During a gap the scheduler emits no events. The gap repeats on a fixed
 /// cycle defined by `every`, and each instance lasts for `for`.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct GapConfig {
     /// How often the gap recurs (e.g. `"2m"`).
     pub every: String,
@@ -32,7 +33,7 @@ pub struct GapConfig {
 /// Determines how the spike window produces distinct values for the injected
 /// label key on each tick.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(rename_all = "snake_case"))]
 pub enum SpikeStrategy {
     /// Sequential counter: `prefix + (tick % cardinality)`.
@@ -65,7 +66,7 @@ pub enum SpikeStrategy {
 ///     prefix: "pod-"
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct CardinalitySpikeConfig {
     /// The label key to inject during the spike window.
     ///
@@ -101,7 +102,7 @@ pub struct CardinalitySpikeConfig {
 /// Determines how a [`DynamicLabelConfig`] produces per-tick values for the
 /// label key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(untagged))]
 pub enum DynamicLabelStrategy {
     /// Cycle through an explicit list of values.
@@ -151,7 +152,7 @@ pub enum DynamicLabelStrategy {
 ///     values: [us-east-1, us-west-2, eu-west-1]
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct DynamicLabelConfig {
     /// The label key to attach to every event.
     ///
@@ -173,7 +174,7 @@ pub struct DynamicLabelConfig {
 /// If a gap and burst overlap in time, the gap takes priority and no events
 /// are emitted.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct BurstConfig {
     /// How often the burst recurs (e.g. `"10s"`).
     pub every: String,
@@ -209,7 +210,7 @@ fn default_sink() -> SinkConfig {
 /// offset) should be added here once and automatically propagate to both
 /// signal types.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct BaseScheduleConfig {
     /// Scenario name (metric name for metrics, identifier for logs).
     pub name: String,
@@ -258,6 +259,27 @@ pub struct BaseScheduleConfig {
     /// cross-scenario signaling is deferred to a future phase.
     #[cfg_attr(feature = "config", serde(default))]
     pub clock_group: Option<String>,
+    /// Provenance of [`Self::clock_group`] from the v2 compiler.
+    ///
+    /// Populated by [`crate::compiler::prepare`] when an entry traverses
+    /// the v2 compile pipeline. Carries:
+    ///
+    /// - `Some(true)` — the compiler synthesized
+    ///   `chain_{lowest_lex_id}` because the `after:` component had no
+    ///   user-supplied `clock_group`.
+    /// - `Some(false)` — the value was adopted from an explicit user
+    ///   assignment (including explicit values that happen to start with
+    ///   `chain_`).
+    /// - `None` — the entry did not flow through the v2 compiler (v1
+    ///   loaders, hand-built configs); display code must not show an
+    ///   `(auto)` marker.
+    ///
+    /// Hidden from YAML serialization because it is a compiler-derived
+    /// field, not user-supplied input. Skipped from deserialization for
+    /// the same reason — round-tripping a config never resurrects this
+    /// flag.
+    #[cfg_attr(feature = "config", serde(skip))]
+    pub clock_group_is_auto: Option<bool>,
     /// Optional jitter amplitude. When set, adds uniform noise in
     /// `[-jitter, +jitter]` to every generated value. Defaults to `None` (no jitter).
     #[cfg_attr(feature = "config", serde(default))]
@@ -301,7 +323,7 @@ pub struct BaseScheduleConfig {
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -340,7 +362,7 @@ impl std::ops::DerefMut for ScenarioConfig {
 ///   rate: 10.0
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
 pub enum DistributionConfig {
     /// Exponential distribution with rate parameter lambda.
@@ -396,7 +418,7 @@ pub enum DistributionConfig {
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct HistogramScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -457,7 +479,7 @@ impl std::ops::DerefMut for HistogramScenarioConfig {
 /// seed: 42
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct SummaryScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -503,7 +525,7 @@ impl std::ops::DerefMut for SummaryScenarioConfig {
 /// Deserialized from a YAML multi-scenario file where each element of the
 /// `scenarios` list carries a `signal_type` key.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "signal_type"))]
 pub enum ScenarioEntry {
     /// A metrics scenario entry.
@@ -543,45 +565,16 @@ impl ScenarioEntry {
     pub fn clock_group(&self) -> Option<&str> {
         self.base().clock_group.as_deref()
     }
-}
 
-/// Full configuration for running multiple concurrent scenarios.
-///
-/// Deserialized from a multi-scenario YAML file that contains a top-level
-/// `scenarios:` list. Each entry specifies its `signal_type` (either `metrics`
-/// or `logs`) along with the scenario-specific fields.
-///
-/// # Example YAML
-///
-/// ```yaml
-/// scenarios:
-///   - signal_type: metrics
-///     name: cpu_usage
-///     rate: 100
-///     duration: 30s
-///     generator: { type: sine, amplitude: 50, period_secs: 60, offset: 50 }
-///     encoder:
-///       type: prometheus_text
-///     sink:
-///       type: stdout
-///   - signal_type: logs
-///     name: app_logs
-///     rate: 10
-///     duration: 30s
-///     generator:
-///       type: template
-///       templates: [{ message: "event", field_pools: {} }]
-///     encoder:
-///       type: json_lines
-///     sink:
-///       type: file
-///       path: /tmp/logs.json
-/// ```
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
-pub struct MultiScenarioConfig {
-    /// The list of scenarios to run concurrently.
-    pub scenarios: Vec<ScenarioEntry>,
+    /// Return the v2-compiler-derived provenance for [`Self::clock_group`].
+    ///
+    /// `Some(true)` when the v2 compiler synthesized the `chain_<id>`
+    /// name; `Some(false)` for explicit user assignments via the v2
+    /// pipeline; `None` for entries that bypassed the v2 compiler (v1
+    /// loaders, hand-built configs).
+    pub fn clock_group_is_auto(&self) -> Option<bool> {
+        self.base().clock_group_is_auto
+    }
 }
 
 /// Validate the `columns` field of a `CsvReplay` generator config.
@@ -845,7 +838,7 @@ pub fn expand_entry(entry: ScenarioEntry) -> Result<Vec<ScenarioEntry>, SondaErr
 ///   type: stdout
 /// ```
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "config", derive(serde::Deserialize))]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogScenarioConfig {
     /// Shared schedule and delivery fields.
     #[cfg_attr(feature = "config", serde(flatten))]
@@ -1245,6 +1238,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("5s".to_string()),
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1270,6 +1264,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1295,6 +1290,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("10s".to_string()),
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1331,6 +1327,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: Some("my-group".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1356,6 +1353,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1385,6 +1383,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1411,6 +1410,7 @@ clock_group: compound-alert
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1426,121 +1426,6 @@ clock_group: compound-alert
         });
         assert_eq!(entry.base().name, "log_base");
         assert_eq!(entry.base().rate, 99.0);
-    }
-
-    // -----------------------------------------------------------------------
-    // Multi-scenario YAML with phase_offset and clock_group
-    // -----------------------------------------------------------------------
-
-    /// Multi-scenario YAML with phase_offset and clock_group deserializes correctly.
-    #[test]
-    fn multi_scenario_config_with_phase_offset_and_clock_group_deserializes() {
-        let yaml = r#"
-scenarios:
-  - signal_type: metrics
-    name: cpu_usage
-    rate: 1
-    duration: 10s
-    phase_offset: "0s"
-    clock_group: alert-test
-    generator:
-      type: constant
-      value: 95.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
-  - signal_type: metrics
-    name: memory_usage
-    rate: 1
-    duration: 10s
-    phase_offset: "3s"
-    clock_group: alert-test
-    generator:
-      type: constant
-      value: 88.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 2);
-
-        assert_eq!(config.scenarios[0].phase_offset(), Some("0s"));
-        assert_eq!(config.scenarios[0].clock_group(), Some("alert-test"));
-        assert_eq!(config.scenarios[1].phase_offset(), Some("3s"));
-        assert_eq!(config.scenarios[1].clock_group(), Some("alert-test"));
-    }
-
-    /// Existing multi-scenario YAML without phase_offset/clock_group still works.
-    #[test]
-    fn multi_scenario_config_without_phase_offset_backward_compatible() {
-        let yaml = r#"
-scenarios:
-  - signal_type: metrics
-    name: cpu_usage
-    rate: 100
-    duration: 10s
-    generator:
-      type: constant
-      value: 1.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 1);
-        assert_eq!(config.scenarios[0].phase_offset(), None);
-        assert_eq!(config.scenarios[0].clock_group(), None);
-    }
-
-    /// The example multi-metric-correlation.yaml file deserializes correctly.
-    #[test]
-    fn multi_metric_correlation_example_deserializes() {
-        let yaml = include_str!("../../../examples/multi-metric-correlation.yaml");
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 2, "example must have 2 scenarios");
-
-        // First scenario: cpu_usage with phase_offset "0s"
-        assert_eq!(config.scenarios[0].phase_offset(), Some("0s"));
-        assert_eq!(config.scenarios[0].clock_group(), Some("alert-test"));
-
-        // Second scenario: memory_usage_percent with phase_offset "3s"
-        assert_eq!(config.scenarios[1].phase_offset(), Some("3s"));
-        assert_eq!(config.scenarios[1].clock_group(), Some("alert-test"));
-
-        // Both should be metrics entries
-        assert!(matches!(config.scenarios[0], ScenarioEntry::Metrics(_)));
-        assert!(matches!(config.scenarios[1], ScenarioEntry::Metrics(_)));
-    }
-
-    /// Multi-scenario YAML with a Logs entry including phase_offset deserializes.
-    #[test]
-    fn multi_scenario_config_logs_entry_with_phase_offset() {
-        let yaml = r#"
-scenarios:
-  - signal_type: logs
-    name: delayed_logs
-    rate: 10
-    duration: 10s
-    phase_offset: "2s"
-    clock_group: log-group
-    generator:
-      type: template
-      templates:
-        - message: "log event"
-          field_pools: {}
-    encoder:
-      type: json_lines
-    sink:
-      type: stdout
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 1);
-        assert_eq!(config.scenarios[0].phase_offset(), Some("2s"));
-        assert_eq!(config.scenarios[0].clock_group(), Some("log-group"));
     }
 
     // -----------------------------------------------------------------------
@@ -1709,6 +1594,7 @@ gaps:
             sink: SinkConfig::Stdout,
             phase_offset: None,
             clock_group: None,
+            clock_group_is_auto: None,
             jitter: None,
             jitter_seed: None,
         };
@@ -1742,6 +1628,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: Some("1s".to_string()),
                 clock_group: Some("group-a".to_string()),
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1773,6 +1660,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -1811,6 +1699,7 @@ gaps:
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -2219,6 +2108,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: Some(0.5),
                 jitter_seed: Some(42),
                 dynamic_labels: None,
@@ -2297,6 +2187,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2656,6 +2547,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2793,6 +2685,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2866,6 +2759,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2927,6 +2821,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -2973,6 +2868,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3010,6 +2906,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3051,6 +2948,7 @@ mod expand_tests {
                 sink: SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
@@ -3255,81 +3153,6 @@ distribution:
     // ScenarioEntry: Histogram and Summary variants
     // -----------------------------------------------------------------------
 
-    /// Multi-scenario YAML with histogram entry deserializes correctly.
-    #[test]
-    #[cfg(feature = "config")]
-    fn multi_scenario_histogram_entry_deserializes() {
-        let yaml = r#"
-scenarios:
-  - signal_type: histogram
-    name: http_request_duration_seconds
-    rate: 1
-    duration: 1m
-    distribution:
-      type: exponential
-      rate: 10.0
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 1);
-        assert!(matches!(config.scenarios[0], ScenarioEntry::Histogram(_)));
-    }
-
-    /// Multi-scenario YAML with summary entry deserializes correctly.
-    #[test]
-    #[cfg(feature = "config")]
-    fn multi_scenario_summary_entry_deserializes() {
-        let yaml = r#"
-scenarios:
-  - signal_type: summary
-    name: rpc_duration_seconds
-    rate: 1
-    duration: 1m
-    distribution:
-      type: normal
-      mean: 0.1
-      stddev: 0.02
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 1);
-        assert!(matches!(config.scenarios[0], ScenarioEntry::Summary(_)));
-    }
-
-    /// Multi-scenario YAML with mixed metrics, logs, histogram, and summary.
-    #[test]
-    #[cfg(feature = "config")]
-    fn multi_scenario_mixed_types_deserialize() {
-        let yaml = r#"
-scenarios:
-  - signal_type: metrics
-    name: cpu_usage
-    rate: 10
-    duration: 1m
-    generator:
-      type: constant
-      value: 1.0
-  - signal_type: histogram
-    name: latency_hist
-    rate: 1
-    duration: 1m
-    distribution:
-      type: exponential
-      rate: 10.0
-  - signal_type: summary
-    name: latency_sum
-    rate: 1
-    duration: 1m
-    distribution:
-      type: normal
-      mean: 0.1
-      stddev: 0.02
-"#;
-        let config: MultiScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.scenarios.len(), 3);
-        assert!(matches!(config.scenarios[0], ScenarioEntry::Metrics(_)));
-        assert!(matches!(config.scenarios[1], ScenarioEntry::Histogram(_)));
-        assert!(matches!(config.scenarios[2], ScenarioEntry::Summary(_)));
-    }
-
     /// ScenarioEntry::base() works for histogram entries.
     #[test]
     #[cfg(feature = "config")]
@@ -3381,6 +3204,7 @@ distribution:
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },
@@ -3412,6 +3236,7 @@ distribution:
                 sink: crate::sink::SinkConfig::Stdout,
                 phase_offset: None,
                 clock_group: None,
+                clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
             },

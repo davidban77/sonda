@@ -103,26 +103,27 @@ works directly with `rate()` and `histogram_quantile()`.
 ### Scenario file
 
 ```yaml title="examples/histogram.yaml"
-name: http_request_duration_seconds
-rate: 1
-duration: 10s
+version: 2
 
-distribution:
-  type: exponential
-  rate: 10.0
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-observations_per_tick: 100
-seed: 42
-
-labels:
-  method: GET
-  handler: /api/v1/query
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      method: GET
+      handler: /api/v1/query
 ```
 
 Run it:
@@ -184,28 +185,29 @@ mean increases from 0.1s to 0.7s after 60 seconds -- pushing the p99 well above 
 threshold.
 
 ```yaml title="histogram-degradation.yaml"
-name: http_request_duration_seconds
-rate: 1
-duration: 5m
+version: 2
 
-distribution:
-  type: exponential
-  rate: 10.0
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: http://localhost:8428/api/v1/write
 
-observations_per_tick: 100
-mean_shift_per_sec: 0.01
-seed: 42
-
-labels:
-  method: GET
-  handler: /api/v1/query
-
-encoder:
-  type: remote_write
-
-sink:
-  type: remote_write
-  endpoint: http://localhost:8428/api/v1/write
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 100
+    mean_shift_per_sec: 0.01
+    seed: 42
+    labels:
+      method: GET
+      handler: /api/v1/query
 ```
 
 ```bash
@@ -249,27 +251,28 @@ Summaries are simpler to generate and query, but remember: the quantile values a
 per-tick and cannot be aggregated across instances.
 
 ```yaml title="examples/summary.yaml"
-name: rpc_duration_seconds
-rate: 1
-duration: 10s
+version: 2
 
-distribution:
-  type: normal
-  mean: 0.1
-  stddev: 0.02
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-observations_per_tick: 100
-seed: 42
-
-labels:
-  service: auth
-  method: GetUser
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: summary
+    name: rpc_duration_seconds
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      service: auth
+      method: GetUser
 ```
 
 ```bash

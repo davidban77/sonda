@@ -1,0 +1,19 @@
+# v2 single-signal file with `defaults:` + `scenarios:`. CLI tests use
+# this to verify `sonda run` dispatches v2 files through the v2 compiler.
+version: 2
+
+defaults:
+  rate: 5
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: v2_inline
+    signal_type: metrics
+    name: v2_inline_metric
+    generator:
+      type: constant
+      value: 1.0

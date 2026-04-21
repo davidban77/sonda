@@ -1,0 +1,20 @@
+version: 2
+scenario_name: scn-b
+category: infrastructure
+description: "Catalog test scenario B"
+
+defaults:
+  rate: 1
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: scn_b_metric
+    signal_type: metrics
+    name: scn_b_metric
+    generator:
+      type: constant
+      value: 2.0

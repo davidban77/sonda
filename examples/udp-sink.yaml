@@ -1,13 +1,19 @@
-name: cpu_usage
-rate: 10
-duration: 5s
-generator:
-  type: constant
-  value: 1.0
-labels:
-  host: server-01
-encoder:
-  type: json_lines
-sink:
-  type: udp
-  address: "127.0.0.1:9998"
+version: 2
+
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: json_lines
+  sink:
+    type: udp
+    address: "127.0.0.1:9998"
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      host: server-01

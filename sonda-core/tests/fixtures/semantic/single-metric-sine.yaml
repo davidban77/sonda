@@ -1,0 +1,15 @@
+name: interface_traffic
+rate: 10
+duration: 30s
+generator:
+  type: sine
+  amplitude: 50.0
+  period_secs: 60
+  offset: 100.0
+labels:
+  hostname: router-01
+  interface: eth0
+encoder:
+  type: prometheus_text
+sink:
+  type: stdout

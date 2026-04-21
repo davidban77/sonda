@@ -126,16 +126,19 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 
 ## Push metrics that trigger alerts
 
-The existing `network-link-failure.yaml` scenario generates `interface_oper_state` transitions
-that trigger InterfaceDown. To also trigger BGPSessionDown, you need a BGP metric.
+The built-in `link-failover` scenario generates `interface_oper_state` transitions that
+trigger InterfaceDown. To also trigger BGPSessionDown, you need a BGP metric.
 
-Use the link failure scenario to generate both interface state and BGP session data. The link
-failure file already produces `interface_oper_state` with a 10-second down window per 30-second
-cycle -- plenty to trigger the `for: 10s` rule. For BGP, add a quick one-liner:
+The failover scenario models an edge router primary link flap (60s up / 30s down, cycling) with
+a backup link that saturates after the primary drops. The first flap crosses `interface_oper_state
+== 0` at the one-minute mark, which is plenty to trigger the `for: 10s` rule. For BGP, add a
+quick one-liner:
 
 ```bash
-# Terminal 1: run the link failure scenario (pushes to VictoriaMetrics)
-sonda run --scenario examples/network-link-failure.yaml
+# Terminal 1: run the failover scenario from the built-in catalog
+sonda catalog run link-failover
+# or load the YAML directly:
+sonda run --scenario scenarios/link-failover.yaml
 ```
 
 !!! warning "Sink must target VictoriaMetrics"
@@ -426,8 +429,8 @@ a remediation storm.
 
 ### What flapping looks like
 
-The link failure scenario's 30-second cycle already produces a simple flap pattern: 10 seconds
-up, 10 seconds down, 10 seconds up. But real flaps are faster and less predictable.
+The `link-failover` scenario's `flap` generator already produces a simple flap pattern: 60s up,
+30s down, cycling for the scenario duration. But real flaps are faster and less predictable.
 
 Here is a rapid-flap sequence that toggles every 2--3 seconds:
 
@@ -481,21 +484,27 @@ The sequence generator gives you precise control over flap timing. At `rate: 1`,
 in the sequence is one second. To simulate sub-second flaps, increase the rate:
 
 ```yaml
-rate: 2          # 2 events/second = each sequence value is 500ms
-generator:
-  type: sequence
-  values: [1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
-  repeat: true
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 2          # 2 events/second = each sequence value is 500ms
+    generator:
+      type: sequence
+      values: [1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
+      repeat: true
 ```
 
 To simulate flaps with longer intervals, decrease the rate:
 
 ```yaml
-rate: 0.2        # 1 event every 5 seconds = each sequence value is 5s
-generator:
-  type: sequence
-  values: [1, 0, 0, 1, 1, 1]  # 5s up, 10s down, 15s up
-  repeat: true
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 0.2        # 1 event every 5 seconds = each sequence value is 5s
+    generator:
+      type: sequence
+      values: [1, 0, 0, 1, 1, 1]  # 5s up, 10s down, 15s up
+      repeat: true
 ```
 
 ---
@@ -509,8 +518,8 @@ Here is a checklist for validating your automation workflow against Sonda-genera
 
 | Test case | Sonda scenario | Expected alert | Expected automation |
 |-----------|---------------|---------------|-------------------|
-| Interface down | `network-link-failure.yaml` | InterfaceDown fires | Remediation playbook runs |
-| Interface recovers | Let sequence cycle back to 1 | InterfaceDown resolves | Resolution handler runs (if configured) |
+| Interface down | `@link-failover` | InterfaceDown fires | Remediation playbook runs |
+| Interface recovers | Let the `flap` cycle back to 1 | InterfaceDown resolves | Resolution handler runs (if configured) |
 | BGP session down | BGP sequence (see [Network Device Telemetry](network-device-telemetry.md#bgp-session-state)) | BGPSessionDown fires | BGP remediation runs |
 | Rapid flap | Rapid flap sequence (above) | No alert (below `for:` threshold) | No automation triggers |
 | Slow flap | Slow flap sequence (above) | Multiple InterfaceDown alerts | Deduplication or rate limiting works |
@@ -521,9 +530,9 @@ Here is a checklist for validating your automation workflow against Sonda-genera
 Alertmanager sends a `"status": "resolved"` webhook when an alert clears. Your automation
 should handle this -- for example, closing a ticket or logging the recovery.
 
-The link failure scenario naturally produces resolution events: after the 10-second down window,
-`interface_oper_state` returns to 1, the alert clears, and Alertmanager delivers the resolved
-webhook. Verify your engine processes it:
+The failover scenario naturally produces resolution events: after each 30-second down window,
+the `flap` generator returns `interface_oper_state` to 1, the alert clears, and Alertmanager
+delivers the resolved webhook. Verify your engine processes it:
 
 ```bash
 # Check webhook logs for resolved status
@@ -538,34 +547,40 @@ Run multiple Sonda scenarios simultaneously to test that your automation handles
 alerts correctly. Create a BGP session scenario file:
 
 ```yaml title="bgp-session-down.yaml"
-name: bgp_session_state
-rate: 1
-duration: 120s
-generator:
-  type: sequence
-  # 10s Established, 10s down, 10s Established
-  values: [1,1,1,1,1,1,1,1,1,1,
-           0,0,0,0,0,0,0,0,0,0,
-           1,1,1,1,1,1,1,1,1,1]
-  repeat: true
-labels:
-  device: rtr-core-01
-  bgp_peer: "192.168.1.1"
-  bgp_asn: "65001"
-  job: snmp
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
+scenarios:
+  - signal_type: metrics
+    name: bgp_session_state
+    generator:
+      type: sequence
+      # 10s Established, 10s down, 10s Established
+      values: [1,1,1,1,1,1,1,1,1,1,
+               0,0,0,0,0,0,0,0,0,0,
+               1,1,1,1,1,1,1,1,1,1]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      bgp_peer: "192.168.1.1"
+      bgp_asn: "65001"
+      job: snmp
 ```
 
 Then run both scenarios at the same time:
 
 ```bash
-# Terminal 1: interface failure
-sonda run --scenario examples/network-link-failure.yaml &
+# Terminal 1: link failover (primary flap, backup saturation, latency degradation)
+sonda catalog run link-failover &
 
 # Terminal 2: BGP session down
 sonda metrics --scenario bgp-session-down.yaml
@@ -598,7 +613,7 @@ rm -f examples/alertmanager/network-automation-alerts.yml
 | Task | Command |
 |------|---------|
 | Start alerting stack | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d` |
-| Run link failure scenario | `sonda run --scenario examples/network-link-failure.yaml` |
+| Run failover scenario | `sonda catalog run link-failover` |
 | Check vmalert for InterfaceDown | `curl -s http://localhost:8880/api/v1/alerts \| jq '.data.alerts[]'` |
 | Check Alertmanager alerts | `curl -s http://localhost:9093/api/v2/alerts \| jq '.[].labels'` |
 | Check webhook delivery | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting logs webhook-receiver` |

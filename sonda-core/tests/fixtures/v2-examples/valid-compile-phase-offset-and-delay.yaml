@@ -1,0 +1,28 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  # 10s explicit phase_offset + 60s crossing + 15s delay = 85s total.
+  - id: backup
+    signal_type: metrics
+    name: backup_util
+    generator:
+      type: constant
+      value: 1
+    phase_offset: 10s
+    after:
+      ref: link
+      op: "<"
+      value: 1
+      delay: 15s

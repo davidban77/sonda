@@ -32,18 +32,45 @@ curl http://localhost:8080/health
 
 ## Start a Scenario
 
-Post a YAML or JSON scenario body to `POST /scenarios`. The server accepts both
-`text/yaml` and `application/json` content types. See [Scenario Files](../configuration/scenario-file.md)
-for the full YAML schema.
+Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
+`POST /scenarios`. The server accepts both `text/yaml` (or `application/x-yaml`) and
+`application/json` content types.
+
+!!! warning "v2 scenarios only"
+    The server only accepts v2 bodies (`version: 2` at the top level). Legacy v1 bodies are
+    rejected with `400 Bad Request` and a migration hint. See
+    [Migrating v1 bodies](#migrating-v1-bodies) below.
+
+### Single-scenario body
 
 === "YAML"
 
     ```bash
     curl -X POST \
       -H "Content-Type: text/yaml" \
-      --data-binary @examples/basic-metrics.yaml \
-      http://localhost:8080/scenarios
-    # {"id":"<uuid>","name":"interface_oper_state","status":"running"}
+      --data-binary @- http://localhost:8080/scenarios <<'EOF'
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 30s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - id: up
+        signal_type: metrics
+        name: up
+        generator:
+          type: constant
+          value: 1.0
+    EOF
+    ```
+
+    ```json title="Response"
+    {"id":"a1b2c3d4-...","name":"up","status":"running"}
     ```
 
 === "JSON"
@@ -51,27 +78,39 @@ for the full YAML schema.
     ```bash
     curl -X POST \
       -H "Content-Type: application/json" \
-      -d '{"signal_type":"metrics","name":"up","rate":10,"generator":{"type":"constant","value":1},"encoder":{"type":"prometheus_text"},"sink":{"type":"stdout"}}' \
-      http://localhost:8080/scenarios
+      -d @- http://localhost:8080/scenarios <<'EOF'
+    {
+      "version": 2,
+      "defaults": {
+        "rate": 10,
+        "duration": "30s",
+        "encoder": { "type": "prometheus_text" },
+        "sink": { "type": "stdout" }
+      },
+      "scenarios": [
+        {
+          "id": "up",
+          "signal_type": "metrics",
+          "name": "up",
+          "generator": { "type": "constant", "value": 1.0 }
+        }
+      ]
+    }
+    EOF
     ```
 
-Error responses:
+    The JSON body is transcoded to YAML server-side and compiled through the same v2 pipeline
+    as the YAML path. Any valid v2 scenario file can be posted as JSON by converting the YAML
+    to its JSON equivalent.
 
-- **400 Bad Request** -- body cannot be parsed as YAML or JSON.
-- **422 Unprocessable Entity** -- valid YAML/JSON but fails validation (e.g., `rate: 0`).
-- **500 Internal Server Error** -- scenario thread could not be spawned, or internal state error.
+The response shape depends on how many entries the compiler produces, not on the request
+format. A single-entry result returns the flat `{"id", "name", "status"}` body; anything that
+compiles to two or more entries (for example, a pack-backed entry that fans out) returns
+`{"scenarios": [...]}`.
 
-!!! tip "Long-running scenarios"
-    Omit the `duration` field from your scenario body to create a scenario that runs
-    indefinitely. Stop it later with `DELETE /scenarios/{id}`. See the
-    [tutorial](../guides/tutorial.md#long-running-scenarios)
-    for a full start and stop example.
+### Multi-scenario body
 
-### Multi-scenario batch
-
-You can launch multiple scenarios in a single request by wrapping them in a `scenarios` array.
-This is the same format used by [`sonda run`](../configuration/scenario-file.md#multi-scenario-files),
-so you can POST the exact same YAML files you use locally.
+Post a v2 file with two or more `scenarios:` entries to launch them atomically:
 
 === "YAML"
 
@@ -83,26 +122,32 @@ so you can POST the exact same YAML files you use locally.
     ```
 
     ```yaml title="examples/multi-scenario.yaml"
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 30s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
     scenarios:
-      - signal_type: metrics
+      - id: cpu_usage
+        signal_type: metrics
         name: cpu_usage
-        rate: 100
-        duration: 30s
         generator:
           type: sine
           amplitude: 50
           period_secs: 60
           offset: 50
-        encoder:
-          type: prometheus_text
-        sink:
-          type: stdout
 
-      - signal_type: logs
+      - id: app_logs
+        signal_type: logs
         name: app_logs
-        rate: 10
-        duration: 30s
-        generator:
+        encoder:
+          type: json_lines
+        log_generator:
           type: template
           templates:
             - message: "Request from {ip} to {endpoint}"
@@ -110,10 +155,6 @@ so you can POST the exact same YAML files you use locally.
                 ip: ["10.0.0.1", "10.0.0.2"]
                 endpoint: ["/api/v1/health", "/api/v1/metrics"]
           seed: 42
-        encoder:
-          type: json_lines
-        sink:
-          type: stdout
     ```
 
 === "JSON"
@@ -123,24 +164,25 @@ so you can POST the exact same YAML files you use locally.
       -H "Content-Type: application/json" \
       -d @- http://localhost:8080/scenarios <<'EOF'
     {
+      "version": 2,
+      "defaults": {
+        "rate": 10,
+        "duration": "30s",
+        "encoder": { "type": "prometheus_text" },
+        "sink": { "type": "stdout" }
+      },
       "scenarios": [
         {
+          "id": "cpu_usage",
           "signal_type": "metrics",
           "name": "cpu_usage",
-          "rate": 10,
-          "duration": "30s",
-          "generator": { "type": "constant", "value": 42.0 },
-          "encoder": { "type": "prometheus_text" },
-          "sink": { "type": "stdout" }
+          "generator": { "type": "constant", "value": 42.0 }
         },
         {
+          "id": "memory_usage",
           "signal_type": "metrics",
           "name": "memory_usage",
-          "rate": 10,
-          "duration": "30s",
-          "generator": { "type": "constant", "value": 75.0 },
-          "encoder": { "type": "prometheus_text" },
-          "sink": { "type": "stdout" }
+          "generator": { "type": "constant", "value": 75.0 }
         }
       ]
     }
@@ -153,68 +195,103 @@ The response wraps each launched scenario in a `scenarios` array:
 {
   "scenarios": [
     { "id": "a1b2c3d4-...", "name": "cpu_usage", "status": "running" },
-    { "id": "e5f6a7b8-...", "name": "memory_usage", "status": "running" }
+    { "id": "e5f6a7b8-...", "name": "app_logs", "status": "running" }
   ]
 }
 ```
 
-Each scenario gets its own ID and runs on a separate thread. You manage them
-individually with `GET /scenarios/{id}`, `DELETE /scenarios/{id}`, etc.
+Each scenario gets its own ID and runs on a separate thread. You manage them individually
+with `GET /scenarios/{id}`, `DELETE /scenarios/{id}`, etc.
 
-!!! info "Single vs. multi response shape"
-    The response format depends on the request body. A single-scenario body
-    returns a flat object (`{"id", "name", "status"}`). A multi-scenario body
-    returns `{"scenarios": [...]}`. Existing single-scenario clients are
-    unaffected.
-
-**Batch error handling** is atomic -- if any entry in the batch fails validation, the
-entire request is rejected and nothing is launched:
+**Batch error handling** is atomic -- if any entry in the batch fails compilation or
+validation, the entire request is rejected and nothing is launched:
 
 | Condition | Status | Behavior |
 |-----------|--------|----------|
-| Empty `scenarios: []` | **400** | Bad request -- at least one scenario required |
-| Any entry fails validation | **422** | Nothing launched, error detail identifies the failing entry |
+| Body is not v2 (`version: 2` missing) | **400** | Rejected with migration hint |
+| Body parses but compile fails (unknown field, unresolved pack, etc.) | **400** | Rejected with compiler error detail |
+| Empty `scenarios: []` | **400** | At least one scenario required |
+| Any entry fails runtime validation | **422** | Nothing launched, detail identifies the failing entry |
 | All entries valid | **201** | All scenarios launched and returned |
 
-??? tip "Phase offsets in batch requests"
-    Multi-scenario batches honor `phase_offset` and `clock_group` fields, just like
-    `sonda run`. This lets you create time-correlated scenarios over the API:
+!!! tip "Long-running scenarios"
+    Omit the `duration` field from your scenario body (or put `duration:` only inside a
+    single entry and omit it from `defaults:`) to create a scenario that runs indefinitely.
+    Stop it later with `DELETE /scenarios/{id}`. See the
+    [tutorial](../guides/tutorial.md#long-running-scenarios) for a full start and stop
+    example.
+
+??? tip "Phase offsets and after: chains in batch requests"
+    Multi-scenario batches honor `phase_offset`, `clock_group`, and `after:` fields, just
+    like `sonda run`. This lets you create time-correlated scenarios over the API:
 
     ```yaml
+    version: 2
+
+    defaults:
+      rate: 1
+      duration: 120s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
     scenarios:
-      - signal_type: metrics
+      - id: cpu_usage
+        signal_type: metrics
         name: cpu_usage
         phase_offset: "0s"
         clock_group: alert-test
-        rate: 1
-        duration: 120s
         generator:
           type: sequence
           values: [20, 20, 95, 95, 95, 20]
           repeat: true
-        encoder:
-          type: prometheus_text
-        sink:
-          type: stdout
 
-      - signal_type: metrics
+      - id: memory_usage
+        signal_type: metrics
         name: memory_usage
         phase_offset: "3s"
         clock_group: alert-test
-        rate: 1
-        duration: 120s
         generator:
           type: sequence
           values: [40, 40, 88, 88, 88, 40]
           repeat: true
-        encoder:
-          type: prometheus_text
-        sink:
-          type: stdout
     ```
 
-    The `memory_usage` scenario starts 3 seconds after `cpu_usage`, simulating a
-    cascading failure for compound alert testing.
+    The `memory_usage` scenario starts 3 seconds after `cpu_usage`, simulating a cascading
+    failure for compound alert testing.
+
+### Migrating v1 bodies
+
+When you POST a pre-v2 body, the server responds with `400 Bad Request` and a migration
+hint in the detail field:
+
+```json title="Response (400)"
+{
+  "error": "bad_request",
+  "detail": "body is not a v2 scenario. Sonda only accepts v2 scenario bodies (`version: 2` at the top level). Migrate this body to v2 — see docs/configuration/v2-scenarios.md for the migration guide."
+}
+```
+
+The same hint appears for bodies that do declare `version: 2` but fail to compile (unknown
+fields, unresolved pack references, malformed `after:` clauses). In that case the `detail`
+carries the compiler's error message instead. See
+[Migrating from v1](../configuration/v2-scenarios.md#migrating-from-v1) for side-by-side
+shape conversions.
+
+!!! info "Pack references over HTTP"
+    The server has no filesystem pack catalog. Bodies that reference a named pack
+    (`pack: telegraf_snmp_interface`) compile against an empty in-memory resolver and fail
+    with a pack-not-found error. For now, pack-backed scenarios must run via the CLI or be
+    expanded into per-metric entries before posting.
+
+### Error response reference
+
+| Status | Condition | Detail field |
+|--------|-----------|--------------|
+| **400 Bad Request** | Body is not UTF-8, not valid JSON/YAML, missing `version: 2`, or fails compilation. | Parser or compiler error; v1 bodies include the migration hint. |
+| **422 Unprocessable Entity** | Body compiles but fails runtime validation (`rate: 0`, zero `duration`, etc.). | Validation error identifying the failing entry. |
+| **500 Internal Server Error** | Scenario thread could not be spawned, or internal state error. | Short internal error; check server logs. |
 
 ## API Endpoints
 

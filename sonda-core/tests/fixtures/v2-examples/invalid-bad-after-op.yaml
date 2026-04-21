@@ -1,0 +1,20 @@
+# ERROR: YAML parse error -- unknown variant `==`, expected `<` or `>`
+version: 2
+scenarios:
+  - id: source
+    signal_type: metrics
+    name: metric_a
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+  - signal_type: metrics
+    name: metric_b
+    rate: 1
+    generator:
+      type: constant
+      value: 2.0
+    after:
+      ref: source
+      op: "=="
+      value: 1

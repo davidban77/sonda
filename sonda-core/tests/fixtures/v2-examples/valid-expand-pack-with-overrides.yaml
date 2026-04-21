@@ -1,0 +1,26 @@
+# Pack entry inside scenarios: with generator and label overrides, plus
+# file-level defaults.labels that must flow into every expanded metric per
+# the §2.2 precedence chain. Used as the canonical pack-expansion snapshot
+# target (Phase 3 compilation).
+version: 2
+defaults:
+  rate: 1
+  duration: 2m
+  labels:
+    env: prod
+scenarios:
+  - id: primary_uplink
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: Gi0/0/0
+      ifIndex: "1"
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
+          up_duration: 60s
+          down_duration: 30s
+        labels:
+          probe: synthetic

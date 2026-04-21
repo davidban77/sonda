@@ -10,26 +10,28 @@
 # Usage:
 #   sonda metrics --scenario examples/dynamic-labels-fleet.yaml
 
-name: node_cpu_usage
-rate: 10
-duration: 10s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 40.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 10
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-dynamic_labels:
-  - key: hostname
-    prefix: "host-"
-    cardinality: 10
-
-labels:
-  env: production
-  cluster: us-east-1
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: node_cpu_usage
+    generator:
+      type: sine
+      amplitude: 40.0
+      period_secs: 60
+      offset: 50.0
+    dynamic_labels:
+      - key: hostname
+        prefix: "host-"
+        cardinality: 10
+    labels:
+      env: production
+      cluster: us-east-1

@@ -64,12 +64,20 @@ sonda --dry-run run --scenario examples/network-device-baseline.yaml
 ```
 
 ```yaml title="examples/network-device-baseline.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
   # Interface traffic counter (sawtooth = monotonic ramp)
   - signal_type: metrics
     name: interface_in_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -82,16 +90,10 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # Interface operational state (1 = up)
   - signal_type: metrics
     name: interface_oper_state
-    rate: 1
-    duration: 120s
     generator:
       type: constant
       value: 1.0
@@ -100,10 +102,6 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # ... more interfaces, CPU, memory (9 scenarios total)
 ```
@@ -134,87 +132,119 @@ The output interleaves across all 9 metric streams.
 
 ---
 
-## Simulate a link failure
+## Simulate a link failover
 
-The interesting part: what happens when a link goes down? Traffic shifts to the backup path,
-errors spike on the failing interface, and CPU jumps from the rerouting overhead. Testing your
-dashboards and alerts against this pattern before it happens in production is the whole point.
+The interesting part: what happens when a primary link drops? Traffic shifts to the backup path,
+the backup saturates as it absorbs double the load, and latency climbs as the backup fills.
+Testing your dashboards and alerts against that cascade is the whole point.
 
-The link failure scenario uses the sequence generator to script a precise timeline:
+The built-in `link-failover` scenario models the cascade as a 3-signal causal chain. Each signal
+uses a dedicated generator (not a hand-scripted sequence) and the `after:` field tells Sonda to
+delay a signal until the one it depends on crosses a threshold:
 
-| Seconds | Event | Gi0/0/0 state | Gi0/0/0 traffic | Gi0/0/1 traffic | CPU |
-|---------|-------|---------------|-----------------|-----------------|-----|
-| 0--9 | Normal | 1 (up) | Normal | Normal | ~33% |
-| 10--19 | Failure | 0 (down) | Drops to 0 | Doubles | ~80% |
-| 20--29 | Recovery | 1 (up) | Resumes | Returns to normal | Settling |
+| Signal | Generator | Starts when |
+|--------|-----------|-------------|
+| `interface_oper_state` (primary) | `flap` -- 60s up, 30s down, cycling | `t=0` |
+| `backup_link_utilization` | `saturation` -- ramps 20% -> 85% over 2m | primary drops below 1 (first flap) |
+| `latency_ms` | `degradation` -- climbs 5ms -> 150ms over 3m | backup utilization exceeds 70% |
 
-This 30-second cycle repeats, giving you multiple failure/recovery events to test against.
+Sonda resolves the chain at parse time: the v2 compiler computes a concrete `phase_offset` for
+each linked signal, so the signals still emit independently but start in the right order.
+See the [v2 `after:` chain reference](../configuration/v2-scenarios.md#temporal-chains-with-after)
+for the underlying mechanics.
 
-```yaml title="examples/network-link-failure.yaml (excerpt)"
+```yaml title="scenarios/link-failover.yaml (excerpt)"
+version: 2
+
+scenario_name: link-failover
+category: network
+description: "Edge router link failure with traffic shift to backup"
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    device: rtr-edge-01
+    job: network
+
 scenarios:
-  # Gi0/0/0 operational state: up -> down -> up
-  - signal_type: metrics
+  - id: interface_oper_state
+    signal_type: metrics
     name: interface_oper_state
-    rate: 1
-    duration: 120s
     generator:
-      type: sequence
-      values: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-               0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-               1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-      repeat: true
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
     labels:
-      device: rtr-core-01
-      ifName: GigabitEthernet0/0/0
-      ifAlias: uplink-isp-a
-      job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
+      interface: GigabitEthernet0/0/0
 
-  # Gi0/0/1 traffic: absorbs load during failure
-  - signal_type: metrics
-    name: interface_in_octets
-    rate: 1
-    duration: 120s
+  - id: backup_link_utilization
+    signal_type: metrics
+    name: backup_link_utilization
     generator:
-      type: sequence
-      values: [100000000, 120000000, 140000000, 160000000, 180000000,
-               200000000, 180000000, 160000000, 140000000, 120000000,
-               300000000, 340000000, 380000000, 420000000, 460000000,
-               500000000, 460000000, 420000000, 380000000, 340000000,
-               100000000, 120000000, 140000000, 160000000, 180000000,
-               200000000, 180000000, 160000000, 140000000, 120000000]
-      repeat: true
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
     labels:
-      device: rtr-core-01
-      ifName: GigabitEthernet0/0/1
-      ifAlias: uplink-isp-b
-      job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
+      interface: GigabitEthernet0/1/0
+    after:
+      ref: interface_oper_state
+      op: "<"
+      value: 1
 
-  # ... plus failing interface traffic, errors, CPU (6 scenarios total)
+  # ... plus latency_ms, gated on backup_link_utilization > 70
 ```
 
-Run the failure scenario:
+Run the scenario from the catalog or directly from disk:
 
 ```bash
-sonda run --scenario examples/network-link-failure.yaml
+sonda catalog run link-failover
+sonda run --scenario scenarios/link-failover.yaml
 ```
 
-The full file includes 6 correlated scenarios: interface state for both links, traffic counters
-for both (with the failing interface dropping to zero and the backup absorbing load), error
-counters that spike during the failure window, and CPU that jumps from rerouting overhead.
+Use `--dry-run` to see the resolved `phase_offset` values that Sonda computed from the `after:`
+clauses:
 
-!!! info "Correlation through sequence alignment"
-    All scenarios in the file use the same 30-value sequence length at `rate: 1`. Because
-    `sonda run` starts all threads at the same time, tick 10 in every scenario corresponds
-    to the same wall-clock second. This is how you create correlated behavior across metrics
-    without needing explicit synchronization.
+```bash
+sonda run --scenario scenarios/link-failover.yaml --dry-run
+```
+
+```text title="Output (abridged)"
+[config] file: scenarios/link-failover.yaml (version: 2, 3 scenarios)
+
+[config] [1/3] interface_oper_state
+    generator:      flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)
+    clock_group:    chain_backup_link_utilization (auto)
+
+[config] [2/3] backup_link_utilization
+    generator:      saturation (baseline: 20, ceiling: 85, time_to_saturate: 2m)
+    phase_offset:   1m
+    clock_group:    chain_backup_link_utilization (auto)
+
+[config] [3/3] latency_ms
+    generator:      degradation (baseline: 5, ceiling: 150, time_to_degrade: 3m)
+    phase_offset:   152.308s
+    clock_group:    chain_backup_link_utilization (auto)
+
+Validation: OK (3 scenarios)
+```
+
+The `phase_offset:` lines show the concrete delays Sonda derived from each `after:` threshold:
+the backup saturates 1 minute in (when the primary first flaps down), and latency begins
+degrading ~152 seconds in (when the backup ramp crosses 70%). All three signals share the same
+auto-assigned `clock_group`, so their timers start from the same reference.
+
+!!! info "Why `after:` instead of aligned sequences?"
+    You can express a link failure with the `sequence` generator by hand-aligning values across
+    scenarios -- that is what the built-in [interface-flap](scenarios.md#network) scenario does.
+    `after:` is the v2 equivalent: instead of counting ticks, you declare the causal relationship
+    once and let the compiler do the timing math. The [v2 scenarios guide](../configuration/v2-scenarios.md)
+    covers the full surface.
 
 ---
 
@@ -358,10 +388,10 @@ or Prometheus, change the sink in each scenario entry.
       path: /tmp/network-metrics.txt
     ```
 
-!!! warning "Sink per scenario"
-    In a multi-scenario file, each scenario entry has its own `sink` block. If you change
-    the sink, update it in every entry. A quick way: use your editor's find-and-replace to
-    swap `type: stdout` for your target sink across the file.
+!!! tip "Change the sink in one place"
+    In a v2 scenario file, the `defaults:` block holds the shared `sink` (and `encoder`,
+    `rate`, `duration`, `labels`). Swap the sink there once and every entry in
+    `scenarios:` picks it up. Per-entry overrides still win if you need a mixed setup.
 
 ---
 
@@ -502,8 +532,9 @@ Model environmental sensors with sine waves:
 |------|---------|
 | Validate baseline scenario | `sonda --dry-run run --scenario examples/network-device-baseline.yaml` |
 | Run baseline (stdout) | `sonda run --scenario examples/network-device-baseline.yaml` |
-| Validate failure scenario | `sonda --dry-run run --scenario examples/network-link-failure.yaml` |
-| Run failure simulation | `sonda run --scenario examples/network-link-failure.yaml` |
+| Validate failover scenario | `sonda --dry-run run --scenario scenarios/link-failover.yaml` |
+| Run failover simulation | `sonda run --scenario scenarios/link-failover.yaml` |
+| Run failover from catalog | `sonda catalog run link-failover` |
 
 **Related pages:**
 

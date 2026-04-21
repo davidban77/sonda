@@ -1,0 +1,12 @@
+# Pack entry without an `id` field. Phase 3 expansion synthesizes a
+# deterministic id of the form `{pack_def_name}_{entry_index}` so the
+# expanded metrics remain addressable through sub-signal ids
+# (e.g. `telegraf_snmp_interface_0.ifOperStatus`).
+version: 2
+defaults:
+  rate: 1
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-auto

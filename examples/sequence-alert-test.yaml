@@ -9,20 +9,23 @@
 # giving you multiple threshold crossings to validate alert firing
 # and resolution behavior.
 
-name: cpu_spike_test
-rate: 1
-duration: 80s
+version: 2
 
-generator:
-  type: sequence
-  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
-  repeat: true
+defaults:
+  rate: 1
+  duration: 80s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_spike_test
+    generator:
+      type: sequence
+      values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node

@@ -10,25 +10,27 @@
 # format. The sink batches data points and sends them as
 # ExportMetricsServiceRequest via gRPC.
 
-name: cpu_usage
-rate: 10
-duration: 60s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50
-  offset: 50
-  period_secs: 30
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: otlp
+  sink:
+    type: otlp_grpc
+    endpoint: "http://localhost:4317"
+    signal_type: metrics
+    batch_size: 100
 
-labels:
-  host: server-01
-  service: web
-
-encoder:
-  type: otlp
-
-sink:
-  type: otlp_grpc
-  endpoint: "http://localhost:4317"
-  signal_type: metrics
-  batch_size: 100
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50
+      offset: 50
+      period_secs: 30
+    labels:
+      host: server-01
+      service: web

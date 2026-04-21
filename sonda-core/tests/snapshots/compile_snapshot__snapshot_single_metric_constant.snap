@@ -1,0 +1,22 @@
+---
+source: sonda-core/tests/compile_snapshot.rs
+expression: entries
+---
+[
+  {
+    "duration": "10s",
+    "encoder": {
+      "type": "prometheus_text"
+    },
+    "generator": {
+      "type": "constant",
+      "value": 42.0
+    },
+    "name": "cpu_usage",
+    "rate": 1.0,
+    "signal_type": "metrics",
+    "sink": {
+      "type": "stdout"
+    }
+  }
+]

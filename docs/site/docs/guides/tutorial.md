@@ -69,20 +69,27 @@ sonda metrics --scenario examples/sequence-alert-test.yaml --duration 10s
 ```
 
 ```yaml title="examples/sequence-alert-test.yaml"
-name: cpu_spike_test
-rate: 1
-duration: 80s
-generator:
-  type: sequence
-  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
-  repeat: true
-labels:
-  instance: server-01
-  job: node
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 1
+  duration: 80s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: cpu_spike_test
+    signal_type: metrics
+    name: cpu_spike_test
+    generator:
+      type: sequence
+      values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
 ```
 
 ??? tip "More generators: sawtooth, uniform, step, csv_replay"
@@ -117,22 +124,29 @@ sink:
     ```
 
     ```yaml title="examples/csv-replay-metrics.yaml"
-    name: cpu_replay
-    rate: 1
-    duration: 60s
-    generator:
-      type: csv_replay
-      file: examples/sample-cpu-values.csv
-      columns:
-        - index: 1
-          name: cpu_replay
-    labels:
-      instance: prod-server-42
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
+    version: 2
+
+    defaults:
+      rate: 1
+      duration: 60s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+      labels:
+        instance: prod-server-42
+        job: node
+
+    scenarios:
+      - id: cpu_replay
+        signal_type: metrics
+        name: cpu_replay
+        generator:
+          type: csv_replay
+          file: examples/sample-cpu-values.csv
+          columns:
+            - index: 1
+              name: cpu_replay
     ```
 
     For multi-column CSV files, add more entries to `columns` to emit multiple metrics
@@ -145,13 +159,17 @@ sink:
     deterministic uniform noise:
 
     ```yaml
-    generator:
-      type: sine
-      amplitude: 20
-      period_secs: 120
-      offset: 50
-    jitter: 3.0
-    jitter_seed: 42
+    scenarios:
+      - id: cpu
+        signal_type: metrics
+        name: cpu
+        generator:
+          type: sine
+          amplitude: 20
+          period_secs: 120
+          offset: 50
+        jitter: 3.0
+        jitter_seed: 42
     ```
 
     This adds noise in the range `[-3.0, +3.0]` to every value. Set `jitter_seed` for
@@ -303,22 +321,29 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
     ```
 
     ```yaml title="examples/tcp-sink.yaml"
-    name: cpu_usage
-    rate: 10
-    duration: 5s
-    generator:
-      type: sine
-      amplitude: 50.0
-      period_secs: 10
-      offset: 50.0
-    labels:
-      host: server-01
-      region: us-east
-    encoder:
-      type: prometheus_text
-    sink:
-      type: tcp
-      address: "127.0.0.1:9999"
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 5s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: tcp
+        address: "127.0.0.1:9999"
+      labels:
+        host: server-01
+        region: us-east
+
+    scenarios:
+      - id: cpu_usage
+        signal_type: metrics
+        name: cpu_usage
+        generator:
+          type: sine
+          amplitude: 50.0
+          period_secs: 10
+          offset: 50.0
     ```
 
 ??? example "UDP sink setup"
@@ -335,19 +360,26 @@ The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered 
     ```
 
     ```yaml title="examples/udp-sink.yaml"
-    name: cpu_usage
-    rate: 10
-    duration: 5s
-    generator:
-      type: constant
-      value: 1.0
-    labels:
-      host: server-01
-    encoder:
-      type: json_lines
-    sink:
-      type: udp
-      address: "127.0.0.1:9998"
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 5s
+      encoder:
+        type: json_lines
+      sink:
+        type: udp
+        address: "127.0.0.1:9998"
+      labels:
+        host: server-01
+
+    scenarios:
+      - id: cpu_usage
+        signal_type: metrics
+        name: cpu_usage
+        generator:
+          type: constant
+          value: 1.0
     ```
 
 ### loki
@@ -369,29 +401,36 @@ sonda logs --scenario examples/loki-json-lines.yaml
 ??? example "Full Loki scenario file"
 
     ```yaml title="examples/loki-json-lines.yaml"
-    name: app_logs_loki
-    rate: 10
-    duration: 60s
-    generator:
-      type: template
-      templates:
-        - message: "Request from {ip} to {endpoint}"
-          field_pools:
-            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-            endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
-      severity_weights:
-        info: 0.7
-        warn: 0.2
-        error: 0.1
-    labels:
-      job: sonda
-      env: dev
-    encoder:
-      type: json_lines
-    sink:
-      type: loki
-      url: http://localhost:3100
-      batch_size: 50
+    version: 2
+
+    defaults:
+      rate: 10
+      duration: 60s
+      encoder:
+        type: json_lines
+      sink:
+        type: loki
+        url: http://localhost:3100
+        batch_size: 50
+      labels:
+        job: sonda
+        env: dev
+
+    scenarios:
+      - id: app_logs_loki
+        signal_type: logs
+        name: app_logs_loki
+        log_generator:
+          type: template
+          templates:
+            - message: "Request from {ip} to {endpoint}"
+              field_pools:
+                ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+                endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+          severity_weights:
+            info: 0.7
+            warn: 0.2
+            error: 0.1
     ```
 
 ### kafka
@@ -496,16 +535,23 @@ sonda logs --scenario examples/log-replay.yaml
 ```
 
 ```yaml title="examples/log-replay.yaml"
-name: app_logs_replay
-rate: 5
-duration: 30s
-generator:
-  type: replay
-  file: examples/sample-app.log
-encoder:
-  type: json_lines
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 5
+  duration: 30s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
+
+scenarios:
+  - id: app_logs_replay
+    signal_type: logs
+    name: app_logs_replay
+    log_generator:
+      type: replay
+      file: examples/sample-app.log
 ```
 
 Lines are replayed in order and cycle back to the start when the file is exhausted.
@@ -562,25 +608,32 @@ sonda metrics --scenario examples/burst-metrics.yaml --duration 20s
 ```
 
 ```yaml title="examples/burst-metrics.yaml"
-name: cpu_burst
-rate: 100
-duration: 60s
-generator:
-  type: sine
-  amplitude: 20.0
-  period_secs: 60
-  offset: 50.0
-bursts:
-  every: 10s
-  for: 2s
-  multiplier: 5.0
-labels:
-  host: web-01
-  zone: us-east-1
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 100
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    host: web-01
+    zone: us-east-1
+
+scenarios:
+  - id: cpu_burst
+    signal_type: metrics
+    name: cpu_burst
+    generator:
+      type: sine
+      amplitude: 20.0
+      period_secs: 60
+      offset: 50.0
+    bursts:
+      every: 10s
+      for: 2s
+      multiplier: 5.0
 ```
 
 | Pattern | Real-world scenario |
@@ -608,11 +661,16 @@ sonda run --scenario examples/multi-scenario.yaml
 ```
 
 ```yaml title="examples/multi-scenario.yaml"
+version: 2
+
+defaults:
+  duration: 30s
+
 scenarios:
-  - signal_type: metrics
+  - id: cpu_usage
+    signal_type: metrics
     name: cpu_usage
     rate: 100
-    duration: 30s
     generator:
       type: sine
       amplitude: 50
@@ -623,11 +681,16 @@ scenarios:
     sink:
       type: stdout
 
-  - signal_type: logs
+  - id: app_logs
+    signal_type: logs
     name: app_logs
     rate: 10
-    duration: 30s
-    generator:
+    encoder:
+      type: json_lines
+    sink:
+      type: file
+      path: /tmp/sonda-logs.json
+    log_generator:
       type: template
       templates:
         - message: "Request from {ip} to {endpoint}"
@@ -639,11 +702,6 @@ scenarios:
         warn: 0.2
         error: 0.1
       seed: 42
-    encoder:
-      type: json_lines
-    sink:
-      type: file
-      path: /tmp/sonda-logs.json
 ```
 
 Each scenario runs on its own thread. Use different sinks per scenario to keep outputs separate.
@@ -658,36 +716,39 @@ sonda run --scenario examples/multi-metric-correlation.yaml
 ```
 
 ```yaml title="examples/multi-metric-correlation.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    instance: server-01
+    job: node
+
 scenarios:
-  - signal_type: metrics
+  - id: cpu_usage
+    signal_type: metrics
     name: cpu_usage
-    rate: 1
-    duration: 120s
     phase_offset: "0s"
     clock_group: alert-test
     generator:
       type: sequence
       values: [20, 20, 20, 95, 95, 95, 95, 95, 20, 20]
       repeat: true
-    labels:
-      instance: server-01
-      job: node
-    # ...
 
-  - signal_type: metrics
+  - id: memory_usage
+    signal_type: metrics
     name: memory_usage_percent
-    rate: 1
-    duration: 120s
     phase_offset: "3s"
     clock_group: alert-test
     generator:
       type: sequence
       values: [40, 40, 40, 88, 88, 88, 88, 88, 40, 40]
       repeat: true
-    labels:
-      instance: server-01
-      job: node
-    # ...
 ```
 
 Here is how the phase offset creates an overlapping window for compound alert testing:
@@ -753,8 +814,8 @@ curl -X POST \
       http://localhost:8080/scenarios | jq -r '.id')
     ```
 
-You can also submit multi-scenario files in a single request. The same `scenarios:` array
-format used by `sonda run` works over the API:
+You can also submit multi-scenario files in a single request. Post a v2 file with two or
+more `scenarios:` entries and the server launches them atomically:
 
 ```bash
 curl -X POST \
@@ -772,8 +833,8 @@ curl -X POST \
 }
 ```
 
-See [Multi-scenario batch](../deployment/sonda-server.md#multi-scenario-batch) for the full
-reference including error handling and phase offsets.
+See [Multi-scenario body](../deployment/sonda-server.md#multi-scenario-body) for the full
+reference including error handling, phase offsets, and `after:` chains.
 
 ### List scenarios
 
@@ -810,20 +871,27 @@ curl -X DELETE http://localhost:8080/scenarios/$ID
 Omit `duration` to run indefinitely. Stop with DELETE when done:
 
 ```yaml title="examples/long-running-metrics.yaml"
-name: continuous_cpu
-rate: 10
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
-labels:
-  instance: api-server-01
-  job: sonda
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 10
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    instance: api-server-01
+    job: sonda
+
+scenarios:
+  - id: continuous_cpu
+    signal_type: metrics
+    name: continuous_cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
 ```
 
 ```bash

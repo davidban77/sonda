@@ -15,11 +15,21 @@
 # Usage:
 #   sonda run --scenario examples/capacity-cardinality-stress.yaml
 
+version: 2
+
+defaults:
+  rate: 50
+  duration: 180s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
 scenarios:
   - signal_type: metrics
     name: http_requests_total
-    rate: 50
-    duration: 180s
     generator:
       type: constant
       value: 1.0
@@ -34,17 +44,9 @@ scenarios:
         cardinality: 500
         strategy: counter
         prefix: "pod-"
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
 
   - signal_type: metrics
     name: http_request_duration_seconds
-    rate: 50
-    duration: 180s
     generator:
       type: sine
       amplitude: 0.3
@@ -61,9 +63,3 @@ scenarios:
         cardinality: 200
         strategy: counter
         prefix: "/api/v1/resource/"
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
