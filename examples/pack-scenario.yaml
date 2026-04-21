@@ -1,6 +1,6 @@
 # Example: using a metric pack in a scenario file.
 #
-# When `sonda run --scenario` encounters a YAML file with a `pack:` field,
+# When `sonda run --scenario` encounters a v2 entry with a `pack:` field,
 # it expands the pack into one metric scenario per metric in the pack.
 #
 # This example uses the telegraf_snmp_interface pack with user labels for
@@ -10,18 +10,21 @@
 # (where `./packs/` exists), or set SONDA_PACK_PATH to point to the
 # packs directory, or use `--pack-path ./packs`.
 
-pack: telegraf_snmp_interface
-rate: 1
-duration: 10s
+version: 2
 
-labels:
-  device: rtr-edge-01
-  ifName: GigabitEthernet0/0/0
-  ifAlias: "Uplink to Core"
-  ifIndex: "1"
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-sink:
-  type: stdout
-
-encoder:
-  type: prometheus_text
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: "Uplink to Core"
+      ifIndex: "1"

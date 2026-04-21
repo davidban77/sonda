@@ -13,29 +13,31 @@
 # Usage:
 #   sonda metrics --scenario examples/cardinality-alert-test.yaml
 
-name: http_requests_total
-rate: 10
-duration: 120s
+version: 2
 
-generator:
-  type: constant
-  value: 1.0
+defaults:
+  rate: 10
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  job: web
-  env: staging
-
-cardinality_spikes:
-  - label: pod_name
-    every: 30s
-    for: 10s
-    cardinality: 500
-    strategy: counter
-    prefix: "pod-"
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    generator:
+      type: constant
+      value: 1.0
+    labels:
+      job: web
+      env: staging
+    cardinality_spikes:
+      - label: pod_name
+        every: 30s
+        for: 10s
+        cardinality: 500
+        strategy: counter
+        prefix: "pod-"

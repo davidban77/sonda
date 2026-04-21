@@ -14,22 +14,25 @@
 #
 # See docs/guide-alert-testing.md Section 5 for a detailed walkthrough.
 
-name: http_requests_total
-rate: 1
-duration: 120s
+version: 2
 
-generator:
-  type: constant
-  value: 100.0
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  method: GET
-  status: "200"
-  job: api
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    generator:
+      type: constant
+      value: 100.0
+    labels:
+      method: GET
+      status: "200"
+      job: api

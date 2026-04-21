@@ -12,26 +12,28 @@
 #     --data-binary @examples/docker-metrics.yaml \
 #     http://localhost:8080/scenarios
 
-name: docker_cpu_usage
-rate: 10
-duration: 120s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 20.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 10
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-gaps:
-  every: 60s
-  for: 5s
-
-labels:
-  host: docker-demo
-  region: us-east-1
-  service: api-gateway
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: docker_cpu_usage
+    generator:
+      type: sine
+      amplitude: 20.0
+      period_secs: 60
+      offset: 50.0
+    gaps:
+      every: 60s
+      for: 5s
+    labels:
+      host: docker-demo
+      region: us-east-1
+      service: api-gateway

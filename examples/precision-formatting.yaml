@@ -9,6 +9,8 @@
 # Or set precision via CLI flag:
 #   sonda metrics --name cpu_usage --rate 2 --duration 5s --value-mode sine --amplitude 50 --offset 50 --precision 2
 
+version: 2
+
 scenarios:
   # Prometheus text: rounds to 2 decimal places.
   # 99.60573 becomes "99.61", and trailing zeros are preserved (100.0 -> "100.00").

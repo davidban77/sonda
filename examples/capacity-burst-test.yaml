@@ -13,11 +13,21 @@
 # Usage:
 #   sonda run --scenario examples/capacity-burst-test.yaml
 
+version: 2
+
+defaults:
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
 scenarios:
   - signal_type: metrics
     name: burst_http_requests
     rate: 500
-    duration: 120s
     generator:
       type: sine
       amplitude: 100.0
@@ -33,17 +43,10 @@ scenarios:
       every: 30s
       for: 5s
       multiplier: 10.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
 
   - signal_type: metrics
     name: burst_queue_depth
     rate: 100
-    duration: 120s
     generator:
       type: sine
       amplitude: 50.0
@@ -57,9 +60,3 @@ scenarios:
       every: 30s
       for: 5s
       multiplier: 10.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"

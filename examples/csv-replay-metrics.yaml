@@ -7,22 +7,25 @@
 # Run with:
 #   sonda metrics --scenario examples/csv-replay-metrics.yaml
 
-name: cpu_replay
-rate: 1
-duration: 60s
+version: 2
 
-generator:
-  type: csv_replay
-  file: examples/sample-cpu-values.csv
-  columns:
-    - index: 1
-      name: cpu_replay
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: prod-server-42
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_replay
+    generator:
+      type: csv_replay
+      file: examples/sample-cpu-values.csv
+      columns:
+        - index: 1
+          name: cpu_replay
+    labels:
+      instance: prod-server-42
+      job: node

@@ -10,26 +10,28 @@
 # format. The sink batches log records and sends them as
 # ExportLogsServiceRequest via gRPC.
 
-name: app_logs
-rate: 5
-duration: 30s
+version: 2
 
-generator:
-  type: template
-  templates:
-    - message: "Request processed in {latency}ms"
-      field_pools:
-        latency: ["10", "50", "100", "500"]
+defaults:
+  rate: 5
+  duration: 30s
+  encoder:
+    type: otlp
+  sink:
+    type: otlp_grpc
+    endpoint: "http://localhost:4317"
+    signal_type: logs
+    batch_size: 50
 
-labels:
-  host: server-01
-  service: web
-
-encoder:
-  type: otlp
-
-sink:
-  type: otlp_grpc
-  endpoint: "http://localhost:4317"
-  signal_type: logs
-  batch_size: 50
+scenarios:
+  - signal_type: logs
+    name: app_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "Request processed in {latency}ms"
+          field_pools:
+            latency: ["10", "50", "100", "500"]
+    labels:
+      host: server-01
+      service: web

@@ -1,23 +1,29 @@
-name: app_logs_loki
-rate: 10
-duration: 60s
-generator:
-  type: template
-  templates:
-    - message: "Request from {ip} to {endpoint}"
-      field_pools:
-        ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-        endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
-  severity_weights:
-    info: 0.7
-    warn: 0.2
-    error: 0.1
-labels:
-  job: sonda
-  env: dev
-encoder:
-  type: json_lines
-sink:
-  type: loki
-  url: http://localhost:3100
-  batch_size: 50
+version: 2
+
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: json_lines
+  sink:
+    type: loki
+    url: http://localhost:3100
+    batch_size: 50
+  labels:
+    job: sonda
+    env: dev
+
+scenarios:
+  - signal_type: logs
+    name: app_logs_loki
+    log_generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+            endpoint: ["/api/v1/health", "/api/v1/metrics", "/api/v1/logs"]
+      severity_weights:
+        info: 0.7
+        warn: 0.2
+        error: 0.1

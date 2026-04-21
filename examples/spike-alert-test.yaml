@@ -1,19 +1,22 @@
-name: cpu_spike_test
-rate: 1
-duration: 120s
+version: 2
 
-generator:
-  type: spike
-  baseline: 50.0
-  magnitude: 200.0
-  duration_secs: 10
-  interval_secs: 60
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_spike_test
+    generator:
+      type: spike
+      baseline: 50.0
+      magnitude: 200.0
+      duration_secs: 10
+      interval_secs: 60
+    labels:
+      instance: server-01
+      job: node

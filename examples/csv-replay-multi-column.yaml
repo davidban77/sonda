@@ -10,26 +10,29 @@
 # Run with:
 #   sonda metrics --scenario examples/csv-replay-multi-column.yaml
 
-name: system_metrics
-rate: 1
-duration: 60s
+version: 2
 
-generator:
-  type: csv_replay
-  file: examples/sample-multi-column.csv
-  columns:
-    - index: 1
-      name: cpu_percent
-    - index: 2
-      name: mem_percent
-    - index: 3
-      name: disk_io_mbps
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: prod-server-42
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: system_metrics
+    generator:
+      type: csv_replay
+      file: examples/sample-multi-column.csv
+      columns:
+        - index: 1
+          name: cpu_percent
+        - index: 2
+          name: mem_percent
+        - index: 3
+          name: disk_io_mbps
+    labels:
+      instance: prod-server-42
+      job: node

@@ -44,21 +44,24 @@ auto-detects it as a header (non-numeric fields), extracts metric names and labe
 column, and creates independent metric streams.
 
 ```yaml title="examples/csv-replay-grafana-auto.yaml"
-name: grafana_replay
-rate: 1
-duration: 60s
+version: 2
 
-generator:
-  type: csv_replay
-  file: examples/grafana-export.csv
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  env: production
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: grafana_replay
+    generator:
+      type: csv_replay
+      file: examples/grafana-export.csv
+    labels:
+      env: production
 ```
 
 ```bash
@@ -98,33 +101,36 @@ When you need more control -- custom metric names, extra labels per column, or y
 with a hand-authored CSV that has plain headers -- use `columns:` with the `labels` sub-field.
 
 ```yaml title="examples/csv-replay-explicit-labels.yaml"
-name: system_metrics
-rate: 1
-duration: 60s
+version: 2
 
-generator:
-  type: csv_replay
-  file: examples/sample-multi-column.csv
-  columns:
-    - index: 1
-      name: cpu_percent
-      labels:
-        core: "0"
-    - index: 2
-      name: mem_percent
-      labels:
-        type: physical
-    - index: 3
-      name: disk_io_mbps
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: prod-server-42
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: system_metrics
+    generator:
+      type: csv_replay
+      file: examples/sample-multi-column.csv
+      columns:
+        - index: 1
+          name: cpu_percent
+          labels:
+            core: "0"
+        - index: 2
+          name: mem_percent
+          labels:
+            type: physical
+        - index: 3
+          name: disk_io_mbps
+    labels:
+      instance: prod-server-42
+      job: node
 ```
 
 ```bash

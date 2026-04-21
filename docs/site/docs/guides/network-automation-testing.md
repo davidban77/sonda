@@ -484,21 +484,27 @@ The sequence generator gives you precise control over flap timing. At `rate: 1`,
 in the sequence is one second. To simulate sub-second flaps, increase the rate:
 
 ```yaml
-rate: 2          # 2 events/second = each sequence value is 500ms
-generator:
-  type: sequence
-  values: [1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
-  repeat: true
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 2          # 2 events/second = each sequence value is 500ms
+    generator:
+      type: sequence
+      values: [1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
+      repeat: true
 ```
 
 To simulate flaps with longer intervals, decrease the rate:
 
 ```yaml
-rate: 0.2        # 1 event every 5 seconds = each sequence value is 5s
-generator:
-  type: sequence
-  values: [1, 0, 0, 1, 1, 1]  # 5s up, 10s down, 15s up
-  repeat: true
+scenarios:
+  - signal_type: metrics
+    name: interface_oper_state
+    rate: 0.2        # 1 event every 5 seconds = each sequence value is 5s
+    generator:
+      type: sequence
+      values: [1, 0, 0, 1, 1, 1]  # 5s up, 10s down, 15s up
+      repeat: true
 ```
 
 ---
@@ -541,27 +547,33 @@ Run multiple Sonda scenarios simultaneously to test that your automation handles
 alerts correctly. Create a BGP session scenario file:
 
 ```yaml title="bgp-session-down.yaml"
-name: bgp_session_state
-rate: 1
-duration: 120s
-generator:
-  type: sequence
-  # 10s Established, 10s down, 10s Established
-  values: [1,1,1,1,1,1,1,1,1,1,
-           0,0,0,0,0,0,0,0,0,0,
-           1,1,1,1,1,1,1,1,1,1]
-  repeat: true
-labels:
-  device: rtr-core-01
-  bgp_peer: "192.168.1.1"
-  bgp_asn: "65001"
-  job: snmp
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
+scenarios:
+  - signal_type: metrics
+    name: bgp_session_state
+    generator:
+      type: sequence
+      # 10s Established, 10s down, 10s Established
+      values: [1,1,1,1,1,1,1,1,1,1,
+               0,0,0,0,0,0,0,0,0,0,
+               1,1,1,1,1,1,1,1,1,1]
+      repeat: true
+    labels:
+      device: rtr-core-01
+      bgp_peer: "192.168.1.1"
+      bgp_asn: "65001"
+      job: snmp
 ```
 
 Then run both scenarios at the same time:

@@ -84,11 +84,25 @@ sonda run --scenario examples/capacity-throughput-test.yaml
 ```
 
 ```yaml title="examples/capacity-throughput-test.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 1000
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+  labels:
+    job: capacity_test
+    service: api-gateway
+    env: load-test
+
 scenarios:
   - signal_type: metrics
     name: throughput_http_requests
-    rate: 1000
-    duration: 60s
     generator:
       type: sine
       amplitude: 200.0
@@ -96,28 +110,14 @@ scenarios:
       offset: 500.0
     jitter: 10.0
     jitter_seed: 1
-    labels:
-      job: capacity_test
-      service: api-gateway
-      env: load-test
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
 
   - signal_type: metrics
     name: throughput_cpu_usage
-    rate: 1000
-    duration: 60s
-    # ... (sine generator, same sink)
+    # ... (sine generator, inherits rate/duration/sink from defaults)
 
   - signal_type: metrics
     name: throughput_memory_bytes
-    rate: 1000
-    duration: 60s
-    # ... (sine generator, same sink)
+    # ... (sine generator, inherits rate/duration/sink from defaults)
 ```
 
 The full file contains all three scenarios with different generator shapes. Each runs on its
@@ -189,11 +189,21 @@ sonda run --scenario examples/capacity-cardinality-stress.yaml
 ```
 
 ```yaml title="examples/capacity-cardinality-stress.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 50
+  duration: 180s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
 scenarios:
   - signal_type: metrics
     name: http_requests_total
-    rate: 50
-    duration: 180s
     generator:
       type: constant
       value: 1.0
@@ -208,17 +218,9 @@ scenarios:
         cardinality: 500
         strategy: counter
         prefix: "pod-"
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
 
   - signal_type: metrics
     name: http_request_duration_seconds
-    rate: 50
-    duration: 180s
     # ... (sine generator, 200 endpoint cardinality spike)
 ```
 
@@ -299,11 +301,21 @@ sonda run --scenario examples/capacity-burst-test.yaml
 ```
 
 ```yaml title="examples/capacity-burst-test.yaml (excerpt)"
+version: 2
+
+defaults:
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
 scenarios:
   - signal_type: metrics
     name: burst_http_requests
     rate: 500
-    duration: 120s
     generator:
       type: sine
       amplitude: 100.0
@@ -319,17 +331,10 @@ scenarios:
       every: 30s
       for: 5s
       multiplier: 10.0
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
 
   - signal_type: metrics
     name: burst_queue_depth
     rate: 100
-    duration: 120s
     # ... (sine generator, same burst config)
 ```
 

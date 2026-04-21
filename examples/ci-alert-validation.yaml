@@ -10,23 +10,26 @@
 #
 # Requires VictoriaMetrics at localhost:8428.
 
-name: docker_alert_cpu
-rate: 1
-duration: 30s
+version: 2
 
-generator:
-  type: constant
-  value: 95.0
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  host: ci-test-node
-  region: us-east-1
-  service: payment-service
-  env: ci
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: ci-test-node
+      region: us-east-1
+      service: payment-service
+      env: ci

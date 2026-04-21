@@ -1,18 +1,21 @@
-name: request_count
-rate: 2
-duration: 5s
+version: 2
 
-generator:
-  type: step
-  start: 0
-  step_size: 1.0
-  max: 1000
+defaults:
+  rate: 2
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: web-01
-  job: app
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: request_count
+    generator:
+      type: step
+      start: 0
+      step_size: 1.0
+      max: 1000
+    labels:
+      instance: web-01
+      job: app

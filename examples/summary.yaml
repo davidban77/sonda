@@ -1,21 +1,22 @@
-name: rpc_duration_seconds
-rate: 1
-duration: 10s
+version: 2
 
-distribution:
-  type: normal
-  mean: 0.1
-  stddev: 0.02
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-observations_per_tick: 100
-seed: 42
-
-labels:
-  service: auth
-  method: GetUser
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: summary
+    name: rpc_duration_seconds
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      service: auth
+      method: GetUser

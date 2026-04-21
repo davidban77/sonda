@@ -214,21 +214,24 @@ sonda catalog show telegraf_snmp_interface > my-snmp-pack.yaml
 For repeatable setups, reference a pack in a YAML file and pass it to `sonda run`:
 
 ```yaml title="pack-scenario.yaml"
-pack: telegraf_snmp_interface
-rate: 1
-duration: 10s
+version: 2
 
-labels:
-  device: rtr-edge-01
-  ifName: GigabitEthernet0/0/0
-  ifAlias: "Uplink to Core"
-  ifIndex: "1"
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-sink:
-  type: stdout
-
-encoder:
-  type: prometheus_text
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: "Uplink to Core"
+      ifIndex: "1"
 ```
 
 ```bash
@@ -246,26 +249,28 @@ Sometimes you need a different generator for one metric without changing the res
 The `overrides` map lets you replace the generator or add extra labels per metric:
 
 ```yaml title="pack-with-overrides.yaml"
-pack: telegraf_snmp_interface
-rate: 1
-duration: 30s
+version: 2
 
-labels:
-  device: rtr-edge-01
-  ifName: GigabitEthernet0/0/0
-  ifAlias: "Uplink to Core"
-  ifIndex: "1"
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-overrides:
-  ifOperStatus:
-    generator:
-      type: flap
-
-sink:
-  type: stdout
-
-encoder:
-  type: prometheus_text
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: "Uplink to Core"
+      ifIndex: "1"
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap
 ```
 
 In this example, `ifOperStatus` uses the [`flap`](../configuration/generators.md#operational-aliases)
@@ -434,19 +439,22 @@ sonda --pack-path ./my-packs catalog list --type pack
 In a scenario file, use a path (containing `/` or starting with `.`) instead of a pack name:
 
 ```yaml title="run-my-pack.yaml"
-pack: ./my-app-pack.yaml
-rate: 1
-duration: 60s
+version: 2
 
-labels:
-  service: api-gateway
-  env: staging
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-sink:
-  type: stdout
-
-encoder:
-  type: prometheus_text
+scenarios:
+  - signal_type: metrics
+    pack: ./my-app-pack.yaml
+    labels:
+      service: api-gateway
+      env: staging
 ```
 
 ```bash

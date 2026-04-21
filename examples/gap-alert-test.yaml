@@ -11,23 +11,25 @@
 # Usage:
 #   sonda metrics --scenario examples/gap-alert-test.yaml
 
-name: cpu_usage
-rate: 1
-duration: 300s
+version: 2
 
-generator:
-  type: constant
-  value: 95.0
+defaults:
+  rate: 1
+  duration: 300s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-gaps:
-  every: 60s
-  for: 20s
-
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    gaps:
+      every: 60s
+      for: 20s
+    labels:
+      instance: server-01
+      job: node

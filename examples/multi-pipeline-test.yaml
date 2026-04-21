@@ -8,6 +8,8 @@
 #   echo "Exit: $?"
 #   wc -l < /tmp/pipeline-logs.json
 
+version: 2
+
 scenarios:
   - signal_type: metrics
     name: pipeline_metrics
@@ -25,7 +27,7 @@ scenarios:
     name: pipeline_logs
     rate: 5
     duration: 10s
-    generator:
+    log_generator:
       type: template
       templates:
         - message: "Pipeline validation event"

@@ -6,27 +6,29 @@
 # Usage:
 #   sonda metrics --scenario examples/dynamic-labels-multi.yaml
 
-name: request_count
-rate: 10
-duration: 10s
+version: 2
 
-generator:
-  type: step
-  start: 0
-  step_size: 1.0
-  max: 10000
+defaults:
+  rate: 10
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-dynamic_labels:
-  - key: hostname
-    prefix: "web-"
-    cardinality: 3
-  - key: region
-    values: [us-east-1, eu-west-1]
-
-labels:
-  service: frontend
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: request_count
+    generator:
+      type: step
+      start: 0
+      step_size: 1.0
+      max: 10000
+    dynamic_labels:
+      - key: hostname
+        prefix: "web-"
+        cardinality: 3
+      - key: region
+        values: [us-east-1, eu-west-1]
+    labels:
+      service: frontend

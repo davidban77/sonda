@@ -21,24 +21,27 @@ sonda metrics --scenario examples/sine-threshold-test.yaml
 ```
 
 ```yaml title="examples/sine-threshold-test.yaml"
-name: cpu_usage
-rate: 1
-duration: 180s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 1
+  duration: 180s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    labels:
+      instance: server-01
+      job: node
 ```
 
 The metric crosses 90 around tick 9, stays above until tick 21, then drops -- giving you
@@ -82,23 +85,26 @@ sonda metrics --scenario examples/for-duration-test.yaml
 ```
 
 ```yaml title="examples/for-duration-test.yaml"
-name: cpu_usage
-rate: 1
-duration: 80s
+version: 2
 
-generator:
-  type: sequence
-  values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
-  repeat: true
+defaults:
+  rate: 1
+  duration: 80s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sequence
+      values: [10, 10, 10, 10, 10, 95, 95, 95, 95, 95, 10, 10, 10, 10, 10, 10]
+      repeat: true
+    labels:
+      instance: server-01
+      job: node
 ```
 
 At `rate: 1`, ticks 5-9 are above 90 (5 seconds continuous), then the pattern repeats.
@@ -117,22 +123,25 @@ sonda metrics --scenario examples/constant-threshold-test.yaml
 ```
 
 ```yaml title="examples/constant-threshold-test.yaml"
-name: cpu_usage
-rate: 1
-duration: 360s
+version: 2
 
-generator:
-  type: constant
-  value: 95.0
+defaults:
+  rate: 1
+  duration: 360s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      instance: server-01
+      job: node
 ```
 
 Run this for 6 minutes to test a `for: 5m` alert. The value stays at 95 for the entire
@@ -161,26 +170,28 @@ sonda metrics --scenario examples/gap-alert-test.yaml
 ```
 
 ```yaml title="examples/gap-alert-test.yaml"
-name: cpu_usage
-rate: 1
-duration: 300s
+version: 2
 
-generator:
-  type: constant
-  value: 95.0
+defaults:
+  rate: 1
+  duration: 300s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-gaps:
-  every: 60s
-  for: 20s
-
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    gaps:
+      every: 60s
+      for: 20s
+    labels:
+      instance: server-01
+      job: node
 ```
 
 The value stays at 95 (above threshold) but goes silent for 20 seconds every 60-second cycle.
@@ -212,10 +223,19 @@ sonda run --scenario examples/multi-metric-correlation.yaml
 ```
 
 ```yaml title="examples/multi-metric-correlation.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
   - signal_type: metrics
     name: cpu_usage
-    phase_offset: "0s"
     clock_group: alert-test
     generator:
       type: sequence

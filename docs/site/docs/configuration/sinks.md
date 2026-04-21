@@ -364,15 +364,21 @@ labels are used as Loki stream labels in the push API envelope.
 | `batch_size` | integer | no | `100` | Flush threshold in number of log entries. |
 
 ```yaml title="Loki sink with top-level labels"
-name: app_logs_loki
-rate: 10
-labels:
-  job: sonda
-  env: dev
-sink:
-  type: loki
-  url: "http://localhost:3100"
-  batch_size: 50
+version: 2
+
+defaults:
+  rate: 10
+  sink:
+    type: loki
+    url: "http://localhost:3100"
+    batch_size: 50
+
+scenarios:
+  - signal_type: logs
+    name: app_logs_loki
+    labels:
+      job: sonda
+      env: dev
 ```
 
 **CLI equivalent** -- use `--sink loki --endpoint` and `--label` for stream labels:

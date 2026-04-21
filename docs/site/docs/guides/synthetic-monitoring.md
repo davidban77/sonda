@@ -181,20 +181,26 @@ A long-running scenario is simply a scenario YAML **without a `duration` field**
 indefinitely until you stop it with `DELETE /scenarios/{id}`.
 
 ```yaml title="examples/long-running-metrics.yaml"
-name: continuous_cpu
-rate: 10
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
-labels:
-  instance: api-server-01
-  job: sonda
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 10
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - signal_type: metrics
+    name: continuous_cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    labels:
+      instance: api-server-01
+      job: sonda
 ```
 
 Submit it to the server:

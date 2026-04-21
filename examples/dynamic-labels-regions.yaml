@@ -7,23 +7,25 @@
 # Usage:
 #   sonda metrics --scenario examples/dynamic-labels-regions.yaml
 
-name: api_latency_seconds
-rate: 5
-duration: 10s
+version: 2
 
-generator:
-  type: uniform
-  min: 0.01
-  max: 2.5
+defaults:
+  rate: 5
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-dynamic_labels:
-  - key: region
-    values: [us-east-1, us-west-2, eu-west-1]
-
-labels:
-  service: api-gateway
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: api_latency_seconds
+    generator:
+      type: uniform
+      min: 0.01
+      max: 2.5
+    dynamic_labels:
+      - key: region
+        values: [us-east-1, us-west-2, eu-west-1]
+    labels:
+      service: api-gateway
