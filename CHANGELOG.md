@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0](https://github.com/davidban77/sonda/compare/v0.15.0...v1.0.0) (2026-04-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core+cli+server:** full v1 YAML retirement + server v2 acceptance (v2 PR 9b) ([#216](https://github.com/davidban77/sonda/issues/216))
+
+### Features
+
+* **cli:** v2 CLI unification — sonda run dispatch, catalog, init, dry-run (v2 PR 7) ([#206](https://github.com/davidban77/sonda/issues/206)) ([957009f](https://github.com/davidban77/sonda/commit/957009fb6c1a95b3eea9934487b2eec0568bf5d7))
+* **core+cli:** v2 ScenarioFile metadata + steady-state migration (v2 PR 8a.1) ([#208](https://github.com/davidban77/sonda/issues/208)) ([c1c3ec6](https://github.com/davidban77/sonda/commit/c1c3ec6a2e3b49f33cd4ac20ce5defb51cadcc25))
+* **core:** after-clause compilation and dependency graph (v2 PR 5) ([#203](https://github.com/davidban77/sonda/issues/203)) ([8d540ef](https://github.com/davidban77/sonda/commit/8d540eff1b6bd2712d708fc7a9bd6e8ae58d3d0a))
+* **core:** compile snapshot harness and test foundation ([5062e50](https://github.com/davidban77/sonda/commit/5062e5006ddfea468eae7abb9845e8d5063b6f49))
+* **core:** defaults resolution and normalization for v2 compiler ([#199](https://github.com/davidban77/sonda/issues/199)) ([c39f4fe](https://github.com/davidban77/sonda/commit/c39f4feed1a56488c53526f53077fd7769651421))
+* **core:** pack expansion inside scenarios: (v2 PR 4) ([#202](https://github.com/davidban77/sonda/issues/202)) ([6a22dcc](https://github.com/davidban77/sonda/commit/6a22dccefb85ab07a409883d7c0f39d3ca2fb101))
+* **core:** runtime wiring + parity tests (v2 PR 6) ([#205](https://github.com/davidban77/sonda/issues/205)) ([5953a5c](https://github.com/davidban77/sonda/commit/5953a5ca6db874a5a9baa92d86d5f7a78f42a6f6))
+* **core:** v2 AST, parser, and version dispatch (v2 PR 2) ([#198](https://github.com/davidban77/sonda/issues/198)) ([383bd0c](https://github.com/davidban77/sonda/commit/383bd0cdb409ea97a4ff8e15e34dc1732d7c79ab))
+* **scenarios:** v2 link-failover migration + network-link-failure dedup + docs (v2 PR 8a.3) ([#214](https://github.com/davidban77/sonda/issues/214)) ([f1d9b00](https://github.com/davidban77/sonda/commit/f1d9b0075c1a18617284b22d628ec2c4acf15782))
+
+
+### Bug Fixes
+
+* **cli:** detect v2 multi-entry scenarios in catalog probe (v2 PR 8a.2b.0) ([#211](https://github.com/davidban77/sonda/issues/211)) ([398430e](https://github.com/davidban77/sonda/commit/398430eb2f96b216cedab028c0ab50528026213a))
+* **cli:** infer signal_type from first entry for v2 scenarios (v2 PR 8a.2a) ([#210](https://github.com/davidban77/sonda/issues/210)) ([00cbf1a](https://github.com/davidban77/sonda/commit/00cbf1a20b23fd640ce1bfe818f619ab444614d7))
+* **core:** address reviewer findings on snapshot harness ([9d9ce42](https://github.com/davidban77/sonda/commit/9d9ce42441d92c2c077352c27e11ce2bb8614f21))
+
+
+### Miscellaneous
+
+* **cli:** retire v1 story subcommand + shipped story + parity bridge (v2 PR 9a) ([#215](https://github.com/davidban77/sonda/issues/215)) ([3706d67](https://github.com/davidban77/sonda/commit/3706d67cce673665beed6e48d89d3cd206dce514))
+* **examples:** migrate 61 example scenario YAMLs to v2 format ([#218](https://github.com/davidban77/sonda/issues/218)) ([06f5122](https://github.com/davidban77/sonda/commit/06f5122a9230260bbae4c6e5da1ab07da7fc0f65))
+* **refactor:** add parity bridge tests to validation matrix (sections 16-17) ([797704b](https://github.com/davidban77/sonda/commit/797704bfc433824e579f5f22b3c7de78858f120a))
+* **refactor:** add progress tracker, validation matrix, and gitignore for v2 docs ([0af830f](https://github.com/davidban77/sonda/commit/0af830f33c04127854d729dda9a9f01d07786338))
+* **scenarios:** batch migrate 10 built-in scenarios to v2 + fix catalog dispatch (v2 PR 8a.2b) ([#212](https://github.com/davidban77/sonda/issues/212)) ([44c8514](https://github.com/davidban77/sonda/commit/44c85149e9940d6765e29862f9a6985a1782465f))
+* **test:** adopt insta + rstest, consolidate v2 test infra ([#204](https://github.com/davidban77/sonda/issues/204)) ([e6c1cc4](https://github.com/davidban77/sonda/commit/e6c1cc47da19a8494c05759efd8dffdf30fafc81))
+* **test:** drop v2_ prefix on test files + prune + collapse pack parity (v2 PR 9c) ([#217](https://github.com/davidban77/sonda/issues/217)) ([b43a0e8](https://github.com/davidban77/sonda/commit/b43a0e8b8f04eeaba271809dfe70a1e63460a7b8))
+* **test:** parametrize encoder_sink_matrix + redact null snapshots ([#207](https://github.com/davidban77/sonda/issues/207)) ([aa4fe55](https://github.com/davidban77/sonda/commit/aa4fe5572a8b26639625d38c6775393b520f8564))
+
+
+### Refactoring
+
+* **core+cli+server:** full v1 YAML retirement + server v2 acceptance (v2 PR 9b) ([#216](https://github.com/davidban77/sonda/issues/216)) ([02693b7](https://github.com/davidban77/sonda/commit/02693b724d515680c4e80fd5c8dbdb41d3a210da))
+* unified v2 scenario model (integration branch) ([864d6a5](https://github.com/davidban77/sonda/commit/864d6a5b6ecd25adf806d29ca6cdf85734a36601))
+
 ## [0.15.0](https://github.com/davidban77/sonda/compare/v0.14.0...v0.15.0) (2026-04-10)
 
 
