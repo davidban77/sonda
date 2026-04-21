@@ -382,7 +382,7 @@ fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
         #[cfg(not(feature = "remote-write"))]
         EncoderConfig::RemoteWriteDisabled {} => "remote_write (disabled)".to_string(),
         #[cfg(feature = "otlp")]
-        EncoderConfig::Otlp { .. } => "otlp".to_string(),
+        EncoderConfig::Otlp => "otlp".to_string(),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
     }
