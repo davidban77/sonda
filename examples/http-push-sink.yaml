@@ -1,18 +1,24 @@
-name: cpu_usage
-rate: 10
-duration: 5s
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 10
-  offset: 50.0
-labels:
-  host: server-01
-  region: us-east
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:9090/api/v1/push"
-  content_type: "text/plain; version=0.0.4"
-  batch_size: 65536
+version: 2
+
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:9090/api/v1/push"
+    content_type: "text/plain; version=0.0.4"
+    batch_size: 65536
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 10
+      offset: 50.0
+    labels:
+      host: server-01
+      region: us-east

@@ -6,24 +6,27 @@
 # Run:
 #   sonda metrics --scenario examples/influx-file.yaml
 #   cat /tmp/sonda-influx-output.txt
-name: disk_io_bytes
-rate: 50
-duration: 10s
 
-generator:
-  type: sawtooth
-  min: 0.0
-  max: 10000000.0
-  period_secs: 10
+version: 2
 
-labels:
-  device: sda
-  host: storage-01
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: influx_lp
+    field_key: bytes
+  sink:
+    type: file
+    path: /tmp/sonda-influx-output.txt
 
-encoder:
-  type: influx_lp
-  field_key: bytes
-
-sink:
-  type: file
-  path: /tmp/sonda-influx-output.txt
+scenarios:
+  - signal_type: metrics
+    name: disk_io_bytes
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 10000000.0
+      period_secs: 10
+    labels:
+      device: sda
+      host: storage-01

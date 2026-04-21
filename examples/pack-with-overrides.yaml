@@ -8,23 +8,25 @@
 # (where `./packs/` exists), or set SONDA_PACK_PATH to point to the
 # packs directory, or use `--pack-path ./packs`.
 
-pack: telegraf_snmp_interface
-rate: 1
-duration: 30s
+version: 2
 
-labels:
-  device: rtr-edge-01
-  ifName: GigabitEthernet0/0/0
-  ifAlias: "Uplink to Core"
-  ifIndex: "1"
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-overrides:
-  ifOperStatus:
-    generator:
-      type: flap
-
-sink:
-  type: stdout
-
-encoder:
-  type: prometheus_text
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifAlias: "Uplink to Core"
+      ifIndex: "1"
+    overrides:
+      ifOperStatus:
+        generator:
+          type: flap

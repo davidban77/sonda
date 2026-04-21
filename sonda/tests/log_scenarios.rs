@@ -1,19 +1,22 @@
-//! Integration tests for slice 2.5 — CLI Logs subcommand (example YAMLs).
+//! Integration tests for the log-flavoured example YAML files.
 //!
-//! Test criteria from the spec:
-//! 1. Config from YAML: log-template.yaml → valid `LogScenarioConfig`.
-//! 2. The log runner integration test (MemorySink, rate=10, duration=1s) lives in
-//!    sonda-core's log_runner tests.
+//! Post-v1 retirement, every example under `examples/*.yaml` is a v2 scenario
+//! file. These tests route each log-flavoured example through
+//! `sonda_core::compile_scenario_file` and assert on the single compiled
+//! [`ScenarioEntry::Logs`] entry (its rate, duration, generator shape,
+//! encoder, sink, and dynamic labels).
 //!
-//! This file validates the example YAML scenario files shipped with the project,
-//! and exercises the full factory stack (generator + encoder + sink) end-to-end.
+//! This file also carries the v2 fixture test for the log-template fixture
+//! under `tests/fixtures/`.
 
 use std::path::PathBuf;
 
-use sonda_core::config::LogScenarioConfig;
+use sonda_core::compile_scenario_file;
+use sonda_core::compiler::expand::InMemoryPackResolver;
+use sonda_core::config::{LogScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{create_log_generator, LogGeneratorConfig};
-use sonda_core::sink::{create_sink, SinkConfig};
+use sonda_core::sink::SinkConfig;
 
 /// Return an absolute path to a file under the workspace root.
 ///
@@ -26,59 +29,47 @@ fn workspace_file(relative: &str) -> PathBuf {
         .join(relative)
 }
 
+/// Compile a v2 example YAML file into exactly one [`LogScenarioConfig`].
+///
+/// Every log-flavoured example in `examples/` carries a single `logs` entry,
+/// so this helper panics if the compile produces a different count or signal
+/// type — that's a test shape mismatch, not a legitimate pass.
+fn compile_single_log_example(relative: &str) -> LogScenarioConfig {
+    let path = workspace_file(relative);
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let resolver = InMemoryPackResolver::new();
+    let entries = compile_scenario_file(&contents, &resolver)
+        .unwrap_or_else(|e| panic!("{relative} failed v2 compile: {e}"));
+    assert_eq!(
+        entries.len(),
+        1,
+        "{relative} must compile to exactly one entry"
+    );
+    match entries.into_iter().next().unwrap() {
+        ScenarioEntry::Logs(cfg) => cfg,
+        other => panic!("{relative} must compile to a Logs entry, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // examples/log-template.yaml
 // ---------------------------------------------------------------------------
 
 #[test]
-fn log_template_yaml_deserializes_without_error() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
-        .unwrap_or_else(|e| panic!("log-template.yaml failed to deserialize: {e}"));
-}
-
-#[test]
-fn log_template_yaml_has_correct_name() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
+fn log_template_yaml_compiles_to_template_log_entry() {
+    let config = compile_single_log_example("examples/log-template.yaml");
     assert_eq!(
         config.name, "app_logs_template",
         "name must be app_logs_template"
     );
-}
-
-#[test]
-fn log_template_yaml_has_correct_rate() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert_eq!(config.rate, 10.0, "rate must be 10");
-}
-
-#[test]
-fn log_template_yaml_has_correct_duration() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert_eq!(
         config.duration.as_deref(),
         Some("60s"),
         "duration must be 60s"
     );
-}
 
-#[test]
-fn log_template_yaml_has_template_generator_with_seed_42() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     match &config.generator {
         LogGeneratorConfig::Template {
             templates,
@@ -94,26 +85,11 @@ fn log_template_yaml_has_template_generator_with_seed_42() {
         }
         other => panic!("expected Template generator, got {other:?}"),
     }
-}
 
-#[test]
-fn log_template_yaml_has_json_lines_encoder() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
     );
-}
-
-#[test]
-fn log_template_yaml_has_stdout_sink() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -121,14 +97,12 @@ fn log_template_yaml_has_stdout_sink() {
 }
 
 #[test]
-fn log_template_yaml_generator_factory_succeeds_and_resolves_placeholders() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
+fn log_template_yaml_generator_resolves_placeholders() {
+    let config = compile_single_log_example("examples/log-template.yaml");
     let gen = create_log_generator(&config.generator)
         .expect("log template generator factory must succeed");
-    // Seeded generator must produce deterministic events with no unresolved placeholders.
+    // Seeded generator must produce deterministic events with no unresolved
+    // placeholders for at least the first few ticks.
     for tick in 0..5 {
         let event = gen.generate(tick);
         assert!(
@@ -140,21 +114,8 @@ fn log_template_yaml_generator_factory_succeeds_and_resolves_placeholders() {
 }
 
 #[test]
-fn log_template_yaml_sink_factory_succeeds() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
-    let _sink =
-        create_sink(&config.sink, None).expect("sink factory must succeed for log-template.yaml");
-}
-
-#[test]
 fn log_template_yaml_generator_is_deterministic_for_same_tick() {
-    let path = workspace_file("examples/log-template.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-template.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-template.yaml");
+    let config = compile_single_log_example("examples/log-template.yaml");
     let gen1 = create_log_generator(&config.generator).expect("factory must succeed");
     let gen2 = create_log_generator(&config.generator).expect("factory must succeed");
     // Same seed, same tick → same message.
@@ -172,67 +133,25 @@ fn log_template_yaml_generator_is_deterministic_for_same_tick() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn log_replay_yaml_deserializes_without_error() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
-        .unwrap_or_else(|e| panic!("log-replay.yaml failed to deserialize: {e}"));
-}
-
-#[test]
-fn log_replay_yaml_has_correct_name() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
+fn log_replay_yaml_compiles_to_replay_log_entry() {
+    let config = compile_single_log_example("examples/log-replay.yaml");
     assert_eq!(
         config.name, "app_logs_replay",
         "name must be app_logs_replay"
     );
-}
-
-#[test]
-fn log_replay_yaml_has_correct_rate() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert_eq!(config.rate, 5.0, "rate must be 5");
-}
 
-#[test]
-fn log_replay_yaml_has_replay_generator() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     match &config.generator {
         LogGeneratorConfig::Replay { file } => {
             assert!(!file.is_empty(), "replay file path must not be empty");
         }
         other => panic!("expected Replay generator, got {other:?}"),
     }
-}
 
-#[test]
-fn log_replay_yaml_has_json_lines_encoder() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert!(
         matches!(config.encoder, EncoderConfig::JsonLines { .. }),
         "encoder must be json_lines"
     );
-}
-
-#[test]
-fn log_replay_yaml_has_stdout_sink() {
-    let path = workspace_file("examples/log-replay.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read log-replay.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize log-replay.yaml");
     assert!(
         matches!(config.sink, SinkConfig::Stdout),
         "sink must be stdout"
@@ -244,43 +163,19 @@ fn log_replay_yaml_has_stdout_sink() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn dynamic_labels_logs_yaml_deserializes_without_error() {
-    let path = workspace_file("examples/dynamic-labels-logs.yaml");
-    let contents = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_yaml_ng::from_str::<LogScenarioConfig>(&contents)
-        .unwrap_or_else(|e| panic!("dynamic-labels-logs.yaml failed to deserialize: {e}"));
-}
-
-#[test]
-fn dynamic_labels_logs_yaml_has_correct_name() {
-    let path = workspace_file("examples/dynamic-labels-logs.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+fn dynamic_labels_logs_yaml_compiles_with_pod_name_label() {
+    let config = compile_single_log_example("examples/dynamic-labels-logs.yaml");
     assert_eq!(config.name, "app_logs", "name must be app_logs");
-}
 
-#[test]
-fn dynamic_labels_logs_yaml_has_dynamic_labels() {
-    let path = workspace_file("examples/dynamic-labels-logs.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
     let dls = config
+        .base
         .dynamic_labels
         .as_ref()
         .expect("dynamic_labels must be present");
     assert_eq!(dls.len(), 1, "must have exactly one dynamic label");
     assert_eq!(dls[0].key, "pod_name");
-}
 
-#[test]
-fn dynamic_labels_logs_yaml_generator_factory_succeeds() {
-    let path = workspace_file("examples/dynamic-labels-logs.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
+    // Generator factory must produce a working template generator.
     let gen = create_log_generator(&config.generator)
         .expect("log generator factory must succeed for dynamic-labels-logs.yaml");
     let event = gen.generate(0);
@@ -288,16 +183,6 @@ fn dynamic_labels_logs_yaml_generator_factory_succeeds() {
         !event.message.is_empty(),
         "generated log message must not be empty"
     );
-}
-
-#[test]
-fn dynamic_labels_logs_yaml_sink_factory_succeeds() {
-    let path = workspace_file("examples/dynamic-labels-logs.yaml");
-    let contents = std::fs::read_to_string(&path).expect("read dynamic-labels-logs.yaml");
-    let config: LogScenarioConfig =
-        serde_yaml_ng::from_str(&contents).expect("deserialize dynamic-labels-logs.yaml");
-    let _sink = create_sink(&config.sink, None)
-        .expect("sink factory must succeed for dynamic-labels-logs.yaml");
 }
 
 // ---------------------------------------------------------------------------
@@ -314,12 +199,12 @@ fn log_scenario_fixture_template_mode_compiles_via_v2() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/log-template.yaml");
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let resolver = sonda_core::compiler::expand::InMemoryPackResolver::new();
-    let entries = sonda_core::compile_scenario_file(&contents, &resolver)
+    let resolver = InMemoryPackResolver::new();
+    let entries = compile_scenario_file(&contents, &resolver)
         .unwrap_or_else(|e| panic!("log-template fixture failed to compile: {e}"));
     assert_eq!(entries.len(), 1);
     match &entries[0] {
-        sonda_core::ScenarioEntry::Logs(cfg) => {
+        ScenarioEntry::Logs(cfg) => {
             assert_eq!(cfg.rate, 10.0, "fixture rate must be 10");
             assert!(
                 matches!(cfg.generator, LogGeneratorConfig::Template { .. }),

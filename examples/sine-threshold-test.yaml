@@ -10,21 +10,24 @@
 # Usage:
 #   sonda metrics --scenario examples/sine-threshold-test.yaml
 
-name: cpu_usage
-rate: 1
-duration: 180s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 1
+  duration: 180s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  instance: server-01
-  job: node
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    labels:
+      instance: server-01
+      job: node

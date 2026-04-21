@@ -278,25 +278,31 @@ labels. If the CSV has no header (all-numeric first row), you must provide expli
 === "Explicit columns"
 
     ```yaml title="Multi-column CSV replay"
-    name: ignored_when_columns_set  # each column entry provides its own metric name
-    rate: 1
-    generator:
-      type: csv_replay
-      file: examples/sample-multi-column.csv
-      columns:
-        - index: 1
-          name: cpu_percent
-        - index: 2
-          name: mem_percent
-        - index: 3
-          name: disk_io_mbps
-    labels:
-      instance: prod-server-42
-      job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
+    version: 2
+
+    defaults:
+      rate: 1
+      encoder:
+        type: prometheus_text
+      sink:
+        type: stdout
+
+    scenarios:
+      - signal_type: metrics
+        name: ignored_when_columns_set  # each column entry provides its own metric name
+        generator:
+          type: csv_replay
+          file: examples/sample-multi-column.csv
+          columns:
+            - index: 1
+              name: cpu_percent
+            - index: 2
+              name: mem_percent
+            - index: 3
+              name: disk_io_mbps
+        labels:
+          instance: prod-server-42
+          job: node
     ```
 
     This expands into three independent metric streams -- `cpu_percent`, `mem_percent`, and
@@ -307,24 +313,27 @@ labels. If the CSV has no header (all-numeric first row), you must provide expli
     Each column entry can carry its own `labels` map. Per-column labels are merged with
     scenario-level labels, and column labels override on key conflict.
 
-    ```yaml title="Per-column labels"
-    generator:
-      type: csv_replay
-      file: examples/sample-multi-column.csv
-      columns:
-        - index: 1
-          name: cpu_percent
-          labels:
-            core: "0"
-        - index: 2
-          name: mem_percent
-          labels:
-            type: physical
-        - index: 3
-          name: disk_io_mbps
-    labels:
-      instance: prod-server-42
-      job: node
+    ```yaml title="Per-column labels (scenarios entry)"
+    scenarios:
+      - signal_type: metrics
+        name: system_metrics
+        generator:
+          type: csv_replay
+          file: examples/sample-multi-column.csv
+          columns:
+            - index: 1
+              name: cpu_percent
+              labels:
+                core: "0"
+            - index: 2
+              name: mem_percent
+              labels:
+                type: physical
+            - index: 3
+              name: disk_io_mbps
+        labels:
+          instance: prod-server-42
+          job: node
     ```
 
     `cpu_percent` gets `{core="0", instance="prod-server-42", job="node"}`.
@@ -635,26 +644,27 @@ updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `
 | `sink` | object | no | `stdout` | Output destination. |
 
 ```yaml title="examples/histogram.yaml"
-name: http_request_duration_seconds
-rate: 1
-duration: 10s
+version: 2
 
-distribution:
-  type: exponential
-  rate: 10.0
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-observations_per_tick: 100
-seed: 42
-
-labels:
-  method: GET
-  handler: /api/v1/query
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: histogram
+    name: http_request_duration_seconds
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      method: GET
+      handler: /api/v1/query
 ```
 
 **Shape:** N+3 time series per tick (N bucket boundaries + `+Inf` + `_count` + `_sum`). With
@@ -713,27 +723,28 @@ the nearest-rank method.
 | `sink` | object | no | `stdout` | Output destination. |
 
 ```yaml title="examples/summary.yaml"
-name: rpc_duration_seconds
-rate: 1
-duration: 10s
+version: 2
 
-distribution:
-  type: normal
-  mean: 0.1
-  stddev: 0.02
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-observations_per_tick: 100
-seed: 42
-
-labels:
-  service: auth
-  method: GetUser
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: stdout
+scenarios:
+  - signal_type: summary
+    name: rpc_duration_seconds
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 100
+    seed: 42
+    labels:
+      service: auth
+      method: GetUser
 ```
 
 **Shape:** Q+2 time series per tick (Q quantile targets + `_count` + `_sum`). With default
@@ -827,7 +838,7 @@ Generates log events from message templates with randomized field values.
 | `seed` | integer | no | `0` | RNG seed for deterministic field and severity selection. |
 
 ```yaml title="Template log generator"
-generator:
+log_generator:
   type: template
   templates:
     - message: "Request from {ip} to {endpoint} returned {status}"
@@ -854,7 +865,7 @@ Replays lines from a log file, cycling back to the start when the file is exhaus
 | `file` | string | yes | -- | Path to the log file to replay. |
 
 ```yaml title="Replay log generator"
-generator:
+log_generator:
   type: replay
   file: /var/log/app.log
 ```
@@ -880,24 +891,30 @@ because it wraps any generator transparently.
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every value. |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic noise. Same seed produces the same noise sequence. |
 
-```yaml title="Sine wave with jitter"
-name: cpu_usage_realistic
-rate: 1
-duration: 30s
-generator:
-  type: sine
-  amplitude: 20
-  period_secs: 120
-  offset: 50
-jitter: 3.0
-jitter_seed: 42
-labels:
-  instance: server-01
-  job: node
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+```yaml title="examples/jitter-sine.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage_realistic
+    generator:
+      type: sine
+      amplitude: 20
+      period_secs: 120
+      offset: 50
+    jitter: 3.0
+    jitter_seed: 42
+    labels:
+      instance: server-01
+      job: node
 ```
 
 ```bash

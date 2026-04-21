@@ -49,22 +49,28 @@ sonda metrics --scenario examples/recording-rule-test.yaml &
 ```
 
 ```yaml title="examples/recording-rule-test.yaml (key fields)"
-name: http_requests_total
-rate: 1
-duration: 120s
+version: 2
 
-generator:
-  type: constant
-  value: 100.0
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-labels:
-  method: GET
-  status: "200"
-  job: api
-
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    generator:
+      type: constant
+      value: 100.0
+    labels:
+      method: GET
+      status: "200"
+      job: api
 ```
 
 !!! tip "Background execution"
@@ -127,19 +133,29 @@ sonda metrics --scenario examples/rate-rule-input.yaml &
 ```
 
 ```yaml title="examples/rate-rule-input.yaml (key fields)"
-name: http_requests_total
-rate: 1
-duration: 300s
+version: 2
 
-generator:
-  type: sawtooth
-  min: 0.0
-  max: 1000.0
-  period_secs: 60
+defaults:
+  rate: 1
+  duration: 300s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
 
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
+scenarios:
+  - signal_type: metrics
+    name: http_requests_total
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 1000.0
+      period_secs: 60
+    labels:
+      instance: api-01
+      job: web
 ```
 
 The sawtooth ramps from 0 to 1000 over 60 seconds, then resets. After sufficient data,

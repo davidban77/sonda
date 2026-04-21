@@ -26,28 +26,30 @@
 #     --data-binary @examples/docker-alerts.yaml \
 #     http://localhost:8080/scenarios
 
-name: docker_alert_cpu
-rate: 10
-duration: 120s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 30
-  offset: 50.0
+defaults:
+  rate: 10
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-bursts:
-  every: 30s
-  for: 5s
-  multiplier: 3.0
-
-labels:
-  host: docker-alert-demo
-  region: us-east-1
-  service: payment-service
-  env: staging
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 30
+      offset: 50.0
+    bursts:
+      every: 30s
+      for: 5s
+      multiplier: 3.0
+    labels:
+      host: docker-alert-demo
+      region: us-east-1
+      service: payment-service
+      env: staging

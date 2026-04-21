@@ -17,12 +17,19 @@
 # conditions overlap. The clock_group groups both scenarios under a
 # shared timing reference.
 
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
   - signal_type: metrics
     name: cpu_usage
-    rate: 1
-    duration: 120s
-    phase_offset: "0s"
     clock_group: alert-test
     generator:
       type: sequence
@@ -31,15 +38,9 @@ scenarios:
     labels:
       instance: server-01
       job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   - signal_type: metrics
     name: memory_usage_percent
-    rate: 1
-    duration: 120s
     phase_offset: "3s"
     clock_group: alert-test
     generator:
@@ -49,7 +50,3 @@ scenarios:
     labels:
       instance: server-01
       job: node
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout

@@ -11,29 +11,31 @@
 #   sonda metrics --scenario examples/http-push-retry.yaml \
 #     --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
 
-name: cpu_usage
-rate: 10
-duration: 60s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 60
-  offset: 50.0
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+    batch_size: 32768
+    retry:
+      max_attempts: 3
+      initial_backoff: 100ms
+      max_backoff: 5s
 
-labels:
-  host: server-01
-  region: us-east
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
-  batch_size: 32768
-  retry:
-    max_attempts: 3
-    initial_backoff: 100ms
-    max_backoff: 5s
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 60
+      offset: 50.0
+    labels:
+      host: server-01
+      region: us-east

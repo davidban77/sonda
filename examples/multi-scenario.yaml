@@ -6,6 +6,8 @@
 # Both scenarios start at the same time on separate threads and run for 30s.
 # Metrics are written to stdout; log events are written to /tmp/sonda-logs.json.
 
+version: 2
+
 scenarios:
   - signal_type: metrics
     name: cpu_usage
@@ -25,7 +27,7 @@ scenarios:
     name: app_logs
     rate: 10
     duration: 30s
-    generator:
+    log_generator:
       type: template
       templates:
         - message: "Request from {ip} to {endpoint}"

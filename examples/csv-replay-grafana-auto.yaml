@@ -13,18 +13,21 @@
 # Run with:
 #   sonda metrics --scenario examples/csv-replay-grafana-auto.yaml
 
-name: grafana_replay
-rate: 1
-duration: 60s
+version: 2
 
-generator:
-  type: csv_replay
-  file: examples/grafana-export.csv
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
 
-labels:
-  env: production
-
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+scenarios:
+  - signal_type: metrics
+    name: grafana_replay
+    generator:
+      type: csv_replay
+      file: examples/grafana-export.csv
+    labels:
+      env: production

@@ -77,22 +77,25 @@ wc -l < /tmp/pipeline-influx.txt
 ```
 
 ```yaml title="examples/multi-format-test.yaml"
-name: pipeline_test
-rate: 2
-duration: 10s
+version: 2
 
-generator:
-  type: constant
-  value: 42.0
+defaults:
+  rate: 2
+  duration: 10s
+  encoder:
+    type: influx_lp
+  sink:
+    type: file
+    path: /tmp/pipeline-influx.txt
 
-labels:
-  env: test
-
-encoder:
-  type: influx_lp
-sink:
-  type: file
-  path: /tmp/pipeline-influx.txt
+scenarios:
+  - signal_type: metrics
+    name: pipeline_test
+    generator:
+      type: constant
+      value: 42.0
+    labels:
+      env: test
 ```
 
 See [Encoders](../configuration/encoders.md) and [Sinks](../configuration/sinks.md) for the
@@ -200,6 +203,8 @@ wc -l < /tmp/pipeline-logs.json
 ```
 
 ```yaml title="examples/multi-pipeline-test.yaml"
+version: 2
+
 scenarios:
   - signal_type: metrics
     name: pipeline_metrics
@@ -217,7 +222,7 @@ scenarios:
     name: pipeline_logs
     rate: 5
     duration: 10s
-    generator:
+    log_generator:
       type: template
       templates:
         - message: "Pipeline validation event"

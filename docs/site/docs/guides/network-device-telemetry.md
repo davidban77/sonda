@@ -64,12 +64,20 @@ sonda --dry-run run --scenario examples/network-device-baseline.yaml
 ```
 
 ```yaml title="examples/network-device-baseline.yaml (excerpt)"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 120s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
 scenarios:
   # Interface traffic counter (sawtooth = monotonic ramp)
   - signal_type: metrics
     name: interface_in_octets
-    rate: 1
-    duration: 120s
     generator:
       type: sawtooth
       min: 0.0
@@ -82,16 +90,10 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # Interface operational state (1 = up)
   - signal_type: metrics
     name: interface_oper_state
-    rate: 1
-    duration: 120s
     generator:
       type: constant
       value: 1.0
@@ -100,10 +102,6 @@ scenarios:
       ifName: GigabitEthernet0/0/0
       ifAlias: uplink-isp-a
       job: snmp
-    encoder:
-      type: prometheus_text
-    sink:
-      type: stdout
 
   # ... more interfaces, CPU, memory (9 scenarios total)
 ```
@@ -390,10 +388,10 @@ or Prometheus, change the sink in each scenario entry.
       path: /tmp/network-metrics.txt
     ```
 
-!!! warning "Sink per scenario"
-    In a multi-scenario file, each scenario entry has its own `sink` block. If you change
-    the sink, update it in every entry. A quick way: use your editor's find-and-replace to
-    swap `type: stdout` for your target sink across the file.
+!!! tip "Change the sink in one place"
+    In a v2 scenario file, the `defaults:` block holds the shared `sink` (and `encoder`,
+    `rate`, `duration`, `labels`). Swap the sink there once and every entry in
+    `scenarios:` picks it up. Per-entry overrides still win if you need a mixed setup.
 
 ---
 

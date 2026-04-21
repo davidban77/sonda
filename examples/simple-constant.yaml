@@ -1,10 +1,16 @@
-name: up
-rate: 10
-duration: 10s
-generator:
-  type: constant
-  value: 1.0
-encoder:
-  type: prometheus_text
-sink:
-  type: stdout
+version: 2
+
+defaults:
+  rate: 10
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - signal_type: metrics
+    name: up
+    generator:
+      type: constant
+      value: 1.0

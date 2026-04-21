@@ -18,24 +18,26 @@
 #   - Thanos Receive: http://localhost:19291/api/v1/receive
 #   - Cortex/Mimir: http://localhost:9009/api/v1/push
 
-name: cpu_usage_rw
-rate: 10
-duration: 60s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50
-  period_secs: 60
-  offset: 50
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "http://localhost:8428/api/v1/write"
+    batch_size: 100
 
-labels:
-  instance: server-01
-  job: sonda
-
-encoder:
-  type: remote_write
-
-sink:
-  type: remote_write
-  url: "http://localhost:8428/api/v1/write"
-  batch_size: 100
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage_rw
+    generator:
+      type: sine
+      amplitude: 50
+      period_secs: 60
+      offset: 50
+    labels:
+      instance: server-01
+      job: sonda
