@@ -609,6 +609,7 @@ mod tests {
         let log_event = LogEvent::new(
             crate::model::log::Severity::Info,
             "test message".to_string(),
+            crate::model::metric::Labels::default(),
             BTreeMap::new(),
         );
         let mut buf = Vec::new();
