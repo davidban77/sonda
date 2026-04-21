@@ -6,10 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.0.0](https://github.com/davidban77/sonda/compare/v0.15.0...v1.0.0) (2026-04-21)
 
+First `v1.0.0` milestone release. Ships the unified v2 scenario format across the full stack (CLI, library, HTTP server). v1 YAML is fully retired — all built-in scenarios, examples, and input paths now speak v2.
+
+**Migration guide:** [`docs/configuration/v2-scenarios.md`](https://github.com/davidban77/sonda/blob/main/docs/site/docs/configuration/v2-scenarios.md)
+
 
 ### ⚠ BREAKING CHANGES
 
-* **core+cli+server:** full v1 YAML retirement + server v2 acceptance (v2 PR 9b) ([#216](https://github.com/davidban77/sonda/issues/216))
+#### CLI — v1 YAML files rejected ([#216](https://github.com/davidban77/sonda/pull/216))
+
+Every CLI path that accepted a YAML scenario file (`sonda run --scenario`, `sonda metrics --scenario`, `sonda logs --scenario`, `sonda histogram --scenario`, `sonda summary --scenario`, `sonda catalog run`, `sonda scenarios run`) now **requires v2 YAML**. v1 files surface a clear migration error pointing at the v2 guide.
+
+**Before (v1):**
+
+```yaml
+name: cpu_usage
+rate: 1
+duration: 30s
+generator: { type: sine, amplitude: 10, period: 60s }
+encoder: { type: prometheus_text }
+sink: { type: stdout }
+```
+
+**After (v2):**
+
+```yaml
+version: 2
+defaults:
+  rate: 1
+  duration: 30s
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage
+    generator: { type: sine, amplitude: 10, period: 60s }
+```
+
+#### CLI — `sonda story` subcommand removed ([#215](https://github.com/davidban77/sonda/pull/215))
+
+Multi-signal temporal scenarios are now expressed directly as v2 scenarios with entry-level `after:` clauses — no separate `story` subcommand. Replace `sonda story --file stories/link-failover.yaml` with `sonda run --scenario scenarios/link-failover.yaml` or `sonda catalog run link-failover`. The canonical causal-chain example (`scenarios/link-failover.yaml`) ships as a built-in v2 scenario demonstrating the flap → saturation → degradation pattern.
+
+#### Library — `MultiScenarioConfig` removed from public API ([#216](https://github.com/davidban77/sonda/pull/216))
+
+`sonda_core::config::MultiScenarioConfig` is deleted. Library integrators calling `run_multi` must update:
+
+```rust
+// Before:
+run_multi(MultiScenarioConfig { scenarios: v }, shutdown)
+
+// After:
+run_multi(v, shutdown)  // pass Vec<ScenarioEntry> directly
+```
+
+#### Server — `POST /scenarios` accepts v2 YAML/JSON only ([#216](https://github.com/davidban77/sonda/pull/216))
+
+`sonda-server` endpoints now accept only v2-shape bodies (`version: 2` at root + `scenarios:` list). v1 bodies return **HTTP 400** with a JSON error including a migration hint pointing at the v2 guide.
+
+
+### ✨ What's new in v2
+
+- **Unified scenario format** — every built-in (`scenarios/*.yaml`), example (`examples/*.yaml`), and input path speaks v2. One shape for single-signal, multi-signal, and pack-backed scenarios.
+- **Causal chains via `after:` clauses** — express "B starts after A crosses threshold N" declaratively; signal offsets compile deterministically from generator timing math.
+- **Catalog metadata** — v2 scenarios carry `scenario_name` / `category` / `description` at root for `sonda scenarios list` / `sonda catalog list`.
+- **Multi-signal detection** — catalog probe reports `signal: multi` automatically for v2 files with multiple entries.
+- **Pack integration** — v2 scenarios reference packs as first-class entries with `pack:` + `overrides:`.
+- **CLI unification** — `sonda run --scenario <file>` handles any signal type (metrics / logs / histogram / summary / multi) transparently.
+- **Server v2 acceptance** — `POST /scenarios` accepts v2 YAML or JSON bodies, atomically launches all scenario entries.
+
 
 ### Features
 
