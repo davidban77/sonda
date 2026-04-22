@@ -101,6 +101,7 @@ use crate::sink::SinkConfig;
 
 /// Errors produced during defaults resolution.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum NormalizeError {
     /// An entry has no `rate` either inline or via the `defaults:` block.
     ///

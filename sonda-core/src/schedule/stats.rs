@@ -23,6 +23,7 @@ pub const MAX_RECENT_METRICS: usize = 100;
 /// scrape-based integration (e.g., Prometheus pulling from
 /// `GET /scenarios/{id}/metrics`). It is bounded by [`MAX_RECENT_METRICS`].
 #[derive(Debug, Clone, Default, Serialize)]
+#[non_exhaustive]
 pub struct ScenarioStats {
     /// Total number of events emitted since the scenario started.
     pub total_events: u64,

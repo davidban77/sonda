@@ -52,6 +52,7 @@ pub trait Encoder: Send + Sync {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum EncoderConfig {
     /// Prometheus text exposition format (version 0.0.4).
     ///

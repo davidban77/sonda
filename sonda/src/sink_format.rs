@@ -63,6 +63,9 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::OtlpGrpc { endpoint, .. } => format!("otlp_grpc ({endpoint})"),
         #[cfg(not(feature = "otlp"))]
         SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc (disabled)".to_string(),
+        // `SinkConfig` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to the Debug form so a future variant still renders.
+        other => format!("unknown ({other:?})"),
     }
 }
 

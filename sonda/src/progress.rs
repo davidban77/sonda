@@ -562,38 +562,33 @@ mod tests {
 
     #[test]
     fn window_tag_plain_gap_active() {
-        let stats = ScenarioStats {
-            in_gap: true,
-            ..Default::default()
-        };
+        // `ScenarioStats` is `#[non_exhaustive]` across the crate boundary,
+        // so struct-literal construction is forbidden here. Start from
+        // `Default::default()` and set the fields the test cares about.
+        let mut stats = ScenarioStats::default();
+        stats.in_gap = true;
         assert_eq!(format_window_tag_plain(&stats), " [gap]");
     }
 
     #[test]
     fn window_tag_plain_burst_active() {
-        let stats = ScenarioStats {
-            in_burst: true,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.in_burst = true;
         assert_eq!(format_window_tag_plain(&stats), " [burst]");
     }
 
     #[test]
     fn window_tag_plain_spike_active() {
-        let stats = ScenarioStats {
-            in_cardinality_spike: true,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.in_cardinality_spike = true;
         assert_eq!(format_window_tag_plain(&stats), " [spike]");
     }
 
     #[test]
     fn window_tag_plain_multiple_windows_active() {
-        let stats = ScenarioStats {
-            in_burst: true,
-            in_cardinality_spike: true,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.in_burst = true;
+        stats.in_cardinality_spike = true;
         assert_eq!(format_window_tag_plain(&stats), " [burst] [spike]");
     }
 
@@ -617,12 +612,10 @@ mod tests {
 
     #[test]
     fn non_tty_line_contains_scenario_name() {
-        let stats = ScenarioStats {
-            total_events: 42,
-            bytes_emitted: 1024,
-            current_rate: 10.0,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 42;
+        stats.bytes_emitted = 1024;
+        stats.current_rate = 10.0;
         let line = format_non_tty_line("cpu_usage", &stats, 10.0, Duration::from_secs(5));
         assert!(
             line.contains("cpu_usage"),
@@ -637,10 +630,8 @@ mod tests {
 
     #[test]
     fn non_tty_line_shows_window_state() {
-        let stats = ScenarioStats {
-            in_burst: true,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.in_burst = true;
         let line = format_non_tty_line("test", &stats, 10.0, Duration::from_secs(1));
         assert!(
             line.contains("[burst]"),

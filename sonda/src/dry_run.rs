@@ -122,6 +122,9 @@ fn write_entry_text<W: Write>(
         ScenarioEntry::Logs(c) => write_logs_fields(out, c)?,
         ScenarioEntry::Histogram(c) => write_histogram_fields(out, c)?,
         ScenarioEntry::Summary(c) => write_summary_fields(out, c)?,
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // emit a marker line so future variants render rather than panic.
+        _ => write_field(out, "signal:", "unknown")?,
     }
     Ok(())
 }
@@ -357,6 +360,9 @@ fn generator_display(gen: &sonda_core::generator::GeneratorConfig) -> String {
             let amp_v = amplitude.unwrap_or(10.0);
             format!("steady (center: {center_v}, amplitude: {amp_v})")
         }
+        // `GeneratorConfig` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to the Debug form so a future variant still renders.
+        other => format!("unknown ({other:?})"),
     }
 }
 
@@ -385,6 +391,9 @@ fn encoder_display(enc: &sonda_core::encoder::EncoderConfig) -> String {
         EncoderConfig::Otlp => "otlp".to_string(),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled {} => "otlp (disabled)".to_string(),
+        // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to the Debug form so a future variant still renders.
+        other => format!("unknown ({other:?})"),
     }
 }
 
@@ -510,6 +519,26 @@ fn to_scenario_dto(index: usize, entry: &ScenarioEntry) -> ScenarioDto<'_> {
             clock_group: c.clock_group.as_deref(),
             clock_group_is_auto: c.clock_group_is_auto,
         },
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // borrow schedule-level fields via `base()` so a future variant still
+        // round-trips through the JSON DTO with a marker signal label.
+        other => {
+            let base = other.base();
+            ScenarioDto {
+                index,
+                name: base.name.as_str(),
+                signal: "unknown",
+                rate: base.rate,
+                duration: base.duration.as_deref(),
+                generator: format!("unknown ({other:?})"),
+                encoder: String::from("unknown"),
+                sink: sink_display(&base.sink),
+                labels: labels_btree(&base.labels),
+                phase_offset: base.phase_offset.as_deref(),
+                clock_group: base.clock_group.as_deref(),
+                clock_group_is_auto: base.clock_group_is_auto,
+            }
+        }
     }
 }
 

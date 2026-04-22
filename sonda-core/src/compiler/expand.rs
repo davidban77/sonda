@@ -156,6 +156,7 @@ use crate::sink::SinkConfig;
 
 /// Errors produced during pack expansion.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ExpandError {
     /// The pack reference could not be resolved — either unknown name or a
     /// file path load failure. The wrapped message includes the pack

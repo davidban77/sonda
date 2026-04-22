@@ -550,6 +550,9 @@ fn scenario_entry_signal_label(entry: &sonda_core::ScenarioEntry) -> &'static st
         sonda_core::ScenarioEntry::Logs(_) => "logs",
         sonda_core::ScenarioEntry::Histogram(_) => "histogram",
         sonda_core::ScenarioEntry::Summary(_) => "summary",
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // future signal kinds will surface here as "unknown" until wired in.
+        _ => "unknown",
     }
 }
 
@@ -931,6 +934,15 @@ fn apply_retry_to_sink(sink: &mut SinkConfig, retry: RetryConfig) -> Result<()> 
                  that was not compiled in"
             );
         }
+        // `SinkConfig` is `#[non_exhaustive]` across the crate boundary;
+        // a future variant reaches this arm until retry semantics are wired in.
+        _ => {
+            bail!(
+                "--retry-* flags cannot be applied to sink variant {:?}: \
+                 this sink type is not yet supported",
+                sink
+            );
+        }
     }
     Ok(())
 }
@@ -962,6 +974,9 @@ fn sink_type_name(sink: &SinkConfig) -> &'static str {
         SinkConfig::KafkaDisabled { .. } => "kafka",
         #[cfg(not(feature = "otlp"))]
         SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc",
+        // `SinkConfig` is `#[non_exhaustive]` across the crate boundary;
+        // future variants surface as "unknown" until wired in here.
+        _ => "unknown",
     }
 }
 
@@ -1606,6 +1621,9 @@ pub fn apply_run_overrides(
             sonda_core::ScenarioEntry::Logs(ref mut c) => &mut c.base,
             sonda_core::ScenarioEntry::Histogram(ref mut c) => &mut c.base,
             sonda_core::ScenarioEntry::Summary(ref mut c) => &mut c.base,
+            // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+            // a future signal variant reaches this arm until wired in here.
+            _ => bail!("cannot apply `run` overrides to unknown scenario variant"),
         };
 
         if let Some(ref dur) = args.duration {
@@ -1630,6 +1648,8 @@ pub fn apply_run_overrides(
                 sonda_core::ScenarioEntry::Logs(ref mut c) => c.encoder = enc.clone(),
                 sonda_core::ScenarioEntry::Histogram(ref mut c) => c.encoder = enc.clone(),
                 sonda_core::ScenarioEntry::Summary(ref mut c) => c.encoder = enc.clone(),
+                // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary.
+                _ => bail!("cannot apply encoder override to unknown scenario variant"),
             }
         }
     }
@@ -1671,6 +1691,9 @@ fn apply_builtin_overrides(
         sonda_core::ScenarioEntry::Logs(ref mut c) => &mut c.base,
         sonda_core::ScenarioEntry::Histogram(ref mut c) => &mut c.base,
         sonda_core::ScenarioEntry::Summary(ref mut c) => &mut c.base,
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // a future signal variant reaches this arm until wired in here.
+        _ => bail!("cannot apply `scenarios run` overrides to unknown scenario variant"),
     };
 
     if let Some(ref dur) = args.duration {
@@ -1693,6 +1716,8 @@ fn apply_builtin_overrides(
             sonda_core::ScenarioEntry::Logs(ref mut c) => c.encoder = encoder,
             sonda_core::ScenarioEntry::Histogram(ref mut c) => c.encoder = encoder,
             sonda_core::ScenarioEntry::Summary(ref mut c) => c.encoder = encoder,
+            // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary.
+            _ => bail!("cannot apply encoder override to unknown scenario variant"),
         }
     }
 

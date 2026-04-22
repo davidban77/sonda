@@ -361,6 +361,12 @@ fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut dyn Sink) -> Result<(),
         ScenarioEntry::Summary(config) => {
             summary_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
         }
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary
+        // (integration tests are a separate crate), so a wildcard arm is
+        // required. A future signal variant has no runner wired in here yet.
+        _ => Err(SondaError::Config(sonda_core::ConfigError::InvalidValue(
+            "test harness encountered an unknown ScenarioEntry variant".to_string(),
+        ))),
     }
 }
 

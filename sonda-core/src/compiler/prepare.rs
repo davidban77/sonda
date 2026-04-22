@@ -49,6 +49,7 @@ use crate::config::{
 /// so diagnostics chain cleanly when both phases need to report on the same
 /// entry.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PrepareError {
     /// The entry's `signal_type` was not one of the four recognized variants
     /// (`"metrics"`, `"logs"`, `"histogram"`, `"summary"`).

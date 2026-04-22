@@ -3,6 +3,20 @@
 //! This crate owns all domain logic: telemetry models, value generators,
 //! schedulers, encoders, and sinks. The CLI and HTTP server are thin layers
 //! that call into this library.
+//!
+//! # Stability
+//!
+//! Public enums and structs on the library surface — including [`SondaError`]
+//! and its sub-enums ([`ConfigError`], [`GeneratorError`], [`EncoderError`],
+//! [`RuntimeError`]), the config enums ([`GeneratorConfig`](generator::GeneratorConfig),
+//! [`EncoderConfig`](encoder::EncoderConfig), [`SinkConfig`](sink::SinkConfig),
+//! [`DistributionConfig`], [`ScenarioEntry`]), the compile-phase error enums
+//! under [`compiler`], and [`ScenarioStats`] — are marked
+//! `#[non_exhaustive]`. Downstream consumers that `match` on these types must
+//! include a wildcard `_ =>` arm, and [`ScenarioStats`] must be constructed
+//! via `Default::default()` plus field updates rather than a struct literal.
+//! This lets sonda-core add new variants and fields in a minor release
+//! without a semver-major bump.
 
 pub mod compiler;
 pub mod config;
@@ -60,6 +74,7 @@ mod compile;
 /// variant at the call site. This prevents generator or config I/O errors
 /// from being misclassified as sink errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SondaError {
     /// An error in scenario configuration (invalid values, missing fields).
     #[error("configuration error: {0}")]
@@ -97,6 +112,7 @@ pub enum SondaError {
 /// durations, and similar problems that the user can fix by editing their
 /// YAML scenario file or adjusting programmatic config construction.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A configuration field has an invalid value.
     ///
@@ -121,6 +137,7 @@ impl ConfigError {
 /// contents), `ParseFailed` (unparseable numeric columns), or
 /// `UnsupportedFormat` as generator capabilities grow.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GeneratorError {
     /// Failed to read a generator input file (CSV replay, log replay).
     ///
@@ -155,6 +172,7 @@ impl GeneratorError {
 /// Preserves original error sources where possible so callers can inspect
 /// the underlying failure without string parsing.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EncoderError {
     /// JSON serialization failed.
     ///
@@ -189,6 +207,7 @@ pub enum EncoderError {
 /// These represent environmental failures (OS thread limits, thread panics)
 /// that cannot be resolved by changing configuration.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RuntimeError {
     /// The OS refused to spawn a new thread.
     ///

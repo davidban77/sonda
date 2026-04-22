@@ -49,11 +49,17 @@ fn metric_names(entries: &[ExpandedEntry]) -> BTreeSet<&str> {
 /// once per variant here.
 fn shorten_duration(entries: &mut [ScenarioEntry], duration: &str) {
     for entry in entries {
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary
+        // (integration tests are a separate crate), so the wildcard arm is
+        // required. Unknown future variants are skipped here rather than
+        // panicking — they will fail the parity assertions downstream if
+        // truly unsupported.
         let base = match entry {
             ScenarioEntry::Metrics(c) => &mut c.base,
             ScenarioEntry::Logs(c) => &mut c.base,
             ScenarioEntry::Histogram(c) => &mut c.base,
             ScenarioEntry::Summary(c) => &mut c.base,
+            _ => continue,
         };
         base.duration = Some(duration.to_string());
     }
