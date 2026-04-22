@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1](https://github.com/davidban77/sonda/compare/v1.0.0...v1.0.1) (2026-04-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **changelog:** footers into a single-line bullet. This expands that section into four per-surface subsections (CLI v1 rejection, sonda story removal, MultiScenarioConfig removal, server v2-only acceptance) with before/after code examples, plus a "What's new in v2" summary.
+
+### Bug Fixes
+
+* repair --all-features gate failures + add CI coverage ([78f1501](https://github.com/davidban77/sonda/commit/78f1501bc5d21997fe457f2a2583bbffb5e2c413))
+
+
+### Documentation
+
+* **changelog:** expand v1.0.0 breaking-changes section with migration guide ([e4d9cd5](https://github.com/davidban77/sonda/commit/e4d9cd53ee09b41465e7de2b7d4c27e5671d60c3))
+* **changelog:** expand v1.0.0 breaking-changes section with migration guide ([62027fc](https://github.com/davidban77/sonda/commit/62027fc7c9762b21a5bbf49f0133b219044c10a0))
+
+
+### Miscellaneous
+
+* **api:** mark public enums non_exhaustive before crates.io publish ([88faa0c](https://github.com/davidban77/sonda/commit/88faa0c2fd5c3ed34fba19ea5a94a62fe2075093))
+* **deps:** bump rustls-webpki to 0.103.13 for RUSTSEC-2026-0104 ([026ac71](https://github.com/davidban77/sonda/commit/026ac716eb3fc04c365729b013a51fa5024def02))
+* **release-please:** pin next release to 1.0.1 ([99226ca](https://github.com/davidban77/sonda/commit/99226ca63af10d28e5ed86b8f52f6978f3b28094))
+
 ## [1.0.0](https://github.com/davidban77/sonda/compare/v0.15.0...v1.0.0) (2026-04-21)
 
 First `v1.0.0` milestone release. Ships the unified v2 scenario format across the full stack (CLI, library, HTTP server). v1 YAML is fully retired — all built-in scenarios, examples, and input paths now speak v2.
