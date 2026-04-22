@@ -75,26 +75,15 @@ impl Sink for FileSink {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
 
     use super::*;
-
-    /// Return a unique temporary directory path for the given test name.
-    /// The directory is created by the caller so sub-paths can be used freely.
-    fn tmp_path(test_name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sonda-filesink-tests-{test_name}"));
-        // Best-effort cleanup of any previous run; ignore errors.
-        let _ = fs::remove_dir_all(&dir);
-        dir
-    }
 
     // ---- Happy path: write → read back ----------------------------------------
 
     #[test]
     fn write_to_temp_file_and_read_back_matches() {
-        let dir = tmp_path("write_read_back");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("out.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("out.txt");
 
         let mut sink = FileSink::new(&path).expect("should open file");
         sink.write(b"hello, sonda\n").expect("write should succeed");
@@ -106,9 +95,8 @@ mod tests {
 
     #[test]
     fn multiple_writes_accumulate_in_file() {
-        let dir = tmp_path("multiple_writes");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("multi.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("multi.txt");
 
         let mut sink = FileSink::new(&path).expect("should open file");
         sink.write(b"line1\n").expect("write 1");
@@ -122,9 +110,8 @@ mod tests {
 
     #[test]
     fn write_empty_slice_succeeds_and_file_is_empty() {
-        let dir = tmp_path("empty_write");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("empty.txt");
 
         let mut sink = FileSink::new(&path).expect("should open file");
         sink.write(b"").expect("empty write should succeed");
@@ -141,9 +128,9 @@ mod tests {
 
     #[test]
     fn parent_dirs_created_automatically_for_nested_path() {
-        let base = tmp_path("parent_dirs");
+        let base = tempfile::tempdir().expect("create tempdir");
         // Three levels of directories that do not yet exist.
-        let path = base.join("a").join("b").join("c").join("out.txt");
+        let path = base.path().join("a").join("b").join("c").join("out.txt");
 
         let mut sink = FileSink::new(&path).expect("should create parent dirs and open file");
         sink.write(b"nested\n").expect("write should succeed");
@@ -156,13 +143,9 @@ mod tests {
 
     #[test]
     fn parent_dir_creation_matches_spec_path_pattern() {
-        // Spec criterion: write to /tmp/sonda-test/subdir/out.txt → dirs created.
-        // We use a unique suffix to avoid collisions with parallel test runs.
-        let path = std::env::temp_dir()
-            .join("sonda-test-slice13")
-            .join("subdir")
-            .join("out.txt");
-        let _ = fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+        // Spec criterion: write to <tmp>/subdir/out.txt → dirs created.
+        let base = tempfile::tempdir().expect("create tempdir");
+        let path = base.path().join("subdir").join("out.txt");
 
         let mut sink = FileSink::new(&path).expect("should create parent dirs");
         sink.write(b"spec path\n").expect("write");
@@ -175,9 +158,8 @@ mod tests {
 
     #[test]
     fn flush_on_drop_data_visible_after_sink_dropped() {
-        let dir = tmp_path("flush_on_drop");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("drop.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("drop.txt");
 
         {
             let mut sink = FileSink::new(&path).expect("should open file");
@@ -201,12 +183,11 @@ mod tests {
     fn write_to_readonly_dir_returns_sink_error_with_path_in_message() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tmp_path("readonly_dir");
-        fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
         // Make the directory read-only so we cannot create files inside it.
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
 
-        let path = dir.join("denied.txt");
+        let path = dir.path().join("denied.txt");
         let result = FileSink::new(&path);
         assert!(result.is_err(), "should fail on read-only dir");
         let err = result.err().unwrap();
@@ -219,22 +200,20 @@ mod tests {
         // Error message must mention the file path.
         let msg = err.to_string();
         assert!(
-            msg.contains("denied.txt") || msg.contains(dir.to_str().unwrap()),
+            msg.contains("denied.txt") || msg.contains(dir.path().to_str().unwrap()),
             "error message should contain the path, got: {msg}"
         );
 
-        // Clean up: restore permissions so tmp cleanup works.
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        // Restore permissions so TempDir cleanup on drop can remove the directory.
+        let _ = fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755));
     }
 
     #[test]
     fn write_to_path_under_nonexistent_root_with_no_create_perm_returns_err() {
-        // On most systems we cannot write under /proc or similar read-only roots.
         // Use a clearly invalid path: a file whose "parent" is itself a file.
-        let dir = tmp_path("parent_is_file");
-        fs::create_dir_all(&dir).unwrap();
-        // Create a regular file.
-        let blocker = dir.join("file.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        // Create a regular file inside the tempdir.
+        let blocker = dir.path().join("file.txt");
         fs::write(&blocker, b"I am a file").unwrap();
         // Try to use that file as a directory.
         let path = blocker.join("child.txt");
@@ -266,9 +245,8 @@ mod tests {
         use crate::sink::create_sink;
         use crate::sink::SinkConfig;
 
-        let dir = tmp_path("factory_wiring");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("factory.txt");
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("factory.txt");
 
         let config = SinkConfig::File {
             path: path.to_str().unwrap().to_string(),
