@@ -296,5 +296,9 @@ fn invalid_missing_rate_rejected() {
             assert_eq!(index, 0);
             assert_eq!(label, "cpu");
         }
+        // `NormalizeError` is `#[non_exhaustive]` across the crate boundary
+        // (integration tests are a separate crate); any other variant is an
+        // unexpected regression for this fixture.
+        other => panic!("expected MissingRate, got {other:?}"),
     }
 }

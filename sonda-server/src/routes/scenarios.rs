@@ -1312,15 +1312,16 @@ scenarios:
     /// StatsResponse correctly converts from ScenarioStats.
     #[test]
     fn stats_response_from_scenario_stats_converts_all_fields() {
-        let stats = ScenarioStats {
-            total_events: 42,
-            bytes_emitted: 1024,
-            current_rate: 10.5,
-            errors: 3,
-            in_gap: true,
-            in_burst: false,
-            ..Default::default()
-        };
+        // `ScenarioStats` is `#[non_exhaustive]` across the crate boundary,
+        // so struct-literal construction is forbidden here. Start from
+        // `Default::default()` and set the fields the test cares about.
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 42;
+        stats.bytes_emitted = 1024;
+        stats.current_rate = 10.5;
+        stats.errors = 3;
+        stats.in_gap = true;
+        stats.in_burst = false;
         let resp: StatsResponse = stats.into();
         assert_eq!(resp.total_events, 42);
         assert_eq!(resp.bytes_emitted, 1024);
@@ -2401,15 +2402,13 @@ scenarios:
     /// GET /scenarios/{id}/stats returns a JSON body with all expected fields.
     #[tokio::test]
     async fn stats_endpoint_returns_all_expected_fields() {
-        let stats = ScenarioStats {
-            total_events: 500,
-            bytes_emitted: 32000,
-            current_rate: 99.5,
-            errors: 2,
-            in_gap: false,
-            in_burst: true,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 500;
+        stats.bytes_emitted = 32000;
+        stats.current_rate = 99.5;
+        stats.errors = 2;
+        stats.in_gap = false;
+        stats.in_burst = true;
         let h = make_handle_with_stats("id-stats-all", "all_fields", 100.0, stats, true);
         let app = router_with_handles(vec![h]);
 
@@ -2522,15 +2521,13 @@ scenarios:
     /// When in_gap is set to true in the stats, the endpoint reflects it.
     #[tokio::test]
     async fn stats_endpoint_in_gap_true_when_stats_indicate_gap() {
-        let stats = ScenarioStats {
-            total_events: 10,
-            bytes_emitted: 640,
-            current_rate: 0.0,
-            errors: 0,
-            in_gap: true,
-            in_burst: false,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 10;
+        stats.bytes_emitted = 640;
+        stats.current_rate = 0.0;
+        stats.errors = 0;
+        stats.in_gap = true;
+        stats.in_burst = false;
         let h = make_handle_with_stats("id-stats-gap", "gap_test", 50.0, stats, true);
         let app = router_with_handles(vec![h]);
 
@@ -2555,15 +2552,13 @@ scenarios:
     /// When a scenario has stopped, GET /scenarios/{id}/stats returns state "stopped".
     #[tokio::test]
     async fn stats_endpoint_returns_stopped_state_for_finished_scenario() {
-        let stats = ScenarioStats {
-            total_events: 1000,
-            bytes_emitted: 64000,
-            current_rate: 0.0,
-            errors: 5,
-            in_gap: false,
-            in_burst: false,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 1000;
+        stats.bytes_emitted = 64000;
+        stats.current_rate = 0.0;
+        stats.errors = 5;
+        stats.in_gap = false;
+        stats.in_burst = false;
         let h = make_handle_with_stats("id-stats-stopped", "stopped_test", 200.0, stats, false);
         let app = router_with_handles(vec![h]);
 
@@ -2641,15 +2636,13 @@ scenarios:
     /// The target_rate field reflects the configured rate on the handle, not measured rate.
     #[tokio::test]
     async fn stats_endpoint_target_rate_reflects_configured_rate() {
-        let stats = ScenarioStats {
-            total_events: 0,
-            bytes_emitted: 0,
-            current_rate: 45.0,
-            errors: 0,
-            in_gap: false,
-            in_burst: false,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 0;
+        stats.bytes_emitted = 0;
+        stats.current_rate = 45.0;
+        stats.errors = 0;
+        stats.in_gap = false;
+        stats.in_burst = false;
         // target_rate = 500.0, but current_rate = 45.0 (different).
         let h = make_handle_with_stats("id-stats-rate", "rate_test", 500.0, stats, true);
         let app = router_with_handles(vec![h]);

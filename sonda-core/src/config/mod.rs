@@ -364,6 +364,7 @@ impl std::ops::DerefMut for ScenarioConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum DistributionConfig {
     /// Exponential distribution with rate parameter lambda.
     ///
@@ -527,6 +528,7 @@ impl std::ops::DerefMut for SummaryScenarioConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "signal_type"))]
+#[non_exhaustive]
 pub enum ScenarioEntry {
     /// A metrics scenario entry.
     #[cfg_attr(feature = "config", serde(rename = "metrics"))]

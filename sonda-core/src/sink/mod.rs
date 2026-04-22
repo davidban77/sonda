@@ -94,6 +94,7 @@ impl std::fmt::Debug for KafkaSaslConfig {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum SinkConfig {
     /// Write encoded events to stdout, buffered via [`BufWriter`](std::io::BufWriter).
     #[cfg_attr(feature = "config", serde(rename = "stdout"))]

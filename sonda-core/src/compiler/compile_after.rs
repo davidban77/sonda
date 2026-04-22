@@ -148,6 +148,7 @@ use crate::sink::SinkConfig;
 /// spec §3.4 validation table so diagnostics stay aligned with the
 /// published error messages.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CompileAfterError {
     /// An `after.ref` pointed to a signal id that does not exist in the
     /// expanded file.

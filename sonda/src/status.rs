@@ -72,6 +72,20 @@ pub fn print_start(entry: &ScenarioEntry, verbosity: Verbosity, position: Option
             sink_display(&c.sink),
             c.duration.as_deref(),
         ),
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to `base()` fields so a future variant still prints a
+        // start banner with an "unknown" signal-type marker.
+        other => {
+            let base = other.base();
+            (
+                base.name.as_str(),
+                "unknown",
+                base.rate,
+                String::from("unknown"),
+                sink_display(&base.sink),
+                base.duration.as_deref(),
+            )
+        }
     };
     let clock_group = entry.clock_group();
     let clock_group_is_auto = entry.clock_group_is_auto();
@@ -207,6 +221,15 @@ pub fn print_config(entry: &ScenarioEntry, index: usize, total: usize) {
         ScenarioEntry::Logs(c) => print_logs_config(c, index, total),
         ScenarioEntry::Histogram(c) => print_histogram_config(c, index, total),
         ScenarioEntry::Summary(c) => print_summary_config(c, index, total),
+        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+        // render a header + marker line so a future variant is observable
+        // in `--verbose` / `--dry-run` output instead of silently skipped.
+        other => {
+            print_config_header(other.base().name.as_str(), index, total);
+            eprintln!();
+            print_config_field("signal:", "unknown");
+            eprintln!();
+        }
     }
 }
 
@@ -815,6 +838,9 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             let i = spike_interval.as_deref().unwrap_or("30s");
             format!("spike_event (baseline: {base}, height: {h}, duration: {d}, interval: {i})")
         }
+        // `GeneratorConfig` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to the Debug form so a future variant still renders.
+        other => format!("unknown ({other:?})"),
     }
 }
 
@@ -860,6 +886,9 @@ fn encoder_display(encoder: &EncoderConfig) -> String {
         EncoderConfig::RemoteWriteDisabled { .. } => ("remote_write (feature disabled)", None),
         #[cfg(not(feature = "otlp"))]
         EncoderConfig::OtlpDisabled { .. } => ("otlp (feature disabled)", None),
+        // `EncoderConfig` is `#[non_exhaustive]` across the crate boundary;
+        // fall back to a generic marker so a future variant still renders.
+        _ => ("unknown", None),
     };
     match precision {
         Some(p) => format!("{name} (precision: {p})"),
@@ -1450,12 +1479,13 @@ mod tests {
 
     #[test]
     fn print_stop_with_errors_does_not_panic() {
-        let stats = ScenarioStats {
-            total_events: 100,
-            bytes_emitted: 4096,
-            errors: 3,
-            ..Default::default()
-        };
+        // `ScenarioStats` is `#[non_exhaustive]` across the crate boundary,
+        // so struct-literal construction is forbidden here. Start from
+        // `Default::default()` and set the fields the test cares about.
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 100;
+        stats.bytes_emitted = 4096;
+        stats.errors = 3;
         // When errors > 0, the stop icon should be yellow and error count red.
         // We just verify it does not panic.
         print_stop(
@@ -1481,10 +1511,8 @@ mod tests {
 
     #[test]
     fn print_stop_with_large_byte_count_does_not_panic() {
-        let stats = ScenarioStats {
-            bytes_emitted: 2_000_000_000,
-            ..Default::default()
-        };
+        let mut stats = ScenarioStats::default();
+        stats.bytes_emitted = 2_000_000_000;
         print_stop(
             "big_bytes",
             Duration::from_secs(60),

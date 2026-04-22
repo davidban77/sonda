@@ -29,6 +29,7 @@ use crate::config::ScenarioEntry;
 /// matching. The `#[from]` conversions let each phase's fallible call site
 /// bubble up naturally via `?`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum CompileError {
     /// **Phase 1** (parse): YAML parsing or schema validation failed.
     #[error("parse error: {0}")]

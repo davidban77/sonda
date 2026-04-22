@@ -18,6 +18,7 @@ use super::{Entry, ScenarioFile};
 
 /// Errors produced during v2 scenario parsing and validation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ParseError {
     /// The YAML could not be deserialized into the expected structure.
     #[error("YAML parse error: {0}")]

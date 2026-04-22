@@ -126,6 +126,7 @@ pub struct CsvColumnSpec {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "config", serde(tag = "type"))]
+#[non_exhaustive]
 pub enum GeneratorConfig {
     /// A generator that always returns the same value.
     #[cfg_attr(feature = "config", serde(rename = "constant"))]
