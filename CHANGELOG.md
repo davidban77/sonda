@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1](https://github.com/davidban77/sonda/compare/v1.0.0...v1.0.1) (2026-04-22)
+
+Maintenance release preparing sonda for its first publish to [crates.io](https://crates.io/crates/sonda-core). No user-visible behavior change vs. v1.0.0 — CLI and server are functionally identical.
+
+### Library integrators — note on `#[non_exhaustive]`
+
+`sonda-core` marks its public error enums, config enums, and `ScenarioStats` as `#[non_exhaustive]` so future variants/fields can be added without a major bump. If you embed `sonda-core` as a library:
+
+- `match` on `SondaError`, `ConfigError`, `GeneratorError`, `EncoderError`, `RuntimeError`, `CompileError`, the five compile-phase error enums (`ParseError`, `NormalizeError`, `ExpandError`, `CompileAfterError`, `PrepareError`), `GeneratorConfig`, `EncoderConfig`, `SinkConfig`, `DistributionConfig`, and `ScenarioEntry` now requires a wildcard `_ =>` arm.
+- Struct literals for `ScenarioStats` must use `..Default::default()` (or `ScenarioStats::default()`) for forward compatibility.
+
+Sonda was not previously published to crates.io, so no released consumer breaks.
+
+### Bug Fixes
+
+* repair `--all-features` gate failures + add CI coverage ([78f1501](https://github.com/davidban77/sonda/commit/78f1501bc5d21997fe457f2a2583bbffb5e2c413))
+
+### Miscellaneous
+
+* **api:** mark public enums `#[non_exhaustive]` before crates.io publish ([88faa0c](https://github.com/davidban77/sonda/commit/88faa0c2fd5c3ed34fba19ea5a94a62fe2075093))
+* **deps:** bump rustls-webpki to 0.103.13 for [RUSTSEC-2026-0104](https://rustsec.org/advisories/RUSTSEC-2026-0104) ([026ac71](https://github.com/davidban77/sonda/commit/026ac716eb3fc04c365729b013a51fa5024def02))
+
 ## [1.0.0](https://github.com/davidban77/sonda/compare/v0.15.0...v1.0.0) (2026-04-21)
 
 First `v1.0.0` milestone release. Ships the unified v2 scenario format across the full stack (CLI, library, HTTP server). v1 YAML is fully retired — all built-in scenarios, examples, and input paths now speak v2.
