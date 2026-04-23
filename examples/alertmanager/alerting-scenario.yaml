@@ -11,7 +11,7 @@
 # Prerequisites:
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d
 #
-# Usage:
+# Usage with the CLI (host-run):
 #   sonda metrics --scenario examples/alertmanager/alerting-scenario.yaml
 #
 # Verify data arrived:
@@ -20,25 +20,28 @@
 # Check fired alerts:
 #   curl -s http://localhost:8880/api/v1/alerts | jq .
 
-name: docker_alert_cpu
-rate: 2
-duration: 300s
+version: 2
 
-generator:
-  type: sine
-  amplitude: 50.0
-  period_secs: 30
-  offset: 50.0
+defaults:
+  rate: 2
+  duration: 300s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+  labels:
+    host: docker-alert-demo
+    region: us-east-1
+    service: payment-service
+    env: staging
 
-labels:
-  host: docker-alert-demo
-  region: us-east-1
-  service: payment-service
-  env: staging
-
-encoder:
-  type: prometheus_text
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
+scenarios:
+  - signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 30
+      offset: 50.0

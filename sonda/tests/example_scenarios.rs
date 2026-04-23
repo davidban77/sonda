@@ -104,9 +104,29 @@ fn discover_sonda_example_files() -> Vec<PathBuf> {
     assert!(dir.is_dir(), "examples/ directory must exist at repo root");
 
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read examples/ directory") {
+    collect_sonda_scenario_yamls(&dir, &mut files);
+    files.sort();
+    files
+}
+
+/// Recursively walk `dir` and push every `.yaml` file whose contents
+/// [`is_sonda_scenario`] accepts.
+///
+/// The walk is intentionally simple (no `walkdir` dep) since `examples/`
+/// is small and the structure is shallow. Recursion catches scenarios
+/// nested under subdirectories like `examples/alertmanager/` that the
+/// prior single-level `read_dir` glob missed.
+fn collect_sonda_scenario_yamls(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!("read {}: {e}", dir.display());
+    }) {
         let entry = entry.expect("directory entry must be readable");
         let path = entry.path();
+
+        if path.is_dir() {
+            collect_sonda_scenario_yamls(&path, out);
+            continue;
+        }
 
         if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
             continue;
@@ -116,12 +136,9 @@ fn discover_sonda_example_files() -> Vec<PathBuf> {
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
         if is_sonda_scenario(&content) {
-            files.push(path);
+            out.push(path);
         }
     }
-
-    files.sort();
-    files
 }
 
 /// Load the YAML text at `relative` (a workspace-relative path).
