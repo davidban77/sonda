@@ -577,6 +577,30 @@ impl ScenarioEntry {
     pub fn clock_group_is_auto(&self) -> Option<bool> {
         self.base().clock_group_is_auto
     }
+
+    /// Return the human-readable signal type name for this entry.
+    ///
+    /// Matches the `signal_type:` discriminant used in v2 scenario YAML
+    /// (`"metrics"`, `"logs"`, `"histogram"`, `"summary"`). Intended for
+    /// diagnostics and user-facing mismatch messages.
+    ///
+    /// [`ScenarioEntry`] is `#[non_exhaustive]`; variants added in the
+    /// future surface here as `"unknown"` until wired in. The catch-all
+    /// arm is intra-crate-unreachable today (Rust only enforces
+    /// `#[non_exhaustive]` across crate boundaries) but is retained so
+    /// the forward-compat contract is visible at the method site.
+    #[allow(unreachable_patterns)]
+    pub fn signal_type_name(&self) -> &'static str {
+        match self {
+            ScenarioEntry::Metrics(_) => "metrics",
+            ScenarioEntry::Logs(_) => "logs",
+            ScenarioEntry::Histogram(_) => "histogram",
+            ScenarioEntry::Summary(_) => "summary",
+            // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
+            // future signal kinds will surface here as "unknown" until wired in.
+            _ => "unknown",
+        }
+    }
 }
 
 /// Validate the `columns` field of a `CsvReplay` generator config.
@@ -2086,6 +2110,69 @@ generator:
             }
             other => panic!("expected CsvReplay variant, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // ScenarioEntry::signal_type_name()
+    // -----------------------------------------------------------------------
+
+    /// `signal_type_name()` returns the v2 YAML discriminant string for
+    /// every currently wired [`ScenarioEntry`] variant.
+    #[test]
+    fn scenario_entry_signal_type_name_covers_all_variants() {
+        // Metrics entry.
+        let metrics_yaml = r#"
+signal_type: metrics
+name: cpu
+rate: 1
+generator:
+  type: constant
+  value: 1.0
+"#;
+        let metrics: ScenarioEntry = serde_yaml_ng::from_str(metrics_yaml).unwrap();
+        assert_eq!(metrics.signal_type_name(), "metrics");
+
+        // Logs entry.
+        let logs_yaml = r#"
+signal_type: logs
+name: app_logs
+rate: 1
+generator:
+  type: replay
+  file: /tmp/does-not-need-to-exist.log
+"#;
+        let logs: ScenarioEntry = serde_yaml_ng::from_str(logs_yaml).unwrap();
+        assert_eq!(logs.signal_type_name(), "logs");
+
+        // Histogram entry.
+        let histogram_yaml = r#"
+signal_type: histogram
+name: req_latency
+rate: 1
+observations_per_tick: 100
+buckets: [0.1, 0.5, 1.0]
+distribution:
+  type: uniform
+  min: 0.0
+  max: 1.0
+"#;
+        let histogram: ScenarioEntry = serde_yaml_ng::from_str(histogram_yaml).unwrap();
+        assert_eq!(histogram.signal_type_name(), "histogram");
+
+        // Summary entry.
+        let summary_yaml = r#"
+signal_type: summary
+name: req_latency_summary
+rate: 1
+observations_per_tick: 100
+quantiles: [0.5, 0.9, 0.99]
+distribution:
+  type: uniform
+  min: 0.0
+  max: 1.0
+"#;
+        let summary: ScenarioEntry = serde_yaml_ng::from_str(summary_yaml).unwrap();
+        assert_eq!(summary.signal_type_name(), "summary");
     }
 }
 
