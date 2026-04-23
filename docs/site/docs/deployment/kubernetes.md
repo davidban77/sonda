@@ -291,7 +291,7 @@ with:
 helm install sonda ./helm/sonda --set serviceMonitor.enabled=true
 ```
 
-See the [ServiceMonitor](#servicemonitor-1) values reference for all options
+See the [ServiceMonitor](#servicemonitor) values reference for all options
 (`interval`, `scrapeTimeout`, `path`, `additionalLabels`).
 
 Alternatively, apply a custom ServiceMonitor manually for full control:
