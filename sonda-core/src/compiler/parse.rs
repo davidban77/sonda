@@ -572,6 +572,43 @@ labels:
         assert_eq!(labels.get("device").map(String::as_str), Some("rtr-01"));
     }
 
+    /// Locks the invariant that the flat shorthand shape never produces
+    /// top-level `scenario_name`, `category`, or `description` on the
+    /// resulting [`ScenarioFile`]. Those fields are only reachable via the
+    /// canonical `scenarios:` form (see `metadata_unknown_field_is_rejected_
+    /// by_deny_unknown_fields` and friends for the canonical-side tests).
+    #[test]
+    fn flat_shorthand_never_carries_top_level_metadata() {
+        let yaml = r#"
+version: 2
+name: cpu_usage
+signal_type: metrics
+rate: 1
+generator:
+  type: sine
+  amplitude: 50
+  period_secs: 60
+  offset: 50
+"#;
+
+        let file = parse(yaml).expect("must parse flat shorthand");
+        assert!(
+            file.scenario_name.is_none(),
+            "flat shorthand must not carry scenario_name; got {:?}",
+            file.scenario_name
+        );
+        assert!(
+            file.category.is_none(),
+            "flat shorthand must not carry category; got {:?}",
+            file.category
+        );
+        assert!(
+            file.description.is_none(),
+            "flat shorthand must not carry description; got {:?}",
+            file.description
+        );
+    }
+
     #[test]
     fn entry_with_after_clause() {
         let yaml = r#"
