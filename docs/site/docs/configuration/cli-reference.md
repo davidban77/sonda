@@ -41,7 +41,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.11.0
+sonda 1.0.1
 ```
 
 ## Status output
@@ -412,7 +412,7 @@ sonda --verbose metrics --name up --rate 1 --duration 2s
 ```
 
 ```text title="Output (stderr)"
-sonda 0.11.0 (http) — synthetic telemetry generator
+sonda 1.0.1 (http) — synthetic telemetry generator
 [config] up
 
   name:          up

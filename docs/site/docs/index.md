@@ -4,6 +4,18 @@ Sonda is a synthetic telemetry generator that produces realistic metrics and log
 observability pipelines. It models the failure patterns that actually break real systems: gaps,
 micro-bursts, cardinality spikes, and shaped value sequences.
 
+!!! tip "New in 1.0.1 — Sonda is on crates.io"
+    Sonda 1.0.1 is the first release published to [crates.io](https://crates.io). You can now
+    pull the binary with `cargo install sonda`, or depend on the library crates directly from
+    any Rust project:
+
+    - [`sonda-core`](https://crates.io/crates/sonda-core) — generators, encoders, sinks, and the v2 scenario compiler.
+    - [`sonda`](https://crates.io/crates/sonda) — the CLI binary.
+    - [`sonda-server`](https://crates.io/crates/sonda-server) — the HTTP control-plane binary.
+
+    The [v2 scenario format](configuration/v2-scenarios.md) is the canonical shape for every
+    scenario file in 1.0.1 — v1 has been fully retired.
+
 ## What you can do with Sonda
 
 - **Validate alert rules** -- generate exact metric shapes (sine waves, sequences, CSV replays) to

@@ -3,6 +3,14 @@
 This guide walks you through installing Sonda and generating your first metrics and logs.
 By the end, you will have synthetic telemetry streaming to stdout.
 
+!!! info "What's new in 1.0.1"
+    Sonda 1.0.1 is the first release on [crates.io](https://crates.io), so
+    `cargo install sonda` is a brand-new install path — use the **Cargo** tab below if you
+    have the Rust toolchain handy. The library crates are also published:
+    [`sonda-core`](https://crates.io/crates/sonda-core),
+    [`sonda`](https://crates.io/crates/sonda),
+    [`sonda-server`](https://crates.io/crates/sonda-server).
+
 ## Installation
 
 === "Install script (Linux/macOS)"
@@ -16,7 +24,7 @@ By the end, you will have synthetic telemetry streaming to stdout.
     To pin a specific version:
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v0.11.0 sh
+    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v1.0.1 sh
     ```
 
 === "Cargo"
@@ -62,7 +70,7 @@ sonda --version
 ```
 
 ```text title="Output"
-sonda 0.11.0
+sonda 1.0.1
 ```
 
 ## Your first metric
