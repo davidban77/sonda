@@ -542,20 +542,6 @@ impl LoadedSingleEntry {
     }
 }
 
-/// Human-readable label for the signal type carried by a
-/// [`sonda_core::ScenarioEntry`]. Used in mismatch diagnostics.
-fn scenario_entry_signal_label(entry: &sonda_core::ScenarioEntry) -> &'static str {
-    match entry {
-        sonda_core::ScenarioEntry::Metrics(_) => "metrics",
-        sonda_core::ScenarioEntry::Logs(_) => "logs",
-        sonda_core::ScenarioEntry::Histogram(_) => "histogram",
-        sonda_core::ScenarioEntry::Summary(_) => "summary",
-        // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary;
-        // future signal kinds will surface here as "unknown" until wired in.
-        _ => "unknown",
-    }
-}
-
 /// Load exactly one scenario entry from a file for a single-signal
 /// subcommand (`metrics`, `logs`, `histogram`, `summary`).
 ///
@@ -594,8 +580,6 @@ fn load_single_entry_from_scenario_file(
     kind: SignalKind,
     subcommand: &str,
 ) -> Result<LoadedSingleEntry> {
-    use crate::scenario_loader::FilesystemPackResolver;
-
     let yaml = resolve_scenario_source(path, scenario_catalog)?;
     let version = sonda_core::compiler::parse::detect_version(&yaml);
 
@@ -609,8 +593,7 @@ fn load_single_entry_from_scenario_file(
         );
     }
 
-    let resolver = FilesystemPackResolver::new(pack_catalog);
-    let mut entries = sonda_core::compile_scenario_file(&yaml, &resolver)
+    let mut entries = crate::scenario_loader::compile_v2_yaml(&yaml, pack_catalog)
         .with_context(|| format!("failed to compile v2 scenario file {}", path.display()))?;
 
     if entries.len() != 1 {
@@ -640,7 +623,7 @@ fn load_single_entry_from_scenario_file(
             Ok(LoadedSingleEntry::Summary(cfg))
         }
         (_, entry) => {
-            let actual = scenario_entry_signal_label(&entry);
+            let actual = entry.signal_type_name();
             bail!(
                 "v2 scenario file {} contains a {} entry; \
                  `sonda {} --scenario` expects a {} entry. \
@@ -1568,16 +1551,14 @@ pub fn parse_builtin_scenario(
         );
     }
 
-    use crate::scenario_loader::FilesystemPackResolver;
-
-    let resolver = FilesystemPackResolver::new(pack_catalog);
-    let mut entries = sonda_core::compile_scenario_file(&yaml, &resolver).with_context(|| {
-        format!(
-            "failed to compile v2 scenario {:?} from {}",
-            scenario.name,
-            scenario.source_path.display()
-        )
-    })?;
+    let mut entries =
+        crate::scenario_loader::compile_v2_yaml(&yaml, pack_catalog).with_context(|| {
+            format!(
+                "failed to compile v2 scenario {:?} from {}",
+                scenario.name,
+                scenario.source_path.display()
+            )
+        })?;
 
     // Apply overrides to each entry.
     for entry in &mut entries {

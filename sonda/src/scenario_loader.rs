@@ -23,10 +23,39 @@ use sonda_core::compiler::expand::{
 };
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::packs::MetricPackDef;
-use sonda_core::{compile_scenario_file, ScenarioEntry};
+use sonda_core::{compile_scenario_file, CompileError, ScenarioEntry};
 
 use crate::packs::PackCatalog;
 use crate::scenarios::ScenarioCatalog;
+
+/// Compile a v2 scenario YAML string into [`ScenarioEntry`] values using
+/// the CLI's filesystem-backed pack resolver.
+///
+/// This is the shared resolver+compile step used by every CLI entry
+/// point that loads a v2 scenario file
+/// ([`load_scenario_entries`], the single-entry subcommand loader in
+/// `sonda::config`, and the catalog dispatcher
+/// [`parse_builtin_scenario`](crate::config::parse_builtin_scenario)).
+///
+/// Callers are expected to have already performed the `version: 2`
+/// check — this helper does not reject v1 YAML shapes. It also does not
+/// wrap the returned [`CompileError`] in `anyhow::Context`; each caller
+/// attaches its own path-specific context so diagnostics stay accurate
+/// to the source that was loaded.
+///
+/// # Errors
+///
+/// Returns the raw [`CompileError`] produced by
+/// [`sonda_core::compile_scenario_file`] so callers can pattern-match
+/// on typed compilation failures or wrap the error with caller-specific
+/// context via [`anyhow::Context`].
+pub fn compile_v2_yaml(
+    yaml: &str,
+    pack_catalog: &PackCatalog,
+) -> Result<Vec<ScenarioEntry>, CompileError> {
+    let resolver = FilesystemPackResolver::new(pack_catalog);
+    compile_scenario_file(yaml, &resolver)
+}
 
 /// The result of loading a scenario file: the prepared runtime entries
 /// plus the detected schema version.
@@ -71,8 +100,7 @@ pub fn load_scenario_entries(
 
     match version {
         Some(2) => {
-            let resolver = FilesystemPackResolver::new(pack_catalog);
-            let entries = compile_scenario_file(&yaml, &resolver).with_context(|| {
+            let entries = compile_v2_yaml(&yaml, pack_catalog).with_context(|| {
                 format!(
                     "failed to compile v2 scenario file {}",
                     scenario_ref.display()
