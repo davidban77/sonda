@@ -24,6 +24,7 @@ sonda metrics --scenario examples/basic-metrics.yaml
 | `udp-sink.yaml` | constant | json_lines | udp | Send UDP datagrams to port 9998 |
 | `file-sink.yaml` | sawtooth | influx_lp | file | Write to `/tmp/sonda-output.txt` |
 | `http-push-sink.yaml` | sine | prometheus_text | http_push | POST batches to an HTTP endpoint |
+| `http-push-retry.yaml` | sine | prometheus_text | http_push | HTTP push with exponential-backoff retry on 5xx/429/connect failures |
 | `kafka-sink.yaml` | constant | prometheus_text | kafka | Publish to a local Kafka broker |
 | `kafka-tls.yaml` | constant | prometheus_text | kafka | Publish to a TLS-secured Kafka broker with SASL PLAIN auth |
 
@@ -57,6 +58,61 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 |------|-----------|---------|------|-------------|
 | `burst-metrics.yaml` | sine | prometheus_text | stdout | Bursts to 5x rate for 2s every 10s |
 | `cardinality-spike.yaml` | sine | prometheus_text | stdout | Injects 100 unique `pod_name` labels for 5s every 10s |
+| `long-running-metrics.yaml` | sine | prometheus_text | stdout | No `duration` -- runs until stopped (pair with `sonda-server` POST/DELETE) |
+
+## Histograms and Summaries
+
+| File | Signal | Encoder | Sink | Description |
+|------|--------|---------|------|-------------|
+| `histogram.yaml` | histogram | prometheus_text | stdout | Exponential distribution, 100 observations/tick (latency-style histogram) |
+| `summary.yaml` | summary | prometheus_text | stdout | Normal distribution (mean 0.1, stddev 0.02), 100 observations/tick |
+
+Run these with the matching subcommand:
+
+```bash
+sonda histogram --scenario examples/histogram.yaml
+sonda summary --scenario examples/summary.yaml
+```
+
+See [Generators](../configuration/generators.md) for distribution options.
+
+## Metric Packs
+
+| File | Pack | Encoder | Sink | Description |
+|------|------|---------|------|-------------|
+| `pack-scenario.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Expand a pack into per-metric scenarios with user-supplied labels |
+| `pack-with-overrides.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Override one metric's generator (`ifOperStatus` -> `flap`) without editing the pack |
+
+Packs must be on the search path. Run from the repo root (where `./packs/` exists), set
+`SONDA_PACK_PATH`, or pass `--pack-path ./packs`. See [Metric Packs](metric-packs.md) for details.
+
+## Dynamic Labels
+
+Dynamic labels rotate a label's value on every tick -- unlike cardinality spikes, the label is
+always present and cycles through a bounded set.
+
+| File | Generator | Strategy | Description |
+|------|-----------|----------|-------------|
+| `dynamic-labels-fleet.yaml` | sine | counter (10) | 10-node fleet: `hostname=host-0..host-9` rotating on a CPU-usage metric |
+| `dynamic-labels-regions.yaml` | uniform | values list | Cycle `region` through `us-east-1, us-west-2, eu-west-1` on an API-latency metric |
+| `dynamic-labels-multi.yaml` | step | counter + values | Two rotating labels (`hostname` counter x `region` values) on a request counter |
+| `dynamic-labels-logs.yaml` | template (logs) | counter (3) | Rotating `pod_name` label on structured log events |
+
+See the [Dynamic Labels guide](dynamic-labels.md) for the walkthrough and
+[Dynamic labels](../configuration/scenario-fields.md#dynamic-labels) for the field reference.
+
+## Capacity Planning
+
+Stress-test ingest pipelines by pushing high-volume, bursty, or high-cardinality workloads to
+VictoriaMetrics (or another backend). Change `url:` to target your own stack.
+
+| File | Generator | Encoder | Sink | Description |
+|------|-----------|---------|------|-------------|
+| `capacity-throughput-test.yaml` | sine x3 | prometheus_text | http_push | Three concurrent streams at 1000 evt/s each (3000 total) to find saturation |
+| `capacity-burst-test.yaml` | sine + bursts | prometheus_text | http_push | 500 evt/s baseline with 10x spikes for 5s every 30s to test backpressure |
+| `capacity-cardinality-stress.yaml` | constant + spike | prometheus_text | http_push | 500-value `pod_name` + 200-value `endpoint` cardinality spikes to stress index |
+
+See the [Capacity Planning](capacity-planning.md) guide for measurement methodology.
 
 ## Log Scenarios
 
@@ -99,8 +155,10 @@ See [Docker deployment](../deployment/docker.md) for the full stack setup.
 | `csv-replay-grafana-auto.yaml` | csv_replay | prometheus_text | stdout | Replay a Grafana CSV export with auto-discovered columns and labels |
 | `csv-replay-explicit-labels.yaml` | csv_replay | prometheus_text | stdout | Multi-column replay with per-column labels merged with scenario labels |
 | `cardinality-alert-test.yaml` | constant | prometheus_text | http_push | 500-value cardinality spike for cardinality alerts |
+| `ci-alert-validation.yaml` | constant | prometheus_text | http_push | Constant 95% CPU for 30s -- short enough for CI, long enough for a `for: 5s` alert |
 
-See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough.
+See the [Alert Testing](alert-testing.md) guide for end-to-end walkthrough, and
+[CI Alert Validation](ci-alert-validation.md) for automated validation in GitHub Actions.
 
 ## Alerting Pipeline
 
@@ -137,6 +195,7 @@ See [Pipeline Validation](pipeline-validation.md) for usage patterns.
 | File | Signal | Description |
 |------|--------|-------------|
 | `network-device-baseline.yaml` | metrics | Router with 2 uplinks: traffic counters, state, CPU, memory (9 scenarios) |
+| `network-link-failure.yaml` | metrics | 6-scenario link-failure cycle on `rtr-core-01`: Gi0/0/0 down 10s, Gi0/0/1 absorbs, errors + CPU spike, then recovers |
 | `scenarios/link-failover.yaml` | multi | Edge router link failover: primary flaps, backup saturates, latency degrades (3-signal `after:` chain) |
 
 Run with `sonda run`:

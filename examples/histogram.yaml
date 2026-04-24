@@ -1,3 +1,24 @@
+# Histogram metrics: HTTP request latency (exponential distribution).
+#
+# Models a latency-style histogram where most requests are fast but a long
+# tail stretches toward higher values. The exponential distribution with
+# rate=10.0 gives a mean of 0.1s and a sharply right-skewed shape, which
+# is typical of HTTP handler latency.
+#
+# 100 observations per tick at 1 tick/s mimics a service handling ~100 req/s.
+# Each tick emits the standard Prometheus histogram triplet per bucket
+# (_bucket, _count, _sum) with cumulative bucket counts.
+#
+# Prerequisites: none -- stdout sink.
+#
+# Run:
+#   sonda histogram --scenario examples/histogram.yaml
+#
+# Observable output: 12 `_bucket` series (default Prometheus bucket set),
+# plus `_count` and `_sum`. Watch the low-le buckets (0.005, 0.01, 0.025)
+# accumulate mass as most observations fall below 0.1s; the `+Inf` bucket
+# always equals `_count`.
+
 version: 2
 
 defaults:
