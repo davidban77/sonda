@@ -41,6 +41,20 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     rejected with `400 Bad Request` and a migration hint. See
     [Migrating v1 bodies](#migrating-v1-bodies) below.
 
+!!! warning "Sink URLs resolve inside the server's network"
+    POSTed scenarios compile and run inside the `sonda-server` process. A sink with
+    `url: http://localhost:<port>` reaches the server container's loopback, not your
+    host. Use the address the server can actually see:
+
+    - In Docker Compose, use the service name -- `http://victoriametrics:8428`,
+      `http://loki:3100`, `kafka:9092`.
+    - In Kubernetes, use the in-cluster Service DNS --
+      `http://vmsingle:8428` for same-namespace, or
+      `http://vmsingle.monitoring.svc.cluster.local:8428` for cross-namespace.
+
+    See [Endpoints & networking](endpoints.md) for the full reference and a `sed`
+    one-liner that rewrites `localhost` URLs before posting.
+
 ### Single-scenario body
 
 === "YAML"

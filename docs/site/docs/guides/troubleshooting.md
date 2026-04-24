@@ -72,6 +72,7 @@ Sonda runs without errors but you don't see data in your backend.
 | No data in Prometheus | Prometheus needs remote write receiver enabled | Start Prometheus with `--web.enable-remote-write-receiver` |
 | Encoder/sink mismatch | Using `prometheus_text` encoder with `remote_write` sink (or vice versa) | Match encoder to sink: `remote_write` encoder with `remote_write` sink, `otlp` encoder with `otlp_grpc` sink |
 | HTTP 400 Bad Request | Wrong `content_type` for the endpoint | Use `text/plain` for VictoriaMetrics import endpoint |
+| POST to `sonda-server` succeeds but no data in backend | Sink `url: http://localhost:<port>` resolves inside the server container | Use the reachable address: Compose service name (`http://victoriametrics:8428`) or Kubernetes Service DNS. See [Endpoints & networking](../deployment/endpoints.md) |
 
 ### Batching delays
 

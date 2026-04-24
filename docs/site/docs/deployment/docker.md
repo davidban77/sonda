@@ -108,7 +108,8 @@ including error responses, protected vs. public endpoints, and Prometheus scrape
 
 ## Docker Compose Stack
 
-A `docker-compose.yml` ships with a full observability stack for demos and testing.
+A `docker-compose.yml` ships with `sonda-server`, Prometheus, Alertmanager, and Grafana
+for smoke-testing scenario submission and exploring the control plane.
 
 | Service | Port | Description |
 |---------|------|-------------|
@@ -116,6 +117,21 @@ A `docker-compose.yml` ships with a full observability stack for demos and testi
 | `prometheus` | 9090 | Prometheus (scrape or remote write) |
 | `alertmanager` | 9093 | Alertmanager for alert routing |
 | `grafana` | 3000 | Grafana dashboards (password: `admin`) |
+
+!!! warning "Scenarios POSTed here write to container stdout"
+    The two scenario files referenced below (`docker-metrics.yaml`,
+    `docker-alerts.yaml`) use `sink: stdout`. When you POST them into `sonda-server`,
+    the generated events land on the server container's stdout -- visible via
+    `docker logs sonda-server` -- and nothing reaches Prometheus or Grafana in this
+    stack.
+
+    This stack is useful for verifying `sonda-server` accepts and runs your scenario
+    body. **To see data flowing into Prometheus and Grafana, use the
+    [VictoriaMetrics Stack](#victoriametrics-stack) below**, which ships scenarios
+    that push to an HTTP backend reachable from inside the container.
+
+    The [Endpoints & networking](endpoints.md) page explains why a sink URL resolves
+    differently depending on where `sonda` runs.
 
 Start, use, and tear down:
 
@@ -126,7 +142,7 @@ docker compose up -d
 # Verify the server
 curl http://localhost:8080/health
 
-# Post a metrics scenario
+# Post a metrics scenario (events go to sonda-server container stdout)
 curl -X POST -H "Content-Type: text/yaml" \
   --data-binary @examples/docker-metrics.yaml \
   http://localhost:8080/scenarios
@@ -136,6 +152,9 @@ curl -X POST -H "Content-Type: text/yaml" \
   --data-binary @examples/docker-alerts.yaml \
   http://localhost:8080/scenarios
 
+# Inspect the generated events
+docker logs -f sonda-server
+
 # List running scenarios
 curl http://localhost:8080/scenarios
 
@@ -143,8 +162,16 @@ curl http://localhost:8080/scenarios
 docker compose down
 ```
 
-Open Grafana at [http://localhost:3000](http://localhost:3000) and Prometheus at
-[http://localhost:9090](http://localhost:9090) to explore your data.
+Grafana is still provisioned at [http://localhost:3000](http://localhost:3000) and
+Prometheus at [http://localhost:9090](http://localhost:9090) -- they just will not show
+sonda data from the stdout scenarios above. Use the VictoriaMetrics Stack for that.
+
+!!! info "Swapping `stdout` for `http_push` in this stack"
+    You can rewrite either scenario on the fly to push to Prometheus's remote-write
+    receiver instead. See
+    [Rewriting URLs before POSTing](endpoints.md#rewriting-urls-before-posting) --
+    the Prometheus service name inside this Compose network is `prometheus`, and its
+    remote-write path is `/api/v1/write`.
 
 Two scenario files are provided for this stack:
 
@@ -180,6 +207,12 @@ curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
 # Tear down
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
+
+The scenario uses `url: http://victoriametrics:8428/...` -- the VictoriaMetrics service
+name, not `localhost` -- because the sink runs inside the `sonda-server` container and
+resolves DNS through the Compose network. If you adapt a host-CLI example that points at
+`localhost:8428`, rewrite the URL before POSTing. See
+[Endpoints & networking](endpoints.md) for the full explanation and a one-liner swap.
 
 You can also push from the host CLI using a pipe to VictoriaMetrics.
 See [Sinks](../configuration/sinks.md) for all available sink types (`http_push`, `remote_write`, `loki`, etc.).

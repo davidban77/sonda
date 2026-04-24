@@ -6,6 +6,13 @@ omitted, the default is `stdout`.
 Most sinks buffer data before delivering it, which affects when you see output. For a full
 explanation of how this works, see [Sink Batching](sink-batching.md).
 
+!!! tip "Choosing the right `url:`"
+    Network sinks (`http_push`, `remote_write`, `loki`, `otlp_grpc`) accept a URL that is
+    resolved inside the process running the scenario. The same YAML run from your host CLI
+    vs. POSTed to a containerized `sonda-server` reaches different hosts. See
+    [Endpoints & networking](../deployment/endpoints.md) for when to use `localhost`,
+    Compose service names, or Kubernetes Service DNS.
+
 ## stdout
 
 Writes events to standard output via a buffered writer. This is the default sink.
