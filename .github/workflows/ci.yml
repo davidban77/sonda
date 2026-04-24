@@ -163,3 +163,43 @@ jobs:
 
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-features -- -D warnings
+
+  docs-commands:
+    name: Validate sonda commands in user-facing docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-commands-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-docs-commands-
+
+      # Build with the union of features used in any documented command so the
+      # script's --dry-run invocations parse every example. Mirrors the feature
+      # set on the all-features job but scoped to the sonda binary only.
+      - name: Build sonda release
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp
+
+      # Stdlib-only Python script — no requirements.txt, no pip install, no uv.
+      # Uses the actions runner's default Python 3.
+      #
+      # tests/e2e/scenarios/{vm,kafka}-prometheus-text.yaml are still v1 and
+      # the e2e-testing guide references them directly; --skip-file is a
+      # documented escape hatch while their migration is tracked in audit
+      # follow-up FU-5.
+      - name: Validate documented sonda commands
+        run: >-
+          python3 scripts/validate_docs_commands.py
+          --skip-file docs/site/docs/guides/e2e-testing.md
