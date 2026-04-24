@@ -56,6 +56,7 @@ nav:
     - Sink Batching: configuration/sink-batching.md
     - CLI Reference: configuration/cli-reference.md
   - Deployment:
+    - Endpoints & networking: deployment/endpoints.md
     - Docker: deployment/docker.md
     - Kubernetes: deployment/kubernetes.md
     - Server API: deployment/sonda-server.md
