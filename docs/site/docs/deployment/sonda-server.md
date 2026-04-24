@@ -13,7 +13,7 @@ cargo run -p sonda-server
 cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
 ```
 
-See [CLI Reference](../configuration/cli-reference.md) for all `sonda-server` flags.
+See [CLI Reference: sonda-server](../configuration/cli-reference.md#sonda-server) for all `sonda-server` flags.
 Control log verbosity with the `RUST_LOG` environment variable (default: `info`):
 
 ```bash

@@ -1606,6 +1606,90 @@ directory on the [scenario search path](../guides/scenarios.md#scenario-search-p
 read `signal_type` from the first entry. See
 [v2 catalog metadata](v2-scenarios.md#catalog-metadata) for the field reference.
 
+## sonda-server
+
+`sonda-server` is the HTTP control-plane binary. It exposes the same scenario surface as
+`sonda run` over a REST API so you can drive Sonda from CI pipelines, test harnesses, or
+dashboards without shell access. This section covers the binary's CLI surface only -- see
+[Server API](../deployment/sonda-server.md) for the full endpoint reference.
+
+```bash
+sonda-server [OPTIONS]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--port <PORT>` | integer | `8080` | Port to listen on. |
+| `--bind <BIND>` | string | `0.0.0.0` | Address to bind to. Use `127.0.0.1` to restrict the server to localhost. |
+| `--api-key <API_KEY>` | string | none | API key for bearer-token authentication on `/scenarios/*` endpoints. When set, all requests to `/scenarios/*` must include an `Authorization: Bearer <key>` header. The `/health` endpoint stays public. Also readable from `SONDA_API_KEY`. |
+| `--help` | -- | -- | Print help information (`-h` for a short summary). |
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `SONDA_API_KEY` | Bearer token for `/scenarios/*` authentication. Equivalent to `--api-key`; the CLI flag wins if both are set. An empty value disables auth and logs a warning. |
+| `RUST_LOG` | Log level filter consumed by `tracing-subscriber`. Defaults to `info`. Common values: `debug`, `sonda_server=debug,info`, `warn`. |
+
+### Examples
+
+Start with defaults (port 8080, bind to all interfaces, no auth):
+
+```bash
+sonda-server
+```
+
+Listen on a custom port and restrict to localhost:
+
+```bash
+sonda-server --port 9090 --bind 127.0.0.1
+```
+
+Enable API key authentication from the environment:
+
+```bash
+export SONDA_API_KEY=$(openssl rand -hex 32)
+sonda-server --port 8080
+```
+
+Raise log verbosity for troubleshooting:
+
+```bash
+RUST_LOG=debug sonda-server --port 8080
+```
+
+### Graceful shutdown
+
+Press Ctrl+C to stop the server. Sonda signals every running scenario to stop, waits up to
+5 seconds for each scenario thread to join so sinks can flush, then exits. Threads that
+miss the 5-second window are logged at `warn` level and abandoned -- the process still
+exits cleanly.
+
+### Authentication
+
+Authentication is opt-in. When neither `--api-key` nor `SONDA_API_KEY` is set, every
+endpoint is publicly accessible (the startup log reads
+`API key authentication disabled -- all endpoints are public`).
+
+When a key is configured, `/scenarios/*` requires the `Authorization: Bearer <key>` header.
+The token is compared in constant time using [`subtle::ConstantTimeEq`] to avoid timing
+side-channels. Requests fall into three buckets:
+
+| Request | Response |
+|---------|----------|
+| Correct bearer token | Request proceeds to the handler |
+| Missing or malformed `Authorization` header | `401 Unauthorized` with `detail: "missing or malformed Authorization header"` |
+| Wrong token | `401 Unauthorized` with `detail: "invalid API key"` |
+
+`GET /health` is always public so load balancers and Kubernetes liveness probes work
+without credentials. See the deployment guide's
+[Authentication section](../deployment/sonda-server.md#authentication) for curl examples,
+Prometheus scrape configuration, and Kubernetes Secret wiring.
+
+[`subtle::ConstantTimeEq`]: https://docs.rs/subtle/latest/subtle/trait.ConstantTimeEq.html
+
 ## Precedence rules
 
 Configuration values are resolved in this order (highest priority wins):
