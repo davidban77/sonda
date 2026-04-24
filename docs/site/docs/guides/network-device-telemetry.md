@@ -132,6 +132,25 @@ The output interleaves across all 9 metric streams.
 
 ---
 
+## Which failure pattern to steal
+
+Two example scenarios model a link failure, and they use different mechanics. Pick the one that
+matches how you want to reason about time:
+
+| Scenario | Mechanic | Best for |
+|----------|----------|----------|
+| `examples/network-link-failure.yaml` | `sequence` generator + `repeat: true`, aligned tick-by-tick across multiple entries | Tight, repeating cycles where every tick's value matters and failures recur on a fixed drumbeat |
+| `scenarios/link-failover.yaml` | v2 `after:` chains -- each signal declares what it waits for, the compiler resolves phase offsets | Once-through causal chains where you care about ordering (primary drops -> backup saturates -> latency climbs) but not the exact tick |
+
+Use `sequence + repeat` when you need hand-authored values at specific ticks and the same
+pattern should loop indefinitely -- useful for soak testing and for dashboards that expect a
+steady rhythm. Use `after:` when the signals form a cascade and you would rather declare
+"latency starts degrading when the backup saturates" than count seconds across four entries.
+Both patterns ship as runnable example files; you can mix them in the same scenario if you
+have a repeating failure that also triggers a cascade.
+
+---
+
 ## Simulate a link failover
 
 The interesting part: what happens when a primary link drops? Traffic shifts to the backup path,

@@ -1,3 +1,24 @@
+# Summary metrics: RPC duration (normal distribution).
+#
+# Models an RPC handler with tightly clustered latency: mean 0.1s,
+# stddev 0.02s. A normal distribution produces a symmetric bell shape
+# around the mean, which fits well-tuned internal services where the
+# latency tail is bounded.
+#
+# 100 observations per tick at 1 tick/s feeds the quantile estimator
+# with enough samples to produce stable p50/p90/p95/p99 readings.
+# Unlike histograms, summaries compute quantile values server-side --
+# they cannot be aggregated across instances in PromQL.
+#
+# Prerequisites: none -- stdout sink.
+#
+# Run:
+#   sonda summary --scenario examples/summary.yaml
+#
+# Observable output: 4 quantile series (0.5, 0.9, 0.95, 0.99) plus
+# `_count` and `_sum`. The p50 should hover near 0.1; p99 should sit
+# near 0.15 (mean + ~2.3 stddev). `_count` ticks up by 100 every second.
+
 version: 2
 
 defaults:

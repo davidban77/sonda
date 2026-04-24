@@ -64,8 +64,9 @@ nav:
     - Tutorial: guides/tutorial.md
     - Catalog & packs:
       - Built-in Scenarios: guides/scenarios.md
-      - Metric Packs: guides/metric-packs.md
+      - Dynamic Labels: guides/dynamic-labels.md
       - Example Scenarios: guides/examples.md
+      - Metric Packs: guides/metric-packs.md
     - Alert testing:
       - Alert Testing: guides/alert-testing.md
       - Histogram & Summary Alerts: guides/histogram-alerts.md

@@ -251,7 +251,9 @@ validation, the entire request is rejected and nothing is launched:
 !!! tip "Long-running scenarios"
     Omit the `duration` field from your scenario body (or put `duration:` only inside a
     single entry and omit it from `defaults:`) to create a scenario that runs indefinitely.
-    Stop it later with `DELETE /scenarios/{id}`. See the
+    Stop it later with `DELETE /scenarios/{id}`. The canonical run-until-stopped example is
+    [`examples/long-running-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/long-running-metrics.yaml)
+    -- POST it to start, DELETE to stop, operator owns the lifecycle. See the
     [tutorial](../guides/tutorial.md#long-running-scenarios) for a full start and stop
     example.
 
