@@ -1,29 +1,16 @@
 #!/usr/bin/env python3
 """Docs-drift catcher for sonda CLI commands referenced in user-facing documentation.
 
-This script walks ``docs/site/docs/**/*.md``, extracts fenced ``bash`` code blocks,
-finds ``sonda <subcommand>`` invocations, and verifies two properties:
+Walks ``docs/site/docs/**/*.md``, extracts fenced ``bash`` code blocks, finds
+``sonda <subcommand>`` invocations, and verifies two properties:
 
 1. **File existence** — when a command passes ``--scenario <path>`` pointing at a
    filesystem path (not a ``@builtin-name``), the path must exist on disk.
 2. **Validity** — when the subcommand supports ``--dry-run``, the script invokes
    ``sonda`` with ``--dry-run`` appended and fails the check on a non-zero exit.
 
-Runs as a zero-dependency, stdlib-only one-file drop-in. Intended to be invoked
-from CI and locally via ``python3 scripts/validate_docs_commands.py`` from the
-repo root.
-
-Contributor notes
------------------
-- Motivation: PR #235 retroactively patched ``examples/alertmanager/alerting-scenario.yaml``
-  after docs pointed users at a v1 YAML file that no longer compiled under v2. A CI
-  step that greps runnable ``sonda ... --scenario <path>`` commands from markdown and
-  dry-runs each one would have caught it automatically.
-- Scope: this tool validates user-visible docs under ``docs/site/docs/``. Built-in
-  catalog names (``@foo``) are left to sonda's runtime catalog probe — double-validating
-  here is scope creep.
-- Self-test: ``python3 scripts/validate_docs_commands.py --self-test`` runs unit tests
-  on the parser logic without needing a ``sonda`` binary.
+Stdlib-only. Run from the repo root via ``python3 scripts/validate_docs_commands.py``.
+``--self-test`` runs the inline unit tests without needing a ``sonda`` binary.
 """
 
 from __future__ import annotations
@@ -41,10 +28,9 @@ from typing import Iterable, Sequence
 # --- Configuration -----------------------------------------------------------
 
 DOCS_GLOB_ROOT = Path("docs/site/docs")
-"""Docs root relative to the repo root."""
 
+# `mkdocs build` emits site output under `docs/site/site/`; skip it.
 DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
-"""Build output directories to skip. mkdocs emits ``site/`` under ``docs/site/``."""
 
 KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
     {
@@ -60,14 +46,10 @@ KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
         "init",
     }
 )
-"""Top-level ``sonda`` subcommands the script recognises. Anything else in a
-``sonda <word>`` position is ignored (e.g., ``sonda --version`` or prose like
-``sonda-server`` / ``sonda_core`` — those never match our regex anyway)."""
 
 DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset(
     {"metrics", "logs", "histogram", "summary", "run"}
 )
-"""Signal subcommands that accept ``--dry-run``."""
 
 DRY_RUNNABLE_WITH_ACTION: frozenset[tuple[str, str]] = frozenset(
     {
@@ -76,26 +58,17 @@ DRY_RUNNABLE_WITH_ACTION: frozenset[tuple[str, str]] = frozenset(
         ("packs", "run"),
     }
 )
-"""``<cmd> <action>`` pairs that accept ``--dry-run`` on the action."""
 
 DEFAULT_SONDA_BINARY = Path("target/release/sonda")
-"""Default path to the built sonda binary, relative to the repo root."""
 
+# File-exists validation only fires on paths that start with one of these
+# roots. Bare filenames in docs (e.g. `my-scenario.yaml`) are tutorial
+# placeholders the reader creates locally.
 REPO_RELATIVE_PATH_ROOTS: frozenset[str] = frozenset(
     {"examples", "scenarios", "packs", "docs", "tests"}
 )
-"""Top-level directory names that make a filesystem path "repo-relative".
-
-The file-exists validation only fires on paths that start with one of these
-roots (e.g. ``examples/foo.yaml``). Bare filenames like ``my-scenario.yaml``
-or ``data.csv`` in the docs are tutorial placeholders the reader creates
-locally — they aren't meant to exist in the repo. Metavar placeholders
-containing shell-special characters (``<FILE>``, ``<FILE | @name>``) are also
-filtered out at the extraction layer.
-"""
 
 DEFAULT_SUBPROCESS_TIMEOUT_S = 30.0
-"""Per-invocation timeout when the script shells out to ``sonda --dry-run``."""
 
 
 # --- Data model --------------------------------------------------------------
@@ -103,70 +76,40 @@ DEFAULT_SUBPROCESS_TIMEOUT_S = 30.0
 
 @dataclasses.dataclass(frozen=True)
 class ExtractedCommand:
-    """A single ``sonda`` invocation extracted from a markdown code block.
-
-    Attributes:
-        file: Absolute path to the markdown file the command was pulled from.
-        line: 1-based line number of the first line of the (joined) command in
-            the source markdown file. Stable for reporting.
-        argv: Tokenised argument vector, starting with ``sonda``. Shell prompts
-            and env-var prefixes are already stripped.
-        raw: Original joined command line (continuations resolved, prompt stripped,
-            env-var prefix stripped). For error reporting only.
-        tutorial_titles: Set of paths that appear as ``title="..."`` on any
-            code fence in the source markdown file. Commands that reference
-            one of these paths are treated as tutorial examples and skip the
-            file-exists + dry-run checks.
-        block_is_tutorial: True when the bash block that contained this command
-            already referenced a tutorial title. In that case, every path in
-            the block is treated as tutorial material. This mirrors how docs
-            authors actually write: a single bash block commonly demonstrates
-            operations on a cluster of tutorial files shown above.
-    """
+    """A single ``sonda`` invocation extracted from a markdown code block."""
 
     file: Path
     line: int
     argv: tuple[str, ...]
     raw: str
+    # Paths shown as ``title="..."`` on any code fence in this file are treated
+    # as tutorial material the reader creates locally — commands referencing
+    # them skip the file-exists + dry-run checks.
     tutorial_titles: frozenset[str] = dataclasses.field(default_factory=frozenset)
+    # When True, every path in this command's block inherits tutorial-skip,
+    # because docs commonly demonstrate operations on titled files just above.
     block_is_tutorial: bool = False
 
     @property
     def subcommand(self) -> str | None:
         """Return the first recognised subcommand token, or ``None``.
 
-        ``sonda --dry-run metrics ...`` → ``metrics`` (global flags skipped).
+        Global flags (``sonda --dry-run metrics ...``) are skipped.
         """
-        # Skip leading global flags (things starting with ``-``) when finding
-        # the positional subcommand.
         for token in self.argv[1:]:
             if token.startswith("-"):
-                # ``--scenario foo`` passes "foo" through as the next token;
-                # but those come AFTER the subcommand by construction. Here we
-                # only ever hit global flags (``--dry-run``, ``--quiet``,
-                # ``--verbose``, ``--pack-path``, ``--scenario-path``,
-                # ``--format``, short equivalents). Those with VALUES are
-                # ``--pack-path <dir>``, ``--scenario-path <dir>``, ``--format <fmt>``.
                 continue
-            # If the previous token consumed a value we still want to skip it.
-            # But the token.startswith("-") filter alone is enough as long as
-            # flags don't use ``=value`` for global flags we care about — they
-            # don't in practice in our docs.
             return token if token in KNOWN_SUBCOMMANDS else None
         return None
 
     @property
     def action(self) -> str | None:
-        """Return the action verb for subcommands that have one.
-
-        For ``sonda catalog run foo``, returns ``"run"``. For ``sonda metrics``,
-        returns ``None``. This lets the caller differentiate
-        ``catalog list`` (no dry-run) from ``catalog run`` (dry-run).
-        """
+        """Return the action verb for ``catalog``/``scenarios``/``packs``,
+        or ``None``. Lets the caller differentiate ``catalog list`` (no
+        dry-run) from ``catalog run`` (dry-run)."""
         sub = self.subcommand
         if sub is None or sub not in {"catalog", "scenarios", "packs"}:
             return None
-        # Find the subcommand position, then walk forward to the first non-flag token.
         seen_subcommand = False
         skip_next_value = False
         for token in self.argv[1:]:
@@ -177,14 +120,10 @@ class ExtractedCommand:
                 if token == sub:
                     seen_subcommand = True
                     continue
-                # Global flag before subcommand — may carry a value.
                 if token in {"--pack-path", "--scenario-path", "--format"}:
                     skip_next_value = True
                 continue
-            # After subcommand, skip any flags and their values.
             if token.startswith("-"):
-                # Conservative: assume no flags *before* the action token.
-                # Docs follow ``sonda catalog <action>`` consistently.
                 continue
             return token
         return None
@@ -192,13 +131,7 @@ class ExtractedCommand:
 
 @dataclasses.dataclass
 class ValidationResult:
-    """Outcome of validating one :class:`ExtractedCommand`.
-
-    Attributes:
-        command: The command that was checked.
-        ok: Overall pass/fail.
-        message: Human-readable failure summary (empty when ``ok``).
-    """
+    """Outcome of validating one :class:`ExtractedCommand`."""
 
     command: ExtractedCommand
     ok: bool
@@ -207,31 +140,19 @@ class ValidationResult:
 
 # --- Markdown extraction -----------------------------------------------------
 
-# Matches a fenced code block opener. Captures the info string (language).
-# Allows any leading whitespace so that mkdocs-material admonition-nested
-# fences (4-space indented) are also picked up. ``text`` markdown's 3-space
-# rule is irrelevant here — mkdocs-material doesn't follow it strictly.
+# Leading whitespace allowed so admonition-nested fences (4-space indented) match.
 _FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\s`]*)")
 _FENCE_CLOSE_RE = re.compile(r"^(?P<indent>[ \t]*)```\s*$")
 
-# Matches an mkdocs-material ``title="..."`` attribute on any fenced block.
-# mkdocs-material uses these to label code samples with the path the reader
-# should save them to. When a path appears in a ``title=``, the file is
-# treated as tutorial material the reader creates — not as a real repo file.
 _FENCE_TITLE_RE = re.compile(r'title\s*=\s*"([^"]+)"')
 
-# Strip a leading env-var assignment prefix: ``FOO=bar BAZ=qux sonda ...`` → ``sonda ...``
-# We only strip assignments that precede the FIRST non-assignment token. Matches NAME=value
-# where NAME is a shell-valid identifier (underscore + uppercase + digits) and value is
-# anything until whitespace.
+# `FOO=bar BAZ=qux sonda ...` → `sonda ...`. Loops to strip multiple prefixes.
 _ENV_ASSIGN_RE = re.compile(r"^[A-Z_][A-Z0-9_]*=[^ \t]*\s+")
 
 
 def iter_markdown_files(docs_root: Path) -> list[Path]:
-    """Return a sorted list of markdown files under ``docs_root``.
-
-    Filters out files under any path in :data:`DOCS_GLOB_EXCLUDE`.
-    """
+    """Return a sorted list of markdown files under ``docs_root``, excluding
+    any path in :data:`DOCS_GLOB_EXCLUDE`."""
     excluded = tuple(docs_root.parent / ex for ex in DOCS_GLOB_EXCLUDE)
     out: list[Path] = []
     for md in docs_root.rglob("*.md"):
@@ -243,22 +164,15 @@ def iter_markdown_files(docs_root: Path) -> list[Path]:
 
 
 def extract_tutorial_file_titles(markdown_text: str) -> set[str]:
-    """Return the set of ``title="..."`` values from ALL fenced blocks.
+    """Return ``title="..."`` values from every fenced block in the document.
 
-    Any path the docs present as a labelled code sample is considered
-    tutorial material: the reader is expected to save the contents to that
-    path themselves, so the path isn't required to exist in the repo. This
-    suppresses false positives on pedagogical examples like
-    ``examples/ci-high-memory-alert.yaml`` while still catching real drift
-    on paths that are referenced in commands but NEVER shown as a titled
-    code sample (the PR #235 regression class).
+    Paths shown as labelled code samples are treated as tutorial material —
+    commands that reference them skip the file-exists + dry-run checks.
     """
     titles: set[str] = set()
     for line in markdown_text.splitlines():
         if "```" not in line:
             continue
-        # Only consider lines that open a fence. Closing fences shouldn't
-        # carry titles, but this check is cheap safety.
         m = _FENCE_OPEN_RE.match(line)
         if not m:
             continue
@@ -271,13 +185,11 @@ def extract_tutorial_file_titles(markdown_text: str) -> set[str]:
 def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
     """Return ``(line_number, block_body)`` tuples for ``bash`` fenced blocks.
 
-    Only fences whose info string is exactly ``bash`` (case-insensitive) are
-    returned. ``text``, ``yaml``, ``json``, ``toml``, ``shell``, etc. are
-    ignored. ``bash title="..."`` IS accepted (mkdocs allows titled fences).
+    Only ``bash`` fences (case-insensitive) match; ``text``/``yaml``/``json``
+    are ignored. ``bash title="..."`` is accepted.
 
-    The line number is 1-based and points at the first line of content INSIDE
-    the fence (the line following the opener), so downstream reporting aligns
-    with what the reader sees.
+    The line number is 1-based and points at the first content line inside
+    the fence so reporting aligns with what the reader sees.
     """
     lines = markdown_text.splitlines()
     blocks: list[tuple[int, str]] = []
@@ -289,15 +201,7 @@ def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
             i += 1
             continue
         info_raw = m.group("info") or ""
-        # The info string may carry a language then trailing attributes like
-        # ``bash title="foo"`` — we split on whitespace, but attributes land on
-        # the same raw info token only when mkdocs uses pymdownx.superfences.
-        # In practice docs use plain ``bash`` or ``bash title="..."``. The line
-        # after the fence marker holds the attributes when present. So split
-        # the whole fence line's remainder.
-        fence_tail = line[m.end() :].strip()
         if info_raw.lower() != "bash":
-            # Not a bash block. Find the closing fence and move on.
             i += 1
             while i < len(lines):
                 if _FENCE_CLOSE_RE.match(lines[i]):
@@ -305,9 +209,7 @@ def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
                     break
                 i += 1
             continue
-        # bash block — collect body until the closing fence.
-        _ = fence_tail  # unused: present for clarity, ignored content
-        start_body_line = i + 2  # 1-based line number of first body line
+        start_body_line = i + 2
         i += 1
         body: list[str] = []
         while i < len(lines):
@@ -323,9 +225,8 @@ def extract_bash_blocks(markdown_text: str) -> list[tuple[int, str]]:
 def join_continuations(block_body: str) -> list[tuple[int, str]]:
     """Join shell line continuations (``\\`` at end of line).
 
-    Returns ``(relative_line_offset, joined_line)`` tuples where
-    ``relative_line_offset`` is the 0-based offset of the FIRST physical line
-    of the joined logical line, relative to the block body.
+    Returns ``(relative_line_offset, joined_line)`` where the offset is the
+    0-based index of the first physical line of each logical line.
     """
     physical = block_body.splitlines()
     logical: list[tuple[int, str]] = []
@@ -336,7 +237,6 @@ def join_continuations(block_body: str) -> list[tuple[int, str]]:
             buf_start = idx
         stripped_end = line.rstrip()
         if stripped_end.endswith("\\"):
-            # Drop the trailing backslash and keep accumulating.
             buf.append(stripped_end[:-1])
             continue
         buf.append(line)
@@ -344,7 +244,6 @@ def join_continuations(block_body: str) -> list[tuple[int, str]]:
         buf = []
         buf_start = None
     if buf:
-        # Unterminated continuation — keep what we have.
         logical.append((buf_start or 0, " ".join(s.strip() for s in buf).strip()))
     return logical
 
@@ -357,11 +256,7 @@ def strip_prompt(line: str) -> str:
 
 
 def strip_env_prefix(line: str) -> str:
-    """Strip leading ``VAR=value ...`` env-var assignments from a command line.
-
-    Iteratively removes assignment prefixes until the first token is a command.
-    Handles multiple (``FOO=bar BAZ=qux sonda ...``).
-    """
+    """Strip leading ``VAR=value ...`` env-var assignments from a command line."""
     while True:
         m = _ENV_ASSIGN_RE.match(line)
         if not m:
@@ -370,12 +265,7 @@ def strip_env_prefix(line: str) -> str:
 
 
 def _contains_cli_placeholder_token(tokens: Iterable[str]) -> bool:
-    """Return True if any token is a CLI-usage placeholder like ``[OPTIONS]``.
-
-    The usage syntax ``sonda metrics [OPTIONS]`` shows the invocation shape,
-    not a runnable command. Detected by brackets or angle-brackets on either
-    end of a token.
-    """
+    """Return True if any token is a CLI usage placeholder (``<FILE>``, ``[OPTIONS]``)."""
     for tok in tokens:
         if tok.startswith(("<", "[")) or tok.endswith((">", "]")):
             return True
@@ -413,7 +303,6 @@ def _trim_shell_trailers(line: str) -> str:
             i += 1
             continue
         if ch == "\\" and i + 1 < len(line):
-            # Escaped next char — keep both verbatim.
             out.append(ch)
             out.append(line[i + 1])
             i += 2
@@ -421,22 +310,17 @@ def _trim_shell_trailers(line: str) -> str:
         if ch == "#" and (i == 0 or line[i - 1].isspace()):
             break
         if ch in (">", "<"):
-            # Potential redirect. A free-standing ``>`` / ``<`` with whitespace
-            # on BOTH sides (or ending the line) is a shell redirect and
-            # truncates the command. A ``<`` followed immediately by a
-            # non-space character is a metavar like ``<FILE>`` and stays in
-            # the token. ``>`` after a token character stays (e.g. in a
-            # ``--label`` value); after whitespace, it's a redirect.
+            # `>` / `<` with whitespace on BOTH sides (or at EOL) is a shell
+            # redirect; `<` immediately before a non-space char is a metavar
+            # like `<FILE>` and stays in the token.
             prev_is_space = i == 0 or line[i - 1].isspace()
             next_is_space = i + 1 >= len(line) or line[i + 1].isspace()
             if prev_is_space and (next_is_space or ch == ">"):
                 break
-            # Keep as part of current token.
             out.append(ch)
             i += 1
             continue
         if ch == "&":
-            # ``&&`` or lone ``&`` → trim here.
             break
         out.append(ch)
         i += 1
@@ -446,18 +330,10 @@ def _trim_shell_trailers(line: str) -> str:
 def extract_sonda_commands(
     md_file: Path, markdown_text: str
 ) -> list[ExtractedCommand]:
-    """Extract every ``sonda <known-subcommand> ...`` invocation from a markdown file.
-
-    Returns a list sorted by file, then by line number. Only recognised subcommands
-    from :data:`KNOWN_SUBCOMMANDS` qualify — bare ``sonda`` mentions, ``sonda-server``,
-    ``sonda_core``, or ``sonda --version`` don't match and are excluded.
-    """
+    """Extract every ``sonda <known-subcommand> ...`` invocation from a markdown file."""
     commands: list[ExtractedCommand] = []
     tutorial_titles = frozenset(extract_tutorial_file_titles(markdown_text))
     for block_line, block_body in extract_bash_blocks(markdown_text):
-        # A block is "tutorial" if any command inside it references a path
-        # shown as a code-fence title elsewhere in the file. Compute this once
-        # per block so every command in the block gets the same verdict.
         block_is_tutorial = any(
             title in block_body for title in tutorial_titles
         )
@@ -467,39 +343,23 @@ def extract_sonda_commands(
                 continue
             cleaned = strip_prompt(stripped)
             cleaned = strip_env_prefix(cleaned)
-            # Fast filter: must have "sonda" in it somewhere.
             if "sonda" not in cleaned:
                 continue
-            # Handle pipelines / command chains: split on `|`, `&&`, `||`, `;`
-            # so that `sonda metrics ... | curl ...` still parses the sonda part.
-            # This is conservative and may over-split — but for validation we
-            # only care about the leading sonda invocation.
+            # Split pipelines / chains so `sonda ... | curl ...` still parses.
             segments = re.split(r"\s*(?:\|\||&&|;|\|)\s*", cleaned)
             for seg in segments:
                 seg = seg.strip()
                 if not seg.startswith("sonda "):
-                    # Must start with ``sonda `` — this filters out things like
-                    # ``cargo run -- sonda metrics ...`` (we don't validate those),
-                    # ``# sonda init --help`` (comments already filtered),
-                    # ``sonda-server``, ``sonda_core`` (they don't have a space).
                     continue
-                # Trim shell redirects, backgrounding, and inline comments
-                # before tokenising — they'd fail clap parsing if passed
-                # through verbatim.
                 seg = _trim_shell_trailers(seg)
                 if not seg:
                     continue
                 try:
                     tokens = tuple(shlex.split(seg, comments=True))
                 except ValueError:
-                    # Unbalanced quotes or other shell-parse error. Skip rather
-                    # than crash — this is a docs tool, not a shell emulator.
                     continue
                 if not tokens or tokens[0] != "sonda":
                     continue
-                # Skip CLI-usage syntax examples like
-                # ``sonda metrics [OPTIONS]`` or ``sonda run --scenario <FILE>``.
-                # These are reference documentation, not runnable commands.
                 if _contains_cli_placeholder_token(tokens):
                     continue
                 cmd = ExtractedCommand(
@@ -510,7 +370,6 @@ def extract_sonda_commands(
                     tutorial_titles=tutorial_titles,
                     block_is_tutorial=block_is_tutorial,
                 )
-                # Only count commands with a recognised subcommand.
                 if cmd.subcommand is None:
                     continue
                 commands.append(cmd)
@@ -521,27 +380,21 @@ def extract_sonda_commands(
 
 
 def is_metavar_placeholder(path: str) -> bool:
-    """Return True for CLI-reference metavar placeholders like ``<FILE>``.
-
-    Placeholders in docs aren't real filesystem paths — they're usage syntax.
-    Detected by the presence of an unescaped ``<`` or ``>``.
-    """
+    """Return True for CLI-reference metavar placeholders like ``<FILE>``."""
     return "<" in path or ">" in path
 
 
 def is_repo_relative_path(path: str) -> bool:
-    """Return True when ``path`` looks like a repo-relative file reference.
+    """Return True when ``path`` is a repo-relative reference whose first
+    segment is in :data:`REPO_RELATIVE_PATH_ROOTS`.
 
-    Only paths whose first segment is in :data:`REPO_RELATIVE_PATH_ROOTS` qualify
-    for file-exists validation. Bare filenames, absolute paths, ``~/`` paths,
-    and metavar placeholders all return False.
+    Bare filenames, absolute paths, ``~/`` paths, and metavar placeholders
+    all return False.
     """
     if is_metavar_placeholder(path):
         return False
     if path.startswith(("/", "~", "@")):
         return False
-    # Split on both POSIX and Windows separators to be safe; docs are POSIX but
-    # this is cheap insurance against odd path styles sneaking in.
     first, sep, _rest = path.partition("/")
     if not sep:
         return False
@@ -549,11 +402,8 @@ def is_repo_relative_path(path: str) -> bool:
 
 
 def extract_scenario_path(argv: Sequence[str]) -> str | None:
-    """Return the ``--scenario`` path value, or ``None`` if absent.
-
-    Handles both ``--scenario foo`` and ``--scenario=foo`` forms. ``@name``
-    values are returned as-is; the caller decides whether to skip them.
-    """
+    """Return the ``--scenario`` path value (handles both ``--scenario foo`` and
+    ``--scenario=foo`` forms), or ``None`` if absent."""
     for idx, tok in enumerate(argv):
         if tok == "--scenario":
             if idx + 1 < len(argv):
@@ -567,21 +417,17 @@ def extract_scenario_path(argv: Sequence[str]) -> str | None:
 def extract_import_or_from_file(argv: Sequence[str]) -> str | None:
     """Return a referenced file path for ``import <file>`` and ``init --from <val>``.
 
-    For ``import <file>``, returns the positional file arg (skipping flags).
-    For ``init --from <val>``, returns the value only if it doesn't start with ``@``.
-    Otherwise returns ``None``.
+    Returns ``None`` for ``init --from @name`` (catalog reference, not a path).
     """
     if len(argv) < 2:
         return None
     sub = None
-    # Find the first known subcommand token, skipping global flags.
     for tok in argv[1:]:
         if tok.startswith("-"):
             continue
         sub = tok
         break
     if sub == "import":
-        # First positional after "import" that isn't a flag or a flag value.
         skip_next = False
         seen_import = False
         for tok in argv[1:]:
@@ -593,13 +439,8 @@ def extract_import_or_from_file(argv: Sequence[str]) -> str | None:
                     seen_import = True
                 continue
             if tok.startswith("-"):
-                # Flags that take values on import: -o, --output, --columns,
-                # --rate, --duration.
                 if tok in {"-o", "--output", "--columns", "--rate", "--duration"}:
                     skip_next = True
-                elif "=" in tok:
-                    # ``-o=foo`` style — nothing to skip.
-                    pass
                 continue
             return tok
         return None
@@ -624,8 +465,8 @@ def extract_import_or_from_file(argv: Sequence[str]) -> str | None:
 def supports_dry_run(cmd: ExtractedCommand) -> bool:
     """Return True when the command's subcommand (and action, if any) supports ``--dry-run``.
 
-    Special case: ``sonda import ... --run`` accepts ``--dry-run`` too. Plain
-    ``sonda import --analyze`` or ``sonda import -o foo.yaml`` do not.
+    ``sonda import --run`` qualifies; plain ``sonda import --analyze`` or
+    ``sonda import -o foo.yaml`` does not.
     """
     sub = cmd.subcommand
     if sub is None:
@@ -688,30 +529,22 @@ def validate_command(
     if not supports_dry_run(cmd):
         return ValidationResult(command=cmd, ok=True)
 
-    # Only dry-run when the command's file references resolve. A tutorial-style
-    # command like ``sonda run --scenario my-scenario.yaml`` would fail dry-run
-    # with a "file not found" that isn't docs drift — it's the reader's TODO.
+    # Skip dry-run on cases that can't fail "for docs drift reasons":
+    # tutorial paths the reader creates, `@name` and `catalog run <name>`
+    # catalog lookups, and tutorial blocks generally.
     if scenario_path is not None and not scenario_path.startswith("@"):
         if not scenario_is_repo_path:
             return ValidationResult(command=cmd, ok=True)
-    # ``@name`` refs defer to sonda's catalog probe — per the brief, validating
-    # catalog entry names against the actual catalog is out of scope. Skip.
     if scenario_path is not None and scenario_path.startswith("@"):
         return ValidationResult(command=cmd, ok=True)
-    # ``sonda catalog run <name>``, ``scenarios run <name>``, ``packs run <name>``
-    # — the ``<name>`` arg is a catalog lookup same as ``@name``. Out of scope.
     if cmd.action == "run" and cmd.subcommand in {"catalog", "scenarios", "packs"}:
         return ValidationResult(command=cmd, ok=True)
-    # Tutorial blocks: reader is expected to create the referenced files.
     if cmd.block_is_tutorial:
         return ValidationResult(command=cmd, ok=True)
-    # ``sonda import <file>`` / ``sonda init --from <file>`` with a bare,
-    # non-repo-relative filename — tutorial placeholder the reader provides.
     if referenced_file is not None and not is_repo_relative_path(referenced_file):
         return ValidationResult(command=cmd, ok=True)
 
     if sonda_bin is None:
-        # File-exists check already happened; no binary available to dry-run.
         return ValidationResult(command=cmd, ok=True)
 
     dry_run_argv = _build_dry_run_argv(cmd, sonda_bin)
@@ -741,7 +574,6 @@ def validate_command(
     if proc.returncode == 0:
         return ValidationResult(command=cmd, ok=True)
     stderr = proc.stderr.strip()
-    # Trim stderr to the first ~20 lines to keep error output scannable.
     stderr_lines = stderr.splitlines()
     if len(stderr_lines) > 20:
         stderr = "\n".join(stderr_lines[:20]) + "\n    ..."
@@ -758,13 +590,7 @@ def validate_command(
 def _build_dry_run_argv(
     cmd: ExtractedCommand, sonda_bin: Path
 ) -> list[str]:
-    """Build the argv the script actually executes for a dry-run.
-
-    Strategy: replace ``sonda`` with the binary path, strip trailing shell
-    operators (already split upstream), and inject ``--dry-run`` as a global
-    flag right after the binary. If ``--dry-run`` is already present we leave
-    it alone.
-    """
+    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` if absent."""
     argv = list(cmd.argv)
     argv[0] = str(sonda_bin)
     if "--dry-run" not in argv:
