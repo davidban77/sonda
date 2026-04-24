@@ -199,7 +199,7 @@ helm install sonda ./helm/sonda -f my-values.yaml
 The Deployment template includes a `checksum/scenarios` annotation, so changing scenario
 content in your values file triggers an automatic pod rollout on `helm upgrade`.
 
-See [Scenario Files](../configuration/scenario-file.md) for the full YAML schema.
+See [Scenario Fields](../configuration/scenario-fields.md) for the full YAML schema.
 
 ### API (runtime)
 
@@ -495,4 +495,4 @@ Add `-n <namespace>` if you installed into a non-default namespace.
 - [Synthetic Monitoring guide](../guides/synthetic-monitoring.md) -- deploy Sonda on Kubernetes, submit long-running scenarios, scrape with Prometheus, and build Grafana dashboards
 - [Server API](sonda-server.md) -- full endpoint reference for `sonda-server`
 - [Docker](docker.md) -- Docker image and Compose stacks for local development
-- [Scenario Files](../configuration/scenario-file.md) -- full YAML schema for scenario configuration
+- [Scenario Fields](../configuration/scenario-fields.md) -- full YAML schema for scenario configuration

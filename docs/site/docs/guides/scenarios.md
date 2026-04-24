@@ -290,5 +290,5 @@ reference.
 - [**Metric Packs**](metric-packs.md) -- pre-built metric bundles for Telegraf SNMP and node_exporter with correct schemas
 - [**Alert Testing**](alert-testing.md) -- end-to-end walkthrough using shaped signals to validate alert rules
 - [**CLI Reference**](../configuration/cli-reference.md#sonda-catalog) -- full flag reference for `sonda catalog`
-- [**Scenario Files**](../configuration/scenario-file.md) -- YAML reference for writing your own scenarios from scratch
+- [**Scenario Fields**](../configuration/scenario-fields.md) -- YAML reference for writing your own scenarios from scratch
 - [**v2 Scenario Files**](../configuration/v2-scenarios.md) -- the forward-compatible format with defaults, `after:`, and inline packs

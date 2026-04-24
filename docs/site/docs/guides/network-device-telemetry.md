@@ -539,7 +539,7 @@ Model environmental sensors with sine waves:
 **Related pages:**
 
 - [Generators](../configuration/generators.md) -- full reference for sawtooth, sequence, sine, spike, and jitter
-- [Scenario Files](../configuration/scenario-file.md) -- multi-scenario YAML format and field reference
+- [Scenario Fields](../configuration/scenario-fields.md) -- multi-scenario YAML format and field reference
 - [Alert Testing](alert-testing.md) -- threshold and compound alert testing patterns
 - [Alerting Pipeline](alerting-pipeline.md) -- end-to-end alerting with vmalert and Alertmanager
 - [Example Scenarios](examples.md) -- all example scenario files

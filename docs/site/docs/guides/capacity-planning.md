@@ -265,7 +265,7 @@ sonda -q metrics --name cardinality_test --rate 50 --duration 60s \
     If you want **always-on** cardinality (e.g., simulating a stable fleet of 50 hosts), use
     `dynamic_labels` instead. The label is present on every event, producing a constant number
     of series for the full duration. See
-    [Dynamic labels](../configuration/scenario-file.md#dynamic-labels) in the scenario file
+    [Dynamic labels](../configuration/scenario-fields.md#dynamic-labels) in the scenario field
     reference.
 
 ---
@@ -593,7 +593,7 @@ Set resource limits 2x above requests to accommodate bursts.
 
 **Related pages:**
 
-- [Scenario Files](../configuration/scenario-file.md) -- cardinality_spikes, bursts, and rate reference
+- [Scenario Fields](../configuration/scenario-fields.md) -- cardinality_spikes, bursts, and rate reference
 - [Sinks](../configuration/sinks.md) -- http_push configuration for backend targets
 - [E2E Testing](e2e-testing.md) -- full Docker Compose test suite
 - [Pipeline Validation](pipeline-validation.md) -- quick smoke tests without Docker

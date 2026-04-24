@@ -238,7 +238,7 @@ scenarios:
 
 Each scenario runs on its own thread. Use different sinks per scenario to keep outputs separate.
 
-See [Scenario Files](../configuration/scenario-file.md) for the full multi-scenario YAML
+See [Scenario Fields](../configuration/scenario-fields.md) for the full multi-scenario YAML
 reference.
 
 ---

@@ -867,7 +867,7 @@ envelope:
 | Shape | Top-level form | Docs |
 |-------|----------------|------|
 | **Single-signal v2** | `version: 2` + `scenarios:` with one entry | [v2 Scenario Files](v2-scenarios.md#minimal-example) |
-| **Multi-signal v2** | `version: 2` + `scenarios:` with N entries | [Multi-signal files](scenario-file.md#multi-signal-files) |
+| **Multi-signal v2** | `version: 2` + `scenarios:` with N entries | [Multi-signal files](scenario-fields.md#multi-signal-files) |
 | **v2 pack-backed entry** | `version: 2` with one or more `pack: <name>` entries under `scenarios:` | [Pack-backed entries](v2-scenarios.md#pack-backed-entries) |
 | **v2 after: chain** | `version: 2` + `after:` clauses linking entries | [Temporal chains](v2-scenarios.md#temporal-chains-with-after) |
 | **@name** | `@<scenario>` or `@<pack>` referencing the catalog | [Built-in Scenarios](../guides/scenarios.md) |
