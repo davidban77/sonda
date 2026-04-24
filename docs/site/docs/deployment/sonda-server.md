@@ -52,6 +52,26 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
       `http://vmsingle:8428` for same-namespace, or
       `http://vmsingle.monitoring.svc.cluster.local:8428` for cross-namespace.
 
+    When a POSTed scenario targets `localhost`, `127.0.0.1`, or `[::1]`, the server
+    still returns **201 Created** -- the trap is likely a mistake but sometimes
+    legitimate, so the scenario launches regardless. A `warnings: [...]` field on
+    the response identifies the offending sink and points here. The same message is
+    emitted via `tracing::warn!` so operators can catch it in server logs:
+
+    ```json title="Response (201 with loopback warning)"
+    {
+      "id": "a1b2c3d4-...",
+      "name": "up",
+      "status": "running",
+      "warnings": [
+        "scenario entry 'up' sink `http_push` targets `http://localhost:8428/api/v1/write` — this host resolves to the sonda-server container's own loopback, not your host. Use a Docker Compose service name (e.g. `victoriametrics:8428`) or a Kubernetes Service DNS name instead. See docs/deployment/endpoints.md."
+      ]
+    }
+    ```
+
+    The `warnings` field is omitted entirely when no issues were detected, so existing
+    clients that do not know about the field continue to parse the response unchanged.
+
     See [Endpoints & networking](endpoints.md) for the full reference and a `sed`
     one-liner that rewrites `localhost` URLs before posting.
 
