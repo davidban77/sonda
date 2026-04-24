@@ -96,6 +96,6 @@ Or jump straight to what you need:
 - [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
 - [**v2 Scenario Files**](configuration/v2-scenarios.md) -- multi-signal scenarios with shared defaults, `after:` temporal chains, and inline packs
 - [**CSV Import**](guides/csv-import.md) -- turn Grafana exports into portable, parameterized scenarios
-- [**Configuration**](configuration/scenario-file.md) -- scenario files, generators, encoders, sinks, CLI reference
+- [**Configuration**](configuration/scenario-fields.md) -- scenario fields, generators, encoders, sinks, CLI reference
 - [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API
 - [**Guides**](guides/tutorial.md) -- tutorial, alert testing, pipeline validation, example scenarios

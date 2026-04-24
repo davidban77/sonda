@@ -501,5 +501,5 @@ This means every feature that works with multi-scenario runs -- `--dry-run`, `--
 - [**Network Device Telemetry**](network-device-telemetry.md) -- end-to-end walkthrough using SNMP metrics for dashboard testing
 - [**CLI Reference**](../configuration/cli-reference.md#sonda-catalog) -- full flag reference for `catalog list`, `catalog show`, `catalog run`
 - [**v2 Scenario Files**](../configuration/v2-scenarios.md#pack-backed-entries) -- reference a pack inline from a v2 `scenarios:` entry
-- [**Scenario Files**](../configuration/scenario-file.md) -- YAML reference for all scenario fields
+- [**Scenario Fields**](../configuration/scenario-fields.md) -- YAML reference for all scenario fields
 - [**Generators**](../configuration/generators.md) -- all generator types and operational aliases

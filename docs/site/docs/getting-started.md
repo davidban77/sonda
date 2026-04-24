@@ -230,7 +230,7 @@ portable scenario YAML.
 When you need specific details:
 
 - [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains, and migration from v1
-- [**Scenario Fields**](configuration/scenario-file.md) -- per-entry field reference (generators, schedules, labels)
+- [**Scenario Fields**](configuration/scenario-fields.md) -- per-entry field reference (generators, schedules, labels)
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
 - [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
 - [**Troubleshooting**](guides/troubleshooting.md) -- common issues and how to fix them

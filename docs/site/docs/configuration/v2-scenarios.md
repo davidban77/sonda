@@ -718,6 +718,6 @@ anything and prints the error alongside a pointer to this guide.
 
 - [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- flag reference for running v2 files
 - [**CLI Reference -- dry run**](cli-reference.md#dry-run) -- validate and preview a v2 file before running
-- [**Scenario Fields**](scenario-file.md) -- per-entry field reference (generators, labels, schedules)
+- [**Scenario Fields**](scenario-fields.md) -- per-entry field reference (generators, labels, schedules)
 - [**Server API**](../deployment/sonda-server.md) -- `POST /scenarios` accepts v2 YAML or JSON
 - [**Metric Packs**](../guides/metric-packs.md) -- the pack catalog you can reference from v2 entries

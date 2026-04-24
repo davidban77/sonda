@@ -154,7 +154,7 @@ Now that you can trigger alerts, what about testing when they resolve?
 ## Testing Alert Resolution
 
 When a metric goes silent during a gap, Prometheus treats it as stale and the alert resolves.
-Use [gap windows](../configuration/scenario-file.md) to control when metrics disappear.
+Use [gap windows](../configuration/scenario-fields.md) to control when metrics disappear.
 
 ```
 Time:  0s          40s         60s         100s        120s
@@ -386,7 +386,7 @@ Beyond simple threshold alerts, Sonda can also test cardinality explosions and r
 ## Cardinality Explosion Alerts
 
 Many monitoring stacks alert when series cardinality crosses a threshold (e.g.,
-`count(up) > 10000`). Sonda's [cardinality spikes](../configuration/scenario-file.md)
+`count(up) > 10000`). Sonda's [cardinality spikes](../configuration/scenario-fields.md)
 generate a controlled burst of unique label values to verify your cardinality-limiting
 rules fire correctly.
 
