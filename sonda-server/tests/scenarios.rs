@@ -741,6 +741,341 @@ sink:
     );
 }
 
+// ---- FU-2: loopback sink pre-flight warnings ---------------------------------
+
+/// POST a scenario whose sink points at `localhost` — the server still
+/// returns 201 (warnings are informational, not errors) but the response
+/// body carries a `warnings` array explaining the container-loopback trap.
+#[test]
+fn post_tcp_localhost_sink_returns_warning() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: tcp
+    address: localhost:9000
+scenarios:
+  - id: loopback_tcp
+    signal_type: metrics
+    name: loopback_tcp
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed at HTTP level");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "loopback sink must still return 201 — warning, not rejection"
+    );
+
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    let warnings = body["warnings"]
+        .as_array()
+        .expect("response must carry a warnings array");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "single loopback sink must produce one warning"
+    );
+    let msg = warnings[0].as_str().unwrap();
+    assert!(
+        msg.contains("loopback_tcp"),
+        "warning must name the entry: {msg}"
+    );
+    assert!(
+        msg.contains("tcp"),
+        "warning must mention the sink type: {msg}"
+    );
+    assert!(
+        msg.contains("localhost:9000"),
+        "warning must echo the offending address: {msg}"
+    );
+    assert!(
+        msg.contains("deployment/endpoints"),
+        "warning must point at the docs: {msg}"
+    );
+}
+
+/// POST a scenario whose sink points at a real service name — no warnings
+/// in the response.
+#[test]
+fn post_tcp_real_hostname_sink_has_no_warnings() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: tcp
+    address: syslog.example.com:514
+scenarios:
+  - id: real_host_tcp
+    signal_type: metrics
+    name: real_host_tcp
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    // Empty warnings vec is skipped via skip_serializing_if — the key must be absent.
+    assert!(
+        body.get("warnings").is_none(),
+        "clean sink must not emit a warnings field"
+    );
+}
+
+/// POST a `stdout` sink — no warnings (sink carries no address).
+#[test]
+fn post_stdout_sink_has_no_warnings() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(VALID_METRICS_YAML)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    assert!(
+        body.get("warnings").is_none(),
+        "stdout sink must not emit a warnings field"
+    );
+}
+
+/// POST a UDP sink pointed at `localhost:9000` — produces a warning.
+#[test]
+fn post_udp_localhost_sink_returns_warning() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: udp
+    address: localhost:9000
+scenarios:
+  - id: loopback_udp
+    signal_type: metrics
+    name: loopback_udp
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    let warnings = body["warnings"]
+        .as_array()
+        .expect("warnings array required");
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("udp"));
+}
+
+/// POST a multi-scenario batch with one localhost sink and one service-name
+/// sink — batch response carries exactly one warning at the top level.
+#[test]
+fn post_multi_scenario_mixed_sinks_returns_one_warning() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+scenarios:
+  - id: multi_loopback
+    signal_type: metrics
+    name: multi_loopback
+    sink:
+      type: tcp
+      address: localhost:9000
+    generator:
+      type: constant
+      value: 1.0
+  - id: multi_clean
+    signal_type: metrics
+    name: multi_clean
+    sink:
+      type: tcp
+      address: collector.internal:9000
+    generator:
+      type: constant
+      value: 2.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    // Multi-scenario shape: top-level `warnings` next to `scenarios`.
+    let warnings = body["warnings"]
+        .as_array()
+        .expect("multi-scenario warnings must live at the top level");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "mixed batch must surface exactly one warning"
+    );
+    assert!(warnings[0].as_str().unwrap().contains("multi_loopback"));
+}
+
+/// POST a multi-scenario batch with two clean sinks — response has no
+/// `warnings` field at all.
+#[test]
+fn post_multi_scenario_both_clean_has_no_warnings() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(VALID_MULTI_YAML)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    assert!(
+        body.get("warnings").is_none(),
+        "all-clean batch must not emit a warnings field"
+    );
+}
+
+/// POST a scenario pointing at `127.0.0.1` — produces a warning.
+#[test]
+fn post_tcp_127_0_0_1_sink_returns_warning() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: tcp
+    address: 127.0.0.1:9000
+scenarios:
+  - id: loopback_v4
+    signal_type: metrics
+    name: loopback_v4
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    let warnings = body["warnings"]
+        .as_array()
+        .expect("warnings array required");
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("127.0.0.1"));
+}
+
+/// POST a scenario pointing at `[::1]` (IPv6 loopback) — produces a warning.
+#[test]
+fn post_tcp_ipv6_loopback_sink_returns_warning() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: tcp
+    address: \"[::1]:9000\"
+scenarios:
+  - id: loopback_v6
+    signal_type: metrics
+    name: loopback_v6
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml)
+        .send()
+        .expect("POST must succeed");
+
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    let warnings = body["warnings"]
+        .as_array()
+        .expect("warnings array required");
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("::1"));
+}
+
 /// POST a v1 multi-scenario YAML (top-level `scenarios:` without
 /// `version: 2`) — also rejected with 400 + migration hint. Companion to
 /// the flat-v1 case above.

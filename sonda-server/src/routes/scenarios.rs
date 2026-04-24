@@ -37,6 +37,7 @@ use uuid::Uuid;
 use sonda_core::compile_scenario_file;
 use sonda_core::config::ScenarioEntry;
 use sonda_core::schedule::launch::{launch_scenario, prepare_entries};
+use sonda_core::sink::SinkConfig;
 
 use crate::state::AppState;
 
@@ -51,6 +52,17 @@ pub struct CreatedScenario {
     pub name: String,
     /// Always `"running"` for a freshly launched scenario.
     pub status: &'static str,
+    /// Non-fatal warnings raised while validating the posted body.
+    ///
+    /// Populated, for example, when a sink URL points at `localhost` — which
+    /// resolves to the `sonda-server` container's own loopback rather than
+    /// the operator's host. The scenario still launches; the warnings exist
+    /// so operators can spot the misconfiguration without grepping logs.
+    ///
+    /// Omitted from the JSON response when no warnings were raised so
+    /// clients that predate this field continue to parse cleanly.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub warnings: Vec<String>,
 }
 
 /// Response body for a successfully created multi-scenario batch.
@@ -62,6 +74,16 @@ pub struct CreatedScenario {
 pub struct CreatedScenariosResponse {
     /// One entry per launched scenario, in the same order as the input.
     pub scenarios: Vec<CreatedScenario>,
+    /// Non-fatal warnings raised while validating the posted body.
+    ///
+    /// Collected across every entry in the batch — one string per flagged
+    /// sink. See [`CreatedScenario::warnings`] for the per-entry shape;
+    /// the batch response aggregates them at the top level so clients do
+    /// not need to walk the `scenarios` array to surface operator hints.
+    ///
+    /// Omitted from the JSON response when no warnings were raised.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub warnings: Vec<String>,
 }
 
 /// Summary of a single scenario in the list response.
@@ -307,6 +329,215 @@ fn yaml_body_text(body: &[u8], headers: &HeaderMap) -> Result<String, String> {
     }
 }
 
+// ---- Sink loopback pre-flight ----------------------------------------------
+
+/// Pointer appended to every loopback warning so operators can find the
+/// deployment networking reference without grepping docs.
+const LOOPBACK_HINT_DOC: &str = "See docs/deployment/endpoints.md.";
+
+/// Hostnames that, in a containerized `sonda-server`, resolve to the
+/// server's own network namespace rather than the operator's host.
+///
+/// Matched case-insensitively against the host component of a sink URL or
+/// `host:port` address. IPv4 addresses in the wider `127.0.0.0/8` range are
+/// not matched — the brief explicitly scopes this to `127.0.0.1` only.
+const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
+
+/// Return `true` when `host` names a loopback interface.
+///
+/// The comparison is case-insensitive (`Localhost` and `LOCALHOST` also
+/// match) because DNS hostnames are case-insensitive and users do write
+/// YAML in either case.
+fn is_loopback_host(host: &str) -> bool {
+    LOOPBACK_HOSTS
+        .iter()
+        .any(|candidate| host.eq_ignore_ascii_case(candidate))
+}
+
+/// Extract the host portion from an HTTP/gRPC URL or a bare `host:port`
+/// address.
+///
+/// Implemented as a small hand-rolled parser so we don't take a
+/// dependency on the `url` crate for a single-purpose check. Supports:
+///
+/// - Full URLs with a scheme (`http://...`, `https://...`, `grpc://...`).
+/// - Bare authority strings (`host:port`, `host`).
+/// - IPv6 literals wrapped in brackets (`[::1]:8428`, `http://[::1]/path`).
+///
+/// Returns `None` when the input is empty or otherwise unparseable. The
+/// caller treats that as "nothing to warn about" — the sink's own
+/// constructor will surface the real parse error at launch time.
+fn extract_host(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Strip a URL scheme (`http://`, `https://`, `grpc://`, ...) if present.
+    let after_scheme = match trimmed.find("://") {
+        Some(idx) => &trimmed[idx + 3..],
+        None => trimmed,
+    };
+
+    // Drop any path / query / fragment tail so we only parse the authority.
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+
+    // Strip userinfo (`user:pass@host`) if present.
+    let authority = match authority.rfind('@') {
+        Some(idx) => &authority[idx + 1..],
+        None => authority,
+    };
+
+    if authority.is_empty() {
+        return None;
+    }
+
+    // IPv6 literal: `[::1]` optionally followed by `:port`.
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.find(']').map(|end| &rest[..end]);
+    }
+
+    // IPv4 / hostname: split on the last `:` to drop the port, if any.
+    let host = match authority.rfind(':') {
+        Some(idx) => &authority[..idx],
+        None => authority,
+    };
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+/// Format a single "sink targets loopback" warning message.
+///
+/// The message is intentionally long-form and actionable: it names the
+/// scenario entry, the sink type tag, the offending URL/host, and the
+/// docs page operators should consult. sonda-server log output is
+/// operator-facing, so the extra bytes are justified.
+fn format_loopback_warning(entry_name: &str, sink_tag: &str, offender: &str) -> String {
+    format!(
+        "scenario entry '{entry_name}' sink `{sink_tag}` targets `{offender}` — this host \
+         resolves to the sonda-server container's own loopback, not your host. Use a Docker \
+         Compose service name (e.g. `victoriametrics:8428`) or a Kubernetes Service DNS name \
+         instead. {LOOPBACK_HINT_DOC}"
+    )
+}
+
+/// Inspect every sink in `entries` and return one warning per loopback match.
+///
+/// The function short-circuits for sink variants that do not carry a
+/// network address (`Stdout`, `File`, `Channel`, `Memory`, and the
+/// `*Disabled` placeholders used when a feature flag is off). For
+/// address-carrying variants it splits the brokers / endpoint / url string
+/// via [`extract_host`] and tests each discovered host with
+/// [`is_loopback_host`].
+///
+/// Feature-gated sink variants are only matched when their corresponding
+/// Cargo feature is enabled; the wildcard arm absorbs both unknown
+/// (`#[non_exhaustive]`) future variants and the placeholder
+/// `*Disabled` cases.
+fn sink_loopback_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for entry in entries {
+        let base = entry.base();
+        let name = base.name.as_str();
+        collect_warnings_for_sink(&base.sink, name, &mut warnings);
+    }
+    warnings
+}
+
+/// Push one warning per loopback host found in `sink` into `out`.
+///
+/// Split out from [`sink_loopback_warnings`] so the per-variant match
+/// lives in one place and is easy to extend when a new address-carrying
+/// sink lands.
+fn collect_warnings_for_sink(sink: &SinkConfig, entry_name: &str, out: &mut Vec<String>) {
+    match sink {
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush { url, .. } => {
+            if let Some(host) = extract_host(url) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "http_push", url));
+                }
+            }
+        }
+        #[cfg(feature = "http")]
+        SinkConfig::Loki { url, .. } => {
+            if let Some(host) = extract_host(url) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "loki", url));
+                }
+            }
+        }
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { url, .. } => {
+            if let Some(host) = extract_host(url) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "remote_write", url));
+                }
+            }
+        }
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc { endpoint, .. } => {
+            if let Some(host) = extract_host(endpoint) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "otlp_grpc", endpoint));
+                }
+            }
+        }
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka { brokers, .. } => {
+            // Kafka brokers is a comma-separated list; warn once per
+            // loopback broker so operators can see exactly which one is
+            // wrong in a mixed list.
+            for broker in brokers.split(',') {
+                let broker = broker.trim();
+                if broker.is_empty() {
+                    continue;
+                }
+                if let Some(host) = extract_host(broker) {
+                    if is_loopback_host(host) {
+                        out.push(format_loopback_warning(entry_name, "kafka", broker));
+                    }
+                }
+            }
+        }
+        SinkConfig::Tcp { address, .. } => {
+            if let Some(host) = extract_host(address) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "tcp", address));
+                }
+            }
+        }
+        SinkConfig::Udp { address } => {
+            if let Some(host) = extract_host(address) {
+                if is_loopback_host(host) {
+                    out.push(format_loopback_warning(entry_name, "udp", address));
+                }
+            }
+        }
+        // Stdout / File carry no network address. `#[non_exhaustive]`
+        // plus feature-gated `*Disabled` placeholders land in this arm.
+        _ => {}
+    }
+}
+
+/// Emit a `tracing::warn!` event for every warning in `warnings`.
+///
+/// Kept separate from [`sink_loopback_warnings`] so the pure pre-flight
+/// check stays test-friendly (no tracing subscriber required) and the
+/// logging happens exactly once per POST request in the handler.
+fn log_scenario_warnings(warnings: &[String]) {
+    for message in warnings {
+        warn!(message = %message, "POST /scenarios: sink pre-flight warning");
+    }
+}
+
 // ---- Handlers ---------------------------------------------------------------
 
 /// `POST /scenarios` — start scenarios from a v2 YAML or JSON body.
@@ -342,9 +573,20 @@ pub async fn post_scenario(
         bad_request(msg)
     })?;
 
+    // 2. Pre-flight sink check: warn (do not reject) when a sink URL points
+    //    at loopback, which in a containerized server resolves to the
+    //    server's own network namespace rather than the operator's host.
+    //    The warnings are logged and returned in the response — operators
+    //    can ignore them if the loopback target is intentional.
+    let warnings = match &parsed {
+        ParsedBody::Single(entry) => sink_loopback_warnings(std::slice::from_ref(entry.as_ref())),
+        ParsedBody::Multi(entries) => sink_loopback_warnings(entries),
+    };
+    log_scenario_warnings(&warnings);
+
     match parsed {
-        ParsedBody::Single(entry) => post_single_scenario(state, *entry).await,
-        ParsedBody::Multi(entries) => post_multi_scenario(state, entries).await,
+        ParsedBody::Single(entry) => post_single_scenario(state, *entry, warnings).await,
+        ParsedBody::Multi(entries) => post_multi_scenario(state, entries, warnings).await,
     }
 }
 
@@ -354,7 +596,11 @@ pub async fn post_scenario(
 /// pipeline as the multi-scenario path. This ensures identical behavior
 /// regardless of whether a scenario is posted alone or inside a `scenarios:`
 /// array.
-async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<Response, Response> {
+async fn post_single_scenario(
+    state: AppState,
+    entry: ScenarioEntry,
+    warnings: Vec<String>,
+) -> Result<Response, Response> {
     // Use the shared pipeline for expansion, validation, and phase offset.
     let mut prepared = prepare_entries(vec![entry]).map_err(|e| {
         warn!(error = %e, "POST /scenarios: validation failed");
@@ -392,6 +638,7 @@ async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<R
             id: id.clone(),
             name,
             status: "running",
+            warnings: Vec::new(),
         });
         handles_to_store.push((id, handle));
     }
@@ -409,14 +656,20 @@ async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<R
     }
     drop(scenarios);
 
-    // Respond based on whether expansion produced a single or multiple entries.
+    // Respond based on whether expansion produced a single or multiple
+    // entries. Warnings (if any) attach at the top level in both shapes so
+    // clients see them without walking the `scenarios` array.
     if created.len() == 1 {
-        let single = created.into_iter().next().expect("len checked above");
+        let mut single = created.into_iter().next().expect("len checked above");
+        single.warnings = warnings;
         Ok((StatusCode::CREATED, Json(single)).into_response())
     } else {
         Ok((
             StatusCode::CREATED,
-            Json(CreatedScenariosResponse { scenarios: created }),
+            Json(CreatedScenariosResponse {
+                scenarios: created,
+                warnings,
+            }),
         )
             .into_response())
     }
@@ -430,6 +683,7 @@ async fn post_single_scenario(state: AppState, entry: ScenarioEntry) -> Result<R
 async fn post_multi_scenario(
     state: AppState,
     entries: Vec<ScenarioEntry>,
+    warnings: Vec<String>,
 ) -> Result<Response, Response> {
     // Reject empty batches.
     if entries.is_empty() {
@@ -474,6 +728,7 @@ async fn post_multi_scenario(
             id: id.clone(),
             name,
             status: "running",
+            warnings: Vec::new(),
         });
         handles_to_store.push((id, handle));
     }
@@ -493,8 +748,13 @@ async fn post_multi_scenario(
     }
     drop(scenarios);
 
-    // Respond with 201 Created.
-    let response_body = CreatedScenariosResponse { scenarios: created };
+    // Respond with 201 Created. Warnings attach at the top level of the
+    // batch response; the per-entry `warnings` field stays empty to keep
+    // the shape predictable for clients.
+    let response_body = CreatedScenariosResponse {
+        scenarios: created,
+        warnings,
+    };
     Ok((StatusCode::CREATED, Json(response_body)).into_response())
 }
 
@@ -1931,11 +2191,31 @@ scenarios:
             id: "abc-123".to_string(),
             name: "my_scenario".to_string(),
             status: "running",
+            warnings: Vec::new(),
         };
         let json = serde_json::to_value(&cs).expect("must serialize");
         assert_eq!(json["id"], "abc-123");
         assert_eq!(json["name"], "my_scenario");
         assert_eq!(json["status"], "running");
+        assert!(
+            json.get("warnings").is_none(),
+            "empty warnings vec must be omitted from JSON"
+        );
+    }
+
+    /// Populated warnings serialize as a JSON string array on the response.
+    #[test]
+    fn created_scenario_serializes_warnings_when_present() {
+        let cs = CreatedScenario {
+            id: "abc-123".to_string(),
+            name: "my_scenario".to_string(),
+            status: "running",
+            warnings: vec!["loopback warning".to_string()],
+        };
+        let json = serde_json::to_value(&cs).expect("must serialize");
+        let arr = json["warnings"].as_array().expect("warnings must be array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], "loopback warning");
     }
 
     // ========================================================================
@@ -3881,19 +4161,44 @@ scenarios:
                     id: "id-1".to_string(),
                     name: "s1".to_string(),
                     status: "running",
+                    warnings: Vec::new(),
                 },
                 CreatedScenario {
                     id: "id-2".to_string(),
                     name: "s2".to_string(),
                     status: "running",
+                    warnings: Vec::new(),
                 },
             ],
+            warnings: Vec::new(),
         };
         let json = serde_json::to_value(&resp).expect("must serialize");
         let arr = json["scenarios"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["id"], "id-1");
         assert_eq!(arr[1]["name"], "s2");
+        assert!(
+            json.get("warnings").is_none(),
+            "empty top-level warnings vec must be omitted from JSON"
+        );
+    }
+
+    /// Batch response emits a top-level `warnings` array when populated.
+    #[test]
+    fn created_scenarios_response_serializes_warnings_when_present() {
+        let resp = CreatedScenariosResponse {
+            scenarios: vec![CreatedScenario {
+                id: "id-1".to_string(),
+                name: "s1".to_string(),
+                status: "running",
+                warnings: Vec::new(),
+            }],
+            warnings: vec!["loopback warning".to_string()],
+        };
+        let json = serde_json::to_value(&resp).expect("must serialize");
+        let arr = json["warnings"].as_array().expect("warnings must be array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], "loopback warning");
     }
 
     // ========================================================================
@@ -3950,5 +4255,222 @@ scenarios:
             StatusCode::UNPROCESSABLE_ENTITY,
             "POST single scenario with rate=0 must return 422"
         );
+    }
+
+    // ========================================================================
+    // Sink loopback pre-flight (FU-2)
+    // ========================================================================
+
+    #[test]
+    fn is_loopback_host_matches_canonical_hosts() {
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+    }
+
+    #[test]
+    fn is_loopback_host_is_case_insensitive() {
+        assert!(is_loopback_host("LOCALHOST"));
+        assert!(is_loopback_host("LocalHost"));
+    }
+
+    #[test]
+    fn is_loopback_host_rejects_real_hostnames() {
+        assert!(!is_loopback_host("victoriametrics"));
+        assert!(!is_loopback_host("loki"));
+        assert!(!is_loopback_host("10.0.0.1"));
+        assert!(!is_loopback_host("192.168.1.10"));
+        // 127/8 non-exact addresses are deliberately NOT matched per the
+        // brief — only exact 127.0.0.1 counts.
+        assert!(!is_loopback_host("127.0.0.2"));
+    }
+
+    #[test]
+    fn extract_host_parses_http_url() {
+        assert_eq!(
+            extract_host("http://localhost:8428/api/v1/write"),
+            Some("localhost")
+        );
+        assert_eq!(
+            extract_host("https://victoriametrics:8428/write"),
+            Some("victoriametrics")
+        );
+    }
+
+    #[test]
+    fn extract_host_parses_url_without_port() {
+        assert_eq!(extract_host("http://localhost/push"), Some("localhost"));
+    }
+
+    #[test]
+    fn extract_host_parses_bare_authority() {
+        assert_eq!(extract_host("localhost:9094"), Some("localhost"));
+        assert_eq!(
+            extract_host("broker.example.com:9092"),
+            Some("broker.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_host_parses_ipv6_literal() {
+        assert_eq!(extract_host("http://[::1]:8428/write"), Some("::1"));
+        assert_eq!(extract_host("[::1]:9000"), Some("::1"));
+        assert_eq!(
+            extract_host("http://[2001:db8::1]/push"),
+            Some("2001:db8::1")
+        );
+    }
+
+    #[test]
+    fn extract_host_handles_userinfo() {
+        assert_eq!(
+            extract_host("http://user:pass@localhost:8428/write"),
+            Some("localhost")
+        );
+    }
+
+    #[test]
+    fn extract_host_rejects_empty_input() {
+        assert_eq!(extract_host(""), None);
+        assert_eq!(extract_host("   "), None);
+    }
+
+    /// Build a minimal v2 YAML body with the given sink block injected into
+    /// `defaults` and compile it to a single `ScenarioEntry`. Used by the
+    /// loopback pre-flight tests so we exercise the real compiler path.
+    fn compile_single_entry_with_sink(sink_yaml: &str) -> ScenarioEntry {
+        let yaml = format!(
+            "version: 2\n\
+             defaults:\n\
+             \x20\x20rate: 10\n\
+             \x20\x20duration: 500ms\n\
+             \x20\x20encoder:\n\
+             \x20\x20\x20\x20type: prometheus_text\n\
+             {sink_yaml}\n\
+             scenarios:\n\
+             \x20\x20- id: loopback_test\n\
+             \x20\x20\x20\x20signal_type: metrics\n\
+             \x20\x20\x20\x20name: loopback_test\n\
+             \x20\x20\x20\x20generator:\n\
+             \x20\x20\x20\x20\x20\x20type: constant\n\
+             \x20\x20\x20\x20\x20\x20value: 1.0\n"
+        );
+        let resolver = InMemoryPackResolver::new();
+        let mut entries = compile_scenario_file(&yaml, &resolver).expect("compile must succeed");
+        assert_eq!(entries.len(), 1, "test fixture must compile to one entry");
+        entries.pop().unwrap()
+    }
+
+    #[test]
+    fn sink_loopback_warnings_flags_tcp_localhost() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: tcp\n\x20\x20\x20\x20address: localhost:9000",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("loopback_test"));
+        assert!(warnings[0].contains("tcp"));
+        assert!(warnings[0].contains("localhost:9000"));
+        assert!(warnings[0].contains("deployment/endpoints"));
+    }
+
+    #[test]
+    fn sink_loopback_warnings_flags_udp_127_0_0_1() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: udp\n\x20\x20\x20\x20address: 127.0.0.1:9000",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("udp"));
+        assert!(warnings[0].contains("127.0.0.1:9000"));
+    }
+
+    #[test]
+    fn sink_loopback_warnings_skips_stdout() {
+        let entry = compile_single_entry_with_sink("\x20\x20sink:\n\x20\x20\x20\x20type: stdout");
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn sink_loopback_warnings_skips_real_tcp_host() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: tcp\n\x20\x20\x20\x20address: syslog.example.com:514",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_loopback_warnings_flags_http_push_localhost() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: http_push\n\x20\x20\x20\x20url: http://localhost:8428/api/v1/write",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("http_push"));
+        assert!(warnings[0].contains("http://localhost:8428/api/v1/write"));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_loopback_warnings_flags_http_push_ipv6_loopback() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: http_push\n\x20\x20\x20\x20url: http://[::1]:8428/api/v1/write",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("[::1]"));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn sink_loopback_warnings_skips_http_push_service_name() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: http_push\n\x20\x20\x20\x20url: http://victoriametrics:8428/api/v1/write",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn sink_loopback_warnings_flags_remote_write_localhost() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: remote_write\n\x20\x20\x20\x20url: http://localhost:8428/api/v1/write",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("remote_write"));
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn sink_loopback_warnings_flags_one_localhost_broker_in_mixed_list() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: kafka\n\
+             \x20\x20\x20\x20brokers: \"localhost:9094,real-broker:9092\"\n\
+             \x20\x20\x20\x20topic: logs",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("kafka"));
+        assert!(warnings[0].contains("localhost:9094"));
+        assert!(!warnings[0].contains("real-broker"));
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn sink_loopback_warnings_flags_otlp_grpc_localhost() {
+        let entry = compile_single_entry_with_sink(
+            "\x20\x20sink:\n\x20\x20\x20\x20type: otlp_grpc\n\
+             \x20\x20\x20\x20endpoint: http://localhost:4317\n\
+             \x20\x20\x20\x20signal_type: metrics",
+        );
+        let warnings = sink_loopback_warnings(std::slice::from_ref(&entry));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("otlp_grpc"));
+        assert!(warnings[0].contains("http://localhost:4317"));
     }
 }
