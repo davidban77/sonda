@@ -335,38 +335,16 @@ fn yaml_body_text(body: &[u8], headers: &HeaderMap) -> Result<String, String> {
 /// deployment networking reference without grepping docs.
 const LOOPBACK_HINT_DOC: &str = "See docs/deployment/endpoints.md.";
 
-/// Hostnames that, in a containerized `sonda-server`, resolve to the
-/// server's own network namespace rather than the operator's host.
-///
-/// Matched case-insensitively against the host component of a sink URL or
-/// `host:port` address. IPv4 addresses in the wider `127.0.0.0/8` range are
-/// not matched — the brief explicitly scopes this to `127.0.0.1` only.
 const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
-/// Return `true` when `host` names a loopback interface.
-///
-/// The comparison is case-insensitive (`Localhost` and `LOCALHOST` also
-/// match) because DNS hostnames are case-insensitive and users do write
-/// YAML in either case.
 fn is_loopback_host(host: &str) -> bool {
     LOOPBACK_HOSTS
         .iter()
         .any(|candidate| host.eq_ignore_ascii_case(candidate))
 }
 
-/// Extract the host portion from an HTTP/gRPC URL or a bare `host:port`
-/// address.
-///
-/// Implemented as a small hand-rolled parser so we don't take a
-/// dependency on the `url` crate for a single-purpose check. Supports:
-///
-/// - Full URLs with a scheme (`http://...`, `https://...`, `grpc://...`).
-/// - Bare authority strings (`host:port`, `host`).
-/// - IPv6 literals wrapped in brackets (`[::1]:8428`, `http://[::1]/path`).
-///
-/// Returns `None` when the input is empty or otherwise unparseable. The
-/// caller treats that as "nothing to warn about" — the sink's own
-/// constructor will surface the real parse error at launch time.
+/// Extract the host from a URL or `host:port` authority. Returns `None` for
+/// unparseable input — sink construction will surface the real error.
 fn extract_host(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -413,12 +391,6 @@ fn extract_host(input: &str) -> Option<&str> {
     }
 }
 
-/// Format a single "sink targets loopback" warning message.
-///
-/// The message is intentionally long-form and actionable: it names the
-/// scenario entry, the sink type tag, the offending URL/host, and the
-/// docs page operators should consult. sonda-server log output is
-/// operator-facing, so the extra bytes are justified.
 fn format_loopback_warning(entry_name: &str, sink_tag: &str, offender: &str) -> String {
     format!(
         "scenario entry '{entry_name}' sink `{sink_tag}` targets `{offender}` — this host \
@@ -428,19 +400,6 @@ fn format_loopback_warning(entry_name: &str, sink_tag: &str, offender: &str) -> 
     )
 }
 
-/// Inspect every sink in `entries` and return one warning per loopback match.
-///
-/// The function short-circuits for sink variants that do not carry a
-/// network address (`Stdout`, `File`, `Channel`, `Memory`, and the
-/// `*Disabled` placeholders used when a feature flag is off). For
-/// address-carrying variants it splits the brokers / endpoint / url string
-/// via [`extract_host`] and tests each discovered host with
-/// [`is_loopback_host`].
-///
-/// Feature-gated sink variants are only matched when their corresponding
-/// Cargo feature is enabled; the wildcard arm absorbs both unknown
-/// (`#[non_exhaustive]`) future variants and the placeholder
-/// `*Disabled` cases.
 fn sink_loopback_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
     let mut warnings = Vec::new();
     for entry in entries {
@@ -451,11 +410,6 @@ fn sink_loopback_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
     warnings
 }
 
-/// Push one warning per loopback host found in `sink` into `out`.
-///
-/// Split out from [`sink_loopback_warnings`] so the per-variant match
-/// lives in one place and is easy to extend when a new address-carrying
-/// sink lands.
 fn collect_warnings_for_sink(sink: &SinkConfig, entry_name: &str, out: &mut Vec<String>) {
     match sink {
         #[cfg(feature = "http")]
@@ -492,9 +446,7 @@ fn collect_warnings_for_sink(sink: &SinkConfig, entry_name: &str, out: &mut Vec<
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, .. } => {
-            // Kafka brokers is a comma-separated list; warn once per
-            // loopback broker so operators can see exactly which one is
-            // wrong in a mixed list.
+            // brokers is comma-separated; warn per loopback entry, not per sink.
             for broker in brokers.split(',') {
                 let broker = broker.trim();
                 if broker.is_empty() {
@@ -521,17 +473,12 @@ fn collect_warnings_for_sink(sink: &SinkConfig, entry_name: &str, out: &mut Vec<
                 }
             }
         }
-        // Stdout / File carry no network address. `#[non_exhaustive]`
-        // plus feature-gated `*Disabled` placeholders land in this arm.
+        // Stdout/File/Channel/Memory carry no address; `*Disabled` placeholders
+        // and future `#[non_exhaustive]` variants also land here.
         _ => {}
     }
 }
 
-/// Emit a `tracing::warn!` event for every warning in `warnings`.
-///
-/// Kept separate from [`sink_loopback_warnings`] so the pure pre-flight
-/// check stays test-friendly (no tracing subscriber required) and the
-/// logging happens exactly once per POST request in the handler.
 fn log_scenario_warnings(warnings: &[String]) {
     for message in warnings {
         warn!(message = %message, "POST /scenarios: sink pre-flight warning");
