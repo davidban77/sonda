@@ -92,24 +92,43 @@ profile from `examples/docker-compose-victoriametrics.yml` first.
 | Metrics | `prometheus_text` | `http_push` (VictoriaMetrics) | `examples/e2e-scenario.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=e2e_pipeline_check' \| jq '.data.result \| length'` |
 | Metrics | `prometheus_text` | `http_push` (VictoriaMetrics, sine) | `examples/vm-push-scenario.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'` |
 | Metrics | `remote_write` | `remote_write` (VictoriaMetrics) | `examples/remote-write-vm.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_rw' \| jq '.data.result \| length'` |
+| Metrics | `remote_write` | `remote_write` (vmagent → VM) | `examples/remote-write-vmagent.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_vmagent' \| jq '.data.result \| length'` |
+| Metrics | `remote_write` | `remote_write` (Prometheus) | `examples/remote-write-prometheus.yaml` | `curl -s 'http://localhost:9090/api/v1/query?query=cpu_usage_prom' \| jq '.data.result \| length'` |
+| Metrics | `otlp` | `otlp_grpc` (OTel Collector → VM) | `examples/otlp-metrics.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'` |
+| Logs | `otlp` | `otlp_grpc` (OTel Collector → Loki) | `examples/otlp-logs.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={service_name="sonda"}' \| jq '.data.result \| length'` |
 | Metrics | `prometheus_text` | `kafka` | `examples/kafka-sink.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-metrics --from-beginning --timeout-ms 5000` |
 | Logs | `json_lines` | `loki` | `examples/loki-json-lines.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={job="sonda"}' \| jq '.data.result \| length'` |
 | Logs | `json_lines` | `kafka` | `examples/kafka-json-logs.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-logs --from-beginning --timeout-ms 5000` |
 | Metrics | `influx_lp` | `file` | `examples/influx-file.yaml` | `wc -l < /tmp/sonda-influx-output.txt` |
 
 !!! info "Compose profiles"
-    Loki and Kafka are behind profiles to keep the base stack lean. Bring them up with
-    `--profile loki` or `--profile kafka` (or both):
+    Loki, Kafka, Prometheus, and the OTel Collector are behind profiles to keep the base
+    stack lean. Bring up only what each row needs. The vmagent row uses the default stack —
+    no extra profile.
     ```bash
     docker compose -f examples/docker-compose-victoriametrics.yml \
-      --profile loki --profile kafka up -d
+      --profile loki --profile kafka --profile prometheus --profile otel-collector up -d
     ```
+    The OTLP-logs row needs both `--profile otel-collector` and `--profile loki` so the
+    collector has somewhere to forward log records.
 
 !!! tip "Feature-gated sinks"
     `remote_write`, `kafka`, and `otlp_grpc` are compile-time features. Pre-built binaries
     and the Docker image include them; if you `cargo build` from source, add
     `--features remote-write,kafka,otlp` (or the subset you need). See
     [Sinks](../configuration/sinks.md) for the full feature flag list.
+
+### Intentionally out of scope
+
+The matrix covers sinks that talk to a queryable backend over HTTP, gRPC, or a broker.
+A few sinks intentionally fall outside that pattern:
+
+- **`tcp`, `udp`, `json-tcp`** — raw socket sinks. The fixtures (`examples/tcp-sink.yaml`,
+  `examples/udp-sink.yaml`, `examples/json-tcp.yaml`) push to whatever process is listening
+  on the configured port; verification is "did `nc -l 5000` print anything?", not a
+  backend query. Use them when you're integrating with a custom collector or socket-based
+  ingest path.
+- **`stdout`** — pipes to the terminal. Already covered by [Pipeline Validation](pipeline-validation.md).
 
 ---
 

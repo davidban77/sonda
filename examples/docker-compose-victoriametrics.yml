@@ -27,6 +27,9 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile loki up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile kafka up -d
 #   docker compose -f examples/docker-compose-victoriametrics.yml --profile loki --profile kafka up -d
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile prometheus up -d
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector up -d
+#   docker compose -f examples/docker-compose-victoriametrics.yml --profile otel-collector --profile loki up -d
 #
 # Tear down:
 #
@@ -331,6 +334,65 @@ services:
     environment:
       - HTTP_PORT=8080
       - LOG_WITHOUT_NEWLINE=true
+
+  # ---------------------------------------------------------------------------
+  # prometheus: upstream Prometheus with the remote-write receiver enabled.
+  #
+  # Started with --web.enable-remote-write-receiver so Sonda's remote_write
+  # sink can POST to http://localhost:9090/api/v1/write. Use this profile when
+  # you specifically need to verify against real Prometheus instead of (or
+  # alongside) VictoriaMetrics.
+  #
+  # Query at http://localhost:9090/api/v1/query.
+  #
+  # This service is only started with --profile prometheus.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [prometheus]
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+      - "--web.listen-address=:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # otel-collector: OpenTelemetry Collector (contrib distribution).
+  #
+  # Receives OTLP/gRPC on :4317 and OTLP/HTTP on :4318. Forwards metrics to
+  # VictoriaMetrics via the Prometheus remote-write exporter, so the standard
+  # VM query path (http://localhost:8428/api/v1/query) verifies arrival.
+  #
+  # Logs go to Loki via the loki exporter when the loki profile is also up;
+  # the debug exporter mirrors them to collector stdout for inspection with:
+  #
+  #   docker compose -f examples/docker-compose-victoriametrics.yml \
+  #     --profile otel-collector logs -f otel-collector
+  #
+  # This service is only started with --profile otel-collector.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    profiles: [otel-collector]
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
 
 volumes:
   vm-data:

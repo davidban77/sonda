@@ -1,0 +1,38 @@
+# Push metrics via Prometheus remote write protocol to vmagent.
+#
+# vmagent ships in the default compose stack and forwards everything it
+# receives to VictoriaMetrics. Targeting vmagent first lets you exercise the
+# relay path (rewriting, queueing, retries) end-to-end before data lands in
+# the TSDB.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/remote-write-vmagent.yaml
+#
+# Verify data arrived (query VictoriaMetrics, where vmagent forwards to):
+#   curl -s "http://localhost:8428/api/v1/query?query=cpu_usage_vmagent" \
+#     | jq '.data.result | length'
+
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "http://localhost:8429/api/v1/write"
+    batch_size: 100
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage_vmagent
+    generator:
+      type: constant
+      value: 88.0
+    labels:
+      instance: server-01
+      job: sonda

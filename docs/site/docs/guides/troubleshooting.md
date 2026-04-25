@@ -125,14 +125,6 @@ Data arrives in chunks or only appears when the scenario ends.
 | HTTP 400 from backend | Wrong endpoint URL for the backend | Each backend has a specific path. See the [compatible endpoints table](../configuration/sinks.md#remote_write) |
 | HTTP 403 or 401 | Backend requires authentication headers | Add auth headers via `http_push` with custom `headers` instead |
 
-??? tip "Common remote write URLs"
-    | Backend | URL |
-    |---------|-----|
-    | VictoriaMetrics | `http://host:8428/api/v1/write` |
-    | Prometheus | `http://host:9090/api/v1/write` |
-    | Cortex / Mimir | `http://host:9009/api/v1/push` |
-    | Thanos Receive | `http://host:19291/api/v1/receive` |
-
 ### OTLP gRPC
 
 | Symptom | Likely cause | Fix |

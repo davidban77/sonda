@@ -277,70 +277,16 @@ With local testing covered, let's push metrics to a real backend.
 
 ## Pushing to a Backend
 
-The fastest path to end-to-end alert testing: push metrics into a TSDB and verify alerts fire.
+Once you can shape the alert pattern locally, push it into a real TSDB and verify the alert
+fires there. The push-and-query loop -- start the backend, run the scenario, `curl` the query
+API -- is the same one [E2E Testing](e2e-testing.md) walks through, with the full coverage
+matrix of encoder and sink combinations.
 
-=== "HTTP Push"
-
-    POST metrics directly to VictoriaMetrics using the Prometheus text import API.
-    No scenario file needed:
-
-    ```bash
-    sonda metrics --name cpu_usage --rate 1 --duration 180s --value 95 \
-      --label instance=server-01 --label job=node \
-      --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
-      --content-type "text/plain"
-    ```
-
-    Or use a scenario file for generators that require YAML (sequence, csv_replay):
-
-    ```bash
-    sonda metrics --scenario examples/vm-push-scenario.yaml
-    ```
-
-=== "Remote Write"
-
-    Use the Prometheus remote write protocol for native compatibility with any
-    remote-write receiver. No scenario file needed:
-
-    ```bash
-    sonda metrics --name cpu_usage --rate 1 --duration 180s --value 95 \
-      --label instance=server-01 --label job=node \
-      --encoder remote_write \
-      --sink remote_write --endpoint http://localhost:8428/api/v1/write
-    ```
-
-    Or use a scenario file:
-
-    ```bash
-    sonda metrics --scenario examples/remote-write-vm.yaml
-    ```
-
-!!! warning "Remote write requires a feature flag when building from source"
-    Pre-built binaries and Docker images include remote-write support. When building from
-    source, add `--features remote-write`: `cargo build --features remote-write -p sonda`.
-
-| Target | URL |
-|--------|-----|
-| VictoriaMetrics | `http://localhost:8428/api/v1/write` |
-| vmagent | `http://localhost:8429/api/v1/write` |
-| Prometheus | `http://localhost:9090/api/v1/write` |
-| Thanos Receive | `http://localhost:19291/api/v1/receive` |
-| Cortex/Mimir | `http://localhost:9009/api/v1/push` |
-
-### Verify data arrived
-
-```bash
-# Check that the series exists
-curl "http://localhost:8428/api/v1/series?match[]={__name__='cpu_usage'}"
-
-# Query the latest value
-curl "http://localhost:8428/api/v1/query?query=cpu_usage"
-```
-
-!!! info "Docker Compose stack required"
-    These push scenarios require a running backend. Start the included stack with:
-    `docker compose -f examples/docker-compose-victoriametrics.yml up -d`.
-    See [Docker Deployment](../deployment/docker.md) for details.
+For alerting specifically, the two scenarios you'll reach for first are
+`examples/vm-push-scenario.yaml` (Prometheus text via `http_push`) and
+`examples/remote-write-vm.yaml` (`remote_write` to VictoriaMetrics, vmagent, or upstream
+Prometheus). Both land in the stack from
+`examples/docker-compose-victoriametrics.yml`.
 
 You can also use the pull model instead of pushing.
 

@@ -1,0 +1,11 @@
+# Prometheus config used by the prometheus compose profile.
+#
+# The container is started with --web.enable-remote-write-receiver so it
+# accepts data POSTed by Sonda's remote_write sink. No scrape jobs needed —
+# the verify path queries Prometheus directly via /api/v1/query.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs: []
