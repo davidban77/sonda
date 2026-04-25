@@ -204,7 +204,7 @@ services:
   # This service is only started with --profile kafka.
   # ---------------------------------------------------------------------------
   kafka:
-    image: apache/kafka:4.1.2
+    image: apache/kafka:4.2.0
     profiles: [kafka]
     environment:
       - CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk
