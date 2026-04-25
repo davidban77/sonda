@@ -18,6 +18,9 @@ cargo build --release --target x86_64-unknown-linux-musl -p sonda
 cargo test --workspace
 ```
 
+For the Docker Compose-based end-to-end harness (real backends — VictoriaMetrics, Loki,
+Kafka), see [`docs/e2e-tests.md`](docs/e2e-tests.md).
+
 ## Linting and Formatting
 
 Both must pass before committing:

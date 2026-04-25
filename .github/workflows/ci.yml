@@ -194,12 +194,5 @@ jobs:
 
       # Stdlib-only Python script — no requirements.txt, no pip install, no uv.
       # Uses the actions runner's default Python 3.
-      #
-      # tests/e2e/scenarios/{vm,kafka}-prometheus-text.yaml are still v1 and
-      # the e2e-testing guide references them directly; --skip-file is a
-      # documented escape hatch while their migration is tracked in audit
-      # follow-up FU-5.
       - name: Validate documented sonda commands
-        run: >-
-          python3 scripts/validate_docs_commands.py
-          --skip-file docs/site/docs/guides/e2e-testing.md
+        run: python3 scripts/validate_docs_commands.py
