@@ -21,7 +21,7 @@ use crate::state::AppState;
 /// Uses a manual `Debug` implementation to redact `api_key`, preventing
 /// accidental exposure of the secret in log output.
 #[derive(Parser)]
-#[command(name = "sonda-server", about = "HTTP control plane for Sonda")]
+#[command(name = "sonda-server", version, about = "HTTP control plane for Sonda")]
 struct Args {
     /// Port to listen on.
     #[arg(long, default_value_t = 8080)]

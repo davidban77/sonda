@@ -1625,6 +1625,7 @@ sonda-server [OPTIONS]
 | `--bind <BIND>` | string | `0.0.0.0` | Address to bind to. Use `127.0.0.1` to restrict the server to localhost. |
 | `--api-key <API_KEY>` | string | none | API key for bearer-token authentication on `/scenarios/*` endpoints. When set, all requests to `/scenarios/*` must include an `Authorization: Bearer <key>` header. The `/health` endpoint stays public. Also readable from `SONDA_API_KEY`. |
 | `--help` | -- | -- | Print help information (`-h` for a short summary). |
+| `--version` | -- | -- | Print the binary version and exit (`-V` for the short form). |
 
 ### Environment variables
 
