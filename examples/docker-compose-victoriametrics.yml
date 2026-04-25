@@ -388,11 +388,18 @@ services:
     ports:
       - "4317:4317"
       - "4318:4318"
+      - "13133:13133"
     volumes:
       - ./otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
     depends_on:
       victoriametrics:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
 volumes:
   vm-data:

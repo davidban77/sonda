@@ -9,6 +9,13 @@
 # is not running — `docker logs otel-collector` still shows incoming events
 # via the debug exporter.
 
+extensions:
+  # Surfaces `:13133/` HTTP 200 once the collector is ready. Polled by the
+  # live-infra UAT harness in lieu of the verify-with-backoff loop absorbing
+  # collector warmup.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -46,6 +53,7 @@ exporters:
     verbosity: basic
 
 service:
+  extensions: [health_check]
   pipelines:
     metrics:
       receivers: [otlp]
