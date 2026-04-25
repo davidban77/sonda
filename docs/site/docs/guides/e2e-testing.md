@@ -1,166 +1,174 @@
 # E2E Testing
 
-Unit tests and smoke tests catch encoding and sink errors, but they don't prove that data
-survives the full journey from Sonda through your backend to a query API. The `tests/e2e/`
-directory contains a Docker Compose-based test suite that validates Sonda against real
-observability backends and message brokers.
+You changed an encoder, swapped a sink, or pointed at a new backend. Unit tests pass and
+[Pipeline Validation](pipeline-validation.md) shows bytes leaving the wire — but did the
+data actually land in the backend you query against? This guide shows the canonical
+end-to-end loop: start a real backend, push a known value, query it back.
+
+---
+
+## The pattern
+
+Every e2e check is the same three steps. The encoder, sink, and backend change; the
+shape does not.
+
+1. **Start the backend** — `docker compose up -d` against an `examples/docker-compose-*.yml` stack.
+2. **Push a known value** — `sonda <signal> --scenario examples/<scenario>.yaml` with a unique metric or log name.
+3. **Query the backend** — `curl ... | jq ...` and assert the value arrived.
+
+This is the heavier sibling of the [Pipeline Validation](pipeline-validation.md) smoke
+check: same loop, but the backend is a real service container instead of `wc -l`.
 
 ---
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`)
-- [Task](https://taskfile.dev/) (optional, for convenient commands)
-- `curl` and `python3` in PATH
-- Rust toolchain (for `cargo build`)
-
-!!! note "Disk space"
-    The e2e tests build Sonda in release mode. Make sure you have sufficient disk space
-    for the Rust target directory (~2 GB).
+- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
+- `sonda` on `PATH` — see [Installation](../getting-started.md#installation).
+- `curl` and [`jq`](https://jqlang.github.io/jq/) for backend queries.
 
 ---
 
-## Services
+## Worked example: metrics into VictoriaMetrics
 
-The e2e stack runs these services alongside Sonda:
+The fastest path from zero to a verified pipeline. Pushes a constant `99.0` to
+VictoriaMetrics for ten seconds, queries the series, and tears down.
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| VictoriaMetrics | 8428 | Push target and query endpoint |
-| Prometheus | 9090 | Remote write receiver |
-| vmagent | 8429 | Relay agent forwarding to VictoriaMetrics |
-| Kafka | 9094 | Kafka broker (KRaft mode, no Zookeeper) |
-| Kafka UI | 8080 | Browse topics and messages |
-| Grafana | 3000 | Pre-configured datasources for VM, Prometheus, and Loki |
-| Loki | 3100 | Log aggregation push target |
+```bash title="Start the backend"
+docker compose -f examples/docker-compose-victoriametrics.yml up -d
+```
+
+```bash title="Push a known value"
+sonda metrics --scenario examples/e2e-scenario.yaml
+```
+
+```yaml title="examples/e2e-scenario.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+
+scenarios:
+  - signal_type: metrics
+    name: e2e_pipeline_check
+    generator:
+      type: constant
+      value: 99.0
+    labels:
+      test: pipeline
+      env: ci
+```
+
+```bash title="Verify the data arrived"
+sleep 5
+curl -s "http://localhost:8428/api/v1/query?query=e2e_pipeline_check" \
+  | jq '.data.result | length'
+# Expected: 1 (one series with labels env=ci, test=pipeline)
+```
+
+```bash title="Tear down"
+docker compose -f examples/docker-compose-victoriametrics.yml down -v
+```
+
+That same shape — start, push, query — works for every signal × encoder × sink combo
+below. Swap the scenario file and the verification command.
 
 ---
 
-## Test Scenarios
+## Coverage matrix
 
-Each scenario pushes data through a specific encoder/sink combination, then the test runner
-queries the backend to verify the data arrived.
+Every row below is a real `examples/*.yaml` you can run today. Start the matching backend
+profile from `examples/docker-compose-victoriametrics.yml` first.
 
-**VictoriaMetrics** (verified by querying `/api/v1/series`):
+| Signal | Encoder | Sink | Scenario | Verify |
+|---|---|---|---|---|
+| Metrics | `prometheus_text` | `http_push` (VictoriaMetrics) | `examples/e2e-scenario.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=e2e_pipeline_check' \| jq '.data.result \| length'` |
+| Metrics | `prometheus_text` | `http_push` (VictoriaMetrics, sine) | `examples/vm-push-scenario.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage' \| jq '.data.result \| length'` |
+| Metrics | `remote_write` | `remote_write` (VictoriaMetrics) | `examples/remote-write-vm.yaml` | `curl -s 'http://localhost:8428/api/v1/query?query=cpu_usage_rw' \| jq '.data.result \| length'` |
+| Metrics | `prometheus_text` | `kafka` | `examples/kafka-sink.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-metrics --from-beginning --timeout-ms 5000` |
+| Logs | `json_lines` | `loki` | `examples/loki-json-lines.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={job="sonda"}' \| jq '.data.result \| length'` |
+| Logs | `json_lines` | `kafka` | `examples/kafka-json-logs.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-logs --from-beginning --timeout-ms 5000` |
+| Metrics | `influx_lp` | `file` | `examples/influx-file.yaml` | `wc -l < /tmp/sonda-influx-output.txt` |
 
-| Scenario file | Encoder | Sink target | Metric verified |
-|---------------|---------|-------------|-----------------|
-| `vm-prometheus-text.yaml` | prometheus_text | VM `/api/v1/import/prometheus` | `sonda_e2e_vm_prom_text` |
-| `vm-influx-lp.yaml` | influx_lp | VM `/write` | `sonda_e2e_vm_influx_lp_value` |
-
-**Kafka** (verified by consuming from topic):
-
-| Scenario file | Encoder | Kafka topic | Verification |
-|---------------|---------|-------------|--------------|
-| `kafka-prometheus-text.yaml` | prometheus_text | `sonda-e2e-metrics` | messages > 0 |
-| `kafka-json-lines.yaml` | json_lines | `sonda-e2e-json` | messages > 0 |
-
-All scenario files live in `tests/e2e/scenarios/`.
-
----
-
-## Running Automated Tests
-
-The fastest way to run the full suite:
-
-=== "Taskfile"
-
+!!! info "Compose profiles"
+    Loki and Kafka are behind profiles to keep the base stack lean. Bring them up with
+    `--profile loki` or `--profile kafka` (or both):
     ```bash
-    task e2e
+    docker compose -f examples/docker-compose-victoriametrics.yml \
+      --profile loki --profile kafka up -d
     ```
 
-=== "Script"
-
-    ```bash
-    ./tests/e2e/run.sh
-    ```
-
-The script starts the Docker Compose stack, waits for all services to become healthy, builds
-Sonda in release mode, runs each scenario, verifies data arrived (VictoriaMetrics via series
-API, Kafka via consumer), and tears everything down. Exit code `0` means all passed.
-
-For more control, use the individual Taskfile commands.
+!!! tip "Feature-gated sinks"
+    `remote_write`, `kafka`, and `otlp_grpc` are compile-time features. Pre-built binaries
+    and the Docker image include them; if you `cargo build` from source, add
+    `--features remote-write,kafka,otlp` (or the subset you need). See
+    [Sinks](../configuration/sinks.md) for the full feature flag list.
 
 ---
 
-## Using the Taskfile
+## The localhost trap
 
-The project Taskfile provides shortcuts for common operations:
+The matrix above runs `sonda` on your host, so `url: http://localhost:8428` reaches the
+Compose-published port. If you POST the same scenario to a containerized
+`sonda-server`, the URL resolves inside the server container — `localhost` is the
+container, not your host, and the push silently fails.
+
+Rewrite the URL to match the server's network before POSTing:
+
+- **Compose**: `http://victoriametrics:8428`, `http://loki:3100`, `kafka:9092`.
+- **Kubernetes**: `http://<svc>.<ns>.svc.cluster.local:<port>`.
+
+See [Endpoints & networking](../deployment/endpoints.md) for the full resolution table
+and an in-flight `sed` rewrite recipe.
+
+---
+
+## Visual exploration
+
+Want to eyeball the data before bolting it into CI? The same Compose stack ships
+Grafana with a pre-provisioned VictoriaMetrics datasource:
 
 ```bash
-task stack:up       # Start the full e2e stack
-task stack:down     # Stop and remove everything
-task stack:status   # Show service status
-task stack:logs     # Tail all service logs
-
-task e2e            # Run automated e2e tests (starts/stops stack)
-task demo           # Start stack + send a 30s sine wave demo
-
-task run:vm-prom    # Send Prometheus text metrics to VictoriaMetrics
-task run:vm-influx  # Send InfluxDB LP metrics to VictoriaMetrics
-task run:kafka      # Send metrics to Kafka
-task run:loki       # Send log events to Loki
+docker compose -f examples/docker-compose-victoriametrics.yml up -d
+sonda metrics --scenario examples/vm-push-scenario.yaml
+open http://localhost:3000
 ```
 
-!!! tip "Mix and match"
-    Use `task stack:up` to start the stack, then run individual `task run:*` commands
-    to test specific encoder/sink combinations without tearing down between runs.
-
----
-
-## Exploring Metrics Visually
-
-Start the stack and generate some data:
+For the full alert-flow loop (vmalert + Alertmanager + a webhook receiver), bring up the
+alerting profile and walk through [Alerting Pipeline](alerting-pipeline.md):
 
 ```bash
-task stack:up
-task demo
+docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d
 ```
 
-Then open the dashboards:
-
-- **Grafana** -- [http://localhost:3000](http://localhost:3000) (anonymous access). Go to Explore,
-  select VictoriaMetrics, and query `demo_sine_wave`.
-- **Kafka UI** -- [http://localhost:8080](http://localhost:8080). Browse topics `sonda-e2e-metrics`
-  and `sonda-e2e-json`.
-- **VictoriaMetrics** -- [http://localhost:8428/vmui](http://localhost:8428/vmui) for the built-in
-  query UI.
-
-Dashboards are great for exploration. For repeatable manual tests, run scenarios individually.
+To verify the alert rules themselves cross thresholds correctly, see
+[Alert Testing](alert-testing.md).
 
 ---
 
-## Running Scenarios Manually
+## CI integration
 
-```bash
-# Start the stack
-task stack:up
+For a worked GitHub Actions workflow that runs this loop on every push, see the
+[Pipeline Validation CI section](pipeline-validation.md#ci-integration). The same shape
+extends to e2e: add a service container for VictoriaMetrics, run a scenario from
+`examples/`, and assert with `curl` + `jq`.
 
-# Run individual scenarios
-sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
-sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
-
-# Verify VictoriaMetrics received data
-curl "http://localhost:8428/api/v1/series?match[]={__name__=%22sonda_e2e_vm_prom_text%22}"
-
-# Verify Kafka received messages
-docker exec sonda-e2e-kafka kafka-console-consumer.sh \
-    --bootstrap-server 127.0.0.1:9092 \
-    --topic sonda-e2e-metrics \
-    --from-beginning --timeout-ms 5000
-
-# Tear down
-task stack:down
-```
+For alert-rule validation in CI specifically — vmalert as a service, `for:` durations,
+firing-state assertions — [CI Alert Validation](ci-alert-validation.md) is the worked example.
 
 ---
 
-## Next Steps
+## Next steps
 
-**Testing alert rules?** Start with [Alert Testing](alert-testing.md).
-
-**Validating alert rules in CI/CD?** See [CI Alert Validation](ci-alert-validation.md).
-
-**Quick pipeline smoke tests (no Docker)?** See [Pipeline Validation](pipeline-validation.md).
-
-**Browsing all example scenarios?** See [Example Scenarios](examples.md).
+- [Pipeline Validation](pipeline-validation.md) — fast smoke check without a backend.
+- [Alert Testing](alert-testing.md) — generate metric shapes that cross thresholds.
+- [CI Alert Validation](ci-alert-validation.md) — assert rules fire in GitHub Actions.
+- [Endpoints & networking](../deployment/endpoints.md) — pick the right `url:` per process.
+- [Example Scenarios](examples.md) — browse every scenario in `examples/`.
