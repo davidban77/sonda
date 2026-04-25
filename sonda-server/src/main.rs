@@ -7,6 +7,7 @@ mod auth;
 mod routes;
 mod state;
 
+use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -54,12 +55,14 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialise structured logging. Respects RUST_LOG env var.
+    // Initialise structured logging. Respects RUST_LOG env var. Writes to
+    // stderr so stdout is reserved for the bound-port announce contract.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let args = Args::parse();
@@ -91,7 +94,15 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind to {bind_addr}"))?;
 
-    info!(addr = %bind_addr, "sonda-server listening");
+    // Announce the actual bound port on stdout so parents (test harnesses,
+    // tooling) get a typed, parseable signal once the OS has assigned a port
+    // (necessary when `--port 0` is used) and the listener is ready to accept.
+    let bound_addr = listener
+        .local_addr()
+        .context("failed to read local address from bound listener")?;
+    announce_bound_port(bound_addr.port())?;
+
+    info!(addr = %bound_addr, "sonda-server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
@@ -99,6 +110,20 @@ async fn main() -> anyhow::Result<()> {
         .context("server error")?;
 
     info!("sonda-server shut down cleanly");
+    Ok(())
+}
+
+/// Write the bound-port announce line to stdout and flush.
+///
+/// Contract: a single JSON line `{"sonda_server":{"port":N}}\n` is the first
+/// (and only) thing written to stdout. The namespaced envelope leaves room for
+/// future fields without colliding with anything else a tool might print.
+fn announce_bound_port(port: u16) -> anyhow::Result<()> {
+    let line = serde_json::json!({ "sonda_server": { "port": port } });
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    writeln!(handle, "{line}").context("failed to write stdout announce")?;
+    handle.flush().context("failed to flush stdout announce")?;
     Ok(())
 }
 
