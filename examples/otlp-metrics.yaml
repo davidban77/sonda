@@ -14,7 +14,7 @@ version: 2
 
 defaults:
   rate: 10
-  duration: 60s
+  duration: 10s
   encoder:
     type: otlp
   sink:
