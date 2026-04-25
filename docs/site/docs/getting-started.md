@@ -126,8 +126,8 @@ cpu_usage{host="web-01"} 90.45084971874738 1774277940081
 ```
 
 The sine wave oscillates between 0 and 100 (offset 50 +/- amplitude 50), completing one full
-cycle every 10 seconds. The [Tutorial](guides/tutorial.md#generators) covers all eight generators
-in detail.
+cycle every 10 seconds. The [Tutorial -- Generators](guides/tutorial-generators.md) covers all
+eight generators in detail.
 
 ## Using a scenario file
 
@@ -190,7 +190,7 @@ sonda logs --mode template --rate 2 --duration 3s
 ```
 
 For richer logs with field pools, severity weights, and multiple templates, see the
-[Tutorial](guides/tutorial.md#generating-logs).
+[Tutorial -- Generating logs](guides/tutorial-logs.md).
 
 ## Sending to a backend
 
@@ -208,7 +208,7 @@ sonda logs --mode template --rate 10 --duration 30s \
   --sink loki --endpoint http://localhost:3100 --label app=myservice
 ```
 
-The [Tutorial](guides/tutorial.md#sinks) covers all sink types in detail.
+The [Tutorial -- Sinks](guides/tutorial-sinks.md) covers all sink types in detail.
 
 ## What next
 
