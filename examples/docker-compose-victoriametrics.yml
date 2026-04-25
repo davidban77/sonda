@@ -348,7 +348,7 @@ services:
   # This service is only started with --profile prometheus.
   # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v3.11.2
     profiles: [prometheus]
     ports:
       - "9090:9090"
