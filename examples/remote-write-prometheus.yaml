@@ -1,0 +1,37 @@
+# Push metrics via Prometheus remote write protocol to upstream Prometheus.
+#
+# Prerequisites:
+#   docker compose -f examples/docker-compose-victoriametrics.yml \
+#     --profile prometheus up -d
+#
+# Usage:
+#   sonda metrics --scenario examples/remote-write-prometheus.yaml
+#
+# Verify data arrived (Prometheus query API):
+#   curl -s "http://localhost:9090/api/v1/query?query=cpu_usage_prom" \
+#     | jq '.data.result | length'
+#
+# Pre-built binaries and Docker images include remote-write support.
+# When building from source: cargo build --features remote-write -p sonda
+
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "http://localhost:9090/api/v1/write"
+    batch_size: 100
+
+scenarios:
+  - signal_type: metrics
+    name: cpu_usage_prom
+    generator:
+      type: constant
+      value: 77.0
+    labels:
+      instance: server-01
+      job: sonda

@@ -1,0 +1,57 @@
+# OpenTelemetry Collector config used by the otel-collector compose profile.
+#
+# Receives OTLP/gRPC on :4317 and OTLP/HTTP on :4318. Forwards metrics to
+# VictoriaMetrics over the Prometheus remote-write protocol so the same
+# `curl ... | jq ...` query path the rest of the matrix uses still works.
+# Forwards logs to Loki when the `loki` profile is also enabled, and always
+# to the `debug` exporter (collector stdout). The Loki exporter is configured
+# without retries or queueing so failed exports are dropped silently when Loki
+# is not running — `docker logs otel-collector` still shows incoming events
+# via the debug exporter.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 100
+  # Inject `service.name=sonda` so the Loki exporter promotes it to the
+  # `service_name` label. Without this the exporter falls back to
+  # `unknown_service` because Sonda's OTLP encoder doesn't set this
+  # resource attribute itself.
+  resource:
+    attributes:
+      - key: service.name
+        value: sonda
+        action: upsert
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://victoriametrics:8428/api/v1/write
+    tls:
+      insecure: true
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    retry_on_failure:
+      enabled: false
+    sending_queue:
+      enabled: false
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [loki, debug]

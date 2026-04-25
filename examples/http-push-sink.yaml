@@ -1,3 +1,14 @@
+# Demonstrates the http_push sink with the prometheus_text encoder, targeting
+# the VictoriaMetrics import API. Bring up the stack with:
+#
+#   docker compose -f examples/docker-compose-victoriametrics.yml up -d
+#
+# Then run:
+#
+#   sonda metrics --scenario examples/http-push-sink.yaml
+#
+# Verify with: curl 'http://localhost:8428/api/v1/query?query=cpu_usage'
+
 version: 2
 
 defaults:
@@ -7,7 +18,7 @@ defaults:
     type: prometheus_text
   sink:
     type: http_push
-    url: "http://localhost:9090/api/v1/push"
+    url: "http://localhost:8428/api/v1/import/prometheus"
     content_type: "text/plain; version=0.0.4"
     batch_size: 65536
 
