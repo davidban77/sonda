@@ -24,3 +24,13 @@ updates:
     commit-message:
       prefix: "ci"
     target-branch: "main"
+
+  # Track image tags in examples/docker-compose-victoriametrics.yml so the
+  # Live Infra UAT gate gets continuous backend-bump signal.
+  - package-ecosystem: "docker-compose"
+    directory: "/examples"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    target-branch: "main"

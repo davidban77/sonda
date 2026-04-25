@@ -1,0 +1,86 @@
+# Informational gate — failures show in PR checks but do not block merge.
+# Promote to required after measured stability (2-4 weeks of green runs).
+#
+# Runs the e2e coverage matrix from docs/site/docs/guides/e2e-testing.md
+# against live container backends. Catches the bug class the dry-run
+# docs-drift catcher cannot: did the encoder/sink actually deliver data
+# to the backend image we're pinned to?
+#
+# Local equivalent (assumes Docker is up + sonda is built):
+#   python3 scripts/live_infra_uat.py
+
+name: Live Infra UAT
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: live-infra-uat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  live-infra-uat:
+    name: Live Infra UAT (e2e matrix)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-live-infra-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-live-infra-
+
+      # Union of features required across every matrix row. Mirrors the
+      # docs-commands job's pattern so feature drift between gates is loud.
+      - name: Build sonda release
+        run: cargo build --release -p sonda --features http,kafka,remote-write,otlp
+
+      # Stdlib-only Python harness — no requirements.txt, no pip install.
+      - name: Run live-infra UAT harness
+        run: python3 scripts/live_infra_uat.py
+
+      # Best-effort: dump container logs for post-mortem when the harness
+      # fails. The harness already attaches per-row log tails to stderr,
+      # but full logs uploaded as an artifact are easier to read in the UI.
+      - name: Collect compose logs (on failure)
+        if: failure()
+        run: |
+          mkdir -p compose-logs
+          docker compose -f examples/docker-compose-victoriametrics.yml \
+            --profile loki --profile otel-collector --profile prometheus \
+            ps > compose-logs/ps.txt 2>&1 || true
+          for svc in victoriametrics vmagent prometheus loki otel-collector; do
+            docker compose -f examples/docker-compose-victoriametrics.yml \
+              --profile loki --profile otel-collector --profile prometheus \
+              logs --no-color --tail 500 "$svc" \
+              > "compose-logs/${svc}.log" 2>&1 || true
+          done
+
+      - name: Upload compose logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: compose-logs/
+          retention-days: 7
+          if-no-files-found: ignore
