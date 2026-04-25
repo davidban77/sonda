@@ -42,37 +42,19 @@ The first question in capacity planning: how many data points per second can you
 ingest before it falls behind? Sonda's `rate` field controls events per second per scenario,
 and multi-scenario files let you run several streams in parallel.
 
-### Quick CLI test
+### Smoke-check before scaling up
 
-Start simple. Push 1,000 metrics per second to stdout and verify Sonda keeps up:
+Before you push thousands of events per second at a backend, confirm Sonda generates at the
+target rate on your hardware. A 5-second stdout run is enough:
 
 ```bash
-sonda -q metrics --name throughput_test --rate 1000 --duration 5s \
-  --value-mode sine --amplitude 50 --period-secs 60 --offset 100 \
-  --label job=capacity_test --label env=load-test | wc -l
+sonda -q metrics --name throughput_test --rate 1000 --duration 5s | wc -l
 # ~5000 lines
 ```
 
-If the line count roughly matches `rate * duration`, Sonda is keeping up on the generation side.
-Now push that load into a real backend.
-
-### Single-stream push to VictoriaMetrics
-
-Push a single metric stream directly to VictoriaMetrics with CLI flags -- no YAML needed:
-
-```bash
-sonda -q metrics --name throughput_test --rate 1000 --duration 30s \
-  --value-mode sine --amplitude 50 --period-secs 60 --offset 100 \
-  --label job=capacity_test --label env=load-test \
-  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
-  --content-type "text/plain"
-```
-
-Verify the data arrived:
-
-```bash
-curl -s "http://localhost:8428/api/v1/query?query=throughput_test" | jq '.data.result | length'
-```
+If the line count roughly matches `rate * duration`, generation is keeping up. See
+[Pipeline Validation](pipeline-validation.md) for the full smoke-test pattern with exit-code
+checks and CI snippets. The rest of this section assumes the smoke check passed.
 
 ### Multi-stream throughput test
 

@@ -154,40 +154,16 @@ CI catches regressions automatically. For deeper validation against real backend
 
 ## E2E Testing With Docker Compose
 
-For full end-to-end validation, spin up Sonda alongside a backend and verify data arrives.
+The smoke and CI checks above confirm Sonda emitted the expected number of lines and exited
+cleanly. They don't prove the data arrived in the shape your backend expects -- only the
+backend can answer that.
 
-The project includes a ready-to-use e2e test suite in `tests/e2e/`. See [E2E Testing](e2e-testing.md)
-for the full suite with Prometheus, VictoriaMetrics, Kafka, and Loki.
+For full end-to-end validation against a real Prometheus, VictoriaMetrics, Kafka, or Loki
+instance -- with backend queries that assert arrival, schema, and labels -- see
+[E2E Testing](e2e-testing.md). That guide is the canonical worked example for backend-side
+assertions.
 
-For a quick single-scenario check against VictoriaMetrics -- no YAML file needed:
-
-```bash
-# Start the stack
-docker compose -f examples/docker-compose-victoriametrics.yml up -d
-
-# Push data (CLI only, no scenario file)
-sonda metrics --name e2e_pipeline_check --rate 1 --duration 10s --value 99 \
-  --label test=pipeline --label env=ci \
-  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
-  --content-type "text/plain"
-
-# Wait for ingestion, then verify
-sleep 5
-curl -s "http://localhost:8428/api/v1/query?query=e2e_pipeline_check" \
-  | jq '.data.result | length'
-# Expected: 1 (at least one series)
-
-# Tear down
-docker compose -f examples/docker-compose-victoriametrics.yml down -v
-```
-
-The same scenario also exists as a YAML file at `examples/e2e-scenario.yaml` if you prefer:
-
-```bash
-sonda metrics --scenario examples/e2e-scenario.yaml
-```
-
-Single-scenario checks validate one signal type. For full pipeline coverage, test metrics and logs together.
+Backend assertions cover one signal at a time. For full pipeline coverage, test metrics and logs together.
 
 ---
 
