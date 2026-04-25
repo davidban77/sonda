@@ -45,8 +45,10 @@ src/
 
 tests/
 ├── common/
-│   └── mod.rs          ← shared test infrastructure: ServerGuard RAII, free_port(), spawn_server(),
-│                         spawn_server_with(), wait_for_server(), start_server(), start_server_with(),
+│   └── mod.rs          ← shared test infrastructure: ServerGuard RAII; spawn_server() / spawn_server_with()
+│                         spawn the binary with `--port 0` and read the stdout announce to discover
+│                         the bound port (no pre-allocated port → no port-race);
+│                         start_server() / start_server_with() wrap that in a ServerGuard;
 │                         http_client(). All test files use `mod common;` for these helpers.
 ├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
@@ -102,7 +104,11 @@ and all endpoints are publicly accessible (backwards compatible behaviour).
 cargo run -p sonda-server -- --port 8080 --bind 0.0.0.0
 ```
 
-Respects `RUST_LOG` env var for log level (default: `info`).
+Respects `RUST_LOG` env var for log level (default: `info`). `--port 0` lets the OS
+pick a free port. After binding, the server prints a single JSON line to stdout
+announcing the bound port (`{"sonda_server":{"port":N}}`); tracing logs continue
+to go to stderr. Test harnesses use this announce to discover the port without
+racing the kernel's port allocator.
 
 ### CLI dispatch shim
 
