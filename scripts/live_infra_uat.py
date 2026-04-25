@@ -156,9 +156,7 @@ BACKENDS_BY_PROFILE: dict[str, tuple[Backend, ...]] = {
         Backend(name="loki", health_url="http://localhost:3100/ready"),
     ),
     "otel-collector": (
-        # Collector exposes no health endpoint by default; we rely on the
-        # downstream backends being ready and a short post-up grace via the
-        # verify-with-backoff loop.
+        Backend(name="otel-collector", health_url="http://localhost:13133/"),
     ),
 }
 
