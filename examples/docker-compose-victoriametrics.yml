@@ -80,7 +80,7 @@ services:
   # restarts. Retention is set to 7 days.
   # ---------------------------------------------------------------------------
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.108.1
+    image: victoriametrics/victoria-metrics:v1.140.0
     ports:
       - "8428:8428"
     command:
