@@ -254,8 +254,8 @@ validation, the entire request is rejected and nothing is launched:
     Stop it later with `DELETE /scenarios/{id}`. The canonical run-until-stopped example is
     [`examples/long-running-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/long-running-metrics.yaml)
     -- POST it to start, DELETE to stop, operator owns the lifecycle. See the
-    [tutorial](../guides/tutorial.md#long-running-scenarios) for a full start and stop
-    example.
+    [tutorial Server API page](../guides/tutorial-server.md#long-running-scenarios) for
+    a full start and stop example.
 
 ??? tip "Phase offsets and after: chains in batch requests"
     Multi-scenario batches honor `phase_offset`, `clock_group`, and `after:` fields, just
