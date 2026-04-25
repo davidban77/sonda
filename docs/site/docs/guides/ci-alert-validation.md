@@ -230,7 +230,7 @@ scenarios:
 ```
 
 The constant generator is ideal here -- you need the value to stay above threshold for long
-enough to satisfy the `for:` clause. See [Alert Testing](alert-testing.md#constant-generator-shortcut)
+enough to satisfy the `for:` clause. See [Threshold and `for:` duration](alert-testing-thresholds.md#constant-generator-shortcut)
 for more on choosing the right generator.
 
 ### Wait for evaluation
