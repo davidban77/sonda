@@ -76,7 +76,12 @@ nav:
       - Example Scenarios: guides/examples.md
       - Metric Packs: guides/metric-packs.md
     - Alert testing:
-      - Alert Testing: guides/alert-testing.md
+      - Overview: guides/alert-testing.md
+      - "Threshold & for: duration": guides/alert-testing-thresholds.md
+      - Resolution & recovery: guides/alert-testing-resolution.md
+      - Compound & correlated alerts: guides/alert-testing-correlation.md
+      - Cardinality explosion: guides/alert-testing-cardinality.md
+      - Replaying incidents: guides/alert-testing-replay.md
       - Histogram & Summary Alerts: guides/histogram-alerts.md
       - Recording Rules: guides/recording-rules.md
       - Alerting Pipeline: guides/alerting-pipeline.md
