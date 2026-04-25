@@ -4,6 +4,71 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0](https://github.com/davidban77/sonda/compare/v1.0.1...v1.1.0) (2026-04-25)
+
+
+### Features
+
+* **sonda-server:** warn on POST when a sink URL targets loopback ([3329f92](https://github.com/davidban77/sonda/commit/3329f9260efea2d4dcb4202ab1018159e36a1cde))
+* **sonda-server:** warn on POST when a sink URL targets loopback (audit FU-2) ([3da214e](https://github.com/davidban77/sonda/commit/3da214e153241213d7cc16678ca1644dbbd04ebc))
+
+
+### Bug Fixes
+
+* **examples:** migrate alerting-scenario to v2 + recurse example sweep ([a3bc86c](https://github.com/davidban77/sonda/commit/a3bc86cf96a96227a874118dbaacfc76ace2e91b))
+* **sink:** replace hand-rolled tmp_path with tempfile::TempDir ([11f039d](https://github.com/davidban77/sonda/commit/11f039db862773a2cc22376230f05955f6989f7a))
+* **sonda-server:** wire clap version flag + document in CLI reference ([68adf75](https://github.com/davidban77/sonda/commit/68adf75eb039f0e3a1946f46403790279378dc38))
+
+
+### Documentation
+
+* **alert-testing:** split monolithic page into 6 progressive sub-pages ([8b75383](https://github.com/davidban77/sonda/commit/8b7538361294fef4b333ee97c2750dead28792f8))
+* **cli:** add sonda-server section + fix sonda-server.md cross-ref ([800e607](https://github.com/davidban77/sonda/commit/800e607ff2bbdab5afa0ddfc4b68ab750b19b4ed))
+* **cli:** add sonda-server section + fix sonda-server.md cross-ref (audit P1-1) ([dba0a13](https://github.com/davidban77/sonda/commit/dba0a130373b3c58d06b25cc8a26971a87364936))
+* **e2e:** close 3 of 4 matrix gaps + trim curl/jq dup + repoint 2 examples ([621a3e6](https://github.com/davidban77/sonda/commit/621a3e6e65734d7c6bc0ca4f8663765482bb93fc))
+* **e2e:** close 3 of 4 matrix gaps + trim curl/jq dup + repoint 2 examples (issue [#245](https://github.com/davidban77/sonda/issues/245) + audit FU-6) ([00c63ed](https://github.com/davidban77/sonda/commit/00c63eddd1e1b6a7e671f6a8bd0e83a304cf281d))
+* **e2e:** rewrite guide user-facing + lift contributor content + drop CI skip ([a28db0d](https://github.com/davidban77/sonda/commit/a28db0d8adfd0cb338b6cb645c553abba443c176))
+* **guides:** trim pipeline-validation E2E section + capacity-planning intro ([fbbb5a8](https://github.com/davidban77/sonda/commit/fbbb5a8b268bd3433e9b2114283af64406d50ea3))
+* **site:** add endpoints & networking page + fix Compose stack honesty ([568f063](https://github.com/davidban77/sonda/commit/568f0633b6e77717eabb227c0f9c5db8d57aabe4))
+* **site:** announce v1.0.1 crates.io release + fix k8s servicemonitor anchor ([319b796](https://github.com/davidban77/sonda/commit/319b7969c772f1217e7af0801442390f4816868e))
+* **site:** fill 16 missing examples + Dynamic Labels guide + polish ([c8d5ca7](https://github.com/davidban77/sonda/commit/c8d5ca7e601abf5983aa8afc4cbe3b90e08629ca))
+* **site:** rename scenario-file → scenario-fields + regroup Guides nav ([817b3ab](https://github.com/davidban77/sonda/commit/817b3abe10fbe3cd3af665de75e972c46eab5cae))
+* **tutorial:** split monolithic tutorial into 8 progressive pages ([a718e5e](https://github.com/davidban77/sonda/commit/a718e5e5f95c9816ce37410c029cdb937302b9fe))
+* **tutorial:** split monolithic tutorial into 8 progressive pages (audit P2-1) ([3946ff3](https://github.com/davidban77/sonda/commit/3946ff36cfc6f1713a5629d8fce80c9e1deb011b))
+
+
+### Miscellaneous
+
+* **examples:** trim otlp-metrics duration + pin grafana/loki to 3.5.5 ([ea77af4](https://github.com/davidban77/sonda/commit/ea77af49692fab481dd600c56af3b6c3f5ffa7e0))
+* **release-please:** remove release-as pin after v1.0.1 ([0196dd7](https://github.com/davidban77/sonda/commit/0196dd7d66d1b27f76c2eb60a77a3f104a127da8))
+* **scripts:** trim narrative comments in docs-drift catcher ([60aa8c5](https://github.com/davidban77/sonda/commit/60aa8c5fc17e72152cd0c873ef62fe1f25452d95))
+* **sonda-server:** trim verbose docstrings on FU-2 helpers ([bc55735](https://github.com/davidban77/sonda/commit/bc55735292f29add31b66202960d7751cb97925a))
+* **tooling:** pin rust toolchain to 1.95.0 via rust-toolchain.toml ([5454311](https://github.com/davidban77/sonda/commit/54543111253c930b1ed37291a58089529910fb1e))
+
+
+### CI/CD
+
+* add docs-drift catcher for sonda commands in user-facing docs ([88fdd4f](https://github.com/davidban77/sonda/commit/88fdd4fdee347264b2c2439e1600522f9d91eaee))
+* bump apache/kafka from 4.1.2 to 4.2.0 in /examples ([a17a4e1](https://github.com/davidban77/sonda/commit/a17a4e1bbb81c1b4b3faa7442b23cd8f5334176f))
+* bump apache/kafka from 4.1.2 to 4.2.0 in /examples ([a0ecf6f](https://github.com/davidban77/sonda/commit/a0ecf6f7a315ab2a7c535088833f0a74bc61e3f8))
+* bump googleapis/release-please-action from 4 to 5 ([f892d57](https://github.com/davidban77/sonda/commit/f892d573ef180f9c22eb096415b1e9a7c7876c0d))
+* bump googleapis/release-please-action from 4 to 5 ([e2eef51](https://github.com/davidban77/sonda/commit/e2eef5153c0c7c9873e25c178dfdf934aeacb775))
+* bump grafana/grafana from 11.5.2 to 13.0.1 in /examples ([be01ff7](https://github.com/davidban77/sonda/commit/be01ff7246e438d3f100354cdb897f4670f60941))
+* bump grafana/grafana from 11.5.2 to 13.0.1 in /examples ([e7ff1e1](https://github.com/davidban77/sonda/commit/e7ff1e10efcad83d78c00d1cac3c1b8485f399bb))
+* bump prom/prometheus from v2.55.1 to v3.11.2 in /examples ([cff0e17](https://github.com/davidban77/sonda/commit/cff0e17d07f3208c0cc05515eefc3f37cb599c9e))
+* bump prom/prometheus from v2.55.1 to v3.11.2 in /examples ([ed6ea4c](https://github.com/davidban77/sonda/commit/ed6ea4ce4251dde8e54240541a929921542da220))
+* bump victoriametrics/victoria-metrics from v1.108.1 to v1.140.0 in /examples ([099134d](https://github.com/davidban77/sonda/commit/099134dcaa2da4c80593c18bd68132a31755c3d0))
+* bump victoriametrics/victoria-metrics in /examples ([fbd8fa3](https://github.com/davidban77/sonda/commit/fbd8fa38ac69ccd08baefd10756b603fdeb869f9))
+* bump victoriametrics/vmagent from v1.108.1 to v1.140.0 in /examples ([2b4ac24](https://github.com/davidban77/sonda/commit/2b4ac24cfaa692457f628aed4de50f9efbd907ba))
+* bump victoriametrics/vmagent from v1.108.1 to v1.140.0 in /examples ([4f9580f](https://github.com/davidban77/sonda/commit/4f9580f2a7cce6f18b73e24a0c1bb45b18592ad0))
+* **live-infra-uat:** validate e2e matrix against live container backends ([6a5eb54](https://github.com/davidban77/sonda/commit/6a5eb54b3dcdef841ca06dc395159fee5351688c))
+* **live-infra:** wire OTel collector health_check extension end-to-end ([c13e25d](https://github.com/davidban77/sonda/commit/c13e25d50af711cb8516d8d5b390cc745320d6a6))
+
+
+### Refactoring
+
+* **scenario-loader:** consolidate v2 compile dispatch + promote discriminant ([ab899d6](https://github.com/davidban77/sonda/commit/ab899d6973628f241f659e78eb5418fd6331d133))
+
 ## [1.0.1](https://github.com/davidban77/sonda/compare/v1.0.0...v1.0.1) (2026-04-22)
 
 Maintenance release preparing sonda for its first publish to [crates.io](https://crates.io/crates/sonda-core). No user-visible behavior change vs. v1.0.0 — CLI and server are functionally identical.
