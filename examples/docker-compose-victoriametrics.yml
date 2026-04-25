@@ -118,7 +118,7 @@ services:
   # http_push sink with Prometheus text format, which bypasses vmagent.
   # ---------------------------------------------------------------------------
   vmagent:
-    image: victoriametrics/vmagent:v1.108.1
+    image: victoriametrics/vmagent:v1.140.0
     ports:
       - "8429:8429"
     command:
