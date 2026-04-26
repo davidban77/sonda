@@ -45,9 +45,10 @@ src/
 
 tests/
 ├── common/
-│   └── mod.rs          ← shared test infrastructure: ServerGuard RAII, free_port(), spawn_server(),
-│                         spawn_server_with(), wait_for_server(), start_server(), start_server_with(),
-│                         http_client(). All test files use `mod common;` for these helpers.
+│   └── mod.rs          ← shared test infrastructure: ServerGuard RAII, spawn_server(),
+│                         spawn_server_with(), start_server(), start_server_with(), http_client().
+│                         Spawn helpers use `--port 0` + read the stdout announce.
+│                         All test files use `mod common;` for these helpers.
 ├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
 ├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped
@@ -103,6 +104,9 @@ cargo run -p sonda-server -- --port 8080 --bind 0.0.0.0
 ```
 
 Respects `RUST_LOG` env var for log level (default: `info`).
+
+`--port 0` lets the OS assign a port. The server then prints
+`{"sonda_server":{"port":N}}` to stdout; tracing logs go to stderr.
 
 ### CLI dispatch shim
 

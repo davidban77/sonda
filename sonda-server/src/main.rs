@@ -8,6 +8,7 @@ mod routes;
 mod state;
 
 use std::env;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::os::unix::process::CommandExt;
 use std::process::{exit, Command};
@@ -74,12 +75,13 @@ impl std::fmt::Debug for Args {
 async fn main() -> anyhow::Result<()> {
     maybe_dispatch_to_sonda_cli();
 
-    // Initialise structured logging. Respects RUST_LOG env var.
+    // Tracing on stderr — stdout is reserved for the bound-port announce.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let args = Args::parse();
@@ -111,7 +113,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind to {bind_addr}"))?;
 
-    info!(addr = %bind_addr, "sonda-server listening");
+    let bound_addr = listener
+        .local_addr()
+        .context("failed to read local address from bound listener")?;
+    announce_bound_port(bound_addr.port())?;
+
+    info!(addr = %bound_addr, "sonda-server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
@@ -164,6 +171,16 @@ fn maybe_dispatch_to_sonda_cli() {
     exit(127);
 }
 
+/// Write `{"sonda_server":{"port":N}}\n` to stdout and flush.
+fn announce_bound_port(port: u16) -> anyhow::Result<()> {
+    let line = serde_json::json!({ "sonda_server": { "port": port } });
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    writeln!(handle, "{line}").context("failed to write stdout announce")?;
+    handle.flush().context("failed to flush stdout announce")?;
+    Ok(())
+}
+
 /// Wait for Ctrl+C, then stop all running scenarios and signal shutdown.
 async fn shutdown_signal(state: AppState) {
     tokio::signal::ctrl_c()
@@ -172,15 +189,13 @@ async fn shutdown_signal(state: AppState) {
 
     info!("shutdown signal received — stopping all running scenarios");
 
-    // Stop every running scenario so their threads exit cleanly.
     if let Ok(scenarios) = state.scenarios.read() {
         for handle in scenarios.values() {
             handle.stop();
         }
     }
 
-    // Join scenario threads with a timeout so sinks can flush before exit.
-    // Requires a write lock because join() consumes the inner JoinHandle.
+    // Write lock: join() consumes the inner JoinHandle.
     if let Ok(mut scenarios) = state.scenarios.write() {
         for (id, handle) in scenarios.iter_mut() {
             match handle.join(Some(Duration::from_secs(5))) {

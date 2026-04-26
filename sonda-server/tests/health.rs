@@ -5,8 +5,6 @@
 
 mod common;
 
-use std::time::Duration;
-
 // ---- Test: Server starts and binds to port ----------------------------------
 
 /// The server binary must start and bind to the specified port within 10 seconds.
@@ -90,12 +88,8 @@ fn unknown_route_returns_404() {
 /// (exit code 0 or signal-terminated without panic).
 #[test]
 fn server_shuts_down_cleanly_on_sigterm() {
-    let port = common::free_port();
-    let mut child = common::spawn_server(port);
-    assert!(
-        common::wait_for_server(port, Duration::from_secs(10)),
-        "sonda-server must start within 10 seconds on port {port}"
-    );
+    // Direct child handle: the RAII guard would kill on drop before SIGTERM.
+    let (_port, mut child) = common::spawn_server();
 
     // Send SIGTERM (the Unix equivalent of Ctrl+C for graceful shutdown).
     unsafe {
