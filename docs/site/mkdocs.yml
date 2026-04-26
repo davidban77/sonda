@@ -49,6 +49,9 @@ markdown_extensions:
         - docs/site/docs
       auto_append:
         - includes/abbreviations.md
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - attr_list
   - md_in_html
   - toc:
@@ -58,6 +61,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Configuration:
+    - configuration/index.md
     - Scenario Fields: configuration/scenario-fields.md
     - v2 Scenario Files: configuration/v2-scenarios.md
     - Generators: configuration/generators.md
@@ -66,13 +70,15 @@ nav:
     - Sink Batching: configuration/sink-batching.md
     - CLI Reference: configuration/cli-reference.md
   - Deployment:
+    - deployment/index.md
     - Endpoints & networking: deployment/endpoints.md
     - Docker: deployment/docker.md
     - Kubernetes: deployment/kubernetes.md
     - Server API: deployment/sonda-server.md
   - Guides:
+    - guides/index.md
     - Tutorial:
-      - Overview: guides/tutorial.md
+      - guides/tutorial.md
       - Generators: guides/tutorial-generators.md
       - Encoders: guides/tutorial-encoders.md
       - Sinks: guides/tutorial-sinks.md

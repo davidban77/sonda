@@ -1,11 +1,16 @@
 # Alert Testing
 
-You write alert rules, deploy them, and hope they work. Common issues slip through:
-a `for: 5m` alert that never fires because the metric only breaches for 3 minutes, a
-gap-fill rule that triggers false positives during scrape outages, or a compound alert
-where two metrics never overlap. Sonda lets you generate the exact metric shapes to
-trigger -- and resolve -- alerts on demand, so you catch these problems before they hit
-production.
+3 a.m. The pager goes off for `HighRequestLatency`. By the time you log in, latency
+is back below threshold and the alert has cleared. You spend an hour reading dashboards
+and find nothing -- the spike was real, but it lasted 90 seconds and your `for: 5m`
+clause silently swallowed it. The alert is doing exactly what you told it to. You just
+told it the wrong thing.
+
+That whole class of problem -- `for:` durations that swallow real spikes, gap-fill rules
+that fire during scrape outages, compound `A AND B` rules where the two signals never
+overlap -- only shows up in production because nothing else generates the right metric
+shape. Sonda does. You write the alert, run a scenario that crosses the threshold for
+exactly the duration you care about, and watch whether the alert fires.
 
 This page is the entry point. Five focused sub-pages cover the patterns; the table
 below maps each common alert shape to the right one.
