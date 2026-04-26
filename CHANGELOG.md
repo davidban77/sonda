@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0](https://github.com/davidban77/sonda/compare/v1.1.0...v1.2.0) (2026-04-26)
+
+
+### Features
+
+* env-var interpolation in v2 scenario YAML loader (closes [#223](https://github.com/davidban77/sonda/issues/223)) ([17b72a3](https://github.com/davidban77/sonda/commit/17b72a3f6864a52d84672004bbdeec7bd7bde54d))
+
+
+### Bug Fixes
+
+* docker entrypoint dispatch + http_push 4 KiB default (closes [#223](https://github.com/davidban77/sonda/issues/223)) ([8b5d4fa](https://github.com/davidban77/sonda/commit/8b5d4fa8fe58bdf98cc961c33acb3d7806d6b6d4))
+* docker entrypoint dispatch + lower http_push batch_size to 4 KiB ([25b947a](https://github.com/davidban77/sonda/commit/25b947a73b017f86448d21dd5fbc8fea2b2140d0))
+* **sonda-server:** bind port 0 + stdout announce eliminates test port race ([0675a09](https://github.com/davidban77/sonda/commit/0675a0973ef169157e73be1c6d0de8be2c496d80))
+* **sonda-server:** bind port 0 + stdout announce eliminates test port race ([028242a](https://github.com/davidban77/sonda/commit/028242a17b4ab32e47f36fa331d1cc1bfeb50715))
+
+
+### Documentation
+
+* convert landing pages to Material grid cards + start-here callouts ([ad53d44](https://github.com/davidban77/sonda/commit/ad53d44ac0725fc3b87f7154331ce3e5f0c6dfb3))
+* glossary tooltips, scroll-aware TOC, one tabbed snippet ([7acf772](https://github.com/davidban77/sonda/commit/7acf77255d708ba7d1e98e99dccfab2848b0d0a1))
+* rework landing page in FastAPI-shape, drop story-led intro ([8dacd6d](https://github.com/davidban77/sonda/commit/8dacd6dfb8a8bfe4fb6a6aaaf821620be900ce52))
+* story-lead the landing page (extends PR [#278](https://github.com/davidban77/sonda/issues/278) pattern) ([690b072](https://github.com/davidban77/sonda/commit/690b0722d878103739e50ba121a4ac09cd9a1908))
+* story-led guide intros, section landing pages, generator chooser table ([82e461f](https://github.com/davidban77/sonda/commit/82e461f3d31bb88589bcee20110e4628e4ac085e))
+* tone-match env-var interpolation prose + sweep cross-links ([6366694](https://github.com/davidban77/sonda/commit/636669460a9b684a453d90303db1e2cbec127045))
+
+
+### Miscellaneous
+
+* drop hand-written CHANGELOG entry — release-please owns the file ([9881eb4](https://github.com/davidban77/sonda/commit/9881eb4c6ed44a4725c4c50cdb65ea730d68e02f))
+* trim verbose comments + docstrings on port-zero harness ([291a1a7](https://github.com/davidban77/sonda/commit/291a1a77dd8a1b23ea19d74fdef00f08586de445))
+* trim verbose comments + tighten getting-started prose ([2344836](https://github.com/davidban77/sonda/commit/23448365498c9f17dd3adbe33dbfe3d154c1340d))
+
 ## [1.1.0](https://github.com/davidban77/sonda/compare/v1.0.1...v1.1.0) (2026-04-25)
 
 
