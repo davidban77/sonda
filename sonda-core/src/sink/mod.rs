@@ -149,7 +149,7 @@ pub enum SinkConfig {
         /// `"application/octet-stream"` if not specified.
         content_type: Option<String>,
 
-        /// Optional flush threshold in bytes. Defaults to 64 KiB if not specified.
+        /// Optional flush threshold in bytes. Defaults to 4 KiB if not specified.
         batch_size: Option<usize>,
 
         /// Optional extra HTTP headers to send with every POST request.

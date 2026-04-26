@@ -87,7 +87,7 @@ batch size is reached, then the buffer is flushed as a single POST request.
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Target URL for HTTP POST requests. |
 | `content_type` | string | no | `application/octet-stream` | Value for the `Content-Type` header. |
-| `batch_size` | integer | no | `65536` (64 KiB) | Flush threshold in bytes. |
+| `batch_size` | integer | no | `4096` (4 KiB) | Flush threshold in bytes. Raise for high-rate scenarios. |
 | `headers` | map | no | none | Extra HTTP headers sent with every request. |
 
 ```yaml title="HTTP push sink"

@@ -34,13 +34,21 @@ See [Server API](sonda-server.md) for the full endpoint reference.
 # Start the server
 docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
 
-# Run the CLI instead
-docker run --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+# Run the CLI instead — sonda-server dispatches to the sonda CLI when the
+# first argument is a sonda subcommand (metrics, logs, run, catalog, ...).
+docker run --rm ghcr.io/davidban77/sonda:latest \
   metrics --name up --rate 10 --duration 5s
 
 # Mount scenario files from the host
 docker run -p 8080:8080 -v ./examples:/scenarios ghcr.io/davidban77/sonda:latest
 ```
+
+!!! info "No more `--entrypoint /sonda` workaround"
+    Since v1.1.x, the image's default entrypoint inspects the first argument
+    and `exec`s the sibling `sonda` CLI when that argument is one of
+    `metrics`, `logs`, `histogram`, `summary`, `run`, `catalog`, `scenarios`,
+    `packs`, `import`, or `init`. Older recipes that override the entrypoint
+    still work, but the override is no longer required.
 
 The image includes built-in [scenario](../guides/scenarios.md) and
 [pack](../guides/metric-packs.md) YAML files at `/scenarios` and `/packs`, with

@@ -43,11 +43,13 @@ By the end, you will have synthetic telemetry streaming to stdout.
     docker pull ghcr.io/davidban77/sonda:latest
     ```
 
-    Run Sonda inside the container (the default entrypoint is `sonda-server`, so
-    override it with `--entrypoint`):
+    Run Sonda inside the container. The default entrypoint is `sonda-server`,
+    but it dispatches to the `sonda` CLI automatically when the first
+    argument is a sonda subcommand (`metrics`, `logs`, `run`, `catalog`,
+    etc.) — no `--entrypoint` override needed:
 
     ```bash
-    docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+    docker run --rm ghcr.io/davidban77/sonda:latest \
       metrics --name cpu_usage --rate 2 --duration 5s
     ```
 
