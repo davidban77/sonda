@@ -1,58 +1,28 @@
 # Sonda
 
-You ship the new dashboard and two alert rules on Tuesday. Staging has four hosts, production has
-1,800. By Friday at dinner the page fires for `HighErrorRate` -- by the time you open the laptop,
-the rule has cleared, the dashboard panel is blank for half the regions, and the only thing the
-ingest pipeline logged is `ok`. Staging never had the cardinality to surface the relabel that
-dropped `region`, never had a long enough run to expose the 4-minute burst your `for: 10m` clause
-silently swallowed, and never had the host count to make the panel's `topk(10, ...)` query mean
-anything. The data flowed cleanly the whole time.
+*Synthetic telemetry generator for the people who run the pipeline -- metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary.*
 
-Production is the only environment that produces those shapes for free, and production is the
-worst place to discover them. Sonda is the synthetic telemetry generator you point at staging
-to make staging behave like production: real metric shapes (gaps, micro-bursts, cardinality
-spikes, sequenced values), real wire formats (Prometheus, InfluxDB, OTLP, JSON, syslog), real
-push to whatever backend you actually run. Write the alert, run the scenario that crosses the
-threshold for exactly the duration you care about, and find out before Friday.
+[![crates.io](https://img.shields.io/crates/v/sonda.svg?logo=rust)](https://crates.io/crates/sonda)
+[![MSRV](https://img.shields.io/badge/MSRV-1.75-blue.svg)](https://github.com/davidban77/sonda/blob/main/Cargo.toml)
+[![CI](https://github.com/davidban77/sonda/actions/workflows/ci.yml/badge.svg)](https://github.com/davidban77/sonda/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/sonda.svg)](https://github.com/davidban77/sonda/blob/main/LICENSE-MIT)
 
-!!! tip "New in 1.0.1 — Sonda is on crates.io"
-    Sonda 1.0.1 is the first release published to [crates.io](https://crates.io). You can now
-    pull the binary with `cargo install sonda`, or depend on the library crates directly from
-    any Rust project:
+!!! tip "New in 1.2.0 -- env-var interpolation in v2 scenarios"
+    Reference `${VAR}` and `${VAR:-default}` directly in scenario YAML. One file
+    runs from your laptop on the defaults and from a containerized `sonda-server`
+    on the overrides -- no `sed`, no per-environment fork. See
+    [Environment variable interpolation](configuration/v2-scenarios.md#environment-variable-interpolation).
 
-    - [`sonda-core`](https://crates.io/crates/sonda-core) — generators, encoders, sinks, and the v2 scenario compiler.
-    - [`sonda`](https://crates.io/crates/sonda) — the CLI binary.
-    - [`sonda-server`](https://crates.io/crates/sonda-server) — the HTTP control-plane binary.
-
-    The [v2 scenario format](configuration/v2-scenarios.md) is the canonical shape for every
-    scenario file in 1.0.1 — v1 has been fully retired.
-
-## What you can do with Sonda
-
-- **Validate alert rules** -- generate exact metric shapes (sine waves, sequences, CSV replays) to
-  trigger thresholds and verify `for:` duration behavior.
-- **Smoke-test ingest pipelines** -- push Prometheus, InfluxDB, or JSON-encoded telemetry to any
-  backend and confirm it arrives correctly.
-- **Simulate failure modes** -- introduce intentional gaps, bursts, and cardinality spikes to test
-  gap-fill logic, alert flap detection, buffer sizing, and cardinality-limiting rules.
-- **Import CSV data** -- analyze Grafana exports or plain CSVs, detect time-series patterns, and
-  generate portable scenario YAML using generators instead of raw replay.
-- **Scaffold scenarios interactively** -- `sonda init` walks you through building a scenario with
-  guided prompts, or run fully non-interactively with flags. Pre-fill from built-in scenarios
-  (`--from @cpu-spike`) or CSV files (`--from data.csv`).
-- **Test recording rules** -- push known constant values and verify computed outputs.
-- **Load-test backends** -- generate thousands of events per second in a static binary with zero
-  runtime dependencies.
-
-## Quick install
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
 ```
 
-More installation options (Cargo, Docker, from source) in [Getting Started](getting-started.md#installation).
+Other install paths (Cargo, Docker, source) live in
+[Getting Started](getting-started.md#installation).
 
-## A quick taste
+## A taste
 
 ```bash
 sonda metrics --name cpu_usage --rate 2 --duration 2s \
@@ -60,53 +30,38 @@ sonda metrics --name cpu_usage --rate 2 --duration 2s \
   --label host=web-01
 ```
 
-```text title="Output (Prometheus exposition format)"
-cpu_usage{host="web-01"} 50 1774997347438
-cpu_usage{host="web-01"} 85.35533905932738 1774997347943
-cpu_usage{host="web-01"} 100 1774997348440
-cpu_usage{host="web-01"} 85.35533905932738 1774997348943
+```text title="stdout (Prometheus exposition)"
+cpu_usage{host="web-01"} 50 1777243958972
+cpu_usage{host="web-01"} 85.35533905932738 1777243959525
+cpu_usage{host="web-01"} 100 1777243959982
+cpu_usage{host="web-01"} 85.35533905932738 1777243960481
+cpu_usage{host="web-01"} 50.00000000000001 1777243960974
 ```
 
-One command, shaped values, labeled output. Send that same metric straight to a backend --
-no YAML needed:
+One command, shaped values, labeled output -- now wire it once in a v2 scenario file
+and replay it from CI, your laptop, or `sonda-server`.
 
-```bash
-# Push to Prometheus / VictoriaMetrics via remote write
-sonda metrics --name cpu_usage --rate 10 --duration 30s \
-  --value-mode sine --amplitude 50 --offset 50 --period-secs 60 \
-  --label host=web-01 --encoder remote_write \
-  --sink remote_write --endpoint http://localhost:8428/api/v1/write
-```
+## Where to next
 
-Define reusable scenarios in YAML for anything beyond quick one-offs --
-[Getting Started](getting-started.md#using-a-scenario-file) shows you how.
+<div class="grid cards" markdown>
 
-## Features at a glance
+-   :material-rocket-launch: __[Get started in 5 minutes](getting-started.md)__
 
-| Category | Options |
-|----------|---------|
-| **Generators** | constant, sine, sawtooth, uniform random, sequence, step counter, spike, CSV replay |
-| **Encoders** | Prometheus text, InfluxDB line protocol, JSON lines, syslog, Prometheus remote write, OTLP |
-| **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
-| **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, jitter |
-| **Signals** | metrics, logs (template and replay modes), histograms, summaries |
-| **CSV import** | Analyze CSVs, detect patterns, generate portable scenario YAML |
-| **Interactive scaffolding** | `sonda init` -- guided wizard, non-interactive mode, `--from` prefill |
-| **Built-in scenarios** | Curated patterns you can run instantly -- browse with `sonda catalog list` |
-| **v2 scenario files** | `version: 2` format with shared `defaults:`, inline packs, and `after:` temporal chains |
-| **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
+    Install Sonda, stream your first metric, and push to a real backend.
 
-## What next
+-   :material-bookshelf: __[Built-in scenarios](guides/scenarios.md)__
 
-Ready to dive in? **[Get started in 5 minutes -->](getting-started.md)**
+    Run curated patterns instantly -- `sonda metrics --scenario @cpu-spike`.
+    Browse the catalog, pin one, customize from there.
 
-Or jump straight to what you need:
+-   :material-file-document-outline: __[v2 scenario files](configuration/v2-scenarios.md)__
 
-- [**`sonda init`**](configuration/cli-reference.md#sonda-init) -- scaffold a v2 scenario YAML interactively, non-interactively with flags, or pre-filled from a built-in or CSV
-- [**`sonda catalog`**](configuration/cli-reference.md#sonda-catalog) -- unified browse/show/run for scenarios and metric packs
-- [**Built-in Scenarios**](guides/scenarios.md) -- run pre-built patterns instantly, customize from there
-- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- multi-signal scenarios with shared defaults, `after:` temporal chains, and inline packs
-- [**CSV Import**](guides/csv-import.md) -- turn Grafana exports into portable, parameterized scenarios
-- [**Configuration**](configuration/scenario-fields.md) -- scenario fields, generators, encoders, sinks, CLI reference
-- [**Deployment**](deployment/docker.md) -- Docker, Kubernetes, Server API
-- [**Guides**](guides/tutorial.md) -- tutorial, alert testing, pipeline validation, example scenarios
+    The canonical file shape: `version: 2`, shared `defaults:`, inline packs,
+    `after:` temporal chains, and env-var interpolation.
+
+-   :material-database-import: __[CSV import](guides/csv-import.md)__
+
+    Turn Grafana exports into portable, parameterized scenarios -- one
+    `sonda import` away.
+
+</div>
