@@ -10,10 +10,7 @@ use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
-/// Default batch size in bytes (4 KiB).
-///
-/// Chosen so low-rate scenarios deliver visible data within seconds. High-rate
-/// users should raise this explicitly via the `batch_size` field.
+/// Default batch size in bytes (4 KiB) — sized so low-rate scenarios flush within seconds.
 pub const DEFAULT_BATCH_SIZE: usize = 4 * 1024;
 
 /// Delivers encoded telemetry to an HTTP endpoint via POST requests.

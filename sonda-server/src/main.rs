@@ -19,9 +19,8 @@ use tracing::{info, warn};
 
 use crate::state::AppState;
 
-/// Sonda CLI subcommands recognised by the dispatch shim. Kept in sync with
-/// the `sonda` binary's clap definition; if a subcommand is added there, add
-/// it here so `docker run image <subcommand> ...` reaches the CLI directly.
+/// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
+/// Mirror of `sonda`'s clap definition.
 const SONDA_SUBCOMMANDS: &[&str] = &[
     "metrics",
     "logs",
@@ -73,10 +72,6 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Dispatch to the sibling sonda CLI binary when the first argument is one
-    // of its subcommands. Lets `docker run image metrics ...` work without an
-    // entrypoint override. Fires before clap parsing so unknown-subcommand
-    // errors from clap don't shadow the dispatch.
     maybe_dispatch_to_sonda_cli();
 
     // Initialise structured logging. Respects RUST_LOG env var.
@@ -127,14 +122,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// If the first CLI argument is a sonda subcommand, exec the sibling `sonda`
-/// binary in place of this process and never return. Otherwise return so the
-/// caller can continue with sonda-server's own arg parsing.
-///
-/// The sibling binary is resolved relative to the current executable so that
-/// dev runs (`cargo run -p sonda-server -- metrics ...`) dispatch to the
-/// `sonda` built into the same `target/<profile>/` directory rather than a
-/// hardcoded `/sonda`.
+/// If `argv[1]` is a sonda subcommand, exec the sibling `sonda` binary and
+/// never return. Otherwise no-op. Sibling resolved via `current_exe()` so dev
+/// builds dispatch within the same `target/<profile>/`.
 fn maybe_dispatch_to_sonda_cli() {
     let mut args = env::args_os();
     let _self_arg = args.next();
@@ -165,9 +155,7 @@ fn maybe_dispatch_to_sonda_cli() {
         }
     };
 
-    // CommandExt::exec replaces the current process image — on success it
-    // never returns. The error path is reached only when exec itself fails
-    // (e.g., the sibling binary is missing or not executable).
+    // exec only returns on failure (replaces process image otherwise).
     let err = Command::new(&sibling).arg(&first).args(args).exec();
     eprintln!(
         "sonda-server: failed to exec sibling sonda binary at {}: {err}",
@@ -207,9 +195,6 @@ async fn shutdown_signal(state: AppState) {
 mod tests {
     use super::*;
 
-    /// The dispatch list must include every public `sonda` subcommand. If a new
-    /// subcommand is added to the CLI without being mirrored here, dispatch
-    /// silently falls through to clap and surfaces an unhelpful error.
     #[test]
     fn dispatch_list_covers_all_known_subcommands() {
         let expected = [
@@ -233,9 +218,6 @@ mod tests {
         }
     }
 
-    /// Sonda-server's own flags (--port, --bind, --api-key) and clap built-ins
-    /// (--help, --version) must NOT be matched as sonda subcommands, otherwise
-    /// the dispatch shim would hijack them and break server startup.
     #[test]
     fn server_flags_are_not_treated_as_subcommands() {
         for flag in [
@@ -254,8 +236,6 @@ mod tests {
         }
     }
 
-    /// The dispatch list contains no duplicates — duplicates are a smell that
-    /// the source-of-truth `sonda` clap definition has drifted.
     #[test]
     fn dispatch_list_has_no_duplicates() {
         let mut sorted: Vec<&str> = SONDA_SUBCOMMANDS.to_vec();

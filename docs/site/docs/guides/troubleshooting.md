@@ -85,11 +85,10 @@ Data arrives in chunks or only appears when the scenario ends.
 | Short scenario sends only one batch | Total data smaller than batch threshold | All data flushes on exit. This is correct behavior for short runs |
 
 !!! info
-    At 10 events/sec with `http_push` at the default 4 KiB threshold, roughly 40 events
-    (~4 seconds) must accumulate before the first POST. For even faster feedback during
-    development, set `batch_size: 512` or lower. A future `flush_interval` field
-    ([#266](https://github.com/davidban77/sonda/issues/266)) will let a partial batch
-    flush on a wall-clock deadline regardless of buffer fill.
+    At 10 events/sec with `http_push` at the default 4 KiB threshold, ~40 events
+    (~4 seconds) must accumulate before the first POST. Set `batch_size: 512` for
+    faster feedback. Time-based flushing is tracked in
+    [#266](https://github.com/davidban77/sonda/issues/266).
 
 ---
 

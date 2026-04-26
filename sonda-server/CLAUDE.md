@@ -106,16 +106,9 @@ Respects `RUST_LOG` env var for log level (default: `info`).
 
 ### CLI dispatch shim
 
-Before clap parsing, `main.rs` inspects the first CLI argument. When it is one
-of the canonical sonda subcommands (`metrics`, `logs`, `histogram`, `summary`,
-`run`, `catalog`, `scenarios`, `packs`, `import`, `init`), `sonda-server`
-`exec`s the sibling `sonda` binary (resolved via `env::current_exe()`) with the
-original argv tail and never returns. This makes
-`docker run image metrics --rate 1 ...` work without an `--entrypoint`
-override, and a bare `cargo run -p sonda-server -- catalog list` dispatch to
-the matching dev-build CLI. The list is mirrored in
-`SONDA_SUBCOMMANDS`; if a sonda subcommand is added or removed, update the
-const.
+`main.rs` checks `argv[1]` before clap and `exec`s the sibling `sonda` binary
+when it matches `SONDA_SUBCOMMANDS`. Sibling resolved via `env::current_exe()`.
+Keep `SONDA_SUBCOMMANDS` in sync with `sonda`'s clap definitions.
 
 ## Dependencies
 

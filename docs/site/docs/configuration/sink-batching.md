@@ -68,11 +68,10 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
       batch_size: 65536  # 64 KiB -- fewer requests at thousands of events/s
     ```
 
-    !!! info "Time-based flushing is on the roadmap"
-        Tracked in [issue #266](https://github.com/davidban77/sonda/issues/266):
-        a future `flush_interval` field will complement `batch_size` so a
-        partial batch is sent after a wall-clock deadline regardless of buffer
-        fill. The 4 KiB default is the size-only band-aid until that lands.
+    !!! info "Roadmap"
+        A `flush_interval` field
+        ([#266](https://github.com/davidban77/sonda/issues/266)) will let a partial batch
+        flush on a wall-clock deadline regardless of buffer fill.
 
 === "remote_write"
 
