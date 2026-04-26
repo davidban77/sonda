@@ -121,10 +121,10 @@ steady-state   scenario  infrastructure   metrics   yes        Normal oscillatin
 
 ## Environment variable interpolation
 
-Sonda substitutes `${VAR}` and `${VAR:-default}` references against the process
-environment before parsing the YAML. The same scenario file can therefore run
-from your host CLI with the baked-in defaults and from a containerized
-`sonda-server` (or a Kubernetes pod) where the environment overrides them.
+`${VAR}` and `${VAR:-default}` references in a scenario file are substituted from
+the process environment before parsing. One file runs from your host CLI on the
+defaults and from a containerized `sonda-server` on the overrides -- no edit, no
+`sed` rewrite.
 
 ```yaml title="loki-json-lines.yaml (excerpt)"
 defaults:
@@ -134,10 +134,10 @@ defaults:
 ```
 
 ```bash
-# host CLI: LOKI_URL is unset, the default is used
+# Host CLI -- LOKI_URL unset, default wins
 sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
 
-# overridden: every reference to ${LOKI_URL} resolves to this value
+# Override -- every ${LOKI_URL} resolves to this value
 LOKI_URL=http://loki:3100 sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
 ```
 
@@ -145,21 +145,23 @@ LOKI_URL=http://loki:3100 sonda run --scenario examples/loki-json-lines.yaml --d
 
 | Form | Meaning |
 |---|---|
-| `${VAR}` | Required reference. If `VAR` is unset, the compile fails with `environment variable VAR is not set (referenced at line N, column N of scenario YAML)`. |
-| `${VAR:-default}` | Optional reference. If `VAR` is unset, the literal text up to the next `}` is substituted in its place. Defaults may contain `:`, `/`, `?`, `&`, and `=`; only an unescaped `}` ends the default. |
-| `$$` | Literal `$`. The only escape supported. |
+| `${VAR}` | Required. Compile fails if `VAR` is unset. |
+| `${VAR:-default}` | Optional. Default text runs to the next unescaped `}`; may contain `:`, `/`, `?`, `&`, `=`. |
+| `$$` | Literal `$`. The only escape. |
 
-Variable names match `[A-Z_][A-Z0-9_]*`. Lowercase names, names starting with a
-digit, and names containing characters outside that grammar are rejected at
-compile time so a typo does not silently swallow a YAML field.
+Variable names match `[A-Z_][A-Z0-9_]*`. Lowercase, leading digits, or other
+characters are rejected at compile time so a typo cannot silently swallow a YAML field.
+
+!!! note "Not supported"
+    No recursion into substituted values, no nested defaults (`${A:-${B}}`), no
+    bare `$VAR`, no `:?` / `:+` / `:=`.
 
 ### Built-in example variables
 
-The example scenarios under `examples/` honour these variable names. The
-defaults map to the host-published Compose ports so the YAMLs run untouched
-from a host CLI; setting the variable inside `sonda-server` (the bundled
-`docker-compose-victoriametrics.yml` already does this) repoints them at
-the in-network service hostnames. See
+Every scenario under `examples/` honours these names. Defaults map to the
+host-published Compose ports; the bundled `examples/docker-compose-victoriametrics.yml`
+exports the in-network values so POSTing an example scenario to the
+containerized `sonda-server` works untouched. See
 [Endpoints & networking](../deployment/endpoints.md) for the full
 host-vs-container resolution table.
 
@@ -172,13 +174,6 @@ host-vs-container resolution table.
 | `LOKI_URL` | `http://localhost:3100` | `http://loki:3100` |
 | `KAFKA_BROKERS` | `localhost:9094` | `kafka:9092` |
 | `OTLP_GRPC_ENDPOINT` | `http://localhost:4317` | `http://otel-collector:4317` |
-
-!!! note "Unsupported syntax"
-    Substitution does **not** recurse into substituted values, nested
-    references inside defaults (`${A:-${B}}`) are not parsed, the bare
-    `$VAR` form is not recognised, and bash operators beyond `:-` (`:?`,
-    `:+`, `:=`) are not implemented. If you need any of these, file an
-    issue.
 
 ## The `defaults:` block
 

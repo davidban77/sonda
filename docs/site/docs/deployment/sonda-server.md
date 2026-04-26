@@ -72,8 +72,9 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     The `warnings` field is omitted entirely when no issues were detected, so existing
     clients that do not know about the field continue to parse the response unchanged.
 
-    See [Endpoints & networking](endpoints.md) for the full reference and a `sed`
-    one-liner that rewrites `localhost` URLs before posting.
+    See [Endpoints & networking](endpoints.md) for the full reference,
+    [`${VAR:-default}` interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation)
+    so one file works from both paths, and a `sed` one-liner for the rewrite-before-POST fallback.
 
 ### Single-scenario body
 

@@ -135,17 +135,16 @@ A few sinks intentionally fall outside that pattern:
 ## The localhost trap
 
 The matrix above runs `sonda` on your host, so `url: http://localhost:8428` reaches the
-Compose-published port. If you POST the same scenario to a containerized
-`sonda-server`, the URL resolves inside the server container — `localhost` is the
-container, not your host, and the push silently fails.
+Compose-published port. POST the same scenario to a containerized `sonda-server` and the
+URL resolves inside the server container — `localhost` is the container, and the push
+silently fails.
 
-Rewrite the URL to match the server's network before POSTing:
+Two ways to make one scenario file work from both paths:
 
-- **Compose**: `http://victoriametrics:8428`, `http://loki:3100`, `kafka:9092`.
-- **Kubernetes**: `http://<svc>.<ns>.svc.cluster.local:<port>`.
-
-See [Endpoints & networking](../deployment/endpoints.md) for the full resolution table
-and an in-flight `sed` rewrite recipe.
+- Use `${VAR:-default}` in the URL — the bundled examples already do this. See
+  [Environment variable interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation).
+- Rewrite the URL with `sed` before POSTing — see
+  [Endpoints & networking](../deployment/endpoints.md#rewriting-urls-before-posting).
 
 ---
 
