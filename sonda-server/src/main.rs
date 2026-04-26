@@ -75,8 +75,7 @@ impl std::fmt::Debug for Args {
 async fn main() -> anyhow::Result<()> {
     maybe_dispatch_to_sonda_cli();
 
-    // Initialise structured logging. Respects RUST_LOG env var. Writes to
-    // stderr so stdout is reserved for the bound-port announce contract.
+    // Tracing on stderr — stdout is reserved for the bound-port announce.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -114,9 +113,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind to {bind_addr}"))?;
 
-    // Announce the actual bound port on stdout so parents (test harnesses,
-    // tooling) get a typed, parseable signal once the OS has assigned a port
-    // (necessary when `--port 0` is used) and the listener is ready to accept.
     let bound_addr = listener
         .local_addr()
         .context("failed to read local address from bound listener")?;
@@ -175,11 +171,7 @@ fn maybe_dispatch_to_sonda_cli() {
     exit(127);
 }
 
-/// Write the bound-port announce line to stdout and flush.
-///
-/// Contract: a single JSON line `{"sonda_server":{"port":N}}\n` is the first
-/// (and only) thing written to stdout. The namespaced envelope leaves room for
-/// future fields without colliding with anything else a tool might print.
+/// Write `{"sonda_server":{"port":N}}\n` to stdout and flush.
 fn announce_bound_port(port: u16) -> anyhow::Result<()> {
     let line = serde_json::json!({ "sonda_server": { "port": port } });
     let stdout = std::io::stdout();
@@ -197,15 +189,13 @@ async fn shutdown_signal(state: AppState) {
 
     info!("shutdown signal received — stopping all running scenarios");
 
-    // Stop every running scenario so their threads exit cleanly.
     if let Ok(scenarios) = state.scenarios.read() {
         for handle in scenarios.values() {
             handle.stop();
         }
     }
 
-    // Join scenario threads with a timeout so sinks can flush before exit.
-    // Requires a write lock because join() consumes the inner JoinHandle.
+    // Write lock: join() consumes the inner JoinHandle.
     if let Ok(mut scenarios) = state.scenarios.write() {
         for (id, handle) in scenarios.iter_mut() {
             match handle.join(Some(Duration::from_secs(5))) {

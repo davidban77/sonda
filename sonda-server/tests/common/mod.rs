@@ -1,12 +1,7 @@
-//! Shared test infrastructure for sonda-server integration tests.
-//!
-//! Spawns the sonda-server binary with `--port 0` so the OS picks a free port
-//! and the server announces it on stdout. The harness reads the announce —
-//! eliminating the bind/spawn race that pre-allocating a port introduces.
-//! See `sonda-server/src/main.rs::announce_bound_port` for the contract.
+//! Shared test infrastructure: spawns sonda-server with `--port 0` and reads
+//! the bound port from the stdout announce.
 
-// Each test file compiles its own copy of this module, so not every file
-// uses every helper. Suppress the per-file dead_code warnings.
+// Each test file compiles its own copy; not every file uses every helper.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader};
@@ -14,11 +9,9 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// How long to wait for the server to print its bound-port announce.
 const ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// RAII guard that kills the child process on drop, ensuring cleanup even on
-/// test failure or panic.
+/// RAII guard: kills the child on drop.
 pub struct ServerGuard {
     child: Child,
 }
@@ -30,15 +23,8 @@ impl Drop for ServerGuard {
     }
 }
 
-/// Spawn the sonda-server binary with `--port 0`, read the announced port from
-/// stdout, and return both the port and the child handle.
-///
-/// The `SONDA_API_KEY` environment variable is always removed from the
-/// inherited environment so that tests running under a shell with the variable
-/// set do not accidentally enable authentication.
-///
-/// Stdout is piped (and consumed by the announce reader); stderr is piped so
-/// callers can collect tracing output for diagnostics on failure.
+/// Spawn `sonda-server --port 0`, read the announced port, return `(port, child)`.
+/// Strips `SONDA_API_KEY` from the inherited env so a shell-set key doesn't leak in.
 pub fn spawn_server_with(extra_args: &[&str], extra_env: &[(&str, &str)]) -> (u16, Child) {
     let binary = env!("CARGO_BIN_EXE_sonda-server");
 
@@ -66,24 +52,20 @@ pub fn spawn_server_with(extra_args: &[&str], extra_env: &[(&str, &str)]) -> (u1
     (port, child)
 }
 
-/// Spawn the sonda-server binary with default settings.
 pub fn spawn_server() -> (u16, Child) {
     spawn_server_with(&[], &[])
 }
 
-/// Start the server with default settings, wrapped in a `ServerGuard`.
 pub fn start_server() -> (u16, ServerGuard) {
     start_server_with(&[], &[])
 }
 
-/// Start the server with extra CLI args and env vars, wrapped in a
-/// `ServerGuard` for automatic cleanup.
+/// `spawn_server_with` wrapped in a `ServerGuard`.
 pub fn start_server_with(extra_args: &[&str], extra_env: &[(&str, &str)]) -> (u16, ServerGuard) {
     let (port, child) = spawn_server_with(extra_args, extra_env);
     (port, ServerGuard { child })
 }
 
-/// Build a `reqwest::blocking::Client` with a 10-second timeout.
 pub fn http_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -91,11 +73,8 @@ pub fn http_client() -> reqwest::blocking::Client {
         .expect("must build HTTP client")
 }
 
-/// Read the first line of the child's stdout and parse it as the server's
-/// bound-port announce: `{"sonda_server":{"port":N}}`.
-///
-/// Uses a worker thread + mpsc so the read is bounded by `ANNOUNCE_TIMEOUT` —
-/// otherwise a server that never printed would hang the test indefinitely.
+/// Parse the first stdout line as `{"sonda_server":{"port":N}}`. Worker thread +
+/// mpsc bound the read to `ANNOUNCE_TIMEOUT` so a silent server can't hang the test.
 fn read_announced_port(stdout: ChildStdout) -> Result<u16, String> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {

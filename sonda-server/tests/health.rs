@@ -88,8 +88,7 @@ fn unknown_route_returns_404() {
 /// (exit code 0 or signal-terminated without panic).
 #[test]
 fn server_shuts_down_cleanly_on_sigterm() {
-    // Drive the child directly so we can SIGTERM it and inspect the exit
-    // status — the RAII guard would kill on drop instead.
+    // Direct child handle: the RAII guard would kill on drop before SIGTERM.
     let (_port, mut child) = common::spawn_server();
 
     // Send SIGTERM (the Unix equivalent of Ctrl+C for graceful shutdown).
