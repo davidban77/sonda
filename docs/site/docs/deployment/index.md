@@ -10,19 +10,29 @@ This section covers the runtime side: where the process lives, how it reaches yo
 backends, and how scenarios are submitted. For *what* the scenarios contain, see
 [Configuration](../configuration/index.md).
 
-## Start here
-
-- [**Endpoints & networking**](endpoints.md) -- the rules for `localhost`, Compose
-  service names, Docker Desktop's `host.docker.internal`, and Kubernetes Service DNS.
-  Read this before you change a sink URL -- the `localhost` trap catches most
-  first-time `sonda-server` users.
+!!! warning "Read this first"
+    [**Endpoints & networking**](endpoints.md) covers the rules for `localhost`,
+    Compose service names, Docker Desktop's `host.docker.internal`, and Kubernetes
+    Service DNS. The `localhost` trap catches most first-time `sonda-server`
+    users -- skim it before you change a sink URL.
 
 ## Runtimes
 
-- [**Docker**](docker.md) -- pulling the image, dispatch between `sonda` and
-  `sonda-server`, and the bundled Compose stacks for VictoriaMetrics, Loki, Kafka,
-  and Grafana.
-- [**Kubernetes**](kubernetes.md) -- the Helm chart, Deployment + Service shape,
-  health probes, ConfigMap-injected scenarios, and cluster-DNS sink URLs.
-- [**Server API**](sonda-server.md) -- the REST surface for submitting scenarios,
-  inspecting live stats, scraping metrics, and stopping runs over HTTP.
+<div class="grid cards" markdown>
+
+-   :material-docker: __[Docker](docker.md)__
+
+    Pulling the image, dispatch between `sonda` and `sonda-server`, and the
+    bundled Compose stacks for VictoriaMetrics, Loki, Kafka, and Grafana.
+
+-   :material-kubernetes: __[Kubernetes](kubernetes.md)__
+
+    The Helm chart, Deployment + Service shape, health probes, ConfigMap-injected
+    scenarios, and cluster-DNS sink URLs.
+
+-   :material-server-network: __[Server API](sonda-server.md)__
+
+    The REST surface for submitting scenarios, inspecting live stats, scraping
+    metrics, and stopping runs over HTTP.
+
+</div>
