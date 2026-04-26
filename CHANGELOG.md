@@ -4,30 +4,6 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
-
-### Behavior changes
-
-* **`http_push` sink: default `batch_size` lowered from 64 KiB to 4 KiB.**
-  Low-rate scenarios (the most common case for demos and CI smoke tests) now
-  see data at the backend within seconds instead of minutes. Tracked in issue
-  [#223](https://github.com/davidban77/sonda/issues/223). High-rate users
-  (≥1000 events/s) should raise `batch_size` explicitly in their scenario YAML
-  or via `--batch-size` to keep request volume down. Issue
-  [#266](https://github.com/davidban77/sonda/issues/266) tracks the
-  complementary `flush_interval` time-based flush field that will eventually
-  remove the need to tune size at all.
-
-### Bug Fixes
-
-* **Docker image: smart entrypoint dispatch.** `sonda-server` now inspects the
-  first CLI argument and `exec`s the sibling `sonda` CLI when that argument is
-  one of the known sonda subcommands (`metrics`, `logs`, `histogram`,
-  `summary`, `run`, `catalog`, `scenarios`, `packs`, `import`, `init`).
-  `docker run ghcr.io/davidban77/sonda metrics --rate 1 ...` works directly —
-  no more `--entrypoint /sonda` workaround. Closes
-  [#223](https://github.com/davidban77/sonda/issues/223) item 1.
-
 ## [1.1.0](https://github.com/davidban77/sonda/compare/v1.0.1...v1.1.0) (2026-04-25)
 
 
