@@ -7,7 +7,10 @@ mod auth;
 mod routes;
 mod state;
 
+use std::env;
 use std::net::SocketAddr;
+use std::os::unix::process::CommandExt;
+use std::process::{exit, Command};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -15,6 +18,21 @@ use clap::Parser;
 use tracing::{info, warn};
 
 use crate::state::AppState;
+
+/// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
+/// Mirror of `sonda`'s clap definition.
+const SONDA_SUBCOMMANDS: &[&str] = &[
+    "metrics",
+    "logs",
+    "histogram",
+    "summary",
+    "run",
+    "catalog",
+    "scenarios",
+    "packs",
+    "import",
+    "init",
+];
 
 /// Command-line arguments for sonda-server.
 ///
@@ -54,6 +72,8 @@ impl std::fmt::Debug for Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    maybe_dispatch_to_sonda_cli();
+
     // Initialise structured logging. Respects RUST_LOG env var.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -102,6 +122,48 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// If `argv[1]` is a sonda subcommand, exec the sibling `sonda` binary and
+/// never return. Otherwise no-op. Sibling resolved via `current_exe()` so dev
+/// builds dispatch within the same `target/<profile>/`.
+fn maybe_dispatch_to_sonda_cli() {
+    let mut args = env::args_os();
+    let _self_arg = args.next();
+    let first = match args.next() {
+        Some(arg) => arg,
+        None => return,
+    };
+
+    let Some(first_str) = first.to_str() else {
+        return;
+    };
+
+    if !SONDA_SUBCOMMANDS.contains(&first_str) {
+        return;
+    }
+
+    let sibling = match env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("sonda")))
+    {
+        Some(path) => path,
+        None => {
+            eprintln!(
+                "sonda-server: failed to resolve sibling `sonda` binary path; \
+                 cannot dispatch `{first_str}` subcommand"
+            );
+            exit(127);
+        }
+    };
+
+    // exec only returns on failure (replaces process image otherwise).
+    let err = Command::new(&sibling).arg(&first).args(args).exec();
+    eprintln!(
+        "sonda-server: failed to exec sibling sonda binary at {}: {err}",
+        sibling.display()
+    );
+    exit(127);
+}
+
 /// Wait for Ctrl+C, then stop all running scenarios and signal shutdown.
 async fn shutdown_signal(state: AppState) {
     tokio::signal::ctrl_c()
@@ -126,5 +188,64 @@ async fn shutdown_signal(state: AppState) {
                 Err(e) => warn!(scenario = %id, error = %e, "scenario thread join failed"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_list_covers_all_known_subcommands() {
+        let expected = [
+            "metrics",
+            "logs",
+            "histogram",
+            "summary",
+            "run",
+            "catalog",
+            "scenarios",
+            "packs",
+            "import",
+            "init",
+        ];
+        assert_eq!(SONDA_SUBCOMMANDS.len(), expected.len());
+        for name in expected {
+            assert!(
+                SONDA_SUBCOMMANDS.contains(&name),
+                "{name} must be in SONDA_SUBCOMMANDS"
+            );
+        }
+    }
+
+    #[test]
+    fn server_flags_are_not_treated_as_subcommands() {
+        for flag in [
+            "--port",
+            "--bind",
+            "--api-key",
+            "--help",
+            "--version",
+            "-h",
+            "-V",
+        ] {
+            assert!(
+                !SONDA_SUBCOMMANDS.contains(&flag),
+                "{flag} must not be in SONDA_SUBCOMMANDS"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_list_has_no_duplicates() {
+        let mut sorted: Vec<&str> = SONDA_SUBCOMMANDS.to_vec();
+        sorted.sort_unstable();
+        let len_before = sorted.len();
+        sorted.dedup();
+        assert_eq!(
+            len_before,
+            sorted.len(),
+            "SONDA_SUBCOMMANDS contains duplicates"
+        );
     }
 }

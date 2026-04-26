@@ -34,13 +34,17 @@ See [Server API](sonda-server.md) for the full endpoint reference.
 # Start the server
 docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
 
-# Run the CLI instead
-docker run --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+# Run the CLI instead — first argument is auto-detected as a sonda subcommand.
+docker run --rm ghcr.io/davidban77/sonda:latest \
   metrics --name up --rate 10 --duration 5s
 
 # Mount scenario files from the host
 docker run -p 8080:8080 -v ./examples:/scenarios ghcr.io/davidban77/sonda:latest
 ```
+
+!!! info "No `--entrypoint /sonda` needed"
+    The default entrypoint inspects `argv[1]` and `exec`s the sibling `sonda` CLI when
+    it matches a known subcommand. Recipes that pass `--entrypoint /sonda` still work.
 
 The image includes built-in [scenario](../guides/scenarios.md) and
 [pack](../guides/metric-packs.md) YAML files at `/scenarios` and `/packs`, with

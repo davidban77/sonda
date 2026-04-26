@@ -81,13 +81,14 @@ Data arrives in chunks or only appears when the scenario ends.
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Stdout output appears in bursts | Normal OS-level buffering (~8 KB) | Expected behavior. Data flushes when the buffer fills or the scenario ends |
-| No HTTP POST until scenario ends | Batch threshold not reached at low rates | Lower `batch_size` (e.g., `1024` for `http_push`) or increase the rate. See [Sink Batching](../configuration/sink-batching.md) |
+| No HTTP POST until scenario ends | Batch threshold not reached at low rates | Lower `batch_size` (e.g., `512` for `http_push`) or increase the rate. See [Sink Batching](../configuration/sink-batching.md) |
 | Short scenario sends only one batch | Total data smaller than batch threshold | All data flushes on exit. This is correct behavior for short runs |
 
 !!! info
-    At 10 events/sec with `http_push` at the default 64 KiB threshold, roughly 650 events
-    (~65 seconds) must accumulate before the first POST. For faster feedback during development,
-    set `batch_size: 1024` or lower.
+    At 10 events/sec with `http_push` at the default 4 KiB threshold, ~40 events
+    (~4 seconds) must accumulate before the first POST. Set `batch_size: 512` for
+    faster feedback. Time-based flushing is tracked in
+    [#266](https://github.com/davidban77/sonda/issues/266).
 
 ---
 

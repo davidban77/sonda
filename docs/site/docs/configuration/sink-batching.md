@@ -21,7 +21,7 @@ Sonda has two kinds of batching depending on the sink type:
 | `file` | OS-level (`BufWriter`) | ~8 KB | No | bytes |
 | `tcp` | OS-level (`BufWriter`) | ~8 KB | No | bytes |
 | `udp` | None (immediate) | -- | -- | -- |
-| `http_push` | Application-level | 64 KiB | Yes | bytes |
+| `http_push` | Application-level | 4 KiB | Yes | bytes |
 | `kafka` | Application-level | 64 KiB | No | bytes |
 | `loki` | Application-level | 100 entries | Yes | entries |
 | `remote_write` | Application-level | 100 entries | Yes | entries |
@@ -58,15 +58,20 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
 
 === "http_push"
 
-    `batch_size` is in **bytes**. Default: `65536` (64 KiB).
+    `batch_size` is in **bytes**. Default: `4096` (4 KiB).
 
-    ```yaml title="Smaller batches for lower latency"
+    ```yaml title="Larger batches for high-rate scenarios"
     sink:
       type: http_push
       url: "http://localhost:8428/api/v1/import/prometheus"
       content_type: "text/plain"
-      batch_size: 1024  # 1 KiB -- more frequent sends
+      batch_size: 65536  # 64 KiB -- fewer requests at thousands of events/s
     ```
+
+    !!! info "Roadmap"
+        A `flush_interval` field
+        ([#266](https://github.com/davidban77/sonda/issues/266)) will let a partial batch
+        flush on a wall-clock deadline regardless of buffer fill.
 
 === "remote_write"
 
@@ -129,9 +134,10 @@ any data remaining in the buffer, so you never lose a partial batch under normal
 see output for several seconds while the ~8 KB buffer fills. This is normal. The data will appear
 all at once when the buffer flushes, or when the scenario ends.
 
-**Network sinks have delivery delay.** With `http_push` at the default 64 KiB threshold, a
-scenario producing small metrics (~100 bytes each) needs roughly 650 events to fill a batch.
-At 10 events/second, that is about 65 seconds before the first HTTP POST goes out.
+**Network sinks have delivery delay.** With `http_push` at the default 4 KiB threshold, a
+scenario producing small metrics (~100 bytes each) needs roughly 40 events to fill a batch.
+At 10 events/second, that is about 4 seconds before the first HTTP POST goes out. Raise
+`batch_size` for high-rate scenarios to cut request volume.
 
 **Short scenarios may send only one batch.** If your scenario runs for 5 seconds at 10
 events/second (50 events total), the entire output is likely sent as a single flush at the end,

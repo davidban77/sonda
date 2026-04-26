@@ -40,7 +40,7 @@ cargo install sonda
 **Docker:**
 
 ```bash
-docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest metrics --name up --rate 5 --duration 10s
+docker run --rm ghcr.io/davidban77/sonda:latest metrics --name up --rate 5 --duration 10s
 ```
 
 See the [Getting Started](https://davidban77.github.io/sonda/getting-started/) guide for all installation options.

@@ -104,6 +104,12 @@ cargo run -p sonda-server -- --port 8080 --bind 0.0.0.0
 
 Respects `RUST_LOG` env var for log level (default: `info`).
 
+### CLI dispatch shim
+
+`main.rs` checks `argv[1]` before clap and `exec`s the sibling `sonda` binary
+when it matches `SONDA_SUBCOMMANDS`. Sibling resolved via `env::current_exe()`.
+Keep `SONDA_SUBCOMMANDS` in sync with `sonda`'s clap definitions.
+
 ## Dependencies
 
 | Crate              | Purpose                                                   |

@@ -1,35 +1,18 @@
 # Getting Started
 
-This guide walks you through installing Sonda and generating your first metrics and logs.
-By the end, you will have synthetic telemetry streaming to stdout.
-
-!!! info "What's new in 1.0.1"
-    Sonda 1.0.1 is the first release on [crates.io](https://crates.io), so
-    `cargo install sonda` is a brand-new install path — use the **Cargo** tab below if you
-    have the Rust toolchain handy. The library crates are also published:
-    [`sonda-core`](https://crates.io/crates/sonda-core),
-    [`sonda`](https://crates.io/crates/sonda),
-    [`sonda-server`](https://crates.io/crates/sonda-server).
+Install Sonda and stream your first synthetic metrics and logs to stdout.
 
 ## Installation
 
 === "Install script (Linux/macOS)"
 
-    Download the latest pre-built binary for your platform:
-
     ```bash
     curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
     ```
 
-    To pin a specific version:
-
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | SONDA_VERSION=v1.0.1 sh
-    ```
+    Pin a version with `SONDA_VERSION=v1.0.1` before the pipe.
 
 === "Cargo"
-
-    If you have the Rust toolchain installed:
 
     ```bash
     cargo install sonda
@@ -37,23 +20,16 @@ By the end, you will have synthetic telemetry streaming to stdout.
 
 === "Docker"
 
-    Pull the image from GitHub Container Registry:
-
     ```bash
     docker pull ghcr.io/davidban77/sonda:latest
-    ```
-
-    Run Sonda inside the container (the default entrypoint is `sonda-server`, so
-    override it with `--entrypoint`):
-
-    ```bash
-    docker run --rm --entrypoint /sonda ghcr.io/davidban77/sonda:latest \
+    docker run --rm ghcr.io/davidban77/sonda:latest \
       metrics --name cpu_usage --rate 2 --duration 5s
     ```
 
-=== "From source"
+    The default entrypoint runs `sonda-server`, but dispatches to the `sonda` CLI
+    when the first argument is a subcommand (`metrics`, `logs`, `run`, `catalog`, ...).
 
-    Clone and build:
+=== "From source"
 
     ```bash
     git clone https://github.com/davidban77/sonda.git
@@ -61,17 +37,9 @@ By the end, you will have synthetic telemetry streaming to stdout.
     cargo build --release -p sonda
     ```
 
-    The binary is at `target/release/sonda`.
+    Binary lands at `target/release/sonda`.
 
-Verify the installation:
-
-```bash
-sonda --version
-```
-
-```text title="Output"
-sonda 1.0.1
-```
+Check it works: `sonda --version` should print the installed version.
 
 ## Your first metric
 
@@ -80,10 +48,6 @@ Generate a constant metric at 2 events per second for 5 seconds:
 ```bash
 sonda metrics --name cpu_usage --rate 2 --duration 5s
 ```
-
-You will see a colored start banner on stderr, followed by data on stdout, then a stop banner.
-On longer runs, live progress lines appear between the banners showing event count, rate, and
-elapsed time (see [CLI Reference -- Live progress](configuration/cli-reference.md#live-progress)).
 
 ```text title="stderr"
 ▶ cpu_usage  signal_type: metrics | rate: 2/s | encoder: prometheus_text | sink: stdout | duration: 5s
@@ -101,15 +65,15 @@ cpu_usage 0 1774277934523
 ■ cpu_usage  completed in 5.0s | events: 10 | bytes: 240 B | errors: 0
 ```
 
-Each line on stdout is Prometheus exposition format: `metric_name value timestamp_ms`.
+Each stdout line is Prometheus exposition format: `metric_name value timestamp_ms`.
+Banners go to stderr; pipe stdout and only data flows through. Long runs show a live
+progress line between the banners (see
+[CLI Reference -- Live progress](configuration/cli-reference.md#live-progress)).
 
-!!! tip "stderr vs stdout"
-    Status banners go to stderr, data goes to stdout. When you redirect or pipe stdout,
-    only data flows through. Use `--quiet` / `-q` to suppress banners entirely:
-    `sonda -q metrics --name cpu_usage --rate 2 --duration 5s`
+!!! tip "Suppress banners"
+    `sonda -q metrics ...` (or `--quiet`) silences the banners.
 
-The default generator is `constant` with a value of `0.0`. To produce a shaped signal, use a
-sine wave:
+The default generator is `constant` at `0.0`. Shape the signal with a sine wave:
 
 ```bash
 sonda metrics --name cpu_usage --rate 2 --duration 5s \
@@ -125,13 +89,12 @@ cpu_usage{host="web-01"} 90.45084971874738 1774277940081
 ...
 ```
 
-The sine wave oscillates between 0 and 100 (offset 50 +/- amplitude 50), completing one full
-cycle every 10 seconds. The [Tutorial -- Generators](guides/tutorial-generators.md) covers all
-eight generators in detail.
+The wave oscillates between 0 and 100 with a 10-second period. The
+[Tutorial -- Generators](guides/tutorial-generators.md) covers all eight generators.
 
 ## Using a scenario file
 
-For repeatable configurations, define a scenario in a [v2 YAML file](configuration/v2-scenarios.md):
+Repeatable runs live in a [v2 YAML file](configuration/v2-scenarios.md):
 
 ```yaml title="basic-metrics.yaml"
 version: 2
@@ -176,7 +139,7 @@ interface_oper_state{hostname="t0-a1",zone="eu1"} 10.002094395041146 17742779441
 
 ## Generating logs
 
-Sonda also generates structured log events:
+Structured log events work the same way:
 
 ```bash
 sonda logs --mode template --rate 2 --duration 3s
@@ -189,13 +152,12 @@ sonda logs --mode template --rate 2 --duration 3s
 ...
 ```
 
-For richer logs with field pools, severity weights, and multiple templates, see the
+Field pools, severity weights, and multiple templates are in the
 [Tutorial -- Generating logs](guides/tutorial-logs.md).
 
 ## Sending to a backend
 
-You don't need a YAML file to push data to a real backend. Use `--sink` and `--endpoint`
-to send metrics or logs directly from the CLI:
+Push directly from the CLI with `--sink` and `--endpoint` -- no YAML required:
 
 ```bash
 # Push metrics to VictoriaMetrics / Prometheus via remote write
@@ -208,29 +170,25 @@ sonda logs --mode template --rate 10 --duration 30s \
   --sink loki --endpoint http://localhost:3100 --label app=myservice
 ```
 
-The [Tutorial -- Sinks](guides/tutorial-sinks.md) covers all sink types in detail.
+See [Tutorial -- Sinks](guides/tutorial-sinks.md) for every sink type.
 
 ## What next
 
-You have the basics. The **[Tutorial](guides/tutorial.md)** walks through every generator,
-encoder, sink, and advanced feature step by step.
+The **[Tutorial](guides/tutorial.md)** walks through every generator, encoder, sink, and
+advanced feature step by step. Skip the YAML grind:
 
-Don't want to write YAML by hand? Run **`sonda init`** -- an interactive wizard that walks
-you through building a scenario step by step and writes v2 YAML for you. Pass CLI flags
-(e.g. `--signal-type`, `--situation`, `--rate`) to skip prompts, or use
-`--from @builtin` to start from an existing scenario (see
-[CLI Reference](configuration/cli-reference.md#sonda-init)). Or try the
-**[Built-in Scenarios](guides/scenarios.md)** -- curated patterns you can browse with
-`sonda catalog list` and run instantly with `sonda metrics --scenario @cpu-spike`. Explore
-**[Metric Packs](guides/metric-packs.md)** -- pre-built metric bundles for Telegraf SNMP
-and node_exporter that match real-world schemas. Have existing CSV data?
-**[CSV Import](guides/csv-import.md)** analyzes it, detects patterns, and generates a
-portable scenario YAML.
+- **`sonda init`** -- interactive wizard, or non-interactive with flags like `--situation`
+  and `--from @builtin` ([CLI Reference](configuration/cli-reference.md#sonda-init)).
+- **[Built-in Scenarios](guides/scenarios.md)** -- run curated patterns instantly:
+  `sonda metrics --scenario @cpu-spike`.
+- **[Metric Packs](guides/metric-packs.md)** -- bundles for Telegraf SNMP and node_exporter
+  that match real-world schemas.
+- **[CSV Import](guides/csv-import.md)** -- turn existing CSV data into a portable scenario.
 
-When you need specific details:
+Reference pages:
 
-- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains, and migration from v1
-- [**Scenario Fields**](configuration/scenario-fields.md) -- per-entry field reference (generators, schedules, labels)
-- [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, and `run`
-- [**Docker**](deployment/docker.md) -- run Sonda in containers or with Docker Compose
-- [**Troubleshooting**](guides/troubleshooting.md) -- common issues and how to fix them
+- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains, v1 migration
+- [**Scenario Fields**](configuration/scenario-fields.md) -- per-entry field reference
+- [**CLI Reference**](configuration/cli-reference.md) -- every flag for `metrics`, `logs`, `run`
+- [**Docker**](deployment/docker.md) -- containers and Compose
+- [**Troubleshooting**](guides/troubleshooting.md) -- common issues
