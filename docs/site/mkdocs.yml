@@ -4,6 +4,9 @@ site_url: https://davidban77.github.io/sonda/
 repo_url: https://github.com/davidban77/sonda
 repo_name: davidban77/sonda
 
+not_in_nav: |
+  /includes/
+
 theme:
   name: material
   palette:
@@ -24,12 +27,15 @@ theme:
   features:
     - navigation.sections
     - navigation.expand
+    - navigation.indexes
     - navigation.top
     - search.highlight
     - content.code.copy
     - content.tabs.link
+    - toc.follow
 
 markdown_extensions:
+  - abbr
   - admonition
   - pymdownx.details
   - pymdownx.superfences
@@ -38,7 +44,11 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.tabbed:
       alternate_style: true
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      base_path:
+        - docs/site/docs
+      auto_append:
+        - includes/abbreviations.md
   - attr_list
   - md_in_html
   - toc:

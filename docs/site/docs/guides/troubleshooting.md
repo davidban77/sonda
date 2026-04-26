@@ -14,13 +14,17 @@ Before diving into specific issues, run these quick checks.
 
 Use `--dry-run` to parse and validate a scenario without emitting any events:
 
-```bash
-sonda --dry-run metrics --name cpu --rate 10 --duration 30s
-```
+=== "Inline CLI flags"
 
-```bash
-sonda --dry-run run --scenario my-scenario.yaml
-```
+    ```bash
+    sonda --dry-run metrics --name cpu --rate 10 --duration 30s
+    ```
+
+=== "Scenario file"
+
+    ```bash
+    sonda --dry-run run --scenario my-scenario.yaml
+    ```
 
 If the config is valid, Sonda prints the resolved settings and exits with code `0`. If there's
 an error, it prints the problem to stderr and exits with code `1`.
