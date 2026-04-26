@@ -309,7 +309,7 @@ services:
   # This service is only started with --profile alerting.
   # ---------------------------------------------------------------------------
   alertmanager:
-    image: prom/alertmanager:v0.28.1
+    image: prom/alertmanager:v0.32.0
     profiles: [alerting]
     ports:
       - "9093:9093"
