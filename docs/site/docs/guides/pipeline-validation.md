@@ -1,8 +1,15 @@
 # Pipeline Validation
 
-You changed your ingest pipeline, added an encoder, or modified a routing rule. How do you know
-nothing broke? Sonda gives you a fast, repeatable way to push known data through your pipeline
-and verify it arrives correctly at the other end.
+You shipped a one-line change to a vmagent relabel rule on Friday. By Monday morning,
+half the dashboards for `service=payments` are blank. The metrics still arrive, the
+counts are normal -- but the rule rewrote `service` to lowercase and the dashboards
+filter for `Payments`. Nothing in your pipeline noticed: the data flowed, the writes
+succeeded, the only thing that broke was the contract with downstream consumers.
+
+This is the gap CI is supposed to catch. Sonda fills it by giving you a known input
+on one end of the pipeline and a check at the other end -- exit code, line count,
+backend query -- so any rewrite, drop, or schema drift surfaces as a failed step
+before it reaches the dashboards.
 
 ---
 

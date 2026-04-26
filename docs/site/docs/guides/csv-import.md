@@ -1,9 +1,15 @@
 # CSV Import
 
-You have a CSV file -- maybe a Grafana export from a production incident, maybe a hand-recorded
-dataset -- and you want to turn it into a portable, parameterized scenario that uses Sonda's
-generators instead of replaying raw values. `sonda import` analyzes the data, detects dominant
-patterns, and generates scenario YAML you can run, share, and customize.
+After last week's incident, you exported the CPU and memory series from Grafana to
+attach to the postmortem. The CSV sits in a Drive folder. The next time someone tries
+to reproduce the alert pattern in CI, they will not find the file -- and even if they
+do, raw replay locks them to the original timestamps and the original rate.
+
+What you actually want is the *shape* of that incident as a reusable scenario:
+"a CPU spike like the one from the May 14 outage" parameterized on rate and duration,
+checked into the repo next to the alert rules. `sonda import` does that conversion in
+one step. It scans each column, classifies the pattern (steady, spike, leak, sawtooth,
+flap, step), and emits a v2 scenario YAML wired to a generator with the right knobs.
 
 ---
 

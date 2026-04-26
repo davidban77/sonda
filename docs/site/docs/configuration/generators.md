@@ -3,6 +3,42 @@
 Generators produce values for each tick of a scenario. For metrics, they produce `f64` values. For
 logs, they produce structured log events. You select a generator with the `generator.type` field.
 
+## Which generator?
+
+Pick the row that matches what you are simulating. The first table covers the eight
+core metric generators. The second covers [operational aliases](#operational-aliases) --
+sugar for the same engine that lets you say `flap` instead of `sequence` with hand-aligned
+values.
+
+| Generator | Use case | Shape | Key fields |
+|-----------|----------|-------|------------|
+| [`constant`](#constant) | Up/down indicators, recording-rule baselines | Flat horizontal line | `value` |
+| [`sine`](#sine) | CPU, latency, cyclical load | Smooth oscillation around a midpoint | `amplitude`, `period_secs`, `offset` |
+| [`sawtooth`](#sawtooth) | Counter wraps, queue fill cycles | Linear ramp that snaps back at period end | `min`, `max`, `period_secs` |
+| [`uniform`](#uniform) | Jitter, random-load streams | Random values drawn each tick | `min`, `max`, `seed` |
+| [`sequence`](#sequence) | Exact `for:` durations, scripted timelines | Whatever you list, tick by tick | `values`, `repeat` |
+| [`step`](#step) | `rate()` and `increase()` testing | Monotonic counter incrementing each tick | `start`, `step_size`, optional `max` |
+| [`spike`](#spike) | Anomaly detection, threshold alerts | Baseline with periodic outlier bursts | `baseline`, `magnitude`, `interval_secs` |
+| [`csv_replay`](#csv_replay) | Bit-for-bit incident reproduction | The recorded values, in order | `file`, `columns` |
+
+For [logs](#log-generators), pick `template` for synthesized messages with field pools
+or `replay` for line-by-line CSV/log-file replay. For latency distributions, see the
+[histogram and summary generators](#histogram-and-summary-generators).
+
+| Alias | Operational meaning | Shape | Key fields |
+|-------|---------------------|-------|------------|
+| [`steady`](#steady) | Healthy "everything is fine" baseline | Sine + jitter around a center | `center`, `amplitude`, `noise` |
+| [`flap`](#flap) | Interface or health-check toggling | Binary up/down with per-state durations | `up_duration`, `down_duration` |
+| [`saturation`](#saturation) | Buffer or disk filling, then resetting | Ramp from baseline to ceiling, repeats | `baseline`, `ceiling`, `time_to_saturate` |
+| [`leak`](#leak) | Memory leak, unreleased connections | One-way ramp toward ceiling, no reset | `baseline`, `ceiling`, `time_to_ceiling` |
+| [`degradation`](#degradation) | Latency climbing, throughput dropping | One-way ramp with noise on top | `baseline`, `ceiling`, `time_to_degrade` |
+| [`spike_event`](#spike_event) | CPU spikes, request surges, error floods | Baseline with periodic bursts | `baseline`, `spike_height`, `spike_interval` |
+
+!!! tip "Aliases and core generators are interchangeable"
+    Aliases are sugar -- they desugar at parse time into the core generators above. Use the
+    alias when the operational meaning is clearer; drop to the core generator when you need a
+    parameter the alias does not expose (e.g. negative spike `magnitude` for dip testing).
+
 ## Metric generators
 
 ### constant

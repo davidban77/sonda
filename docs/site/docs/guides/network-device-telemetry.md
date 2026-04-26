@@ -1,9 +1,19 @@
 # Network Device Telemetry
 
-You are building dashboards and alerts for network infrastructure -- routers, switches, firewalls --
-and you need realistic test data. SNMP polling intervals, interface counter wraps, link flaps, and
-traffic redistribution are hard to simulate in a lab. Sonda lets you model a network device with
-multiple interfaces and generate correlated metrics that behave like the real thing.
+You inherit a snmp_exporter dashboard for a 200-router fleet. The PR that introduces
+a new "Top Talkers" panel and an `InterfaceErrorBurst` alert needs to ship Monday.
+The lab has two routers and a port-channel that never flaps. The interesting cases --
+a 32-bit counter wrapping at peak traffic, a primary uplink dropping while the backup
+saturates, BGP sessions toggling between Established and Idle -- are exactly the
+shapes neither lab will produce on demand. Asking netops to break a production link
+to test your dashboard is not a strategy.
+
+Sonda models each interface as its own metric stream with the labels snmp_exporter
+emits (`device`, `ifName`, `ifAlias`, `job=snmp`), then composes them into a scenario
+that recreates the failure cascade you cannot trigger in the lab. PromQL written
+against the synthetic data is the same PromQL you ship: `rate(interface_in_octets[1m])`
+behaves the same way against a sawtooth-modeled counter as it does against a real
+SNMP poll. The dashboard you tune against this scenario is the dashboard you ship.
 
 This guide walks you through modeling a router with multiple uplinks, generating SNMP-style
 metrics, simulating a link failure cascade, and validating your PromQL queries against the
