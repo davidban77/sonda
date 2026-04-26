@@ -24,7 +24,7 @@ defaults:
     type: remote_write
   sink:
     type: remote_write
-    url: "http://localhost:8429/api/v1/write"
+    url: "${VMAGENT_URL:-http://localhost:8429/api/v1/write}"
     batch_size: 100
 
 scenarios:

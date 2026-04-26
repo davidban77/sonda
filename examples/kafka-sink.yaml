@@ -21,7 +21,7 @@ defaults:
     type: prometheus_text
   sink:
     type: kafka
-    brokers: "localhost:9094"
+    brokers: "${KAFKA_BROKERS:-localhost:9094}"
     topic: sonda-metrics
 
 scenarios:

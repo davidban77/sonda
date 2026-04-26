@@ -27,7 +27,7 @@ defaults:
     type: remote_write
   sink:
     type: remote_write
-    url: "http://localhost:8428/api/v1/write"
+    url: "${VICTORIAMETRICS_REMOTE_WRITE_URL:-http://localhost:8428/api/v1/write}"
     batch_size: 100
 
 scenarios:

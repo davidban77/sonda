@@ -11,6 +11,8 @@
 //!
 //! # Submodules
 //!
+//! - [`env_interpolate`] — Phase 0: pre-parse `${VAR}` / `${VAR:-default}`
+//!   substitution against the process environment.
 //! - [`parse`] — YAML deserialization, schema validation, and version detection.
 //! - [`normalize`] — `defaults:` resolution and entry-level normalization.
 //! - [`expand`] — pack expansion inside `scenarios:` (Phase 3).
@@ -19,6 +21,9 @@
 //!   clock-group assignment (Phases 4 and 5).
 //! - [`prepare`] — translation from [`compile_after::CompiledFile`] into the
 //!   runtime's `Vec<ScenarioEntry>` input shape (Phase 6).
+
+#[cfg(feature = "config")]
+pub mod env_interpolate;
 
 #[cfg(feature = "config")]
 pub mod parse;

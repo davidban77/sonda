@@ -72,9 +72,13 @@ Pick the row that matches where `sonda` runs and where your backend lives.
 
 ## Rewriting URLs before POSTing
 
-Sonda's example YAMLs in `examples/` use `http://localhost:<port>` so they work out of
-the box for host-CLI users running against a published Compose port. When you want to
-POST the same file into a containerized `sonda-server`, rewrite the URL in flight:
+The first-class fix is environment-variable interpolation -- see
+[URL interpolation with `${VAR:-default}`](#url-interpolation-with-var-default) below.
+The bundled examples already use `${VAR:-default}` syntax so the same file works from
+both invocation paths without edits.
+
+If you have a YAML file that hardcodes `http://localhost:<port>` and you cannot or do not
+want to add interpolation, rewrite the URL in flight when POSTing:
 
 ```bash title="Swap localhost for Compose service names"
 sed 's|http://localhost:8428|http://victoriametrics:8428|g; \
@@ -161,13 +165,29 @@ customize the compose file, match the `sed` substitutions to your service names.
       url: "http://vmsingle.monitoring.svc.cluster.local:8428/api/v1/import/prometheus"
     ```
 
-## URL interpolation (future)
+## URL interpolation with `${VAR:-default}`
 
-Making the same YAML work from both invocation paths today requires either two files or
-a `sed` swap. Environment variable interpolation in YAML
-(`url: ${VM_URL:-http://localhost:8428}`) is under consideration as a proper fix. The
-audit follow-up is tracked in the repository; for now the rewrite-before-POST workflow
-is the supported path.
+The example scenarios in `examples/` use environment variable interpolation so the same
+file works from both invocation paths. A sink URL like
+
+```yaml
+sink:
+  type: http_push
+  url: "${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"
+```
+
+resolves to the host-loopback default when no environment variable is set, and to the
+in-network service hostname when `sonda-server` exports `VICTORIAMETRICS_URL=http://victoriametrics:8428/api/v1/import/prometheus`
+in its container environment. The bundled `examples/docker-compose-victoriametrics.yml`
+already wires up the right values for the Compose-network case, so POSTing an example
+scenario to the containerized server "just works" out of the box.
+
+See the full [Environment variable interpolation reference](../configuration/v2-scenarios.md#environment-variable-interpolation)
+for the syntax, the variable name grammar, and the table of built-in variables every
+example file honours.
+
+When you cannot or do not want to set environment variables, the rewrite-before-POST
+workflow above still works.
 
 ## See also
 
