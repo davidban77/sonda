@@ -51,6 +51,19 @@ services:
       - "8080:8080"
     volumes:
       - ./:/scenarios:ro
+    # Environment variables consumed by ${VAR:-default} interpolation in
+    # the example scenario YAMLs. When a scenario is POSTed to this server
+    # the substitution resolves to the in-network service name; running the
+    # same YAML from the host CLI falls back to the localhost defaults
+    # baked into the YAML.
+    environment:
+      VICTORIAMETRICS_URL: "http://victoriametrics:8428/api/v1/import/prometheus"
+      VICTORIAMETRICS_REMOTE_WRITE_URL: "http://victoriametrics:8428/api/v1/write"
+      VMAGENT_URL: "http://vmagent:8429/api/v1/write"
+      PROMETHEUS_URL: "http://prometheus:9090/api/v1/write"
+      LOKI_URL: "http://loki:3100"
+      KAFKA_BROKERS: "kafka:9092"
+      OTLP_GRPC_ENDPOINT: "http://otel-collector:4317"
     depends_on:
       victoriametrics:
         condition: service_healthy

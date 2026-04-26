@@ -7,7 +7,7 @@ defaults:
     type: json_lines
   sink:
     type: loki
-    url: http://localhost:3100
+    url: "${LOKI_URL:-http://localhost:3100}"
     batch_size: 50
   labels:
     job: sonda

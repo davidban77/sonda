@@ -23,7 +23,7 @@ defaults:
     type: remote_write
   sink:
     type: remote_write
-    url: "http://localhost:9090/api/v1/write"
+    url: "${PROMETHEUS_URL:-http://localhost:9090/api/v1/write}"
     batch_size: 100
 
 scenarios:

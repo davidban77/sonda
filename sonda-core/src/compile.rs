@@ -1,8 +1,11 @@
 //! One-shot v2 scenario compilation from YAML to the runtime's input shape.
 //!
-//! This module composes the five v2 compilation phases — `parse`, `normalize`,
-//! `expand`, `compile_after`, and `prepare` — behind a single callable so that
-//! library consumers can go from YAML text to `Vec<ScenarioEntry>` in one step.
+//! This module composes the v2 compilation phases — `env_interpolate`,
+//! `parse`, `normalize`, `expand`, `compile_after`, and `prepare` — behind a
+//! single callable so that library consumers can go from YAML text to
+//! `Vec<ScenarioEntry>` in one step. `env_interpolate` runs first so every
+//! caller (CLI file load, HTTP body POST, programmatic) gets the same
+//! `${VAR}` / `${VAR:-default}` substitution semantics.
 //!
 //! Every caller (CLI, server, tests) goes through this entry point — the
 //! runtime accepts `Vec<ScenarioEntry>` directly and there is no v1 fallback.
@@ -16,6 +19,7 @@
 //! underlying phase would have produced — see [`CompileError`].
 
 use crate::compiler::compile_after::{compile_after, CompileAfterError};
+use crate::compiler::env_interpolate::{interpolate, InterpolateError};
 use crate::compiler::expand::{expand, ExpandError, PackResolver};
 use crate::compiler::normalize::{normalize, NormalizeError};
 use crate::compiler::parse::{parse, ParseError};
@@ -31,23 +35,29 @@ use crate::config::ScenarioEntry;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// **Phase 0** (env_interpolate): `${VAR}` substitution against the
+    /// process environment failed (unset required variable, malformed
+    /// reference, or invalid variable name).
+    #[error("env interpolation error")]
+    EnvInterpolate(#[from] InterpolateError),
+
     /// **Phase 1** (parse): YAML parsing or schema validation failed.
-    #[error("parse error: {0}")]
+    #[error("parse error")]
     Parse(#[from] ParseError),
 
     /// **Phase 2** (normalize): defaults resolution failed (e.g. an entry
     /// was missing a required field with no default available).
-    #[error("normalize error: {0}")]
+    #[error("normalize error")]
     Normalize(#[from] NormalizeError),
 
     /// **Phase 3** (expand): pack expansion failed (unknown pack, unknown
     /// override key, duplicate id, or resolver I/O error).
-    #[error("expand error: {0}")]
+    #[error("expand error")]
     Expand(#[from] ExpandError),
 
     /// **Phase 4+5** (compile_after): `after:` resolution, dependency
     /// graph, or clock-group assignment failed.
-    #[error("compile_after error: {0}")]
+    #[error("compile_after error")]
     CompileAfter(#[from] CompileAfterError),
 
     /// **Phase 6** (prepare): translation to the runtime input shape
@@ -65,7 +75,7 @@ pub enum CompileError {
     /// build a [`CompiledFile`][crate::compiler::compile_after::CompiledFile]
     /// in code and feed it directly to
     /// [`prepare`][crate::compiler::prepare::prepare].
-    #[error("prepare error: {0}")]
+    #[error("prepare error")]
     Prepare(#[from] PrepareError),
 }
 
@@ -104,7 +114,8 @@ pub fn compile_scenario_file(
     // for callers that cross module boundaries) without modifying `expand`'s
     // API.
     let wrapped = DynPackResolver(resolver);
-    let parsed = parse(yaml)?;
+    let interpolated = interpolate(yaml)?;
+    let parsed = parse(&interpolated)?;
     let normalized = normalize(parsed)?;
     let expanded = expand(normalized, &wrapped)?;
     let compiled = compile_after(expanded)?;

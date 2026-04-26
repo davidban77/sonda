@@ -74,6 +74,11 @@ curl -X POST \
 See [Multi-scenario body](../deployment/sonda-server.md#multi-scenario-body) for batch
 error handling, `phase_offset`, and `after:` chains.
 
+!!! tip "One file, host CLI and container"
+    A sink URL like `${VICTORIAMETRICS_URL:-http://localhost:8428/...}` runs from your
+    host CLI on the default and from a containerized `sonda-server` on the override. See
+    [Environment variable interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation).
+
 ## Monitor a running scenario
 
 ```bash title="List all scenarios"

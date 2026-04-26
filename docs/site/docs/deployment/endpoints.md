@@ -41,15 +41,14 @@ port), but the scenario it carries runs one level deeper, inside the server cont
 
 !!! warning "The `localhost` trap"
     A scenario with `url: http://localhost:8428` works from the host CLI and silently
-    fails when POSTed to a containerized `sonda-server`. From inside the container,
-    `localhost` is the container, not your host or the Compose network. The server
-    accepts the POST, the scenario starts, the sink tries to connect -- and the
-    connection is refused or times out with no data in your backend.
+    fails when POSTed to a containerized `sonda-server` -- inside the container,
+    `localhost` is the container, not your host. The POST returns 201, the sink times
+    out, no data lands.
 
-    When you adapt a host-CLI example to run inside `sonda-server`, rewrite the URL to
-    match the server's network. For Compose, that means using the service name
-    (`http://victoriametrics:8428`). For Kubernetes, use the in-cluster Service DNS
-    (`http://vmsingle.monitoring.svc.cluster.local:8428`).
+    Two fixes: write the URL with [`${VAR:-default}`](#one-file-both-paths-var-default)
+    so one file works from both paths, or hardcode the in-network address (Compose
+    service name like `http://victoriametrics:8428`, or the Kubernetes Service DNS
+    `http://vmsingle.monitoring.svc.cluster.local:8428`).
 
 ## Endpoint resolution reference
 
@@ -70,11 +69,28 @@ Pick the row that matches where `sonda` runs and where your backend lives.
     Either add `--add-host=host.docker.internal:host-gateway` to the `sonda-server`
     container or use the host's LAN IP.
 
+## One file, both paths: `${VAR:-default}`
+
+The first-class fix is `${VAR:-default}` interpolation in the YAML itself. The same
+file then runs from your host CLI on the defaults and from a containerized
+`sonda-server` on the overrides -- no edit, no `sed`, no second copy.
+
+```yaml title="A sink URL that works from both paths"
+sink:
+  type: http_push
+  url: "${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"
+```
+
+The bundled `examples/docker-compose-victoriametrics.yml` exports the in-network
+overrides on the `sonda-server` container, so every scenario under `examples/`
+already works untouched in both places. See the
+[full reference](../configuration/v2-scenarios.md#environment-variable-interpolation)
+for syntax and the seven built-in variable names every example honours.
+
 ## Rewriting URLs before POSTing
 
-Sonda's example YAMLs in `examples/` use `http://localhost:<port>` so they work out of
-the box for host-CLI users running against a published Compose port. When you want to
-POST the same file into a containerized `sonda-server`, rewrite the URL in flight:
+If a YAML file hardcodes `http://localhost:<port>` and you would rather not add
+interpolation, rewrite the URL in flight:
 
 ```bash title="Swap localhost for Compose service names"
 sed 's|http://localhost:8428|http://victoriametrics:8428|g; \
@@ -86,7 +102,7 @@ sed 's|http://localhost:8428|http://victoriametrics:8428|g; \
       http://localhost:8080/scenarios
 ```
 
-The three swaps cover the Compose backends Sonda ships with:
+The swaps cover the Compose backends Sonda ships with:
 
 | Backend | Host CLI URL (published port) | Compose URL (service name) |
 |---|---|---|
@@ -94,13 +110,10 @@ The three swaps cover the Compose backends Sonda ships with:
 | Loki | `http://localhost:3100` | `http://loki:3100` |
 | Kafka | `localhost:9094` (external listener) | `kafka:9092` (internal listener) |
 
-The service names come from `examples/docker-compose-victoriametrics.yml`. If you
-customize the compose file, match the `sed` substitutions to your service names.
+Service names come from `examples/docker-compose-victoriametrics.yml`. Match the
+`sed` substitutions to your service names if you customize the compose file.
 
-!!! tip "Verify the swap first"
-    Pipe the rewritten YAML to `less` or `diff` before posting, so you can eyeball that
-    every URL has been updated:
-
+!!! tip "Diff before you POST"
     ```bash
     sed 's|http://localhost:8428|http://victoriametrics:8428|g' \
       examples/http-push-retry.yaml | diff examples/http-push-retry.yaml -
@@ -160,14 +173,6 @@ customize the compose file, match the `sed` substitutions to your service names.
       type: http_push
       url: "http://vmsingle.monitoring.svc.cluster.local:8428/api/v1/import/prometheus"
     ```
-
-## URL interpolation (future)
-
-Making the same YAML work from both invocation paths today requires either two files or
-a `sed` swap. Environment variable interpolation in YAML
-(`url: ${VM_URL:-http://localhost:8428}`) is under consideration as a proper fix. The
-audit follow-up is tracked in the repository; for now the rewrite-before-POST workflow
-is the supported path.
 
 ## See also
 

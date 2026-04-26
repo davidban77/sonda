@@ -171,11 +171,11 @@ Prometheus at [http://localhost:9090](http://localhost:9090) -- they just will n
 sonda data from the stdout scenarios above. Use the VictoriaMetrics Stack for that.
 
 !!! info "Swapping `stdout` for `http_push` in this stack"
-    You can rewrite either scenario on the fly to push to Prometheus's remote-write
-    receiver instead. See
-    [Rewriting URLs before POSTing](endpoints.md#rewriting-urls-before-posting) --
-    the Prometheus service name inside this Compose network is `prometheus`, and its
-    remote-write path is `/api/v1/write`.
+    Rewrite either scenario on the fly to push to Prometheus's remote-write receiver
+    (`http://prometheus:9090/api/v1/write`). See
+    [Endpoints & networking](endpoints.md#one-file-both-paths-var-default) -- use
+    `${VAR:-default}` so one file works from both host CLI and inside the container,
+    or `sed` the URL just before POSTing.
 
 Two scenario files are provided for this stack:
 
@@ -212,11 +212,11 @@ curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-The scenario uses `url: http://victoriametrics:8428/...` -- the VictoriaMetrics service
-name, not `localhost` -- because the sink runs inside the `sonda-server` container and
-resolves DNS through the Compose network. If you adapt a host-CLI example that points at
-`localhost:8428`, rewrite the URL before POSTing. See
-[Endpoints & networking](endpoints.md) for the full explanation and a one-liner swap.
+The scenario URL uses `${VICTORIAMETRICS_URL:-http://localhost:8428/...}`: the compose
+file exports `VICTORIAMETRICS_URL` on the `sonda-server` container so the scenario
+resolves the in-network service name when POSTed, and falls back to host loopback when
+run from your host CLI. See
+[Endpoints & networking](endpoints.md#one-file-both-paths-var-default) for the pattern.
 
 You can also push from the host CLI using a pipe to VictoriaMetrics.
 See [Sinks](../configuration/sinks.md) for all available sink types (`http_push`, `remote_write`, `loki`, etc.).

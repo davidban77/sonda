@@ -119,6 +119,62 @@ steady-state   scenario  infrastructure   metrics   yes        Normal oscillatin
 ...
 ```
 
+## Environment variable interpolation
+
+`${VAR}` and `${VAR:-default}` references in a scenario file are substituted from
+the process environment before parsing. One file runs from your host CLI on the
+defaults and from a containerized `sonda-server` on the overrides -- no edit, no
+`sed` rewrite.
+
+```yaml title="loki-json-lines.yaml (excerpt)"
+defaults:
+  sink:
+    type: loki
+    url: "${LOKI_URL:-http://localhost:3100}"
+```
+
+```bash
+# Host CLI -- LOKI_URL unset, default wins
+sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
+
+# Override -- every ${LOKI_URL} resolves to this value
+LOKI_URL=http://loki:3100 sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
+```
+
+### Syntax
+
+| Form | Meaning |
+|---|---|
+| `${VAR}` | Required. Compile fails if `VAR` is unset. |
+| `${VAR:-default}` | Optional. Default text runs to the next unescaped `}`; may contain `:`, `/`, `?`, `&`, `=`. |
+| `$$` | Literal `$`. The only escape. |
+
+Variable names match `[A-Z_][A-Z0-9_]*`. Lowercase, leading digits, or other
+characters are rejected at compile time so a typo cannot silently swallow a YAML field.
+
+!!! note "Not supported"
+    No recursion into substituted values, no nested defaults (`${A:-${B}}`), no
+    bare `$VAR`, no `:?` / `:+` / `:=`.
+
+### Built-in example variables
+
+Every scenario under `examples/` honours these names. Defaults map to the
+host-published Compose ports; the bundled `examples/docker-compose-victoriametrics.yml`
+exports the in-network values so POSTing an example scenario to the
+containerized `sonda-server` works untouched. See
+[Endpoints & networking](../deployment/endpoints.md) for the full
+host-vs-container resolution table.
+
+| Variable | Default (host CLI) | In-network override |
+|---|---|---|
+| `VICTORIAMETRICS_URL` | `http://localhost:8428/api/v1/import/prometheus` | `http://victoriametrics:8428/api/v1/import/prometheus` |
+| `VICTORIAMETRICS_REMOTE_WRITE_URL` | `http://localhost:8428/api/v1/write` | `http://victoriametrics:8428/api/v1/write` |
+| `VMAGENT_URL` | `http://localhost:8429/api/v1/write` | `http://vmagent:8429/api/v1/write` |
+| `PROMETHEUS_URL` | `http://localhost:9090/api/v1/write` | `http://prometheus:9090/api/v1/write` |
+| `LOKI_URL` | `http://localhost:3100` | `http://loki:3100` |
+| `KAFKA_BROKERS` | `localhost:9094` | `kafka:9092` |
+| `OTLP_GRPC_ENDPOINT` | `http://localhost:4317` | `http://otel-collector:4317` |
+
 ## The `defaults:` block
 
 Every field in `defaults:` applies to every entry in `scenarios:` unless the entry overrides it.

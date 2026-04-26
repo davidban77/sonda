@@ -7,7 +7,7 @@ defaults:
     type: json_lines
   sink:
     type: kafka
-    brokers: "localhost:9094"
+    brokers: "${KAFKA_BROKERS:-localhost:9094}"
     topic: sonda-logs
 
 scenarios:

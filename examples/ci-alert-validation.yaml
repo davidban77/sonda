@@ -19,7 +19,7 @@ defaults:
     type: prometheus_text
   sink:
     type: http_push
-    url: "http://localhost:8428/api/v1/import/prometheus"
+    url: "${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"
     content_type: "text/plain"
 
 scenarios:
