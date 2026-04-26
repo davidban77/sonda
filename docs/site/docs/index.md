@@ -1,8 +1,19 @@
 # Sonda
 
-Sonda is a synthetic telemetry generator that produces realistic metrics and logs for testing
-observability pipelines. It models the failure patterns that actually break real systems: gaps,
-micro-bursts, cardinality spikes, and shaped value sequences.
+You ship the new dashboard and two alert rules on Tuesday. Staging has four hosts, production has
+1,800. By Friday at dinner the page fires for `HighErrorRate` -- by the time you open the laptop,
+the rule has cleared, the dashboard panel is blank for half the regions, and the only thing the
+ingest pipeline logged is `ok`. Staging never had the cardinality to surface the relabel that
+dropped `region`, never had a long enough run to expose the 4-minute burst your `for: 10m` clause
+silently swallowed, and never had the host count to make the panel's `topk(10, ...)` query mean
+anything. The data flowed cleanly the whole time.
+
+Production is the only environment that produces those shapes for free, and production is the
+worst place to discover them. Sonda is the synthetic telemetry generator you point at staging
+to make staging behave like production: real metric shapes (gaps, micro-bursts, cardinality
+spikes, sequenced values), real wire formats (Prometheus, InfluxDB, OTLP, JSON, syslog), real
+push to whatever backend you actually run. Write the alert, run the scenario that crosses the
+threshold for exactly the duration you care about, and find out before Friday.
 
 !!! tip "New in 1.0.1 — Sonda is on crates.io"
     Sonda 1.0.1 is the first release published to [crates.io](https://crates.io). You can now
