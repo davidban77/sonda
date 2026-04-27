@@ -34,6 +34,7 @@ use rskafka::{
     },
     record::Record,
 };
+use rustls_pki_types::pem::PemObject;
 use tokio::runtime::Runtime;
 
 use crate::sink::retry::RetryPolicy;
@@ -97,7 +98,7 @@ fn build_rustls_config(ca_cert: Option<&str>) -> Result<rustls::ClientConfig, So
                 ))
             })?;
 
-            let certs: Vec<_> = rustls_pemfile::certs(&mut pem_data.as_slice())
+            let certs: Vec<_> = rustls_pki_types::CertificateDer::pem_slice_iter(&pem_data)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| {
                     SondaError::Sink(std::io::Error::new(
