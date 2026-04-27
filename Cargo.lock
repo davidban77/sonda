@@ -2093,6 +2093,7 @@ dependencies = [
  "serde_yaml_ng",
  "sonda-core",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http",

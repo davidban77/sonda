@@ -276,15 +276,33 @@ enum ParsedBody {
 /// subset of YAML, so the transcoded text parses byte-for-byte identically
 /// to the equivalent hand-written YAML.
 ///
-/// The server has no filesystem pack catalog; pack references in posted
-/// scenarios are resolved against an empty [`InMemoryPackResolver`] and will
-/// surface as a compile error. Real pack delivery over HTTP is deferred to a
-/// future endpoint.
+/// Pack references (`pack: <name>`) are resolved against the server's startup
+/// pack catalog (loaded from `SONDA_PACK_PATH`). Bodies referencing a pack
+/// that is not in the catalog surface as a compile error with the missing
+/// pack name and the searched paths.
 ///
 /// Returns a descriptive error string on failure. The handler maps all
 /// failures to `400 Bad Request` because the server contract is "POST v2
 /// YAML/JSON"; anything else is ill-formed by contract.
-fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, String> {
+/// Walk the error source chain and join Display strings with `: `, so a 400
+/// response carries the failing pack name / search path detail instead of a
+/// bare `expand error`.
+fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = err.to_string();
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = err.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
+
+fn parse_body(
+    body: &[u8],
+    headers: &HeaderMap,
+    pack_resolver: &InMemoryPackResolver,
+) -> Result<ParsedBody, String> {
     let text = yaml_body_text(body, headers)?;
 
     let version = detect_version(&text);
@@ -292,9 +310,12 @@ fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, String> {
         return Err(format!("body is not a v2 scenario. {V1_REJECTION_HINT}"));
     }
 
-    let resolver = InMemoryPackResolver::new();
-    let entries = compile_scenario_file(&text, &resolver)
-        .map_err(|e| format!("v2 scenario body failed to compile: {e}"))?;
+    let entries = compile_scenario_file(&text, pack_resolver).map_err(|e| {
+        format!(
+            "v2 scenario body failed to compile: {}",
+            format_error_chain(&e)
+        )
+    })?;
 
     if entries.is_empty() {
         return Err("v2 scenario body produced zero entries".to_string());
@@ -515,7 +536,7 @@ pub async fn post_scenario(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     // 1. Parse the body, detecting single vs multi-scenario.
-    let parsed = parse_body(&body, &headers).map_err(|msg| {
+    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|msg| {
         warn!(error = %msg, "POST /scenarios: invalid request body");
         bad_request(msg)
     })?;
@@ -885,10 +906,11 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 ///
 /// * `limit` — maximum number of events to return (default 100, max 1000).
 ///
-/// # Error responses
+/// # Responses
 ///
+/// * `200 OK` — Prometheus text exposition (possibly empty when no events
+///   are buffered between scrapes).
 /// * `404 Not Found` — scenario ID not found.
-/// * `204 No Content` — scenario exists but no metric events are buffered.
 pub async fn get_scenario_metrics(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -909,12 +931,13 @@ pub async fn get_scenario_metrics(
     // Drain recent metric events from the handle's stats buffer.
     let events = handle.recent_metrics();
 
-    if events.is_empty() {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
-
-    // Apply the limit: take at most `limit` events from the end (most recent).
-    let events_to_encode = if events.len() > limit {
+    // Empty buffer renders as `200 OK` with an empty Prometheus exposition,
+    // matching the contract Prometheus / vmagent / Telegraf scrapers expect.
+    // Returning 204 here breaks scrapers that use `curl --fail` or treat
+    // anything but 200 as an exposition error.
+    let events_to_encode: &[_] = if events.is_empty() {
+        &[]
+    } else if events.len() > limit {
         &events[events.len() - limit..]
     } else {
         &events
@@ -1977,8 +2000,12 @@ scenarios:
     fn parse_body_accepts_v2_metrics_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(VALID_METRICS_YAML.as_bytes(), &headers)
-            .expect("v2 metrics body must parse");
+        let parsed = parse_body(
+            VALID_METRICS_YAML.as_bytes(),
+            &headers,
+            &InMemoryPackResolver::new(),
+        )
+        .expect("v2 metrics body must parse");
         match parsed {
             ParsedBody::Single(entry) => match *entry {
                 ScenarioEntry::Metrics(c) => assert_eq!(c.name, "test_metric"),
@@ -1993,8 +2020,12 @@ scenarios:
     fn parse_body_accepts_v2_logs_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed =
-            parse_body(VALID_LOGS_YAML.as_bytes(), &headers).expect("v2 logs body must parse");
+        let parsed = parse_body(
+            VALID_LOGS_YAML.as_bytes(),
+            &headers,
+            &InMemoryPackResolver::new(),
+        )
+        .expect("v2 logs body must parse");
         match parsed {
             ParsedBody::Single(entry) => match *entry {
                 ScenarioEntry::Logs(c) => assert_eq!(c.name, "test_logs"),
@@ -2016,8 +2047,8 @@ generator:
   type: constant
   value: 1.0
 ";
-        let err =
-            parse_body(v1_yaml.as_bytes(), &headers).expect_err("v1 flat YAML must be rejected");
+        let err = parse_body(v1_yaml.as_bytes(), &headers, &InMemoryPackResolver::new())
+            .expect_err("v1 flat YAML must be rejected");
         assert!(
             err.contains("v2"),
             "rejection must mention v2 requirement, got: {err}"
@@ -2042,7 +2073,7 @@ scenarios:
       type: constant
       value: 1.0
 ";
-        let err = parse_body(v1_multi.as_bytes(), &headers)
+        let err = parse_body(v1_multi.as_bytes(), &headers, &InMemoryPackResolver::new())
             .expect_err("v1 multi-scenario YAML must be rejected");
         assert!(
             err.contains("v2"),
@@ -2055,7 +2086,8 @@ scenarios:
     fn parse_body_rejects_garbage_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let err = parse_body(b"not valid: [}{", &headers).expect_err("garbage must fail");
+        let err = parse_body(b"not valid: [}{", &headers, &InMemoryPackResolver::new())
+            .expect_err("garbage must fail");
         assert!(!err.is_empty(), "error message must not be empty");
     }
 
@@ -2081,8 +2113,12 @@ scenarios:
                 }
             ]
         });
-        let parsed =
-            parse_body(json.to_string().as_bytes(), &headers).expect("v2 JSON body must parse");
+        let parsed = parse_body(
+            json.to_string().as_bytes(),
+            &headers,
+            &InMemoryPackResolver::new(),
+        )
+        .expect("v2 JSON body must parse");
         assert!(matches!(parsed, ParsedBody::Single(_)));
     }
 
@@ -2091,7 +2127,8 @@ scenarios:
     fn parse_body_rejects_invalid_json() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        let err = parse_body(b"not json", &headers).expect_err("invalid JSON must fail");
+        let err = parse_body(b"not json", &headers, &InMemoryPackResolver::new())
+            .expect_err("invalid JSON must fail");
         assert!(!err.is_empty(), "error message must not be empty");
     }
 
@@ -3072,19 +3109,22 @@ scenarios:
         );
     }
 
-    // ---- Metrics scrape: 204 when no metrics buffered -----------------------
+    // ---- Metrics scrape: empty buffer returns 200 with empty body -----------
 
-    /// GET /scenarios/{id}/metrics returns 204 No Content when the buffer is empty.
+    /// Empty buffer must render as `200 OK` with an empty Prometheus exposition
+    /// (the contract Prometheus / vmagent / Telegraf scrapers expect). 204
+    /// breaks scrapers that use `curl --fail`.
     #[tokio::test]
-    async fn metrics_endpoint_empty_buffer_returns_204() {
+    async fn metrics_endpoint_empty_buffer_returns_200_empty_body() {
         let h = make_handle_with_metrics("id-metrics-empty", "empty_metrics", vec![]);
         let app = router_with_handles(vec![h]);
 
         let resp = get_metrics_req(app, "id-metrics-empty").await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::NO_CONTENT,
-            "empty metrics buffer must return 204 No Content"
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.is_empty(),
+            "empty buffer must render as empty Prometheus exposition, got: {body:?}"
         );
     }
 
@@ -3188,38 +3228,24 @@ scenarios:
         );
     }
 
-    /// limit=0 returns 204 No Content (zero events requested).
+    /// `limit=0` drains the buffer but encodes zero events; returns 200 with empty body.
     #[tokio::test]
-    async fn metrics_endpoint_limit_zero_returns_no_content_after_drain() {
+    async fn metrics_endpoint_limit_zero_returns_200_empty_body() {
         let events = vec![make_metric_event("up", 1.0)];
         let h = make_handle_with_metrics("id-metrics-lim0", "lim0_test", events);
         let app = router_with_handles(vec![h]);
 
-        // limit=0 means take 0 events from the drained buffer. But drain
-        // still happens. The implementation drains first, then limits. With
-        // limit=0, events_to_encode is empty, so we should get the encoded
-        // output of zero events. Since the events are drained and the
-        // limited slice is empty, the encode loop produces nothing.
-        // However, the check for events.is_empty() happens BEFORE the limit
-        // is applied, so if the buffer had events the status is 200.
-        // Let's verify what actually happens.
         let resp = get_metrics_with_limit(app, "id-metrics-lim0", 0).await;
-        // The implementation drains 1 event, events is not empty, then takes
-        // the last 0 from the end: &events[1..] which is an empty slice.
-        // The encoder loop runs 0 times, buf is empty. It returns 200 with
-        // empty body (not 204, because the is_empty check passed before limit).
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "limit=0 with non-empty buffer drains events but encodes zero, returns 200 with empty body"
-        );
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // ---- Metrics scrape: drain clears buffer --------------------------------
 
-    /// After scraping, a second request returns 204 because the buffer was drained.
+    /// After scraping, a second request returns 200 with an empty body because
+    /// the buffer was drained. Prometheus contract: 200 with empty exposition,
+    /// not 204.
     #[tokio::test]
-    async fn metrics_endpoint_drain_clears_buffer_second_request_returns_204() {
+    async fn metrics_endpoint_drain_clears_buffer_second_request_returns_200_empty() {
         let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
         let h = make_handle_with_metrics("id-metrics-drain", "drain_test", events);
         let state = AppState::new();
@@ -3228,30 +3254,19 @@ scenarios:
             map.insert(h.id.clone(), h);
         }
 
-        // First request: should return 200 with Prometheus text.
         let app1 = router(state.clone());
         let resp1 = get_metrics_req(app1, "id-metrics-drain").await;
-        assert_eq!(
-            resp1.status(),
-            StatusCode::OK,
-            "first scrape must return 200 with metrics"
-        );
-        let body1 = body_string(resp1).await;
-        assert!(
-            !body1.is_empty(),
-            "first scrape must return non-empty Prometheus text"
-        );
+        assert_eq!(resp1.status(), StatusCode::OK);
+        assert!(!body_string(resp1).await.is_empty());
 
-        // Second request: buffer is now drained, should return 204.
         let app2 = router(state.clone());
         let resp2 = get_metrics_req(app2, "id-metrics-drain").await;
-        assert_eq!(
-            resp2.status(),
-            StatusCode::NO_CONTENT,
-            "second scrape must return 204 No Content because buffer was drained"
+        assert_eq!(resp2.status(), StatusCode::OK);
+        assert!(
+            body_string(resp2).await.is_empty(),
+            "drained buffer must render as empty Prometheus exposition"
         );
 
-        // Clean up.
         cleanup_scenarios(&state);
     }
 
@@ -4087,8 +4102,12 @@ scenarios:
     fn parse_body_returns_multi_for_v2_scenarios_array() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(VALID_MULTI_YAML.as_bytes(), &headers)
-            .expect("v2 multi YAML body must parse");
+        let parsed = parse_body(
+            VALID_MULTI_YAML.as_bytes(),
+            &headers,
+            &InMemoryPackResolver::new(),
+        )
+        .expect("v2 multi YAML body must parse");
         match parsed {
             ParsedBody::Multi(entries) => {
                 assert_eq!(entries.len(), 2, "multi YAML must produce 2 entries");

@@ -4,6 +4,7 @@
 //! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
 mod auth;
+mod packs;
 mod routes;
 mod state;
 
@@ -106,7 +107,8 @@ async fn main() -> anyhow::Result<()> {
         info!("API key authentication disabled — all endpoints are public");
     }
 
-    let state = AppState::with_api_key(api_key);
+    let pack_resolver = packs::load_pack_resolver(&packs::build_search_path());
+    let state = AppState::with_packs(api_key, pack_resolver);
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
