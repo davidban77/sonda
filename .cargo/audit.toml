@@ -1,0 +1,14 @@
+[advisories]
+# RUSTSEC-2026-0105 — `core2` is unmaintained (and all versions yanked).
+#
+# `core2 0.4.0` is pulled in transitively via:
+#   sonda-core (kafka feature) -> rskafka 0.6.0 -> rsasl 2.2.1 -> core2 0.4.0
+#
+# rskafka 0.6.0 is the latest published version; rsasl 2.2.1 is the latest
+# rsasl release. There is no upstream bump available to remove the dep.
+# Re-evaluate when a new rskafka release lands. Tracked in issue #209.
+#
+# The companion `yanked` warning for the same crate is intentionally left
+# visible (cargo-audit has no per-crate yanked silencing) — same root cause,
+# same justification, surfaces the same actionable signal in CI logs.
+ignore = ["RUSTSEC-2026-0105"]

@@ -15,7 +15,7 @@ readme = "../README.md"
 default = ["config"]
 config = ["dep:serde_yaml_ng"]
 http = ["dep:ureq"]
-kafka = ["dep:rskafka", "dep:tokio", "dep:chrono", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots"]
+kafka = ["dep:rskafka", "dep:tokio", "dep:chrono", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq"]
 otlp = ["dep:tonic", "dep:prost", "dep:tokio", "dep:bytes", "dep:http"]
 
@@ -29,7 +29,7 @@ rskafka = { version = "0.6.0", default-features = false, features = ["transport-
 tokio = { version = "1", features = ["rt", "net", "time", "macros"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"], optional = true }
-rustls-pemfile = { version = "2", optional = true }
+rustls-pki-types = { version = "1", features = ["std"], optional = true }
 webpki-roots = { version = "1", optional = true }
 prost = { version = "0.14", optional = true }
 snap = { version = "1", optional = true }
