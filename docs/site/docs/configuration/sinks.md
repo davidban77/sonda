@@ -146,7 +146,7 @@ HTTP POSTs with the correct protocol headers.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Remote write endpoint URL. |
-| `batch_size` | integer | no | `100` | Flush threshold in number of TimeSeries entries. |
+| `batch_size` | integer | no | `5` | Flush threshold in number of TimeSeries entries. Raise for high-rate scenarios. |
 
 ```yaml title="Remote write sink"
 encoder:
@@ -154,7 +154,7 @@ encoder:
 sink:
   type: remote_write
   url: "http://localhost:8428/api/v1/write"
-  batch_size: 100
+  batch_size: 5
 ```
 
 **CLI equivalent** -- use `--encoder remote_write --sink remote_write --endpoint`:
@@ -368,7 +368,7 @@ labels are used as Loki stream labels in the push API envelope.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Base URL of the Loki instance. |
-| `batch_size` | integer | no | `100` | Flush threshold in number of log entries. |
+| `batch_size` | integer | no | `5` | Flush threshold in number of log entries. Raise for high-rate scenarios. |
 
 ```yaml title="Loki sink with top-level labels"
 version: 2
@@ -414,7 +414,7 @@ an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends via gRP
 |-----------|------|----------|---------|-------------|
 | `endpoint` | string | yes | -- | gRPC endpoint URL of the OTEL Collector (e.g. `"http://localhost:4317"`). |
 | `signal_type` | string | yes | -- | `"metrics"` or `"logs"` -- must match the scenario signal type. |
-| `batch_size` | integer | no | `100` | Flush threshold in number of data points or log records. |
+| `batch_size` | integer | no | `5` | Flush threshold in number of data points or log records. Raise for high-rate scenarios. |
 
 ```yaml title="OTLP gRPC sink (metrics)"
 encoder:
@@ -423,7 +423,7 @@ sink:
   type: otlp_grpc
   endpoint: "http://localhost:4317"
   signal_type: metrics
-  batch_size: 100
+  batch_size: 5
 ```
 
 ```yaml title="OTLP gRPC sink (logs)"

@@ -23,9 +23,9 @@ Sonda has two kinds of batching depending on the sink type:
 | `udp` | None (immediate) | -- | -- | -- |
 | `http_push` | Application-level | 4 KiB | Yes | bytes |
 | `kafka` | Application-level | 64 KiB | No | bytes |
-| `loki` | Application-level | 100 entries | Yes | entries |
-| `remote_write` | Application-level | 100 entries | Yes | entries |
-| `otlp_grpc` | Application-level | 100 entries | Yes | entries |
+| `loki` | Application-level | 5 entries | Yes | entries |
+| `remote_write` | Application-level | 5 entries | Yes | entries |
+| `otlp_grpc` | Application-level | 5 entries | Yes | entries |
 
 ### OS-level buffering (stdout, file, tcp)
 
@@ -75,40 +75,40 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
 
 === "remote_write"
 
-    `batch_size` is in **TimeSeries entries**. Default: `100`.
+    `batch_size` is in **TimeSeries entries**. Default: `5`.
 
-    ```yaml title="Smaller remote write batches"
+    ```yaml title="Larger remote write batches for high-rate scenarios"
     encoder:
       type: remote_write
     sink:
       type: remote_write
       url: "http://localhost:8428/api/v1/write"
-      batch_size: 10  # flush every 10 time series
+      batch_size: 100  # fewer requests at thousands of events/s
     ```
 
 === "loki"
 
-    `batch_size` is in **log entries**. Default: `100`.
+    `batch_size` is in **log entries**. Default: `5`.
 
-    ```yaml title="Smaller Loki batches"
+    ```yaml title="Larger Loki batches for high-rate scenarios"
     sink:
       type: loki
       url: "http://localhost:3100"
-      batch_size: 20  # flush every 20 log lines
+      batch_size: 100  # fewer requests at thousands of events/s
     ```
 
 === "otlp_grpc"
 
-    `batch_size` is in **data points / log records**. Default: `100`.
+    `batch_size` is in **data points / log records**. Default: `5`.
 
-    ```yaml title="Smaller OTLP batches"
+    ```yaml title="Larger OTLP batches for high-rate scenarios"
     encoder:
       type: otlp
     sink:
       type: otlp_grpc
       endpoint: "http://localhost:4317"
       signal_type: metrics
-      batch_size: 10  # flush every 10 data points
+      batch_size: 100  # fewer requests at thousands of events/s
     ```
 
 ??? tip "Choosing a batch size"

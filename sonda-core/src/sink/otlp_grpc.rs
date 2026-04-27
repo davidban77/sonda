@@ -36,8 +36,8 @@ use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
-/// Default batch size in data point / log record entries (not bytes).
-pub const DEFAULT_BATCH_SIZE: usize = 100;
+/// Default batch size in data point / log record entries — sized so low-rate scenarios flush within seconds.
+pub const DEFAULT_BATCH_SIZE: usize = 5;
 
 /// The gRPC service path for the OTLP metrics export RPC.
 const METRICS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
@@ -487,8 +487,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn default_batch_size_is_100() {
-        assert_eq!(DEFAULT_BATCH_SIZE, 100);
+    fn default_batch_size_is_5() {
+        assert_eq!(DEFAULT_BATCH_SIZE, 5);
     }
 
     // -----------------------------------------------------------------------

@@ -22,6 +22,9 @@ use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
+/// Default batch size in entries — sized so low-rate scenarios flush within seconds.
+pub const DEFAULT_BATCH_SIZE: usize = 5;
+
 /// Delivers encoded log lines to Grafana Loki via its HTTP push API.
 ///
 /// Log lines are accumulated in a batch. When the batch reaches `batch_size` entries,
@@ -908,28 +911,31 @@ batch_size: 50
     }
 
     #[test]
-    fn create_sink_loki_uses_default_batch_size_of_100_when_none() {
-        // We can't inspect the internal batch_size directly, but we can verify
-        // construction succeeds (batch_size=100 is valid) and write 99 lines
-        // without triggering a flush (no server running → would fail if it tried).
+    fn default_batch_size_is_5() {
+        assert_eq!(DEFAULT_BATCH_SIZE, 5);
+    }
+
+    #[test]
+    fn create_sink_loki_with_no_batch_size_uses_default() {
+        // Construction succeeds with `batch_size: None`; writing fewer entries
+        // than DEFAULT_BATCH_SIZE must not trigger a flush attempt against the
+        // non-existent server.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
-        drop(listener); // No server — any HTTP call would fail.
+        drop(listener);
 
         let url = format!("http://127.0.0.1:{port}");
         let config = SinkConfig::Loki {
             url,
-            batch_size: None, // should default to 100
+            batch_size: None,
             retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
 
-        // Write 99 lines — must not trigger a flush (no server running).
-        for i in 0..99u32 {
+        for i in 0..(DEFAULT_BATCH_SIZE - 1) as u32 {
             sink.write(format!("line {i}\n").as_bytes())
                 .expect("write must succeed below batch_size");
         }
-        // If we reach here without an error, batch_size defaults to ≥ 100.
     }
 
     #[test]
