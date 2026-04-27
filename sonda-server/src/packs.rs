@@ -148,8 +148,7 @@ mod tests {
         write_pack(a.path(), "p.yaml", "shared_name");
         write_pack(b.path(), "p.yaml", "shared_name");
 
-        let resolver =
-            load_pack_resolver(&[a.path().to_path_buf(), b.path().to_path_buf()]);
+        let resolver = load_pack_resolver(&[a.path().to_path_buf(), b.path().to_path_buf()]);
 
         // First-match-wins: only one registration succeeds; resolution still
         // returns a pack.
