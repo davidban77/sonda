@@ -42,7 +42,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # Match the version pinned in rust-toolchain.toml. Using `@stable` installs
+        # rust-std for the matrix target under the "stable" rustup install, but
+        # rust-toolchain.toml then activates the "1.95.0" install (a separate
+        # rustup name) which does not have the target std — surfacing as
+        # `error[E0463]: can't find crate for core`. Bumping rust-toolchain.toml
+        # requires bumping this version too.
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: ${{ matrix.target }}
 
