@@ -412,7 +412,7 @@ pub fn create_sink(
             batch_size,
             retry: retry_cfg,
         } => {
-            let bs = batch_size.unwrap_or(100);
+            let bs = batch_size.unwrap_or(loki::DEFAULT_BATCH_SIZE);
             let loki_labels = labels.cloned().unwrap_or_default();
             let rp = retry_cfg
                 .as_ref()

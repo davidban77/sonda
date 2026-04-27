@@ -23,8 +23,8 @@ use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::{EncoderError, SondaError};
 
-/// Default batch size in TimeSeries entries (not bytes).
-pub const DEFAULT_BATCH_SIZE: usize = 100;
+/// Default batch size in TimeSeries entries — sized so low-rate scenarios flush within seconds.
+pub const DEFAULT_BATCH_SIZE: usize = 5;
 
 /// Delivers metric events to a Prometheus remote write endpoint.
 ///
