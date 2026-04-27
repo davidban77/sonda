@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.1](https://github.com/davidban77/sonda/compare/v1.2.0...v1.2.1) (2026-04-27)
+
+
+### Bug Fixes
+
+* **examples:** bump otel-collector-contrib to 0.150.1 + migrate loki exporter ([#282](https://github.com/davidban77/sonda/issues/282)) ([9828291](https://github.com/davidban77/sonda/commit/9828291dfb4d783bf7ba19a5a6e98f3e47e93da1))
+
+
+### CI/CD
+
+* bump grafana/loki from 3.5.5 to 3.7.1 in /examples ([#270](https://github.com/davidban77/sonda/issues/270)) ([cee3978](https://github.com/davidban77/sonda/commit/cee3978ca7176096c30c41e5dfbd8830d76d5509))
+* bump mendhak/http-https-echo from 35 to 40 in /examples ([#269](https://github.com/davidban77/sonda/issues/269)) ([183fb10](https://github.com/davidban77/sonda/commit/183fb10c91daed4227b6de800f76e9d4569e6540))
+* bump prom/alertmanager from v0.28.1 to v0.32.0 in /examples ([#275](https://github.com/davidban77/sonda/issues/275)) ([0ca0403](https://github.com/davidban77/sonda/commit/0ca04035abf5a77d0e54ddb67072fe3d00db8dbb))
+* bump softprops/action-gh-release from 2 to 3 ([#200](https://github.com/davidban77/sonda/issues/200)) ([816d2a2](https://github.com/davidban77/sonda/commit/816d2a26d7631ba2e26d50011dffccbf65e96e3d))
+* bump victoriametrics/vmalert from v1.108.1 to v1.140.0 in /examples ([#274](https://github.com/davidban77/sonda/issues/274)) ([fe5abc2](https://github.com/davidban77/sonda/commit/fe5abc264153dde6aaf8a666bba475637ea0ceb4))
+
 ## [1.2.0](https://github.com/davidban77/sonda/compare/v1.1.0...v1.2.0) (2026-04-26)
 
 
