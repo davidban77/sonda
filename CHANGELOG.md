@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.2](https://github.com/davidban77/sonda/compare/v1.2.1...v1.2.2) (2026-04-27)
+
+
+### Bug Fixes
+
+* **server:** resolve packs from SONDA_PACK_PATH + scrape endpoint returns 200, not 204 ([#286](https://github.com/davidban77/sonda/issues/286)) ([e15deba](https://github.com/davidban77/sonda/commit/e15deba093651e829255d70a5ccfd85fa4b954ff))
+* **sinks:** lower default batch_size for remote_write/loki/otlp_grpc 100 → 5 ([#285](https://github.com/davidban77/sonda/issues/285)) ([70b6048](https://github.com/davidban77/sonda/commit/70b60489d451864b9689a3f60c4be6e3fcb74b41))
+
+
+### Miscellaneous
+
+* **deps:** clear cargo audit warnings (5 → 1, residual documented) ([#283](https://github.com/davidban77/sonda/issues/283)) ([a1a9bbd](https://github.com/davidban77/sonda/commit/a1a9bbd32ae10e40f6f7698452445b72c530c4ac))
+
 ## [1.2.1](https://github.com/davidban77/sonda/compare/v1.2.0...v1.2.1) (2026-04-27)
 
 
