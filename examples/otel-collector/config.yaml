@@ -43,8 +43,11 @@ exporters:
     endpoint: http://victoriametrics:8428/api/v1/write
     tls:
       insecure: true
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
+  # Loki gained native OTLP support, and the standalone `loki` exporter was
+  # removed from the contrib distribution after v0.130. Use `otlphttp` against
+  # Loki's `/otlp` endpoint instead.
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
     retry_on_failure:
       enabled: false
     sending_queue:
@@ -62,4 +65,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [batch, resource]
-      exporters: [loki, debug]
+      exporters: [otlp_http/loki, debug]
