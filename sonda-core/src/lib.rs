@@ -20,6 +20,7 @@
 
 pub mod compiler;
 pub mod config;
+pub mod emit;
 pub mod encoder;
 pub mod generator;
 pub mod model;

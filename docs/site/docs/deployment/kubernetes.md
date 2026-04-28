@@ -381,7 +381,7 @@ The chart sets `SONDA_API_KEY` in the container environment from the Secret. On 
 will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/* endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/* and /events endpoints
 ```
 
 ### Authenticated API calls

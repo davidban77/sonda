@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if api_key.is_some() {
-        info!("API key authentication enabled for /scenarios/* endpoints");
+        info!("API key authentication enabled for /scenarios/* and /events endpoints");
     } else {
         info!("API key authentication disabled — all endpoints are public");
     }

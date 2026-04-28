@@ -21,9 +21,16 @@ src/
 ├── auth.rs             ← require_api_key middleware (Bearer token), unauthorized() helper,
 │                         extract_bearer_token(), constant-time key comparison via subtle
 ├── routes/
-│   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*)
-│                         sub-routers; applies auth middleware via route_layer on protected routes
+│   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*,
+│                         /events) sub-routers; applies auth middleware via route_layer on protected routes
 │   ├── health.rs       ← GET /health → {"status": "ok"}
+│   ├── events.rs       ← POST /events: synchronous single-event emission. Tagged-enum
+│                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
+│                         delegates to sonda_core::emit::{emit_log, emit_metric} via spawn_blocking.
+│                         Maps SondaError variants to HTTP status (Config→422, Sink→502, others→500).
+│   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
+│                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,
+│                          log_warnings) used by both /scenarios and /events.
 │   └── scenarios.rs    ← POST /scenarios (create single or multi-scenario batch from v2 YAML/JSON),
 │                         GET /scenarios (list),
 │                         GET /scenarios/{id} (inspect with stats),
@@ -50,6 +57,9 @@ tests/
 │                         Spawn helpers use `--port 0` + read the stdout announce.
 │                         All test files use `mod common;` for these helpers.
 ├── auth.rs             ← E2E tests: auth via --api-key flag, SONDA_API_KEY env var, no-key backwards compat
+├── events.rs           ← POST /events E2E: logs + metrics happy paths, malformed body, unknown
+│                         signal_type, missing fields, invalid sink config (422), sink-push 5xx (502),
+│                         auth (401), loopback warning surfaced on success
 ├── health.rs           ← server startup, GET /health, unknown routes, SIGTERM shutdown
 ├── integration.rs      ← full lifecycle: POST metrics + logs → GET list → stats → DELETE → verify stopped
 └── scenarios.rs        ← POST /scenarios unit-level tests (valid/invalid YAML, JSON, validation errors)
@@ -66,6 +76,7 @@ tests/
 | GET    | /scenarios/{id}/stats   | Detailed live stats: rate, target_rate, events, gap/burst state, uptime |
 | GET    | /scenarios/{id}/metrics | Latest metrics in Prometheus text format (scrapeable)   |
 | DELETE | /scenarios/{id}         | Stop a running scenario, return final stats, remove from map |
+| POST   | /events                 | Emit one log or metric event synchronously. Body is a `signal_type`-tagged JSON object (`logs` or `metrics`) carrying `labels`, the per-branch payload (`log` or `metric`), `encoder`, and `sink`. The handler builds the event, delegates encoding + delivery to `sonda_core::emit::{emit_log, emit_metric}` inside `tokio::task::spawn_blocking`, and returns `{sent, signal_type, latency_ms, warnings}` once the sink ACKs. Sink-push 5xx → 502; sink/encoder config validation failure → 422; malformed body / unknown `signal_type` / missing per-branch field → 400. |
 
 ## Error Handling
 

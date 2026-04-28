@@ -36,6 +36,11 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
 `POST /scenarios`. The server accepts both `text/yaml` (or `application/x-yaml`) and
 `application/json` content types.
 
+!!! tip "Need just one event?"
+    `POST /scenarios` is for sustained emission over time. To fire a single log or
+    metric synchronously and block until the sink ACKs, use the
+    [Single-Event API (`POST /events`)](events.md) instead.
+
 !!! warning "v2 scenarios only"
     The server only accepts v2 bodies (`version: 2` at the top level). Legacy v1 bodies are
     rejected with `400 Bad Request` and a migration hint. See
@@ -341,12 +346,14 @@ shape conversions.
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state |
 | GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format |
+| POST | `/events` | Emit one log or metric event synchronously. See [Single-Event API](events.md). |
 
 ## Authentication
 
 You can protect scenario endpoints with API key authentication. When enabled, all
-`/scenarios/*` requests must include a bearer token. The `/health` endpoint is always
-public, so health probes and load balancer checks work without credentials.
+`/scenarios/*` requests and `POST /events` must include a bearer token. The `/health`
+endpoint is always public, so health probes and load balancer checks work without
+credentials.
 
 ### Enabling authentication
 
@@ -367,7 +374,7 @@ Pass an API key via the `--api-key` flag or the `SONDA_API_KEY` environment vari
 When the server starts with a key configured, you will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/* endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/* and /events endpoints
 ```
 
 !!! info "No key = no auth"
@@ -416,6 +423,7 @@ JSON error body:
 | `DELETE /scenarios/{id}` | Yes |
 | `GET /scenarios/{id}/stats` | Yes |
 | `GET /scenarios/{id}/metrics` | Yes |
+| `POST /events` | Yes |
 
 !!! warning "Prometheus scraping with auth"
     If you enable authentication, your Prometheus scrape config must include the bearer

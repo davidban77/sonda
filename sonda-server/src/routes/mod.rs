@@ -9,8 +9,10 @@
 //! The `route_layer` approach ensures that only matched routes run through the
 //! auth middleware. Unmatched paths get a plain 404 from the router, not a 401.
 
+pub mod events;
 pub mod health;
 pub mod scenarios;
+pub mod sink_warnings;
 
 use axum::middleware;
 use axum::routing::get;
@@ -46,6 +48,7 @@ pub fn router(state: AppState) -> Router {
             "/scenarios/{id}/metrics",
             get(scenarios::get_scenario_metrics),
         )
+        .route("/events", axum::routing::post(events::post_events))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

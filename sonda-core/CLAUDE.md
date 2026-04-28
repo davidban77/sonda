@@ -9,6 +9,9 @@ encodes data, or delivers output — it lives here.
 src/
 ├── lib.rs              ← public API surface, re-exports, SondaError + sub-enums
 │                          (ConfigError, GeneratorError, EncoderError, RuntimeError)
+├── emit.rs             ← synchronous single-event helpers: emit_log, emit_metric.
+│                          Build a one-shot encoder + sink, encode one event, write,
+│                          flush, drop. Used by the sonda-server `POST /events` handler.
 ├── util.rs             ← pub(crate) shared utility functions (splitmix64 deterministic hash)
 ├── packs/
 │   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
