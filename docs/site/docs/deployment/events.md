@@ -1,11 +1,8 @@
 # Single-Event API
 
-`POST /events` emits **one** log or metric event synchronously. The request blocks until the
-sink ACKs delivery, then returns the latency it took. Use it when you want a single signal
-to land *now* and you want to know it landed before continuing.
+`POST /events` emits **one** log or metric event synchronously. The request blocks until the sink ACKs delivery, then returns the latency it took. Use it when you want a single signal to land *now* and you want to know it landed before continuing.
 
-The flat JSON body is the easy alternative to the v2 scenario shape — paste the encoder
-and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
+The flat JSON body is the easy alternative to the v2 scenario shape — paste the encoder and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
 
 ## When to use `/events` vs `/scenarios`
 
@@ -14,25 +11,18 @@ and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
 | One signal, one moment, blocks until delivered | **`POST /events`** |
 | A stream of signals at a sustained rate | [`POST /scenarios`](sonda-server.md#start-a-scenario) |
 
-Both share the same encoders, sinks, auth, and loopback-warning behavior. They differ only
-in lifecycle:
+Both share the same encoders, sinks, auth, and loopback-warning behavior. They differ only in lifecycle:
 
-- **`/events`** is synchronous. The handler encodes the event, pushes it through the sink,
-  and returns `{sent, signal_type, latency_ms}` once the destination ACKs (typically
-  5–30 ms). There is no scenario ID — the call is fire-and-confirm.
-- **`/scenarios`** is asynchronous. The server returns a scenario ID immediately and the
-  scenario runs in the background until its `duration` expires or you call
-  `DELETE /scenarios/{id}`.
+- **`/events`** is synchronous. The handler encodes the event, pushes it through the sink, and returns `{sent, signal_type, latency_ms}` once the destination ACKs (typically 5–30 ms). There is no scenario ID — the call is fire-and-confirm.
+- **`/scenarios`** is asynchronous. The server returns a scenario ID immediately and the scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
 
 !!! tip "Two real-world drivers"
     - **Workshop CLI** — fire teaching events without learning the v2 YAML shape.
-    - **Live demos** — a single `curl` on stage produces a Loki log line that Grafana picks
-      up as a panel annotation within ~5–15 ms.
+    - **Live demos** — a single `curl` on stage produces a Loki log line that Grafana picks up as a panel annotation within ~5–15 ms.
 
 ## Request body
 
-The body is a JSON object tagged by `signal_type`. The discriminator selects which
-per-branch field is required (`log` for logs, `metric` for metrics).
+The body is a JSON object tagged by `signal_type`. The discriminator selects which per-branch field is required (`log` for logs, `metric` for metrics).
 
 === "Logs"
 
@@ -100,8 +90,7 @@ per-branch field is required (`log` for logs, `metric` for metrics).
 | `name` | string | yes | Metric name. Must match `[a-zA-Z_:][a-zA-Z0-9_:]*`. |
 | `value` | number (f64) | yes | Sample value. |
 
-The on-wire metric shape (counter, gauge, histogram lines, TimeSeries protobuf, …) is
-determined by the `encoder` you pick — there is no separate `metric_type` field.
+The on-wire metric shape (counter, gauge, histogram lines, TimeSeries protobuf, …) is determined by the `encoder` you pick — there is no separate `metric_type` field.
 
 ## Response
 
@@ -115,12 +104,9 @@ determined by the `encoder` you pick — there is no separate `metric_type` fiel
 }
 ```
 
-`latency_ms` is the wall-clock time the handler spent encoding the event and waiting for
-the sink to ACK.
+`latency_ms` is the wall-clock time the handler spent encoding the event and waiting for the sink to ACK.
 
-When pre-flight checks find advisories (e.g. a sink URL pointing at a loopback host), the
-response includes a `warnings` array. The field is **omitted entirely** when no warnings
-fire, so older clients parse responses unchanged:
+When pre-flight checks find advisories (e.g. a sink URL pointing at a loopback host), the response includes a `warnings` array. The field is **omitted entirely** when no warnings fire, so older clients parse responses unchanged:
 
 ```json title="Response with loopback warning"
 {
@@ -133,8 +119,7 @@ fire, so older clients parse responses unchanged:
 }
 ```
 
-Warnings are informational — they never block delivery. The same message is also written
-to the server log via `tracing::warn!`.
+Warnings are informational — they never block delivery. The same message is also written to the server log via `tracing::warn!`.
 
 ### Errors
 
@@ -150,10 +135,7 @@ All errors share the envelope `{"error": "<short_code>", "detail": "<message>"}`
 
 ## Authentication
 
-`/events` follows the same auth model as `/scenarios`. When the server starts with
-`--api-key <key>` (or `SONDA_API_KEY=<key>`), every request must include
-`Authorization: Bearer <key>`. When no key is configured, `/events` is publicly
-accessible — backwards compatible with existing deployments.
+`/events` follows the same auth model as `/scenarios`. When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request must include `Authorization: Bearer <key>`. When no key is configured, `/events` is publicly accessible — backwards compatible with existing deployments.
 
 ```bash title="Authenticated request"
 curl -X POST http://localhost:8080/events \
@@ -168,13 +150,11 @@ curl -X POST http://localhost:8080/events \
   }'
 ```
 
-See [Authentication](sonda-server.md#authentication) on the Server API page for the full
-configuration reference.
+See [Authentication](sonda-server.md#authentication) on the Server API page for the full configuration reference.
 
 ## Demo: Grafana annotation from one curl
 
-Fire a single log line and watch it appear as a Grafana panel annotation within seconds.
-This works on the **default `sonda-server` binary** — no feature flags required.
+Fire a single log line and watch it appear as a Grafana panel annotation within seconds. This works on the **default `sonda-server` binary** — no feature flags required.
 
 ```bash title="Step 1 — fire the event"
 curl -s -X POST http://127.0.0.1:8080/events \
@@ -195,15 +175,11 @@ curl -s 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode 'limit=1'
 ```
 
-End-to-end latency observed against a real Loki instance: **5–15 ms** from `curl` to ACK.
-Wire a Grafana annotation query against `{event="deploy_start"}` and the panel renders an
-overlay automatically.
+End-to-end latency observed against a real Loki instance: **5–15 ms** from `curl` to ACK. Wire a Grafana annotation query against `{event="deploy_start"}` and the panel renders an overlay automatically.
 
 ## Build-time feature flags
 
-The default `sonda-server` binary supports `loki`, `stdout`, `file`, `tcp`, `udp`,
-`http_push`, `json_lines`, `prometheus_text`, and `syslog`. The Loki annotation demo above
-works out of the box.
+The default `sonda-server` binary supports `loki`, `stdout`, `file`, `tcp`, `udp`, `http_push`, `json_lines`, `prometheus_text`, and `syslog`. The Loki annotation demo above works out of the box.
 
 A few sinks and encoders are gated behind cargo features to keep the default binary small:
 
@@ -213,21 +189,14 @@ A few sinks and encoders are gated behind cargo features to keep the default bin
 | `otlp` encoder, `otlp_grpc` sink | `cargo build --release -p sonda-server -F otlp` |
 | `kafka` sink | `cargo build --release -p sonda-server -F kafka` |
 
-If a request references a type that isn't compiled in, the server returns **422** with a
-clear hint, e.g. `encoder type 'remote_write' requires the 'remote-write' feature: cargo
-build -F remote-write`.
+If a request references a type that isn't compiled in, the server returns **422** with a clear hint, e.g. `encoder type 'remote_write' requires the 'remote-write' feature: cargo build -F remote-write`.
 
 ## Sink URL gotchas
 
-When the server runs in a container, a `sink.url` of `http://localhost:<port>` resolves to
-the **server's own loopback**, not your host. The request still succeeds, but the
-`warnings` array calls out the misconfiguration. In Docker Compose use the service name
-(`http://loki:3100`); in Kubernetes use the in-cluster Service DNS. See
-[Endpoints & networking](endpoints.md) for the full reference.
+When the server runs in a container, a `sink.url` of `http://localhost:<port>` resolves to the **server's own loopback**, not your host. The request still succeeds, but the `warnings` array calls out the misconfiguration. In Docker Compose use the service name (`http://loki:3100`); in Kubernetes use the in-cluster Service DNS. See [Endpoints & networking](endpoints.md) for the full reference.
 
 ## Not in this version
 
-- **Burst path** — there is no `count` or `duration` field. For sustained emission, use
-  [`POST /scenarios`](sonda-server.md#start-a-scenario).
+- **Burst path** — there is no `count` or `duration` field. For sustained emission, use [`POST /scenarios`](sonda-server.md#start-a-scenario).
 - **Trace and flow signal types** — only `logs` and `metrics` are supported.
 - **CLI subcommand** — there is no `sonda emit` yet. The endpoint is the only entry point.

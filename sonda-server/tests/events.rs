@@ -1,7 +1,4 @@
 //! End-to-end tests for `POST /events`.
-//!
-//! These tests spawn the real `sonda-server` binary, post a single
-//! event over HTTP, and verify the response shape and side effects.
 
 mod common;
 
@@ -11,11 +8,6 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Mock Loki server helpers — same pattern as sonda-core's loki.rs tests.
-// ---------------------------------------------------------------------------
-
-/// Bind a TCP listener on an OS-chosen port and return `(listener, base_url)`.
 fn mock_loki_listener() -> (TcpListener, String) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let port = listener.local_addr().expect("local addr").port();
@@ -23,8 +15,6 @@ fn mock_loki_listener() -> (TcpListener, String) {
     (listener, url)
 }
 
-/// Accept one HTTP request from the listener and reply with the given status.
-/// Returns the request body bytes the server sent us.
 fn accept_one_and_respond(listener: TcpListener, status: u16) -> Vec<u8> {
     let (mut stream, _) = listener.accept().expect("accept connection");
     let body = read_http_body(&mut stream);
@@ -55,9 +45,6 @@ fn read_http_body(stream: &mut TcpStream) -> Vec<u8> {
     body
 }
 
-/// Spawn a thread that runs `accept_one_and_respond` on the supplied
-/// listener so the test thread can fire its HTTP request without
-/// deadlocking. Returns a receiver for the captured request body.
 fn spawn_loki_responder(listener: TcpListener, status: u16) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -67,19 +54,11 @@ fn spawn_loki_responder(listener: TcpListener, status: u16) -> mpsc::Receiver<Ve
     rx
 }
 
-// ---------------------------------------------------------------------------
-// Test 1 — happy path, logs.
-// ---------------------------------------------------------------------------
-
-/// POST /events with a logs payload returns 200 and reports
-/// `signal_type: "logs"` plus a `latency_ms` integer.
 #[test]
 fn post_events_logs_happy_path_returns_200() {
     let (port, _guard) = common::start_server();
     let client = common::http_client();
 
-    // Use a temp file as the sink so the test verifies end-to-end delivery
-    // without standing up a network listener.
     let mut path = std::env::temp_dir();
     path.push(format!("sonda-events-logs-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -112,7 +91,6 @@ fn post_events_logs_happy_path_returns_200() {
         "latency_ms must be present and numeric, got: {json}"
     );
 
-    // Side effect: the file received the encoded line.
     let contents = std::fs::read_to_string(&path).expect("read sink file");
     let _ = std::fs::remove_file(&path);
     assert!(
@@ -121,12 +99,6 @@ fn post_events_logs_happy_path_returns_200() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 2 — happy path, metrics.
-// ---------------------------------------------------------------------------
-
-/// POST /events with a metrics payload returns 200 and reports
-/// `signal_type: "metrics"`.
 #[test]
 fn post_events_metrics_happy_path_returns_200() {
     let (port, _guard) = common::start_server();
@@ -168,11 +140,6 @@ fn post_events_metrics_happy_path_returns_200() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 3 — malformed JSON body.
-// ---------------------------------------------------------------------------
-
-/// A garbled JSON body returns 400.
 #[test]
 fn post_events_malformed_json_returns_400() {
     let (port, _guard) = common::start_server();
@@ -190,11 +157,6 @@ fn post_events_malformed_json_returns_400() {
     assert_eq!(json["error"], "bad_request");
 }
 
-// ---------------------------------------------------------------------------
-// Test 4 — unknown signal_type tag.
-// ---------------------------------------------------------------------------
-
-/// `signal_type: "traces"` is not yet supported and returns 400.
 #[test]
 fn post_events_unknown_signal_type_returns_400() {
     let (port, _guard) = common::start_server();
@@ -223,11 +185,6 @@ fn post_events_unknown_signal_type_returns_400() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 5 — missing per-branch field.
-// ---------------------------------------------------------------------------
-
-/// A logs body missing `log.message` returns 400.
 #[test]
 fn post_events_missing_required_log_field_returns_400() {
     let (port, _guard) = common::start_server();
@@ -235,7 +192,7 @@ fn post_events_missing_required_log_field_returns_400() {
 
     let body = serde_json::json!({
         "signal_type": "logs",
-        "log": {"severity": "info"},  // message missing
+        "log": {"severity": "info"},
         "encoder": {"type": "json_lines"},
         "sink": {"type": "stdout"},
     });
@@ -256,12 +213,6 @@ fn post_events_missing_required_log_field_returns_400() {
         .unwrap_or(false));
 }
 
-// ---------------------------------------------------------------------------
-// Test 6 — invalid sink config → 422.
-// ---------------------------------------------------------------------------
-
-/// A sink config with `retry.max_attempts = 0` fails sink construction
-/// with `SondaError::Config`, which the handler maps to 422.
 #[test]
 fn post_events_invalid_sink_config_returns_422() {
     let (port, _guard) = common::start_server();
@@ -294,12 +245,6 @@ fn post_events_invalid_sink_config_returns_422() {
     assert_eq!(json["error"], "unprocessable_entity");
 }
 
-// ---------------------------------------------------------------------------
-// Test 7 — sink push 5xx → 502.
-// ---------------------------------------------------------------------------
-
-/// HTTP client with an extended timeout so the loopback / 5xx tests do
-/// not race the server's blocking sink on slow CI machines.
 fn long_timeout_http_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -307,8 +252,6 @@ fn long_timeout_http_client() -> reqwest::blocking::Client {
         .expect("build long-timeout HTTP client")
 }
 
-/// A real Loki-shaped sink whose target returns 502 surfaces as 502
-/// from `POST /events`.
 #[test]
 fn post_events_sink_push_5xx_returns_502() {
     let (port, _guard) = common::start_server();
@@ -345,11 +288,6 @@ fn post_events_sink_push_5xx_returns_502() {
     assert_eq!(json["error"], "bad_gateway");
 }
 
-// ---------------------------------------------------------------------------
-// Test 8 — auth required, no Bearer → 401.
-// ---------------------------------------------------------------------------
-
-/// When `--api-key` is set, POST /events without a Bearer header returns 401.
 #[test]
 fn post_events_without_auth_returns_401() {
     let (port, _guard) = common::start_server_with(&["--api-key", "test-secret"], &[]);
@@ -374,12 +312,6 @@ fn post_events_without_auth_returns_401() {
     assert_eq!(json["error"], "unauthorized");
 }
 
-// ---------------------------------------------------------------------------
-// Test 9 — loopback warning surfaced on success.
-// ---------------------------------------------------------------------------
-
-/// A loopback Loki URL produces a warning string in the success response
-/// without changing the 200 status.
 #[test]
 fn post_events_loopback_sink_attaches_warning() {
     let (port, _guard) = common::start_server();

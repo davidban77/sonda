@@ -1,6 +1,4 @@
-//! POST /events — synchronous single-event emission. Dispatches on
-//! `signal_type`, builds the event, delegates to `sonda_core::emit`,
-//! returns once the sink ACKs.
+//! POST /events — synchronous single-event emission.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -21,125 +19,56 @@ use tracing::info;
 use crate::routes::sink_warnings::{collect_warnings_for_sink, log_warnings};
 use crate::state::AppState;
 
-// ---- Wire types -------------------------------------------------------------
-
-/// Payload describing a single log event in a `POST /events` request.
 #[derive(Debug, Deserialize)]
 pub struct LogPayload {
-    /// Severity of the log entry: `trace` / `debug` / `info` / `warn`
-    /// / `error` / `fatal` (case-sensitive lowercase).
     pub severity: Severity,
-    /// Human-readable log message.
     pub message: String,
-    /// Optional event-level structured fields.
     #[serde(default)]
     pub fields: HashMap<String, String>,
 }
 
-/// Payload describing a single metric event in a `POST /events` request.
-///
-/// Unknown fields on the metric payload are ignored; future metric-type
-/// semantics will use a dedicated field.
 #[derive(Debug, Deserialize)]
 pub struct MetricPayload {
-    /// Metric name (must match `[a-zA-Z_:][a-zA-Z0-9_:]*`).
     pub name: String,
-    /// Numeric sample value.
     pub value: f64,
 }
 
-/// Tagged-union request body for `POST /events`.
-///
-/// The `signal_type` discriminator selects the per-branch payload field
-/// (`log` for logs, `metric` for metrics). Matches the
-/// `signal_type` convention used by [`sonda_core::config::ScenarioEntry`].
 #[derive(Debug, Deserialize)]
 #[serde(tag = "signal_type")]
 pub enum EventRequest {
-    /// A single log event.
     #[serde(rename = "logs")]
     Logs {
-        /// Optional static labels attached to the event.
         #[serde(default)]
         labels: HashMap<String, String>,
-        /// The log payload.
         log: LogPayload,
-        /// Encoder configuration used to format this event.
         encoder: EncoderConfig,
-        /// Sink configuration used to deliver this event.
         sink: SinkConfig,
     },
-    /// A single metric event.
     #[serde(rename = "metrics")]
     Metrics {
-        /// Optional static labels attached to the event.
         #[serde(default)]
         labels: HashMap<String, String>,
-        /// The metric payload.
         metric: MetricPayload,
-        /// Encoder configuration used to format this event.
         encoder: EncoderConfig,
-        /// Sink configuration used to deliver this event.
         sink: SinkConfig,
     },
 }
 
-/// `POST /events` success response body.
 #[derive(Debug, Serialize)]
 pub struct EventAck {
-    /// Always `true` on a 200 response.
     pub sent: bool,
-    /// Echo of the request's `signal_type` (`"logs"` or `"metrics"`).
     pub signal_type: &'static str,
-    /// Wall-clock latency of the encode + sink push, in milliseconds.
     pub latency_ms: u128,
-    /// Operator-facing pre-flight warnings (e.g. loopback sink URL).
-    /// Omitted when empty so older clients parse cleanly.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub warnings: Vec<String>,
 }
 
-// ---- Handler ----------------------------------------------------------------
-
-/// `POST /events` — encode and deliver one event, blocking on sink ack.
-///
-/// Accepts a JSON body tagged by `signal_type` (`"logs"` or
-/// `"metrics"`). The handler:
-///
-/// 1. Deserializes the body. Malformed JSON or an unknown
-///    `signal_type` returns 400.
-/// 2. Builds a [`LogEvent`] or [`MetricEvent`] from the payload.
-///    Field-level validation failures (e.g. invalid metric name)
-///    return 422.
-/// 3. Computes loopback warnings against the supplied sink.
-/// 4. Spawns a blocking task that calls
-///    [`emit_log`](sonda_core::emit::emit_log) or
-///    [`emit_metric`](sonda_core::emit::emit_metric).
-/// 5. Maps the result variant to a status code and returns the JSON
-///    response.
-///
-/// # Error responses
-///
-/// - `400` — malformed body, unknown `signal_type`, or per-branch
-///   field missing / wrong shape.
-/// - `422` — encoder/sink config failed validation
-///   ([`SondaError::Config`]).
-/// - `502` — sink push or flush failed
-///   ([`SondaError::Sink`]).
-/// - `500` — encoder error ([`SondaError::Encoder`]), runtime error
-///   ([`SondaError::Runtime`]), generator error
-///   ([`SondaError::Generator`]) — none expected on this path — or a
-///   `JoinError` from the blocking task.
 pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes) -> Response {
-    // 1. Deserialize. serde_json's tag handling produces helpful
-    //    messages for unknown tags and missing per-branch fields.
     let req: EventRequest = match serde_json::from_slice::<EventRequest>(&body) {
         Ok(r) => r,
         Err(e) => return bad_request(format!("invalid event body: {e}")),
     };
 
-    // 2. Pre-flight loopback warnings — never gate on these, only
-    //    surface them in the response and the log.
     let mut warnings: Vec<String> = Vec::new();
     let warning_label = match &req {
         EventRequest::Logs { .. } => "events.logs",
@@ -152,7 +81,6 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
     }
     log_warnings("POST /events", &warnings);
 
-    // 3. Build the event + run blocking emit.
     let started = Instant::now();
     let (signal_type, sink_type, emit_result) = match req {
         EventRequest::Logs {
@@ -227,9 +155,6 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
     }
 }
 
-// ---- Helpers ----------------------------------------------------------------
-
-/// Build a [`LogEvent`] from the wire payload + request labels.
 fn build_log_event(
     log: LogPayload,
     labels: &HashMap<String, String>,
@@ -239,7 +164,6 @@ fn build_log_event(
     Ok(LogEvent::new(log.severity, log.message, labels, fields))
 }
 
-/// Build a [`MetricEvent`] from the wire payload + request labels.
 fn build_metric_event(
     metric: MetricPayload,
     labels: &HashMap<String, String>,
@@ -248,9 +172,6 @@ fn build_metric_event(
     MetricEvent::new(metric.name, metric.value, labels)
 }
 
-/// Convert the wire-side `HashMap<String, String>` of labels into the
-/// validated [`Labels`] type, surfacing key validation failures as
-/// [`SondaError::Config`].
 fn labels_from_map(map: &HashMap<String, String>) -> Result<Labels, SondaError> {
     if map.is_empty() {
         return Ok(Labels::default());
@@ -259,8 +180,6 @@ fn labels_from_map(map: &HashMap<String, String>) -> Result<Labels, SondaError> 
     Labels::from_pairs(&pairs)
 }
 
-/// Run a synchronous closure on a blocking task, mapping `JoinError`
-/// (panic in the blocking task) to [`SondaError::Runtime`].
 async fn run_blocking<F>(f: F) -> Result<(), SondaError>
 where
     F: FnOnce() -> Result<(), SondaError> + Send + 'static,
@@ -273,7 +192,6 @@ where
     }
 }
 
-/// Map a [`SondaError`] to the matching HTTP error response.
 fn error_response(err: SondaError) -> Response {
     match err {
         SondaError::Config(e) => unprocessable(format!("{e}")),
@@ -281,12 +199,10 @@ fn error_response(err: SondaError) -> Response {
         SondaError::Encoder(e) => internal_error(format!("encoder error: {e}")),
         SondaError::Generator(e) => internal_error(format!("generator error: {e}")),
         SondaError::Runtime(e) => internal_error(format!("runtime error: {e}")),
-        // SondaError is #[non_exhaustive]; future variants land here.
         _ => internal_error("unexpected error variant"),
     }
 }
 
-/// Stable sink-type tag used in trace logs.
 fn sink_kind(sink: &SinkConfig) -> &'static str {
     match sink {
         SinkConfig::Stdout => "stdout",
@@ -303,7 +219,6 @@ fn sink_kind(sink: &SinkConfig) -> &'static str {
         SinkConfig::Kafka { .. } => "kafka",
         #[cfg(feature = "otlp")]
         SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
-        // Disabled placeholders + future #[non_exhaustive] variants.
         _ => "other",
     }
 }
@@ -332,7 +247,6 @@ fn internal_error(detail: impl std::fmt::Display) -> Response {
 mod tests {
     use super::*;
 
-    /// `EventRequest` deserializes the logs branch from JSON.
     #[test]
     fn deserializes_logs_branch() {
         let payload = serde_json::json!({
@@ -352,7 +266,6 @@ mod tests {
         }
     }
 
-    /// `EventRequest` deserializes the metrics branch from JSON.
     #[test]
     fn deserializes_metrics_branch() {
         let payload = serde_json::json!({
@@ -372,7 +285,6 @@ mod tests {
         }
     }
 
-    /// Unknown `signal_type` produces a serde error mentioning the bad tag.
     #[test]
     fn unknown_signal_type_fails_to_deserialize() {
         let payload = serde_json::json!({
@@ -389,7 +301,6 @@ mod tests {
         );
     }
 
-    /// A logs body missing `message` fails deserialization.
     #[test]
     fn missing_log_message_fails_to_deserialize() {
         let payload = serde_json::json!({
@@ -406,7 +317,6 @@ mod tests {
         );
     }
 
-    /// `error_response` maps `SondaError::Config` to 422.
     #[test]
     fn error_response_maps_config_to_422() {
         let err = SondaError::Config(sonda_core::ConfigError::InvalidValue("bad".to_string()));
@@ -414,7 +324,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    /// `error_response` maps `SondaError::Sink` to 502.
     #[test]
     fn error_response_maps_sink_to_502() {
         let err = SondaError::Sink(std::io::Error::new(
@@ -425,7 +334,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
-    /// `error_response` maps `SondaError::Runtime` to 500.
     #[test]
     fn error_response_maps_runtime_to_500() {
         let err = SondaError::Runtime(sonda_core::RuntimeError::ThreadPanicked);
@@ -433,7 +341,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    /// `sink_kind` returns the expected stable tag.
     #[test]
     fn sink_kind_tags_match_yaml_type_names() {
         assert_eq!(sink_kind(&SinkConfig::Stdout), "stdout");
@@ -452,7 +359,6 @@ mod tests {
         );
     }
 
-    /// Empty labels deserialize to `Labels::default()`.
     #[test]
     fn labels_from_empty_map_returns_default() {
         let map: HashMap<String, String> = HashMap::new();
@@ -460,7 +366,6 @@ mod tests {
         assert!(labels.is_empty());
     }
 
-    /// Invalid label keys surface as `SondaError::Config`.
     #[test]
     fn labels_from_map_rejects_invalid_keys() {
         let mut map = HashMap::new();

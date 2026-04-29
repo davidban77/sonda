@@ -1,55 +1,36 @@
-//! Sink loopback pre-flight warnings shared by `POST /scenarios` and
-//! `POST /events`.
-//!
-//! When a sink URL points at `localhost`, `127.0.0.1`, or `::1`, the
-//! request still launches — these warnings exist so operators can spot
-//! the misconfiguration in containerized deployments where loopback
-//! resolves to the server's own network namespace, not the operator's
-//! host.
-//!
-//! All helpers here are `pub(crate)` and have no side effects beyond
-//! formatting strings (the logging helper writes to `tracing::warn`).
+//! Sink loopback pre-flight warnings shared by `POST /scenarios` and `POST /events`.
 
 use sonda_core::config::ScenarioEntry;
 use sonda_core::sink::SinkConfig;
 use tracing::warn;
 
-/// Pointer appended to every loopback warning so operators can find the
-/// deployment networking reference without grepping docs.
 pub(crate) const LOOPBACK_HINT_DOC: &str = "See docs/deployment/endpoints.md.";
 
-/// Hosts treated as loopback by [`is_loopback_host`].
 pub(crate) const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
-/// Returns `true` when `host` is one of the canonical loopback names
-/// (case-insensitive).
 pub(crate) fn is_loopback_host(host: &str) -> bool {
     LOOPBACK_HOSTS
         .iter()
         .any(|candidate| host.eq_ignore_ascii_case(candidate))
 }
 
-/// Extract the host from a URL or `host:port` authority. Returns `None`
-/// for unparseable input — sink construction will surface the real error.
+/// Pulls the host out of a URL or bare `host:port` authority.
 pub(crate) fn extract_host(input: &str) -> Option<&str> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    // Strip a URL scheme (`http://`, `https://`, `grpc://`, ...) if present.
     let after_scheme = match trimmed.find("://") {
         Some(idx) => &trimmed[idx + 3..],
         None => trimmed,
     };
 
-    // Drop any path / query / fragment tail so we only parse the authority.
     let authority_end = after_scheme
         .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
 
-    // Strip userinfo (`user:pass@host`) if present.
     let authority = match authority.rfind('@') {
         Some(idx) => &authority[idx + 1..],
         None => authority,
@@ -59,12 +40,10 @@ pub(crate) fn extract_host(input: &str) -> Option<&str> {
         return None;
     }
 
-    // IPv6 literal: `[::1]` optionally followed by `:port`.
     if let Some(rest) = authority.strip_prefix('[') {
         return rest.find(']').map(|end| &rest[..end]);
     }
 
-    // IPv4 / hostname: split on the last `:` to drop the port, if any.
     let host = match authority.rfind(':') {
         Some(idx) => &authority[..idx],
         None => authority,
@@ -77,7 +56,6 @@ pub(crate) fn extract_host(input: &str) -> Option<&str> {
     }
 }
 
-/// Format the operator-facing warning string for a single offending sink.
 pub(crate) fn format_loopback_warning(entry_name: &str, sink_tag: &str, offender: &str) -> String {
     format!(
         "scenario entry '{entry_name}' sink `{sink_tag}` targets `{offender}` — this host \
@@ -87,9 +65,6 @@ pub(crate) fn format_loopback_warning(entry_name: &str, sink_tag: &str, offender
     )
 }
 
-/// Inspect every entry's sink and return one warning string per loopback
-/// target. Stdout/File/Channel/Memory sinks (and `*Disabled` placeholders)
-/// produce no warnings.
 pub(crate) fn sink_loopback_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
     let mut warnings = Vec::new();
     for entry in entries {
@@ -100,11 +75,6 @@ pub(crate) fn sink_loopback_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
     warnings
 }
 
-/// Inspect a single sink config and append any loopback warnings it
-/// generates to `out`.
-///
-/// Used directly by `POST /events`, which has a single sink rather than
-/// a list of entries.
 pub(crate) fn collect_warnings_for_sink(
     sink: &SinkConfig,
     entry_name: &str,
@@ -145,7 +115,6 @@ pub(crate) fn collect_warnings_for_sink(
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka { brokers, .. } => {
-            // brokers is comma-separated; warn per loopback entry, not per sink.
             for broker in brokers.split(',') {
                 let broker = broker.trim();
                 if broker.is_empty() {
@@ -172,14 +141,10 @@ pub(crate) fn collect_warnings_for_sink(
                 }
             }
         }
-        // Stdout/File/Channel/Memory carry no address; `*Disabled` placeholders
-        // and future `#[non_exhaustive]` variants also land here.
         _ => {}
     }
 }
 
-/// Emit one `tracing::warn` per warning string, tagged with the route
-/// label so operators can grep logs by endpoint.
 pub(crate) fn log_warnings(route: &str, warnings: &[String]) {
     for message in warnings {
         warn!(message = %message, route = %route, "{}: sink pre-flight warning", route);
@@ -191,8 +156,6 @@ mod tests {
     use super::*;
     use sonda_core::compile_scenario_file;
     use sonda_core::compiler::expand::InMemoryPackResolver;
-
-    // ---- is_loopback_host ----------------------------------------------------
 
     #[test]
     fn is_loopback_host_matches_canonical_hosts() {
@@ -213,12 +176,8 @@ mod tests {
         assert!(!is_loopback_host("loki"));
         assert!(!is_loopback_host("10.0.0.1"));
         assert!(!is_loopback_host("192.168.1.10"));
-        // 127/8 non-exact addresses are deliberately NOT matched per the
-        // canonical-only policy.
         assert!(!is_loopback_host("127.0.0.2"));
     }
-
-    // ---- extract_host --------------------------------------------------------
 
     #[test]
     fn extract_host_parses_http_url() {
@@ -270,11 +229,6 @@ mod tests {
         assert_eq!(extract_host("   "), None);
     }
 
-    // ---- sink_loopback_warnings (entry-list path used by /scenarios) --------
-
-    /// Build a minimal v2 YAML body with the given sink block injected into
-    /// `defaults` and compile it to a single `ScenarioEntry`. Used by the
-    /// loopback pre-flight tests so we exercise the real compiler path.
     fn compile_single_entry_with_sink(sink_yaml: &str) -> ScenarioEntry {
         let yaml = format!(
             "version: 2\n\
@@ -410,8 +364,6 @@ mod tests {
         assert!(warnings[0].contains("otlp_grpc"));
         assert!(warnings[0].contains("http://localhost:4317"));
     }
-
-    // ---- collect_warnings_for_sink (single-sink path used by /events) -------
 
     #[test]
     fn collect_warnings_for_sink_flags_tcp_localhost() {
