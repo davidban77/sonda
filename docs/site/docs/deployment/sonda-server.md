@@ -37,9 +37,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
 `application/json` content types.
 
 !!! tip "Need just one event?"
-    `POST /scenarios` is for sustained emission over time. To fire a single log or
-    metric synchronously and block until the sink ACKs, use the
-    [Single-Event API (`POST /events`)](events.md) instead.
+    `POST /scenarios` is for sustained emission over time. To fire a single log or metric synchronously and block until the sink ACKs, use the [Single-Event API (`POST /events`)](events.md) instead.
 
 !!! warning "v2 scenarios only"
     The server only accepts v2 bodies (`version: 2` at the top level). Legacy v1 bodies are
@@ -350,10 +348,7 @@ shape conversions.
 
 ## Authentication
 
-You can protect scenario endpoints with API key authentication. When enabled, all
-`/scenarios/*` requests and `POST /events` must include a bearer token. The `/health`
-endpoint is always public, so health probes and load balancer checks work without
-credentials.
+You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
 
 ### Enabling authentication
 

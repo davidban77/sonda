@@ -1,7 +1,4 @@
 //! Synchronous single-event emission.
-//!
-//! Build a one-shot encoder + sink, encode one event, write, flush, drop.
-//! I/O-agnostic — no latency measurement, no tracing.
 
 use std::collections::HashMap;
 
@@ -11,16 +8,7 @@ use crate::model::metric::MetricEvent;
 use crate::sink::{create_sink, SinkConfig};
 use crate::SondaError;
 
-/// Encode a single [`LogEvent`] and deliver it through a one-shot sink.
-///
-/// `labels` is forwarded to [`create_sink`]; use `None` when unused.
-///
-/// # Errors
-///
-/// Returns the underlying [`SondaError`] from any of the four steps:
-/// encoder construction, sink construction, encoding, or sink
-/// write/flush. Sink-side I/O failures surface as [`SondaError::Sink`];
-/// invalid encoder/sink configs surface as [`SondaError::Config`].
+/// Encode a [`LogEvent`] and deliver it through a one-shot sink.
 pub fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
@@ -35,16 +23,7 @@ pub fn emit_log(
     sink.flush()
 }
 
-/// Encode a single [`MetricEvent`] and deliver it through a one-shot sink.
-///
-/// `labels` is forwarded to [`create_sink`]; use `None` when unused.
-///
-/// # Errors
-///
-/// Returns the underlying [`SondaError`] from any of the four steps:
-/// encoder construction, sink construction, encoding, or sink
-/// write/flush. Sink-side I/O failures surface as [`SondaError::Sink`];
-/// invalid encoder/sink configs surface as [`SondaError::Config`].
+/// Encode a [`MetricEvent`] and deliver it through a one-shot sink.
 pub fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
@@ -68,8 +47,6 @@ mod tests {
     use crate::model::metric::Labels;
     use crate::sink::retry::RetryConfig;
 
-    /// Per-test temp file path. Tagged with PID + thread id so parallel
-    /// test runs (and reruns) do not collide on the same path.
     fn temp_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
@@ -81,14 +58,6 @@ mod tests {
         p
     }
 
-    /// `emit_log` writes the encoded line through the constructed sink.
-    ///
-    /// The brief specifies `MemorySink` for this assertion, but the
-    /// helpers take `&SinkConfig` and there is no public `Memory` variant
-    /// in [`SinkConfig`]. The file sink is the closest stand-in that
-    /// exercises the full helper end to end (encoder construction, sink
-    /// construction, encode, write, flush) without reaching into private
-    /// internals.
     #[test]
     fn emit_log_writes_encoded_line_to_sink() {
         let path = temp_path("emit_log_writes");
@@ -128,7 +97,6 @@ mod tests {
         );
     }
 
-    /// `emit_metric` writes the encoded line through the constructed sink.
     #[test]
     fn emit_metric_writes_encoded_line_to_sink() {
         let path = temp_path("emit_metric_writes");
@@ -164,9 +132,6 @@ mod tests {
         );
     }
 
-    /// `emit_log` propagates `SondaError::Config` when the sink config is
-    /// invalid (here: a TCP sink with `max_attempts = 0`, which the retry
-    /// validator rejects).
     #[test]
     fn emit_log_propagates_config_error_for_invalid_sink_config() {
         let event = LogEvent::new(
@@ -199,8 +164,6 @@ mod tests {
         );
     }
 
-    /// `emit_metric` propagates `SondaError::Config` when the sink config
-    /// is invalid (here: a TCP sink with `max_attempts = 0`).
     #[test]
     fn emit_metric_propagates_config_error_for_invalid_sink_config() {
         let event =
