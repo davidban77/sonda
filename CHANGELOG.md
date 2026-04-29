@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0](https://github.com/davidban77/sonda/compare/v1.2.2...v1.3.0) (2026-04-29)
+
+
+### Features
+
+* **server:** add POST /events for synchronous single-event emission ([#289](https://github.com/davidban77/sonda/issues/289)) ([b3d9880](https://github.com/davidban77/sonda/commit/b3d9880bb1b81987f54f8928eff11948ec4ee242))
+
+
+### Bug Fixes
+
+* **ci:** pin Release workflow toolchain to 1.95.0 so cross targets find core ([#287](https://github.com/davidban77/sonda/issues/287)) ([deddaad](https://github.com/davidban77/sonda/commit/deddaadfbe2c80e3f3bdf22f5770c13c8c1f0ae9))
+
 ## [1.2.2](https://github.com/davidban77/sonda/compare/v1.2.1...v1.2.2) (2026-04-27)
 
 
