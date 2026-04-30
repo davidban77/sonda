@@ -347,7 +347,16 @@ Validation: OK (3 scenarios)
 
 The `phase_offset` lines show the concrete delays Sonda computed from the threshold-crossing
 math. The `(auto)` suffix on `clock_group` indicates Sonda assigned the group automatically
-because of the `after:` relationship. The scenario also ships in the built-in catalog:
+because of the `after:` relationship.
+
+!!! info "Duration is per-entry, not per-cascade"
+    Each entry's `duration:` runs from that entry's own resolved start time (`phase_offset`), not from cascade registration. The cascade's total wall-clock is therefore `max(phase_offset + duration)` across all entries, which can exceed `defaults.duration`.
+
+    For the `link-failover` example above, `defaults.duration` is `5m` and the largest `phase_offset` is `152.308s` (on `latency_ms`), so the chain finishes at roughly `152.308s + 5m ≈ 7m32s` of wall-clock — not 5m.
+
+    The CLI `--duration` flag (and the body-level `duration` field on `POST /scenarios`) shorten **every entry's `duration` individually**; they do not cap the cascade's total wall-clock. Running the same chain with `--duration 2m` produces `152.308s + 2m ≈ 4m32s`, because every entry now runs for 2m from its own start.
+
+The scenario also ships in the built-in catalog:
 
 ```bash
 sonda catalog run link-failover
