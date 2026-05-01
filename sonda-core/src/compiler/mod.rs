@@ -120,7 +120,9 @@ pub struct Defaults {
     /// Default event rate in events per second.
     #[cfg_attr(feature = "config", serde(default))]
     pub rate: Option<f64>,
-    /// Default total run duration (e.g. `"30s"`, `"5m"`).
+    /// Default total run duration (e.g. `"30s"`, `"5m"`). Applied per entry —
+    /// each entry runs for this long from its own resolved start, so a cascade's
+    /// total wall-clock is `max(phase_offset + duration)`, not `duration`.
     #[cfg_attr(feature = "config", serde(default))]
     pub duration: Option<String>,
     /// Default encoder configuration.

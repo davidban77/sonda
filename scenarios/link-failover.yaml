@@ -16,6 +16,12 @@
 #   sonda run --scenario scenarios/link-failover.yaml
 #   sonda run --scenario scenarios/link-failover.yaml --dry-run
 #   sonda run --scenario scenarios/link-failover.yaml --duration 2m
+#
+# Each entry's `duration:` runs from its own resolved start (`phase_offset`),
+# so a cascade's total wall-clock can exceed `defaults.duration`. With the
+# values below the chain finishes around `152s + 5m ≈ 7m32s`; `--duration 2m`
+# shortens every phase individually (so the cascade ends near `152s + 2m`),
+# it does not cap the total wall-clock.
 
 version: 2
 
