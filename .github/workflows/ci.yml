@@ -39,11 +39,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Build
         run: cargo build --workspace
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Test (nextest)
+        run: cargo nextest run --workspace
+
+      - name: Doctests
+        run: cargo test --workspace --doc
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
@@ -79,11 +87,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-server-
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Build sonda-server
         run: cargo build -p sonda-server
 
       - name: Run sonda-server integration tests
-        run: cargo test -p sonda-server --test integration -- --nocapture
+        run: cargo nextest run -p sonda-server --test integration --no-capture
         timeout-minutes: 5
 
   docker-build:
@@ -128,8 +141,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-no-default-
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Test without default features
-        run: cargo test -p sonda-core --no-default-features
+        run: cargo nextest run -p sonda-core --no-default-features
+
+      - name: Doctests without default features
+        run: cargo test -p sonda-core --no-default-features --doc
 
   all-features:
     name: Build, Test, Clippy (all features)
@@ -155,11 +176,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-all-features-
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Build (all features)
         run: cargo build --workspace --all-features
 
-      - name: Test (all features)
-        run: cargo test --workspace --all-features
+      - name: Test (all features, nextest)
+        run: cargo nextest run --workspace --all-features
+
+      - name: Doctests (all features)
+        run: cargo test --workspace --all-features --doc
 
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-features -- -D warnings
