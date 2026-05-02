@@ -508,6 +508,12 @@ sonda metrics [OPTIONS]
 | `--jitter <FLOAT>` | float | none | Jitter amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. Must be non-negative. |
 | `--jitter-seed <INT>` | integer | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
 
+### Sink-error policy
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--on-sink-error <POLICY>` | string | `warn` | Behavior when a sink write fails mid-run: `warn` (log + keep running) or `fail` (propagate the error and exit). Overrides any `on_sink_error` set in the scenario file. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
+
 ### Labels, encoder, output
 
 | Flag | Type | Default | Description |
@@ -683,6 +689,10 @@ The same cardinality spike flags from `sonda metrics` are available for logs:
 The same jitter flags from `sonda metrics` are available for logs:
 `--jitter`, `--jitter-seed`.
 
+### Sink-error policy
+
+`--on-sink-error <warn|fail>` works the same as for `sonda metrics`. See [Sink-error policy](v2-scenarios.md#sink-error-policy).
+
 ### Retry
 
 The same retry flags from `sonda metrics` are available for logs:
@@ -754,6 +764,7 @@ sonda histogram --scenario <FILE | @name>
 | Flag | Type | Description |
 |------|------|-------------|
 | `--scenario <FILE \| @name>` | path or `@name` | YAML histogram scenario file, or a `@name` [built-in scenario](../guides/scenarios.md) (e.g. `@histogram-latency`). Required. |
+| `--on-sink-error <POLICY>` | string | `warn` (default) or `fail`. Overrides `on_sink_error` in the scenario file. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
 
 The scenario file must contain a `distribution` block and may include `buckets`,
 `observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
@@ -802,6 +813,7 @@ sonda summary --scenario <FILE | @name>
 | Flag | Type | Description |
 |------|------|-------------|
 | `--scenario <FILE \| @name>` | path or `@name` | YAML summary scenario file, or a `@name` [built-in scenario](../guides/scenarios.md). Required. |
+| `--on-sink-error <POLICY>` | string | `warn` (default) or `fail`. Overrides `on_sink_error` in the scenario file. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
 
 The scenario file must contain a `distribution` block and may include `quantiles`,
 `observations_per_tick`, `mean_shift_per_sec`, and `seed`. See
@@ -858,6 +870,7 @@ sonda run --scenario <FILE | @name> [OPTIONS]
 | `--endpoint <URL>` | string | Override the sink endpoint (URL, file path, `host:port`). |
 | `-o, --output <PATH>` | path | Shorthand for `--sink file --endpoint <path>`. Mutually exclusive with `--sink`. |
 | `--label <KEY=VALUE>` | string | Additional label merged into every entry (repeatable). |
+| `--on-sink-error <POLICY>` | string | `warn` (default) or `fail`. Overrides `defaults.on_sink_error` in the scenario file, applied to every entry. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
 
 ### Accepted scenario shapes
 

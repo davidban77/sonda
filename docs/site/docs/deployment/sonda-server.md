@@ -342,7 +342,7 @@ shape conversions.
 | GET | `/scenarios` | List all running scenarios |
 | GET | `/scenarios/{id}` | Inspect a scenario: config, stats, elapsed |
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
-| GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state |
+| GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state, sink-failure counters. See [Self-observability via /stats](#self-observability-via-stats). |
 | GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format |
 | POST | `/events` | Emit one log or metric event synchronously. See [Single-Event API](events.md). |
 
@@ -479,6 +479,85 @@ Response codes:
 !!! warning "DELETE is not idempotent"
     A successful DELETE removes the scenario entirely. A second DELETE on the same ID
     returns **404**, not 200. If your automation retries deletes, treat 404 as success.
+
+## Self-observability via /stats
+
+`GET /scenarios/{id}/stats` returns live runner telemetry. The four sink-failure fields let external monitors spot a wedged runner without parsing logs, and you choose the threshold that counts as "degraded" for your environment.
+
+### `/scenarios` list
+
+```bash
+curl -s http://localhost:8080/scenarios | jq .
+```
+
+```json title="Response"
+{
+  "scenarios": [
+    {
+      "id": "a1b2c3d4-...",
+      "name": "noisy_logs",
+      "status": "running",
+      "elapsed_secs": 184.2
+    }
+  ]
+}
+```
+
+Each entry carries `id`, `name`, `status` (`running` or `stopped`), and `elapsed_secs`. To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
+
+### `/scenarios/{id}/stats`
+
+```bash
+curl -s http://localhost:8080/scenarios/$ID/stats | jq .
+```
+
+```json title="Response"
+{
+  "total_events": 3359,
+  "current_rate": 100.4,
+  "target_rate": 100.0,
+  "bytes_emitted": 1048576,
+  "errors": 12,
+  "uptime_secs": 184.2,
+  "state": "running",
+  "in_gap": false,
+  "in_burst": false,
+  "consecutive_failures": 4,
+  "total_sink_failures": 12,
+  "last_sink_error": "HTTP 500 from 'http://loki:3100/loki/api/v1/push'",
+  "last_successful_write_at": 1714694400000000000
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `total_events` | integer | Total events emitted since the scenario started. |
+| `current_rate` | float | Measured events per second from the runner's rate tracker. |
+| `target_rate` | float | The rate configured in the scenario file. |
+| `bytes_emitted` | integer | Total bytes written to the sink. |
+| `errors` | integer | Encode or sink-write errors observed. |
+| `uptime_secs` | float | Seconds since the scenario was launched. |
+| `state` | string | `running` or `stopped`. |
+| `in_gap` | bool | `true` while a [gap window](../configuration/scenario-fields.md#gap-window) is suppressing output. |
+| `in_burst` | bool | `true` while a [burst window](../configuration/scenario-fields.md#burst-window) is elevating the rate. |
+| `consecutive_failures` | integer | Sink errors observed since the most recent successful write. Resets to `0` on the next successful write. |
+| `total_sink_failures` | integer | Lifetime sink-error count. Monotonic. |
+| `last_sink_error` | string \| null | Text of the most recent sink error, or `null` if none has been observed. |
+| `last_successful_write_at` | integer \| null | Wall-clock time of the most recent successful write, expressed as Unix nanoseconds. `null` until the first write succeeds. |
+
+The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/v2-scenarios.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `stopped`.
+
+!!! tip "Detecting a wedged sink"
+    Compute "degraded" yourself by thresholding `total_sink_failures` and the staleness of `last_successful_write_at`. Pick a staleness window that fits your scenario's rate and your tolerance for transient blips:
+
+    ```bash
+    # Flag a scenario as degraded when sink failures have happened and
+    # no write has succeeded in the last 30 seconds:
+    curl -sS http://localhost:8080/scenarios/$ID/stats |
+      jq 'select(.total_sink_failures > 0 and (.last_successful_write_at == null or (now*1e9 - .last_successful_write_at) > 30e9))'
+    ```
+
+    A non-empty result means the scenario is degraded by your definition. Wire the same expression into a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel — the operator owns the threshold.
 
 ## Scrape Integration
 

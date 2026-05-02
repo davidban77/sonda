@@ -187,6 +187,8 @@ pub fn launch_scenario(
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
     let shutdown_for_thread = Arc::clone(&shutdown);
+    let alive = Arc::new(AtomicBool::new(true));
+    let alive_for_thread = Arc::clone(&alive);
 
     // Extract the name and target rate before moving `entry` into the thread closure.
     let (name, target_rate) = match &entry {
@@ -208,6 +210,13 @@ pub fn launch_scenario(
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
+            // Drop guard clears the alive flag on every exit path, including
+            // panics — observers polling `is_alive()` see a single clean
+            // transition `true → false` regardless of how the thread terminates.
+            let _guard = AliveGuard {
+                flag: alive_for_thread,
+            };
+
             // If a start delay is configured, sleep before entering the event
             // loop. This enables phase-offset correlation between scenarios
             // launched from the same multi-scenario config. The sleep respects
@@ -276,7 +285,18 @@ pub fn launch_scenario(
         started_at,
         stats,
         target_rate,
+        alive,
     })
+}
+
+struct AliveGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +335,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -339,6 +360,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -370,6 +392,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -394,6 +417,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -450,6 +474,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -480,6 +505,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -510,6 +536,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -547,6 +574,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -688,6 +716,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -738,6 +767,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -837,6 +867,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -884,6 +915,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -994,6 +1026,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -1057,6 +1090,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             buckets: None,
             distribution: DistributionConfig::Exponential { rate: 10.0 },
@@ -1085,6 +1119,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             quantiles: None,
             distribution: DistributionConfig::Normal {
@@ -1220,6 +1255,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1254,6 +1290,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1288,6 +1325,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1321,6 +1359,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1342,6 +1381,54 @@ mod tests {
         let prepared = prepare_entries(vec![entry]).unwrap();
         let s = format!("{:?}", prepared[0]);
         assert!(s.contains("PreparedEntry"));
+    }
+
+    #[test]
+    fn alive_guard_clears_flag_on_panic() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_for_thread = Arc::clone(&alive);
+
+        let thread = std::thread::Builder::new()
+            .name("alive-guard-panic".to_string())
+            .spawn(move || {
+                let _guard = AliveGuard {
+                    flag: alive_for_thread,
+                };
+                let always_none: Option<u32> = None;
+                always_none.expect("intentional panic for AliveGuard test");
+            })
+            .expect("spawn must succeed");
+
+        let join_result = thread.join();
+        assert!(
+            join_result.is_err(),
+            "thread must panic and surface Err on join"
+        );
+        assert!(
+            !alive.load(Ordering::SeqCst),
+            "AliveGuard Drop must clear the alive flag even when the thread panics"
+        );
+    }
+
+    #[test]
+    fn alive_guard_clears_flag_on_clean_exit() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_for_thread = Arc::clone(&alive);
+
+        let thread = std::thread::Builder::new()
+            .name("alive-guard-clean".to_string())
+            .spawn(move || {
+                let _guard = AliveGuard {
+                    flag: alive_for_thread,
+                };
+            })
+            .expect("spawn must succeed");
+
+        thread.join().expect("clean thread must join Ok");
+        assert!(
+            !alive.load(Ordering::SeqCst),
+            "AliveGuard Drop must clear the alive flag on clean exit"
+        );
     }
 
     /// prepare_entries error messages reference the original input index, not
@@ -1367,6 +1454,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1406,6 +1494,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },

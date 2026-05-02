@@ -46,6 +46,37 @@ sonda --verbose metrics --name cpu --rate 10 --duration 30s \
 | `0` | Success -- scenario completed or `--dry-run` validation passed |
 | `1` | Error -- invalid config, connection failure, or runtime error |
 
+### A scenario stopped emitting silently
+
+A scenario looks alive (the process is running, no error in the foreground) but no data is reaching the backend. This typically means the sink is failing on every write. Sonda's default [`on_sink_error: warn`](../configuration/v2-scenarios.md#sink-error-policy) policy keeps the runner alive through transient sink errors, so the symptom is degradation rather than a crash. Confirm the diagnosis from three places:
+
+- **Stderr `[progress]` banner** -- when a runner exits, the progress reporter prints a one-shot `STOPPED` line that includes the last sink error:
+
+    ```text
+    [progress] my_scenario  STOPPED (sink: HTTP 500 from 'http://loki:3100/loki/api/v1/push') | events: 3359 | bytes: 1.0 MB | elapsed: 18h59m
+    ```
+
+    No parenthetical means the scenario stopped cleanly (duration expired, Ctrl+C, etc.) and the sink was healthy.
+
+- **`GET /scenarios/{id}/stats`** -- a non-zero `consecutive_failures` with a stale `last_successful_write_at` confirms the sink is wedged. `last_sink_error` carries the message:
+
+    ```bash
+    curl -s http://localhost:8080/scenarios/$ID/stats | jq '.consecutive_failures, .last_sink_error'
+    ```
+
+    See [Self-observability via /stats](../deployment/sonda-server.md#self-observability-via-stats).
+
+- **Threshold the raw fields for monitoring** -- to flag a scenario as degraded for an alert or readiness probe, query its `/stats` and combine `total_sink_failures > 0` with a staleness check on `last_successful_write_at`. You pick the window that fits your rate and tolerance for transient blips:
+
+    ```bash
+    curl -sS http://localhost:8080/scenarios/$ID/stats |
+      jq 'select(.total_sink_failures > 0 and (.last_successful_write_at == null or (now*1e9 - .last_successful_write_at) > 30e9))'
+    ```
+
+    A non-empty result means the scenario has stopped delivering by your definition. The same expression works as a Kubernetes readiness probe or a Prometheus alert input.
+
+The recovery is the default behavior: under `on_sink_error: warn`, the runner keeps ticking while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances, so any threshold you set clears automatically. If you want a sink failure to hard-fail the run instead, set `on_sink_error: fail` -- see [Sink-error policy](../configuration/v2-scenarios.md#sink-error-policy).
+
 ---
 
 ## Connection and delivery issues

@@ -31,7 +31,8 @@ expression: normalized
             "value": 0.0
           }
         }
-      }
+      },
+      "on_sink_error": "warn"
     }
   ]
 }

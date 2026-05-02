@@ -39,6 +39,7 @@ pub use config::DynamicLabelConfig;
 pub use config::DynamicLabelStrategy;
 pub use config::HistogramScenarioConfig;
 pub use config::LogScenarioConfig;
+pub use config::OnSinkError;
 pub use config::ScenarioEntry;
 pub use config::SpikeStrategy;
 pub use config::SummaryScenarioConfig;
@@ -592,6 +593,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },

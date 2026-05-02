@@ -24,7 +24,8 @@ expression: compiled
         "type": "stdout"
       },
       "clock_group": "chain_error_logs",
-      "clock_group_is_auto": true
+      "clock_group_is_auto": true,
+      "on_sink_error": "warn"
     },
     {
       "id": "error_logs",
@@ -49,7 +50,8 @@ expression: compiled
       },
       "phase_offset": "27.931s",
       "clock_group": "chain_error_logs",
-      "clock_group_is_auto": true
+      "clock_group_is_auto": true,
+      "on_sink_error": "warn"
     }
   ]
 }

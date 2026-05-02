@@ -413,6 +413,7 @@ fn run_catalog_run(
         encoder: args.encoder.clone(),
         output: args.output.clone(),
         labels: args.labels.clone(),
+        on_sink_error: None,
     };
 
     match row.kind {
@@ -955,6 +956,7 @@ fn maybe_start_progress(
         handle.name.clone(),
         Arc::clone(&handle.stats),
         handle.target_rate,
+        Arc::clone(&handle.alive),
     )]))
 }
 
@@ -970,7 +972,14 @@ fn maybe_start_progress_multi(
     }
     let scenarios: Vec<_> = handles
         .iter()
-        .map(|h| (h.name.clone(), Arc::clone(&h.stats), h.target_rate))
+        .map(|h| {
+            (
+                h.name.clone(),
+                Arc::clone(&h.stats),
+                h.target_rate,
+                Arc::clone(&h.alive),
+            )
+        })
         .collect();
     Some(progress::ProgressDisplay::start(scenarios))
 }

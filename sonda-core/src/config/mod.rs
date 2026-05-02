@@ -199,6 +199,20 @@ fn default_sink() -> SinkConfig {
     SinkConfig::Stdout
 }
 
+/// Policy for handling sink I/O errors during a running scenario.
+///
+/// `Warn` (the default) logs a rate-limited message, increments error stats,
+/// drops the failing batch, and continues ticking. `Fail` propagates the
+/// error and terminates the scenario thread — the historical behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+pub enum OnSinkError {
+    #[default]
+    Warn,
+    Fail,
+}
+
 /// Shared schedule and delivery fields common to all signal types.
 ///
 /// Both [`ScenarioConfig`] (metrics) and [`LogScenarioConfig`] (logs) embed
@@ -288,6 +302,9 @@ pub struct BaseScheduleConfig {
     /// Different seeds produce different noise sequences.
     #[cfg_attr(feature = "config", serde(default))]
     pub jitter_seed: Option<u64>,
+    /// Behavior when a sink write returns an I/O error mid-run.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub on_sink_error: OnSinkError,
 }
 
 /// Full configuration for a single metric scenario run.
@@ -1267,6 +1284,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1293,6 +1311,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1319,6 +1338,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -1356,6 +1376,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1382,6 +1403,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1412,6 +1434,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1439,6 +1462,7 @@ clock_group: compound-alert
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -1623,6 +1647,7 @@ gaps:
             clock_group_is_auto: None,
             jitter: None,
             jitter_seed: None,
+            on_sink_error: crate::OnSinkError::Warn,
         };
         let cloned = base.clone();
         assert_eq!(cloned.name, "test");
@@ -1657,6 +1682,7 @@ gaps:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1689,6 +1715,7 @@ gaps:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -1728,6 +1755,7 @@ gaps:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -2201,6 +2229,7 @@ mod expand_tests {
                 jitter: Some(0.5),
                 jitter_seed: Some(42),
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: "data.csv".to_string(),
@@ -2280,6 +2309,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 42.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -2640,6 +2670,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -2778,6 +2809,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: path,
@@ -2852,6 +2884,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: path,
@@ -2914,6 +2947,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: path,
@@ -2961,6 +2995,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: path,
@@ -2999,6 +3034,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: "/nonexistent/path.csv".to_string(),
@@ -3041,6 +3077,7 @@ mod expand_tests {
                 jitter: None,
                 jitter_seed: None,
                 dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::CsvReplay {
                 file: path,
@@ -3296,6 +3333,7 @@ distribution:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             buckets: None,
             distribution: DistributionConfig::Exponential { rate: 10.0 },
@@ -3328,6 +3366,7 @@ distribution:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             quantiles: None,
             distribution: DistributionConfig::Normal {

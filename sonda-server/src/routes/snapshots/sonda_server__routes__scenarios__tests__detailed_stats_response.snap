@@ -1,0 +1,19 @@
+---
+source: sonda-server/src/routes/scenarios.rs
+expression: resp
+---
+{
+  "total_events": 1234,
+  "current_rate": 42.5,
+  "target_rate": 100.0,
+  "bytes_emitted": 567890,
+  "errors": 3,
+  "uptime_secs": 12.5,
+  "state": "running",
+  "in_gap": false,
+  "in_burst": true,
+  "consecutive_failures": 2,
+  "total_sink_failures": 7,
+  "last_sink_error": "connection refused",
+  "last_successful_write_at": 1700000000000000000
+}

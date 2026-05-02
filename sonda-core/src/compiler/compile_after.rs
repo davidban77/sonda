@@ -132,6 +132,7 @@ use super::AfterOp;
 use crate::config::validate::parse_duration;
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
+    OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -408,6 +409,8 @@ pub struct CompiledEntry {
     pub mean_shift_per_sec: Option<f64>,
     /// Deterministic seed for histogram/summary sampling.
     pub seed: Option<u64>,
+    /// Resolved sink-error policy.
+    pub on_sink_error: OnSinkError,
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +615,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             quantiles: entry.quantiles,
             observations_per_tick: entry.observations_per_tick,
             mean_shift_per_sec: entry.mean_shift_per_sec,
+            on_sink_error: entry.on_sink_error,
             seed: entry.seed,
         });
     }

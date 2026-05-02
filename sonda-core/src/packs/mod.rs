@@ -306,6 +306,7 @@ pub fn expand_pack(
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator,
             encoder: config.encoder.clone(),

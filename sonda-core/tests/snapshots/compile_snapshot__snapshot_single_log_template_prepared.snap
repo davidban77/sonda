@@ -34,6 +34,7 @@ expression: prepared_view(&prepared)
       "seed": 42
     },
     "name": "app_logs",
+    "on_sink_error": "warn",
     "rate": 5.0,
     "signal_type": "logs",
     "sink": {
