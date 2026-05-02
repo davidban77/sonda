@@ -89,6 +89,7 @@ sonda run --scenario full-example.yaml
 | `labels` | map | no | none | Static key-value labels attached to every event. |
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
+| `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run: `warn` (log + drop batch + keep running) or `fail` (propagate and exit the runner). Overrides `defaults.on_sink_error`. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
 
 ### Gap window
 

@@ -144,6 +144,7 @@ use super::normalize::{NormalizedEntry, NormalizedFile};
 use super::AfterClause;
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
+    OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -465,6 +466,8 @@ pub struct ExpandedEntry {
     pub mean_shift_per_sec: Option<f64>,
     /// Deterministic seed for histogram/summary sampling.
     pub seed: Option<u64>,
+    /// Resolved sink-error policy.
+    pub on_sink_error: OnSinkError,
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +590,7 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
         quantiles: entry.quantiles,
         observations_per_tick: entry.observations_per_tick,
         mean_shift_per_sec: entry.mean_shift_per_sec,
+        on_sink_error: entry.on_sink_error,
         seed: entry.seed,
     }
 }
@@ -722,6 +726,7 @@ fn expand_pack_entry<R: PackResolver>(
             observations_per_tick: None,
             mean_shift_per_sec: None,
             seed: None,
+            on_sink_error: entry.on_sink_error,
         });
     }
 

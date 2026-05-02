@@ -171,6 +171,10 @@ pub struct HistogramArgs {
     /// `distribution` field specifying the observation model.
     #[arg(long)]
     pub scenario: PathBuf,
+
+    /// Behavior when a sink write fails mid-run: `warn` (default) or `fail`.
+    #[arg(long, value_parser = parse_on_sink_error)]
+    pub on_sink_error: Option<sonda_core::OnSinkError>,
 }
 
 /// Arguments for the `summary` subcommand.
@@ -185,6 +189,10 @@ pub struct SummaryArgs {
     /// `distribution` field specifying the observation model.
     #[arg(long)]
     pub scenario: PathBuf,
+
+    /// Behavior when a sink write fails mid-run: `warn` (default) or `fail`.
+    #[arg(long, value_parser = parse_on_sink_error)]
+    pub on_sink_error: Option<sonda_core::OnSinkError>,
 }
 
 /// Arguments for the `metrics` subcommand.
@@ -351,6 +359,10 @@ pub struct MetricsArgs {
     /// Optional seed for jitter noise. Defaults to `0` when absent.
     #[arg(long, help_heading = "Schedule")]
     pub jitter_seed: Option<u64>,
+
+    /// Behavior when a sink write fails mid-run: `warn` (default) or `fail`.
+    #[arg(long, value_parser = parse_on_sink_error, help_heading = "Schedule")]
+    pub on_sink_error: Option<sonda_core::OnSinkError>,
 
     /// Static label attached to every emitted event (repeatable).
     ///
@@ -582,6 +594,10 @@ pub struct LogsArgs {
     #[arg(long, help_heading = "Schedule")]
     pub jitter_seed: Option<u64>,
 
+    /// Behavior when a sink write fails mid-run: `warn` (default) or `fail`.
+    #[arg(long, value_parser = parse_on_sink_error, help_heading = "Schedule")]
+    pub on_sink_error: Option<sonda_core::OnSinkError>,
+
     /// Write output to a file at this path instead of stdout.
     ///
     /// Shorthand for `sink: file` in a YAML scenario. Takes precedence over
@@ -728,6 +744,10 @@ pub struct RunArgs {
     /// Additional labels merged into every entry (format: `key=value`).
     #[arg(long = "label", value_parser = parse_label, help_heading = "Scenario")]
     pub labels: Vec<(String, String)>,
+
+    /// Behavior when a sink write fails mid-run: `warn` (default) or `fail`.
+    #[arg(long, value_parser = parse_on_sink_error, help_heading = "Scenario")]
+    pub on_sink_error: Option<sonda_core::OnSinkError>,
 }
 
 /// Arguments for the `scenarios` subcommand.
@@ -1158,6 +1178,17 @@ fn clap_styles() -> clap::builder::styling::Styles {
         .placeholder(Style::new().fg_color(Some(AnsiColor::Green.into())))
         .valid(Style::new().fg_color(Some(AnsiColor::Green.into())))
         .invalid(Style::new().fg_color(Some(AnsiColor::Red.into())))
+}
+
+/// Parse `--on-sink-error` flag values into the typed enum.
+pub fn parse_on_sink_error(s: &str) -> Result<sonda_core::OnSinkError, String> {
+    match s {
+        "warn" => Ok(sonda_core::OnSinkError::Warn),
+        "fail" => Ok(sonda_core::OnSinkError::Fail),
+        other => Err(format!(
+            "invalid --on-sink-error {other:?}: expected 'warn' or 'fail'"
+        )),
+    }
 }
 
 /// Parse a `key=value` label string into a `(String, String)` pair.

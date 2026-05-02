@@ -23,7 +23,8 @@ expression: normalized
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     }
   ]
 }

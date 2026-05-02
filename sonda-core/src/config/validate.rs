@@ -1726,6 +1726,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -2085,6 +2086,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: Some(f64::NAN),
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: crate::generator::LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -2126,6 +2128,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: Some(-0.5),
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: crate::generator::LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -2299,6 +2302,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: crate::generator::LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -2337,6 +2341,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: crate::generator::LogGeneratorConfig::Template {
                 templates: vec![crate::generator::TemplateConfig {
@@ -2546,6 +2551,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             buckets: None,
             distribution: DistributionConfig::Exponential { rate: 10.0 },
@@ -2609,6 +2615,7 @@ generator:
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             quantiles: None,
             distribution: DistributionConfig::Normal {

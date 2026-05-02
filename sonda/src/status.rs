@@ -1337,6 +1337,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1361,6 +1362,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -1430,6 +1432,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 0.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1586,6 +1589,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Sine {
                 amplitude: 50.0,
@@ -1617,6 +1621,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Replay {
                 file: "/var/log/app.log".to_string(),
@@ -1786,6 +1791,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1811,6 +1817,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {
@@ -1941,6 +1948,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
@@ -1973,6 +1981,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {

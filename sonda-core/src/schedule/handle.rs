@@ -32,6 +32,12 @@ pub struct ScenarioHandle {
     pub stats: Arc<RwLock<ScenarioStats>>,
     /// The configured target rate (events per second) from the scenario config.
     pub target_rate: f64,
+    /// Lock-free liveness flag flipped to `false` when the runner thread exits.
+    ///
+    /// Set inside the spawned thread via a Drop guard so it is also cleared on
+    /// panic. External observers (e.g. the CLI progress display) read this
+    /// without acquiring `JoinHandle::is_finished()`.
+    pub alive: Arc<AtomicBool>,
 }
 
 impl ScenarioHandle {
@@ -52,6 +58,14 @@ impl ScenarioHandle {
             .as_ref()
             .map(|t| !t.is_finished())
             .unwrap_or(false)
+    }
+
+    /// Lock-free check that the runner thread has not yet exited.
+    ///
+    /// Cheaper than [`Self::is_running`] in tight polling loops because it
+    /// reads an `AtomicBool` instead of probing the thread handle.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
     }
 
     /// Join the scenario thread, consuming it.
@@ -208,6 +222,7 @@ mod tests {
             started_at: Instant::now(),
             stats,
             target_rate: 100.0,
+            alive: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -483,6 +498,7 @@ mod tests {
             started_at: Instant::now(),
             stats,
             target_rate: 10.0,
+            alive: Arc::new(AtomicBool::new(true)),
         };
 
         // stats_snapshot must not panic — it recovers from the poisoned lock.
@@ -529,6 +545,7 @@ mod tests {
             started_at: Instant::now(),
             stats,
             target_rate: 10.0,
+            alive: Arc::new(AtomicBool::new(true)),
         };
 
         // recent_metrics must not panic — it recovers from the poisoned lock.

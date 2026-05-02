@@ -19,6 +19,7 @@ expression: entries
       "interface": "eth0"
     },
     "name": "interface_traffic",
+    "on_sink_error": "warn",
     "rate": 10.0,
     "signal_type": "metrics",
     "sink": {

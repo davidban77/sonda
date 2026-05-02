@@ -15,7 +15,7 @@ pub mod summary_runner;
 
 use std::time::Duration;
 
-use crate::config::{DynamicLabelStrategy, SpikeStrategy};
+use crate::config::{DynamicLabelStrategy, OnSinkError, SpikeStrategy};
 use crate::util::splitmix64;
 
 /// Configuration for a gap window (intentional silent period).
@@ -209,6 +209,10 @@ pub(crate) struct ParsedSchedule {
     pub spike_windows: Vec<CardinalitySpikeWindow>,
     /// Resolved dynamic labels (always-on, every tick).
     pub dynamic_labels: Vec<DynamicLabel>,
+    /// Resolved sink-error policy for this scenario.
+    pub on_sink_error: OnSinkError,
+    /// Scenario name surfaced in rate-limited sink-error warnings.
+    pub name: String,
 }
 
 impl ParsedSchedule {
@@ -306,6 +310,8 @@ impl ParsedSchedule {
             burst_window,
             spike_windows,
             dynamic_labels,
+            on_sink_error: config.on_sink_error,
+            name: config.name.clone(),
         })
     }
 }
@@ -982,6 +988,7 @@ mod tests {
             clock_group_is_auto: None,
             jitter: None,
             jitter_seed: None,
+            on_sink_error: crate::OnSinkError::Warn,
         }
     }
 

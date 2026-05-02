@@ -23,7 +23,8 @@ expression: compiled
         "type": "stdout"
       },
       "clock_group": "chain_backup",
-      "clock_group_is_auto": true
+      "clock_group_is_auto": true,
+      "on_sink_error": "warn"
     },
     {
       "id": "backup",
@@ -43,7 +44,8 @@ expression: compiled
       },
       "phase_offset": "85s",
       "clock_group": "chain_backup",
-      "clock_group_is_auto": true
+      "clock_group_is_auto": true,
+      "on_sink_error": "warn"
     }
   ]
 }

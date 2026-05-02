@@ -89,6 +89,7 @@ use std::collections::BTreeMap;
 use super::{AfterClause, Defaults, Entry, ScenarioFile};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
+    OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -249,6 +250,8 @@ pub struct NormalizedEntry {
     pub mean_shift_per_sec: Option<f64>,
     /// Deterministic seed for histogram/summary sampling.
     pub seed: Option<u64>,
+    /// Resolved sink-error policy.
+    pub on_sink_error: OnSinkError,
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +342,10 @@ fn normalize_entry(
     } else {
         merge_labels(defaults.and_then(|d| d.labels.as_ref()), entry.labels)
     };
+    let on_sink_error = entry
+        .on_sink_error
+        .or_else(|| defaults.and_then(|d| d.on_sink_error))
+        .unwrap_or_default();
 
     Ok(NormalizedEntry {
         id: entry.id,
@@ -368,6 +375,7 @@ fn normalize_entry(
         observations_per_tick: entry.observations_per_tick,
         mean_shift_per_sec: entry.mean_shift_per_sec,
         seed: entry.seed,
+        on_sink_error,
     })
 }
 

@@ -46,6 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
+    OnSinkError,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -134,6 +135,9 @@ pub struct Defaults {
     /// Default static labels merged into every entry.
     #[cfg_attr(feature = "config", serde(default))]
     pub labels: Option<BTreeMap<String, String>>,
+    /// Default sink-error policy inherited by every entry.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub on_sink_error: Option<OnSinkError>,
 }
 
 /// A single scenario entry in a v2 file.
@@ -239,6 +243,9 @@ pub struct Entry {
     /// Deterministic seed for histogram/summary sampling.
     #[cfg_attr(feature = "config", serde(default))]
     pub seed: Option<u64>,
+    /// Per-entry sink-error policy (overrides defaults).
+    #[cfg_attr(feature = "config", serde(default))]
+    pub on_sink_error: Option<OnSinkError>,
 }
 
 /// Comparison operator for an [`AfterClause`] threshold check.

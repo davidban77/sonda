@@ -201,6 +201,8 @@ struct FlatFile {
     mean_shift_per_sec: Option<f64>,
     #[serde(default)]
     seed: Option<u64>,
+    #[serde(default)]
+    on_sink_error: Option<crate::config::OnSinkError>,
 }
 
 impl FlatFile {
@@ -248,6 +250,7 @@ impl FlatFile {
             observations_per_tick: self.observations_per_tick,
             mean_shift_per_sec: self.mean_shift_per_sec,
             seed: self.seed,
+            on_sink_error: self.on_sink_error,
         };
 
         // Flat-form files deliberately do NOT expose the top-level metadata

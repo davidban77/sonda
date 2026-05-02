@@ -16,6 +16,7 @@
 //! [`ProgressDisplay::stop`], which also erases the progress lines in TTY mode
 //! so that stop banners print without visual artifacts.
 
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -47,6 +48,8 @@ struct MonitoredScenario {
     stats: Arc<RwLock<ScenarioStats>>,
     /// Configured target rate (events per second).
     target_rate: f64,
+    /// Lock-free liveness flag flipped to `false` when the runner thread exits.
+    alive: Arc<AtomicBool>,
 }
 
 /// A live progress display for one or more running scenarios.
@@ -73,22 +76,26 @@ impl ProgressDisplay {
     /// to stderr. Returns a [`ProgressDisplay`] handle that must be stopped
     /// before printing stop banners.
     ///
-    /// Each tuple contains `(name, stats_arc, target_rate)`.
+    /// Each tuple contains `(name, stats_arc, target_rate, alive_flag)`.
     ///
     /// # Panics
     ///
     /// Panics if the monitoring thread cannot be spawned (system resource
     /// exhaustion).
-    pub fn start(scenarios: Vec<(String, Arc<RwLock<ScenarioStats>>, f64)>) -> Self {
+    #[allow(clippy::type_complexity)]
+    pub fn start(
+        scenarios: Vec<(String, Arc<RwLock<ScenarioStats>>, f64, Arc<AtomicBool>)>,
+    ) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let flag_clone = Arc::clone(&stop_flag);
 
         let monitored: Vec<MonitoredScenario> = scenarios
             .into_iter()
-            .map(|(name, stats, target_rate)| MonitoredScenario {
+            .map(|(name, stats, target_rate, alive)| MonitoredScenario {
                 name,
                 stats,
                 target_rate,
+                alive,
             })
             .collect();
 
@@ -148,16 +155,17 @@ fn read_stats(stats: &Arc<RwLock<ScenarioStats>>) -> ScenarioStats {
 /// Run the TTY progress loop.
 ///
 /// Renders progress lines using ANSI cursor control so they update in place.
-/// On each iteration: move cursor up N lines, overwrite each line, flush.
-/// On exit: erase all progress lines to leave a clean terminal.
+/// Stopped scenarios receive a one-shot "STOPPED" banner and drop out of the
+/// live-line set so the cursor maths stays consistent.
 fn run_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
     let mut first_render = true;
     let start = Instant::now();
+    let mut banner_emitted: HashSet<String> = HashSet::new();
+    let mut live_lines_last_render: usize = 0;
 
     while !stop_flag.load(Ordering::SeqCst) {
         thread::sleep(TTY_POLL_INTERVAL);
 
-        // Check again after sleep — avoids one extra render after stop is signalled.
         if stop_flag.load(Ordering::SeqCst) {
             break;
         }
@@ -165,54 +173,91 @@ fn run_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
         let elapsed = start.elapsed();
         let mut stderr = io::stderr().lock();
 
-        // Move cursor up to overwrite previous progress lines.
-        if !first_render {
-            // Move up N lines (one per scenario).
-            for _ in 0..scenarios.len() {
+        if !first_render && live_lines_last_render > 0 {
+            for _ in 0..live_lines_last_render {
                 let _ = write!(stderr, "\x1b[A");
             }
         }
 
-        // Render one line per scenario.
+        let mut new_banners: Vec<String> = Vec::new();
+        let mut live_count: usize = 0;
+
         for scenario in scenarios {
+            if banner_emitted.contains(&scenario.name) {
+                continue;
+            }
             let stats = read_stats(&scenario.stats);
+            if !scenario.alive.load(Ordering::SeqCst) {
+                let banner = format_stopped_line_tty(&scenario.name, &stats, elapsed);
+                new_banners.push(banner);
+                banner_emitted.insert(scenario.name.clone());
+                continue;
+            }
             let line = format_tty_line(&scenario.name, &stats, scenario.target_rate, elapsed);
-            // \x1b[2K clears the current line (handles variable-width content).
             let _ = write!(stderr, "\x1b[2K{line}\r\n");
+            live_count += 1;
+        }
+
+        for banner in new_banners {
+            let _ = write!(stderr, "\x1b[2K{banner}\r\n");
         }
 
         let _ = stderr.flush();
         first_render = false;
+        live_lines_last_render = live_count;
     }
 
-    // Erase progress lines on exit so stop banners print cleanly.
+    // Erase remaining live progress lines on exit so stop banners print
+    // cleanly. Banners that were already permanent stay where they are.
     let mut stderr = io::stderr().lock();
-    if !first_render {
-        for _ in 0..scenarios.len() {
+    if !first_render && live_lines_last_render > 0 {
+        for _ in 0..live_lines_last_render {
             let _ = write!(stderr, "\x1b[A\x1b[2K");
         }
     }
+
+    // Drain any dead scenarios that were not banner'd before stop was
+    // signaled — when a scenario dies fast (e.g. CLI fail-mode), the
+    // shutdown signal can race ahead of the next polling iteration and
+    // skip the banner pass.
+    let final_elapsed = start.elapsed();
+    drain_stopped_scenarios(scenarios, &banner_emitted, |name, stats| {
+        let banner = format_stopped_line_tty(name, stats, final_elapsed);
+        let _ = write!(stderr, "\x1b[2K{banner}\r\n");
+    });
     let _ = stderr.flush();
 }
 
 /// Run the non-TTY progress loop.
 ///
 /// Emits a self-contained status line every [`NON_TTY_INTERVAL`]. No ANSI
-/// escape sequences are used.
+/// escape sequences are used. Each scenario receives a one-shot STOPPED
+/// banner the first iteration after its runner thread exits.
 fn run_non_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
     let start = Instant::now();
-    // Use short sleeps to remain responsive to the stop flag, but only
-    // emit output at the non-TTY interval.
     let mut last_emit = Instant::now();
-
-    // Sleep in short increments so we notice the stop flag quickly.
     let check_interval = Duration::from_millis(200);
+    let mut banner_emitted: HashSet<String> = HashSet::new();
 
     while !stop_flag.load(Ordering::SeqCst) {
         thread::sleep(check_interval);
 
         if stop_flag.load(Ordering::SeqCst) {
             break;
+        }
+
+        // Detect newly-stopped scenarios immediately and emit a stopped
+        // banner without waiting for the next NON_TTY_INTERVAL tick.
+        for scenario in scenarios {
+            if banner_emitted.contains(&scenario.name) {
+                continue;
+            }
+            if !scenario.alive.load(Ordering::SeqCst) {
+                let stats = read_stats(&scenario.stats);
+                let banner = format_stopped_line_plain(&scenario.name, &stats, start.elapsed());
+                eprintln!("{banner}");
+                banner_emitted.insert(scenario.name.clone());
+            }
         }
 
         if last_emit.elapsed() < NON_TTY_INTERVAL {
@@ -223,11 +268,84 @@ fn run_non_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
         let elapsed = start.elapsed();
 
         for scenario in scenarios {
+            if banner_emitted.contains(&scenario.name) {
+                continue;
+            }
             let stats = read_stats(&scenario.stats);
             let line = format_non_tty_line(&scenario.name, &stats, scenario.target_rate, elapsed);
             eprintln!("{line}");
         }
     }
+
+    // Drain any dead scenarios that were not banner'd before stop was
+    // signaled — when a scenario dies fast (e.g. CLI fail-mode), the
+    // shutdown signal can race ahead of the next polling iteration and
+    // skip the banner pass.
+    let final_elapsed = start.elapsed();
+    drain_stopped_scenarios(scenarios, &banner_emitted, |name, stats| {
+        let banner = format_stopped_line_plain(name, stats, final_elapsed);
+        eprintln!("{banner}");
+    });
+}
+
+/// Invoke `emit` for every scenario whose `alive` flag is false and whose
+/// banner has not yet been recorded in `banner_emitted`.
+///
+/// Used at loop exit so that a fast-dying scenario whose stop raced the
+/// polling cadence still gets its STOPPED banner.
+fn drain_stopped_scenarios<F>(
+    scenarios: &[MonitoredScenario],
+    banner_emitted: &HashSet<String>,
+    mut emit: F,
+) where
+    F: FnMut(&str, &ScenarioStats),
+{
+    for scenario in scenarios {
+        if banner_emitted.contains(&scenario.name) {
+            continue;
+        }
+        if !scenario.alive.load(Ordering::SeqCst) {
+            let stats = read_stats(&scenario.stats);
+            emit(&scenario.name, &stats);
+        }
+    }
+}
+
+/// Format a one-shot STOPPED banner for non-TTY output.
+fn format_stopped_line_plain(name: &str, stats: &ScenarioStats, elapsed: Duration) -> String {
+    let error_clause = match stats.last_sink_error.as_ref() {
+        Some(e) => format!(" (sink: {e})"),
+        None => String::new(),
+    };
+    format!(
+        "[progress] {name}  STOPPED{error_clause} | events: {events} | bytes: {bytes} | elapsed: {elapsed_str}",
+        events = stats.total_events,
+        bytes = format_bytes(stats.bytes_emitted),
+        elapsed_str = format_elapsed_plain(elapsed),
+    )
+}
+
+/// Format a one-shot STOPPED banner for TTY output.
+fn format_stopped_line_tty(name: &str, stats: &ScenarioStats, elapsed: Duration) -> String {
+    let bold_name = format!("{}", name.if_supports_color(Stderr, |t| t.bold()));
+    let label = format!("{}", "STOPPED".if_supports_color(Stderr, |t| t.red()));
+    let pipe = format!("{}", "|".if_supports_color(Stderr, |t| t.dimmed()));
+    let error_clause = match stats.last_sink_error.as_ref() {
+        Some(e) => format!(" (sink: {e})"),
+        None => String::new(),
+    };
+    let events_label = format!("{}", "events:".if_supports_color(Stderr, |t| t.dimmed()));
+    let events_value = format_count(stats.total_events);
+    let bytes_label = format!("{}", "bytes:".if_supports_color(Stderr, |t| t.dimmed()));
+    let bytes_value = format!(
+        "{}",
+        format_bytes(stats.bytes_emitted).if_supports_color(Stderr, |t| t.cyan())
+    );
+    let elapsed_label = format!("{}", "elapsed:".if_supports_color(Stderr, |t| t.dimmed()));
+    let elapsed_value = format_elapsed(elapsed);
+    format!(
+        "  {label} {bold_name}{error_clause}  {events_label} {events_value} {pipe} {bytes_label} {bytes_value} {pipe} {elapsed_label} {elapsed_value}"
+    )
 }
 
 /// Format a TTY progress line for a single scenario.
@@ -643,10 +761,14 @@ mod tests {
     // ProgressDisplay: lifecycle
     // -----------------------------------------------------------------------
 
+    fn alive_flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(true))
+    }
+
     #[test]
     fn progress_display_starts_and_stops_cleanly() {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let display = ProgressDisplay::start(vec![("test".to_string(), stats, 10.0)]);
+        let display = ProgressDisplay::start(vec![("test".to_string(), stats, 10.0, alive_flag())]);
         // Give the thread a moment to start.
         thread::sleep(Duration::from_millis(50));
         display.stop();
@@ -658,8 +780,8 @@ mod tests {
         let stats1 = Arc::new(RwLock::new(ScenarioStats::default()));
         let stats2 = Arc::new(RwLock::new(ScenarioStats::default()));
         let display = ProgressDisplay::start(vec![
-            ("scenario-1".to_string(), stats1, 10.0),
-            ("scenario-2".to_string(), stats2, 20.0),
+            ("scenario-1".to_string(), stats1, 10.0, alive_flag()),
+            ("scenario-2".to_string(), stats2, 20.0, alive_flag()),
         ]);
         thread::sleep(Duration::from_millis(50));
         display.stop();
@@ -668,7 +790,8 @@ mod tests {
     #[test]
     fn progress_display_drop_signals_stop_without_panic() {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let display = ProgressDisplay::start(vec![("drop-test".to_string(), stats, 10.0)]);
+        let display =
+            ProgressDisplay::start(vec![("drop-test".to_string(), stats, 10.0, alive_flag())]);
         // Drop without calling stop() — should not panic.
         drop(display);
         // Give the thread a moment to notice the flag.
@@ -679,7 +802,8 @@ mod tests {
     fn progress_display_reads_updated_stats() {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         let stats_writer = Arc::clone(&stats);
-        let display = ProgressDisplay::start(vec![("live-test".to_string(), stats, 100.0)]);
+        let display =
+            ProgressDisplay::start(vec![("live-test".to_string(), stats, 100.0, alive_flag())]);
 
         // Simulate the runner updating stats.
         {
@@ -695,6 +819,44 @@ mod tests {
         // The test passes if no panics occurred during read.
     }
 
+    #[test]
+    fn format_stopped_line_plain_includes_stopped_label() {
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 100;
+        stats.bytes_emitted = 1024;
+        let line = format_stopped_line_plain("svc", &stats, Duration::from_secs(5));
+        assert!(line.contains("STOPPED"), "missing STOPPED in: {line}");
+        assert!(line.contains("svc"));
+        assert!(line.contains("events: 100"));
+    }
+
+    #[test]
+    fn format_stopped_line_plain_with_error_includes_sink_clause() {
+        let mut stats = ScenarioStats::default();
+        stats.last_sink_error = Some("connection refused".to_string());
+        let line = format_stopped_line_plain("svc", &stats, Duration::from_secs(1));
+        assert!(line.contains("(sink: connection refused)"), "got: {line}");
+    }
+
+    #[test]
+    fn format_stopped_line_plain_clean_shutdown_has_no_parenthetical() {
+        let stats = ScenarioStats::default();
+        let line = format_stopped_line_plain("svc", &stats, Duration::from_secs(1));
+        assert!(
+            !line.contains("(sink:"),
+            "must not include sink clause for clean shutdown: {line}"
+        );
+    }
+
+    #[test]
+    fn format_stopped_line_tty_includes_stopped_label() {
+        let stats = ScenarioStats::default();
+        let line = format_stopped_line_tty("svc", &stats, Duration::from_secs(1));
+        // Strip ANSI for content check
+        assert!(strip_ansi(&line).contains("STOPPED"));
+        assert!(line.contains("svc"));
+    }
+
     // -----------------------------------------------------------------------
     // Contract: ProgressDisplay is Send
     // -----------------------------------------------------------------------
@@ -703,5 +865,83 @@ mod tests {
     fn progress_display_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<ProgressDisplay>();
+    }
+
+    // -----------------------------------------------------------------------
+    // drain_stopped_scenarios: post-loop cleanup of dead scenarios
+    // -----------------------------------------------------------------------
+
+    fn dead_scenario(name: &str) -> MonitoredScenario {
+        MonitoredScenario {
+            name: name.to_string(),
+            stats: Arc::new(RwLock::new(ScenarioStats::default())),
+            target_rate: 10.0,
+            alive: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn live_scenario(name: &str) -> MonitoredScenario {
+        MonitoredScenario {
+            name: name.to_string(),
+            stats: Arc::new(RwLock::new(ScenarioStats::default())),
+            target_rate: 10.0,
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn drain_stopped_scenarios_emits_for_dead_unbannered() {
+        let scenarios = vec![dead_scenario("died_fast")];
+        let emitted = HashSet::new();
+        let mut names: Vec<String> = Vec::new();
+        drain_stopped_scenarios(&scenarios, &emitted, |name, _stats| {
+            names.push(name.to_string());
+        });
+        assert_eq!(names, vec!["died_fast".to_string()]);
+    }
+
+    #[test]
+    fn drain_stopped_scenarios_skips_already_bannered() {
+        let scenarios = vec![dead_scenario("died_first"), dead_scenario("died_second")];
+        let mut emitted = HashSet::new();
+        emitted.insert("died_first".to_string());
+        let mut names: Vec<String> = Vec::new();
+        drain_stopped_scenarios(&scenarios, &emitted, |name, _stats| {
+            names.push(name.to_string());
+        });
+        assert_eq!(names, vec!["died_second".to_string()]);
+    }
+
+    #[test]
+    fn drain_stopped_scenarios_skips_live_scenarios() {
+        let scenarios = vec![live_scenario("still_running")];
+        let emitted = HashSet::new();
+        let mut names: Vec<String> = Vec::new();
+        drain_stopped_scenarios(&scenarios, &emitted, |name, _stats| {
+            names.push(name.to_string());
+        });
+        assert!(
+            names.is_empty(),
+            "live scenarios must not receive a final banner"
+        );
+    }
+
+    #[test]
+    fn drain_stopped_scenarios_passes_stats_snapshot() {
+        let scenario = dead_scenario("with_error");
+        {
+            let mut s = scenario.stats.write().expect("lock");
+            s.last_sink_error = Some("boom".to_string());
+            s.total_events = 7;
+        }
+        let scenarios = vec![scenario];
+        let emitted = HashSet::new();
+        let mut captured: Option<ScenarioStats> = None;
+        drain_stopped_scenarios(&scenarios, &emitted, |_name, stats| {
+            captured = Some(stats.clone());
+        });
+        let snap = captured.expect("must emit once");
+        assert_eq!(snap.total_events, 7);
+        assert_eq!(snap.last_sink_error.as_deref(), Some("boom"));
     }
 }

@@ -147,6 +147,14 @@ pub struct StatsResponse {
     pub bytes_emitted: u64,
     /// Number of encode or sink write errors encountered.
     pub errors: u64,
+    /// Sink failures observed since the most recent successful write.
+    pub consecutive_failures: u64,
+    /// Lifetime sink-failure count.
+    pub total_sink_failures: u64,
+    /// Most recent sink error message, if any.
+    pub last_sink_error: Option<String>,
+    /// Wall-clock Unix-nanoseconds timestamp of the last successful write.
+    pub last_successful_write_at: Option<u64>,
 }
 
 impl From<ScenarioStats> for StatsResponse {
@@ -156,6 +164,10 @@ impl From<ScenarioStats> for StatsResponse {
             current_rate: s.current_rate,
             bytes_emitted: s.bytes_emitted,
             errors: s.errors,
+            consecutive_failures: s.consecutive_failures,
+            total_sink_failures: s.total_sink_failures,
+            last_sink_error: s.last_sink_error,
+            last_successful_write_at: s.last_successful_write_at,
         }
     }
 }
@@ -185,6 +197,14 @@ pub struct DetailedStatsResponse {
     pub in_gap: bool,
     /// Whether the scenario is currently in a burst window (elevated rate).
     pub in_burst: bool,
+    /// Sink failures observed since the most recent successful write.
+    pub consecutive_failures: u64,
+    /// Lifetime sink-failure count.
+    pub total_sink_failures: u64,
+    /// Most recent sink error message, if any.
+    pub last_sink_error: Option<String>,
+    /// Wall-clock Unix-nanoseconds timestamp of the last successful write.
+    pub last_successful_write_at: Option<u64>,
 }
 
 // ---- Error helpers ----------------------------------------------------------
@@ -718,6 +738,10 @@ pub async fn get_scenario_stats(
         state: status_string(handle.is_running()),
         in_gap: snap.in_gap,
         in_burst: snap.in_burst,
+        consecutive_failures: snap.consecutive_failures,
+        total_sink_failures: snap.total_sink_failures,
+        last_sink_error: snap.last_sink_error,
+        last_successful_write_at: snap.last_successful_write_at,
     };
 
     Ok(Json(response))
@@ -856,6 +880,7 @@ mod tests {
             started_at: Instant::now(),
             stats,
             target_rate: 100.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -885,6 +910,7 @@ mod tests {
             started_at: Instant::now(),
             stats,
             target_rate: 100.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -1448,6 +1474,10 @@ scenarios:
                 current_rate: 5.0,
                 bytes_emitted: 2048,
                 errors: 1,
+                consecutive_failures: 0,
+                total_sink_failures: 0,
+                last_sink_error: None,
+                last_successful_write_at: None,
             },
         };
         let json = serde_json::to_value(&d).unwrap();
@@ -2493,6 +2523,7 @@ scenarios:
             started_at: Instant::now(),
             stats,
             target_rate,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -2812,6 +2843,10 @@ scenarios:
             state: "running".to_string(),
             in_gap: true,
             in_burst: false,
+            consecutive_failures: 0,
+            total_sink_failures: 0,
+            last_sink_error: None,
+            last_successful_write_at: None,
         };
         let json = serde_json::to_value(&resp).expect("must serialize");
         assert_eq!(json["total_events"], 42);
@@ -2900,6 +2935,7 @@ scenarios:
             started_at: Instant::now(),
             stats,
             target_rate: 10.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -3258,6 +3294,7 @@ scenarios:
             started_at: Instant::now(),
             stats,
             target_rate: 50.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -3284,6 +3321,7 @@ scenarios:
             started_at: Instant::now(),
             stats,
             target_rate: 10.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -4065,6 +4103,36 @@ scenarios:
             StatusCode::UNPROCESSABLE_ENTITY,
             "POST single scenario with rate=0 must return 422"
         );
+    }
+
+    // ---- insta snapshots: response field shape lock-in ----------------------
+
+    fn snapshot_settings() -> insta::Settings {
+        let mut s = insta::Settings::clone_current();
+        s.set_sort_maps(true);
+        s
+    }
+
+    #[test]
+    fn detailed_stats_response_json_snapshot_locks_field_shape() {
+        let resp = DetailedStatsResponse {
+            total_events: 1234,
+            current_rate: 42.5,
+            target_rate: 100.0,
+            bytes_emitted: 567_890,
+            errors: 3,
+            uptime_secs: 12.5,
+            state: "running".to_string(),
+            in_gap: false,
+            in_burst: true,
+            consecutive_failures: 2,
+            total_sink_failures: 7,
+            last_sink_error: Some("connection refused".to_string()),
+            last_successful_write_at: Some(1_700_000_000_000_000_000),
+        };
+        snapshot_settings().bind(|| {
+            insta::assert_json_snapshot!("detailed_stats_response", resp);
+        });
     }
 
     // Sink loopback pre-flight tests (helpers + cases) live in the

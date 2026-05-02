@@ -132,15 +132,13 @@ pub fn run_logs_with_sink(
     // Run the shared schedule loop. The tick closure owns the sink borrow for
     // per-tick writes; the loop itself handles rate control, gap/burst/spike
     // windows, stats tracking, and shutdown. We flush after the loop returns.
+    let stats_for_flush = stats.clone();
     let loop_result =
         core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn);
 
-    // Always flush buffered data before returning, even on error paths.
-    // If the loop succeeded, propagate any flush error.
-    // If the loop failed, preserve the original error (discard flush error).
     let flush_result = sink.flush();
     match loop_result {
-        Ok(()) => flush_result,
+        Ok(()) => core_loop::apply_flush_policy(&schedule, stats_for_flush.as_ref(), flush_result),
         Err(e) => Err(e),
     }
 }
@@ -178,6 +176,7 @@ mod tests {
                 clock_group_is_auto: None,
                 jitter: None,
                 jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
             },
             generator: LogGeneratorConfig::Template {
                 templates: vec![TemplateConfig {

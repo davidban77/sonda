@@ -1,31 +1,62 @@
-//! Shared schedule loop for metrics and log signal types.
-//!
-//! The core loop handles the schedule infrastructure that is identical across
-//! metrics and logs: duration checking, shutdown handling, gap window sleeping,
-//! burst window effective interval computation, deadline-based rate control,
-//! spike window state tracking, and stats updating.
-//!
-//! Signal-specific work (event generation, encoding, sink writing) is delegated
-//! to a caller-provided [`TickFn`] closure. This eliminates the duplication
-//! between the metrics runner and the log runner while keeping each signal
-//! type's event logic self-contained.
-//!
-//! **Note:** [`TickResult`] currently carries an `Option<MetricEvent>` for the
-//! stats recent-metrics buffer, which couples this module to the metrics model.
-//! If additional signal types (traces, flows) are added, this should be
-//! generalized via a trait object or generic parameter.
+//! Shared schedule loop for metrics, logs, histograms, and summaries.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::config::OnSinkError;
 use crate::model::metric::MetricEvent;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
 use crate::SondaError;
 
 use super::ParsedSchedule;
+
+/// Minimum interval between rate-limited sink-error stderr emissions.
+const SINK_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Per-scenario rate limiter for sink-error stderr warnings.
+///
+/// Stack-local in [`run_schedule_loop`]; not shared, not telemetry. Counts
+/// suppressed errors and emits a single line at most once per
+/// [`SINK_WARN_INTERVAL`].
+struct SinkErrorRateLimiter {
+    last_emit: Option<Instant>,
+    suppressed_count: u64,
+}
+
+impl SinkErrorRateLimiter {
+    fn new() -> Self {
+        Self {
+            last_emit: None,
+            suppressed_count: 0,
+        }
+    }
+
+    /// Record a sink error and emit a warning if the cooldown has elapsed.
+    ///
+    /// Always emits on the first call (so users see at least one line) and
+    /// then at most once per [`SINK_WARN_INTERVAL`].
+    fn observe(&mut self, scenario_name: &str, err: &std::io::Error) {
+        self.suppressed_count += 1;
+        let should_emit = self
+            .last_emit
+            .map(|t| t.elapsed() >= SINK_WARN_INTERVAL)
+            .unwrap_or(true);
+        if should_emit {
+            eprintln!(
+                "sonda: scenario '{}': {} sink errors in last {}s (last: {})",
+                scenario_name,
+                self.suppressed_count,
+                SINK_WARN_INTERVAL.as_secs(),
+                err
+            );
+            self.last_emit = Some(Instant::now());
+            self.suppressed_count = 0;
+        }
+    }
+}
 
 /// The result returned by a per-tick callback.
 ///
@@ -123,6 +154,8 @@ pub(crate) fn run_schedule_loop(
     let mut rate_window_tick: u64 = 0;
     let mut rate_window_start = start;
 
+    let mut sink_warn_limiter = SinkErrorRateLimiter::new();
+
     loop {
         // Check shutdown flag first — highest priority exit path.
         if let Some(flag) = shutdown {
@@ -197,7 +230,7 @@ pub(crate) fn run_schedule_loop(
             dynamic_labels: &schedule.dynamic_labels,
             elapsed,
         };
-        let result = tick_fn(&ctx)?;
+        let tick_outcome = tick_fn(&ctx);
 
         // Determine spike state for stats (check all spike windows).
         let currently_in_spike = schedule
@@ -205,30 +238,66 @@ pub(crate) fn run_schedule_loop(
             .iter()
             .any(|sw| is_in_spike(elapsed, sw));
 
-        // Update live stats (only when a stats arc was provided).
-        if let Some(ref s) = stats {
-            let window_elapsed = rate_window_start.elapsed();
-            let current_rate = if window_elapsed >= Duration::from_secs(1) {
-                let events_in_window = tick - rate_window_tick;
-                let r = events_in_window as f64 / window_elapsed.as_secs_f64();
-                rate_window_tick = tick;
-                rate_window_start = Instant::now();
-                r
-            } else {
-                s.read().map(|st| st.current_rate).unwrap_or(0.0)
-            };
+        match tick_outcome {
+            Ok(result) => {
+                if let Some(ref s) = stats {
+                    let window_elapsed = rate_window_start.elapsed();
+                    let current_rate = if window_elapsed >= Duration::from_secs(1) {
+                        let events_in_window = tick - rate_window_tick;
+                        let r = events_in_window as f64 / window_elapsed.as_secs_f64();
+                        rate_window_tick = tick;
+                        rate_window_start = Instant::now();
+                        r
+                    } else {
+                        s.read().map(|st| st.current_rate).unwrap_or(0.0)
+                    };
 
-            if let Ok(mut st) = s.write() {
-                st.total_events += 1;
-                st.bytes_emitted += result.bytes_written;
-                st.current_rate = current_rate;
-                st.in_gap = currently_in_gap;
-                st.in_burst = currently_in_burst;
-                st.in_cardinality_spike = currently_in_spike;
-                if let Some(event) = result.metric_event {
-                    st.push_metric(event);
+                    if let Ok(mut st) = s.write() {
+                        st.total_events += 1;
+                        st.bytes_emitted += result.bytes_written;
+                        st.current_rate = current_rate;
+                        st.in_gap = currently_in_gap;
+                        st.in_burst = currently_in_burst;
+                        st.in_cardinality_spike = currently_in_spike;
+                        st.consecutive_failures = 0;
+                        st.last_successful_write_at = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_nanos() as u64)
+                            .ok();
+                        if let Some(event) = result.metric_event {
+                            st.push_metric(event);
+                        }
+                    }
                 }
             }
+            Err(SondaError::Sink(io_err)) => match schedule.on_sink_error {
+                OnSinkError::Warn => {
+                    sink_warn_limiter.observe(&schedule.name, &io_err);
+                    if let Some(ref s) = stats {
+                        if let Ok(mut st) = s.write() {
+                            st.errors = st.errors.saturating_add(1);
+                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+                            st.last_sink_error = Some(io_err.to_string());
+                            st.in_gap = currently_in_gap;
+                            st.in_burst = currently_in_burst;
+                            st.in_cardinality_spike = currently_in_spike;
+                        }
+                    }
+                }
+                OnSinkError::Fail => {
+                    if let Some(ref s) = stats {
+                        if let Ok(mut st) = s.write() {
+                            st.errors = st.errors.saturating_add(1);
+                            st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+                            st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+                            st.last_sink_error = Some(io_err.to_string());
+                        }
+                    }
+                    return Err(SondaError::Sink(io_err));
+                }
+            },
+            Err(other) => return Err(other),
         }
 
         next_deadline += effective_interval;
@@ -236,6 +305,41 @@ pub(crate) fn run_schedule_loop(
     }
 
     Ok(())
+}
+
+/// Apply the scenario's sink-error policy to a flush call made at scenario
+/// shutdown.
+///
+/// On `Warn`, emits one rate-limited stderr warning (sharing the same
+/// SCENARIO_NAME format used during the loop) and returns `Ok(())`. On
+/// `Fail`, propagates the error to the caller as before.
+pub(crate) fn apply_flush_policy(
+    schedule: &ParsedSchedule,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    flush_result: Result<(), SondaError>,
+) -> Result<(), SondaError> {
+    match flush_result {
+        Ok(()) => Ok(()),
+        Err(SondaError::Sink(io_err)) => match schedule.on_sink_error {
+            OnSinkError::Warn => {
+                eprintln!(
+                    "sonda: scenario '{}': flush failed at shutdown: {}",
+                    schedule.name, io_err
+                );
+                if let Some(s) = stats {
+                    if let Ok(mut st) = s.write() {
+                        st.errors = st.errors.saturating_add(1);
+                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+                        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+                        st.last_sink_error = Some(io_err.to_string());
+                    }
+                }
+                Ok(())
+            }
+            OnSinkError::Fail => Err(SondaError::Sink(io_err)),
+        },
+        Err(other) => Err(other),
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +355,8 @@ mod tests {
             burst_window: None,
             spike_windows: Vec::new(),
             dynamic_labels: Vec::new(),
+            on_sink_error: OnSinkError::Warn,
+            name: "test".to_string(),
         }
     }
 
@@ -346,6 +452,8 @@ mod tests {
             burst_window: None,
             spike_windows: Vec::new(),
             dynamic_labels: Vec::new(),
+            on_sink_error: OnSinkError::Warn,
+            name: "test".to_string(),
         };
 
         let mut event_count: u64 = 0;
@@ -381,6 +489,8 @@ mod tests {
             }),
             spike_windows: Vec::new(),
             dynamic_labels: Vec::new(),
+            on_sink_error: OnSinkError::Warn,
+            name: "test".to_string(),
         };
 
         let mut event_count: u64 = 0;
@@ -495,6 +605,8 @@ mod tests {
                 seed: 0,
             }],
             dynamic_labels: Vec::new(),
+            on_sink_error: OnSinkError::Warn,
+            name: "test".to_string(),
         };
 
         let mut saw_spike_windows = false;
@@ -516,12 +628,30 @@ mod tests {
         );
     }
 
-    // ---- Error propagation: tick errors are propagated ----------------------
+    // ---- Error propagation: encoder errors propagate regardless of policy ----
 
-    /// When the tick callback returns an error, the loop propagates it.
     #[test]
-    fn loop_propagates_tick_error() {
+    fn loop_propagates_encoder_error_under_warn_policy() {
         let schedule = minimal_schedule(Some(Duration::from_secs(10)));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Err(SondaError::Encoder(crate::EncoderError::NotSupported(
+                "synthetic encoder failure".to_string(),
+            )))
+        };
+
+        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut tick_fn);
+
+        assert!(
+            matches!(result, Err(SondaError::Encoder(_))),
+            "encoder errors must propagate regardless of sink-error policy"
+        );
+    }
+
+    #[test]
+    fn loop_propagates_sink_error_under_fail_policy() {
+        let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
+        schedule.on_sink_error = OnSinkError::Fail;
 
         let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
             Err(SondaError::Sink(std::io::Error::new(
@@ -532,7 +662,287 @@ mod tests {
 
         let result = run_schedule_loop(&schedule, 10.0, None, None, &mut tick_fn);
 
-        assert!(result.is_err(), "loop must propagate tick error");
+        assert!(
+            matches!(result, Err(SondaError::Sink(_))),
+            "Fail policy must propagate sink errors"
+        );
+    }
+
+    #[test]
+    fn fail_policy_records_stats_before_propagating() {
+        let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
+        schedule.on_sink_error = OnSinkError::Fail;
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "fail-before-die",
+            )))
+        };
+
+        let result = run_schedule_loop(
+            &schedule,
+            10.0,
+            None,
+            Some(Arc::clone(&stats)),
+            &mut tick_fn,
+        );
+
+        assert!(
+            matches!(result, Err(SondaError::Sink(_))),
+            "Fail policy must still propagate the sink error"
+        );
+
+        let st = stats.read().expect("stats lock");
+        assert_eq!(st.errors, 1, "errors must be incremented before exit");
+        assert_eq!(
+            st.total_sink_failures, 1,
+            "total_sink_failures must be incremented before exit"
+        );
+        assert_eq!(
+            st.consecutive_failures, 1,
+            "consecutive_failures must be incremented before exit"
+        );
+        assert!(
+            st.last_sink_error.is_some(),
+            "last_sink_error must be populated before exit"
+        );
+        assert!(
+            st.last_sink_error
+                .as_ref()
+                .unwrap()
+                .contains("fail-before-die"),
+            "last_sink_error must carry the io error message"
+        );
+    }
+
+    #[test]
+    fn loop_swallows_sink_error_under_warn_policy_and_continues() {
+        // 200ms run with rate=50: ~10 ticks. All return sink errors. Loop
+        // must complete without propagating.
+        let schedule = minimal_schedule(Some(Duration::from_millis(200)));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "transient",
+            )))
+        };
+
+        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut tick_fn);
+
+        assert!(
+            result.is_ok(),
+            "Warn policy must swallow sink errors and complete: {result:?}"
+        );
+    }
+
+    #[test]
+    fn warn_policy_updates_sink_failure_stats() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "boom",
+            )))
+        };
+
+        run_schedule_loop(
+            &schedule,
+            50.0,
+            None,
+            Some(Arc::clone(&stats)),
+            &mut tick_fn,
+        )
+        .expect("warn policy must complete");
+
+        let st = stats.read().expect("stats lock");
+        assert!(
+            st.total_sink_failures > 0,
+            "total_sink_failures must be > 0"
+        );
+        assert_eq!(
+            st.consecutive_failures, st.total_sink_failures,
+            "no successful writes — consecutive == total"
+        );
+        assert!(st.last_sink_error.is_some(), "last_sink_error must be Some");
+        assert_eq!(
+            st.last_successful_write_at, None,
+            "no successful write happened, must remain None"
+        );
+        assert!(st.errors > 0, "errors counter must increment too");
+    }
+
+    #[test]
+    fn alternating_ok_err_resets_consecutive_failures() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(300)));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        let mut counter: u64 = 0;
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            counter += 1;
+            if counter % 2 == 0 {
+                Ok(TickResult {
+                    bytes_written: 8,
+                    metric_event: None,
+                })
+            } else {
+                Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "alt",
+                )))
+            }
+        };
+
+        run_schedule_loop(
+            &schedule,
+            50.0,
+            None,
+            Some(Arc::clone(&stats)),
+            &mut tick_fn,
+        )
+        .expect("warn must succeed");
+
+        let st = stats.read().expect("stats lock");
+        assert!(
+            st.consecutive_failures <= 1,
+            "consecutive_failures must reset on Ok, got {}",
+            st.consecutive_failures
+        );
+        assert!(st.total_sink_failures > 0);
+        assert!(st.total_events > 0);
+        assert!(st.last_successful_write_at.is_some());
+    }
+
+    // ---- Rate limiter unit tests --------------------------------------------
+
+    #[test]
+    fn rate_limiter_emits_first_error_immediately() {
+        let mut limiter = SinkErrorRateLimiter::new();
+        let err = std::io::Error::new(std::io::ErrorKind::Other, "first");
+        limiter.observe("scenario_a", &err);
+        assert!(
+            limiter.last_emit.is_some(),
+            "first call must emit and record timestamp"
+        );
+    }
+
+    #[test]
+    fn rate_limiter_suppresses_subsequent_errors_within_interval() {
+        let mut limiter = SinkErrorRateLimiter::new();
+        let err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        for _ in 0..1000 {
+            limiter.observe("scenario_b", &err);
+        }
+        // The first call emits and resets count to 0; subsequent 999 calls
+        // accumulate without emitting.
+        assert_eq!(
+            limiter.suppressed_count, 999,
+            "999 errors must be suppressed after the first emission"
+        );
+    }
+
+    // ---- rstest matrix: policy × error variant ------------------------------
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::warn_sink_continues(   OnSinkError::Warn, ErrKind::Sink,    PolicyOutcome::Ok)]
+    #[case::fail_sink_propagates(  OnSinkError::Fail, ErrKind::Sink,    PolicyOutcome::SinkErr)]
+    #[case::warn_encoder_propagates(OnSinkError::Warn, ErrKind::Encoder, PolicyOutcome::EncoderErr)]
+    #[case::fail_encoder_propagates(OnSinkError::Fail, ErrKind::Encoder, PolicyOutcome::EncoderErr)]
+    #[case::warn_config_propagates( OnSinkError::Warn, ErrKind::Config,  PolicyOutcome::ConfigErr)]
+    #[case::fail_config_propagates( OnSinkError::Fail, ErrKind::Config,  PolicyOutcome::ConfigErr)]
+    fn policy_matrix(
+        #[case] policy: OnSinkError,
+        #[case] err_kind: ErrKind,
+        #[case] expected: PolicyOutcome,
+    ) {
+        let mut schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        schedule.on_sink_error = policy;
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            match err_kind {
+                ErrKind::Sink => Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "matrix",
+                ))),
+                ErrKind::Encoder => Err(SondaError::Encoder(crate::EncoderError::NotSupported(
+                    "matrix".to_string(),
+                ))),
+                ErrKind::Config => Err(SondaError::Config(crate::ConfigError::invalid("matrix"))),
+            }
+        };
+
+        let result = run_schedule_loop(&schedule, 30.0, None, None, &mut tick_fn);
+
+        match expected {
+            PolicyOutcome::Ok => assert!(result.is_ok(), "must complete: {result:?}"),
+            PolicyOutcome::SinkErr => {
+                assert!(matches!(result, Err(SondaError::Sink(_))), "got {result:?}")
+            }
+            PolicyOutcome::EncoderErr => assert!(
+                matches!(result, Err(SondaError::Encoder(_))),
+                "got {result:?}"
+            ),
+            PolicyOutcome::ConfigErr => assert!(
+                matches!(result, Err(SondaError::Config(_))),
+                "got {result:?}"
+            ),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ErrKind {
+        Sink,
+        Encoder,
+        Config,
+    }
+
+    #[derive(Clone, Copy)]
+    enum PolicyOutcome {
+        Ok,
+        SinkErr,
+        EncoderErr,
+        ConfigErr,
+    }
+
+    // ---- apply_flush_policy --------------------------------------------------
+
+    #[test]
+    fn apply_flush_policy_warn_swallows_sink_error() {
+        let mut schedule = minimal_schedule(None);
+        schedule.on_sink_error = OnSinkError::Warn;
+        let flush_err = Err(SondaError::Sink(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "flush",
+        )));
+        let out = apply_flush_policy(&schedule, None, flush_err);
+        assert!(out.is_ok(), "warn policy must swallow flush sink errors");
+    }
+
+    #[test]
+    fn apply_flush_policy_fail_propagates_sink_error() {
+        let mut schedule = minimal_schedule(None);
+        schedule.on_sink_error = OnSinkError::Fail;
+        let flush_err = Err(SondaError::Sink(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "flush",
+        )));
+        let out = apply_flush_policy(&schedule, None, flush_err);
+        assert!(matches!(out, Err(SondaError::Sink(_))));
+    }
+
+    #[test]
+    fn apply_flush_policy_propagates_non_sink_errors() {
+        let schedule = minimal_schedule(None);
+        let flush_err = Err(SondaError::Encoder(crate::EncoderError::NotSupported(
+            "non-sink".to_string(),
+        )));
+        let out = apply_flush_policy(&schedule, None, flush_err);
+        assert!(matches!(out, Err(SondaError::Encoder(_))));
     }
 
     // ---- Contract: TickResult fields ----------------------------------------

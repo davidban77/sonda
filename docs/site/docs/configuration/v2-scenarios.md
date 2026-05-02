@@ -218,6 +218,55 @@ scenarios:
 
 The `mem` entry overrides `rate` only; everything else comes from `defaults:`.
 
+### Sink-error policy
+
+`on_sink_error` controls what the runner does when the sink returns an error mid-run -- a Loki `500`, a TCP reset, an HTTP timeout. Two values:
+
+| Value | Behavior |
+|---|---|
+| `warn` (default) | The runner logs to stderr (rate-limited, one line per minute per scenario with a count), increments error counters in [`/stats`](../deployment/sonda-server.md#self-observability-via-stats), drops the failed batch, and keeps ticking. The scenario stays alive while the sink recovers. |
+| `fail` | The runner propagates the error and the scenario thread exits. Use this when any sink failure should hard-fail a CI run. |
+
+Set the policy at `defaults:` to apply it to every entry, or per-entry to override one scenario in a mixed run:
+
+```yaml title="sink-error-policy.yaml"
+version: 2
+
+defaults:
+  rate: 100
+  duration: 30s
+  on_sink_error: warn          # default; written here for clarity
+  encoder:
+    type: prometheus_text
+  sink:
+    type: loki
+    url: ${LOKI_URL:-http://localhost:3100}
+
+scenarios:
+  - id: noisy_logs
+    signal_type: logs
+    name: noisy_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "request handled"
+
+  - id: canary
+    signal_type: metrics
+    name: canary
+    on_sink_error: fail        # this one MUST hard-fail on sink errors
+    generator:
+      type: constant
+      value: 1
+```
+
+The `noisy_logs` entry tolerates Loki blips. The `canary` entry treats any sink error as fatal -- useful when you want a CI run to fail the moment delivery breaks.
+
+!!! tip "When to pick `fail`"
+    Pick `fail` when sink delivery is itself the contract under test -- CI gates that compare metric counts against an expected total, or smoke tests that should abort the moment the backend goes away. Pick `warn` (the default) for everything else: long-running fleets, demo environments, or any scenario where you want runtime self-observability via [`/stats`](../deployment/sonda-server.md#self-observability-via-stats) instead of thread death.
+
+`--on-sink-error <warn|fail>` on every CLI subcommand (`sonda run`, `sonda metrics`, `sonda logs`, `sonda histogram`, `sonda summary`) overrides `defaults.on_sink_error` for one-off invocations -- handy when you want to point a single CI run at a YAML that defaults to `warn`. See [CLI Reference](cli-reference.md#sonda-run).
+
 ## Temporal chains with `after:`
 
 Use `after:` to express "this scenario starts when that one crosses a threshold". Sonda resolves

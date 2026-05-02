@@ -32,6 +32,7 @@ expression: entries
     },
     "name": "http_request_duration_seconds",
     "observations_per_tick": 50,
+    "on_sink_error": "warn",
     "rate": 1.0,
     "seed": 42,
     "signal_type": "histogram",

@@ -237,6 +237,7 @@ fn build_base(entry: &mut CompiledEntry) -> BaseScheduleConfig {
         clock_group_is_auto,
         jitter: entry.jitter,
         jitter_seed: entry.jitter_seed,
+        on_sink_error: entry.on_sink_error,
     }
 }
 
@@ -398,6 +399,7 @@ mod tests {
             observations_per_tick: None,
             mean_shift_per_sec: None,
             seed: None,
+            on_sink_error: crate::OnSinkError::Warn,
         }
     }
 

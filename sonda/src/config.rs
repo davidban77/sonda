@@ -421,6 +421,7 @@ pub fn load_config(
                 clock_group_is_auto: None,
                 jitter: args.jitter,
                 jitter_seed: args.jitter_seed,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator: build_generator_config(args)?,
             encoder: parse_encoder_config(
@@ -693,6 +694,9 @@ fn apply_overrides(config: &mut ScenarioConfig, args: &MetricsArgs) -> Result<()
     }
     if let Some(jitter_seed) = args.jitter_seed {
         config.base.jitter_seed = Some(jitter_seed);
+    }
+    if let Some(policy) = args.on_sink_error {
+        config.base.on_sink_error = policy;
     }
 
     // Labels: CLI labels are merged on top of (not replacing) the file labels.
@@ -1163,6 +1167,7 @@ pub fn load_log_config(
                 clock_group_is_auto: None,
                 jitter: args.jitter,
                 jitter_seed: args.jitter_seed,
+                on_sink_error: sonda_core::OnSinkError::Warn,
             },
             generator,
             encoder: parse_log_encoder_config(
@@ -1277,6 +1282,9 @@ fn apply_log_overrides(config: &mut LogScenarioConfig, args: &LogsArgs) -> Resul
     }
     if let Some(jitter_seed) = args.jitter_seed {
         config.base.jitter_seed = Some(jitter_seed);
+    }
+    if let Some(policy) = args.on_sink_error {
+        config.base.on_sink_error = policy;
     }
 
     // Encoder: override when the user explicitly passes --encoder.
@@ -1482,7 +1490,11 @@ pub fn load_histogram_config(
         SignalKind::Histogram,
         "histogram",
     )?;
-    Ok(loaded.into_histogram())
+    let mut config = loaded.into_histogram();
+    if let Some(policy) = args.on_sink_error {
+        config.base.on_sink_error = policy;
+    }
+    Ok(config)
 }
 
 /// Load a summary scenario from a YAML file.
@@ -1507,7 +1519,11 @@ pub fn load_summary_config(
         SignalKind::Summary,
         "summary",
     )?;
-    Ok(loaded.into_summary())
+    let mut config = loaded.into_summary();
+    if let Some(policy) = args.on_sink_error {
+        config.base.on_sink_error = policy;
+    }
+    Ok(config)
 }
 
 /// Parse a cataloged scenario into one or more [`ScenarioEntry`] values.
@@ -1615,6 +1631,9 @@ pub fn apply_run_overrides(
         }
         if let Some(ref sink) = sink_override {
             base.sink = sink.clone();
+        }
+        if let Some(policy) = args.on_sink_error {
+            base.on_sink_error = policy;
         }
         if !args.labels.is_empty() {
             let map = base.labels.get_or_insert_with(HashMap::new);
@@ -2017,6 +2036,7 @@ mod tests {
             spike_seed: None,
             jitter: None,
             jitter_seed: None,
+            on_sink_error: None,
             labels: vec![],
             encoder: None,
             precision: None,
@@ -2751,6 +2771,7 @@ mod tests {
             spike_seed: None,
             jitter: None,
             jitter_seed: None,
+            on_sink_error: None,
             output: None,
             sink: None,
             endpoint: None,
@@ -5232,6 +5253,7 @@ mod tests {
         let catalog = repo_scenario_catalog();
         let args = crate::cli::HistogramArgs {
             scenario: PathBuf::from("@histogram-latency"),
+            on_sink_error: None,
         };
         let config = load_histogram_config(&args, &catalog, &empty_pack_catalog())
             .expect("@histogram-latency must load as histogram config");

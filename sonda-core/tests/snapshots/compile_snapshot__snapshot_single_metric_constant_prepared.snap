@@ -13,6 +13,7 @@ expression: prepared_view(&prepared)
       "value": 42.0
     },
     "name": "cpu_usage",
+    "on_sink_error": "warn",
     "rate": 1.0,
     "signal_type": "metrics",
     "sink": {

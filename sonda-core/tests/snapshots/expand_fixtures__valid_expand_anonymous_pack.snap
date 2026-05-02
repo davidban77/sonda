@@ -26,7 +26,8 @@ expression: expanded
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     },
     {
       "id": "telegraf_snmp_interface_0.ifHCInOctets",
@@ -50,7 +51,8 @@ expression: expanded
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     },
     {
       "id": "telegraf_snmp_interface_0.ifHCOutOctets",
@@ -74,7 +76,8 @@ expression: expanded
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     },
     {
       "id": "telegraf_snmp_interface_0.ifInErrors",
@@ -97,7 +100,8 @@ expression: expanded
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     },
     {
       "id": "telegraf_snmp_interface_0.ifOutErrors",
@@ -120,7 +124,8 @@ expression: expanded
       },
       "sink": {
         "type": "stdout"
-      }
+      },
+      "on_sink_error": "warn"
     }
   ]
 }

@@ -39,6 +39,14 @@ pub struct ScenarioStats {
     pub in_burst: bool,
     /// Whether the scenario is currently in a cardinality spike window.
     pub in_cardinality_spike: bool,
+    /// Sink failures observed since the most recent successful write.
+    pub consecutive_failures: u64,
+    /// Lifetime count of sink-write failures (warn policy only).
+    pub total_sink_failures: u64,
+    /// Most recent sink error message, or `None` if no failure has occurred.
+    pub last_sink_error: Option<String>,
+    /// Wall-clock time of the most recent successful write, as Unix nanoseconds.
+    pub last_successful_write_at: Option<u64>,
     /// Circular buffer of recent metric events for scrape endpoints.
     ///
     /// Bounded by [`MAX_RECENT_METRICS`]. When full, the oldest event is
@@ -90,6 +98,34 @@ mod tests {
             !s.in_cardinality_spike,
             "in_cardinality_spike must start as false"
         );
+        assert_eq!(s.consecutive_failures, 0);
+        assert_eq!(s.total_sink_failures, 0);
+        assert!(s.last_sink_error.is_none());
+        assert!(s.last_successful_write_at.is_none());
+    }
+
+    #[test]
+    fn sink_failure_fields_serialize_to_json() {
+        let s = ScenarioStats {
+            consecutive_failures: 3,
+            total_sink_failures: 12,
+            last_sink_error: Some("connection refused".to_string()),
+            last_successful_write_at: Some(1_700_000_000_000_000_000),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).expect("must serialize");
+        assert!(json.contains("\"consecutive_failures\":3"));
+        assert!(json.contains("\"total_sink_failures\":12"));
+        assert!(json.contains("\"last_sink_error\":\"connection refused\""));
+        assert!(json.contains("\"last_successful_write_at\":1700000000000000000"));
+    }
+
+    #[test]
+    fn last_sink_error_serializes_as_null_when_none() {
+        let s = ScenarioStats::default();
+        let json = serde_json::to_string(&s).expect("must serialize");
+        assert!(json.contains("\"last_sink_error\":null"));
+        assert!(json.contains("\"last_successful_write_at\":null"));
     }
 
     // ---- Clone: produces an independent copy --------------------------------

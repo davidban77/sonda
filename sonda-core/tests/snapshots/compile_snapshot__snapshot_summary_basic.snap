@@ -17,6 +17,7 @@ expression: entries
     },
     "name": "rpc_duration_seconds",
     "observations_per_tick": 100,
+    "on_sink_error": "warn",
     "quantiles": [
       0.5,
       0.9,
