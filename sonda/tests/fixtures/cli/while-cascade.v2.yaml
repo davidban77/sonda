@@ -1,0 +1,36 @@
+# v2 cascade scenario where `backup_saturation` is gated by `while:`
+# against an upstream `primary_flap` that oscillates 1↔0. CLI tests use
+# this fixture to verify `sonda run` honors `while:` clauses end-to-end
+# (the gate machinery is reachable through the operator-facing path,
+# not just the library API).
+version: 2
+
+defaults:
+  rate: 5
+  duration: 4s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: primary_flap
+    generator:
+      type: flap
+      up_duration: 1s
+      down_duration: 500ms
+
+  - id: backup_saturation
+    signal_type: metrics
+    name: backup_saturation
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2s
+    while:
+      ref: primary_flap
+      op: "<"
+      value: 1

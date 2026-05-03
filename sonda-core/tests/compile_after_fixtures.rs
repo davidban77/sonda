@@ -269,15 +269,16 @@ fn invalid_compile_ambiguous_pack_ref_rejected() {
 }
 
 #[test]
-fn invalid_while_not_yet_supported_rejected() {
+fn while_runtime_yaml_compiles_and_propagates_clause() {
     let yaml = example_fixture("invalid-while-not-yet-supported.yaml");
     let resolver = builtin_pack_resolver();
-    match compile_err(&yaml, &resolver) {
-        CompileAfterError::WhileNotYetSupported { source_id } => {
-            assert_eq!(source_id, "gated");
-        }
-        other => panic!("wrong variant: {other:?}"),
-    }
+    let compiled = common::compile_to_compiled(&yaml, &resolver);
+    let dep = compiled
+        .entries
+        .iter()
+        .find(|e| e.id.as_deref() == Some("gated"))
+        .expect("gated entry present");
+    assert!(dep.while_clause.is_some(), "while clause must propagate");
 }
 
 #[test]

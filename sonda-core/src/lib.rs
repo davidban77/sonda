@@ -58,7 +58,7 @@ pub use schedule::stats::ScenarioStats;
 pub use compiler::prepare::PrepareError;
 
 #[cfg(feature = "config")]
-pub use compile::{compile_scenario_file, CompileError};
+pub use compile::{compile_scenario_file, compile_scenario_file_compiled, CompileError};
 
 #[cfg(feature = "config")]
 mod compile;

@@ -132,38 +132,48 @@ fn run() -> anyhow::Result<()> {
             run_single_scenario("cli-summary".to_string(), p, &running, verbosity)?;
         }
         Commands::Run(ref args) => {
-            // Resolve source + dispatch on version: v2 → compile_scenario_file;
-            // otherwise → v1 pack/multi loaders. Both branches land here with
-            // the same Vec<ScenarioEntry> shape.
-            let loaded = scenario_loader::load_scenario_entries(
+            // Compile to CompiledFile so `while:` / `delay:` clauses survive
+            // the load. When any entry has `while:` we route through
+            // run_multi_compiled (gated multi-runner with a per-upstream
+            // GateBus); otherwise we fall through to the non-gated path.
+            let mut compiled = scenario_loader::load_scenario_compiled(
                 &args.scenario,
                 &scenario_catalog,
                 &pack_catalog,
             )?;
+            config::apply_run_overrides_compiled(&mut compiled, args)?;
+            let has_gates = scenario_loader::has_while_clause(&compiled);
 
-            // Apply CLI overrides (duration, rate, sink/endpoint/output,
-            // encoder, labels) uniformly to every resolved entry.
-            let mut entries = loaded.entries;
-            config::apply_run_overrides(&mut entries, args)?;
-
-            // v2 files get the enhanced dry-run formatter (spec §5) when
-            // `--dry-run` is set. v1 files keep the legacy print_config path
-            // routed through `handle_pre_launch` below.
-            if cli.dry_run && loaded.version == Some(2) {
+            if cli.dry_run {
+                let entries = sonda_core::compiler::prepare::prepare(compiled)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let format = dry_run::parse_format(cli.format.as_deref())?;
                 let label = args.scenario.display().to_string();
                 dry_run::print_dry_run(&label, &entries, format)?;
                 return Ok(());
             }
 
-            let prepared =
-                sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
+            if has_gates {
+                if verbosity == cli::Verbosity::Verbose {
+                    status::print_version();
+                }
+                sonda_core::schedule::multi_runner::run_multi_compiled(
+                    compiled,
+                    Arc::clone(&running),
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            } else {
+                let entries = sonda_core::compiler::prepare::prepare(compiled)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let prepared =
+                    sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
-                return Ok(());
+                if handle_pre_launch(&prepared, verbosity, cli.dry_run) {
+                    return Ok(());
+                }
+
+                launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
             }
-
-            launch_and_join_prepared("cli-run", prepared, &running, verbosity)?;
         }
         Commands::Catalog(ref args) => {
             run_catalog_command(
@@ -418,20 +428,36 @@ fn run_catalog_run(
 
     match row.kind {
         catalog::CatalogKind::Scenario => {
-            let loaded = scenario_loader::load_scenario_entries(
+            let mut compiled = scenario_loader::load_scenario_compiled(
                 &run_args.scenario,
                 scenario_catalog,
                 pack_catalog,
             )?;
-            let mut entries = loaded.entries;
-            config::apply_run_overrides(&mut entries, &run_args)?;
+            config::apply_run_overrides_compiled(&mut compiled, &run_args)?;
+            let has_gates = scenario_loader::has_while_clause(&compiled);
 
-            if cli_opts.dry_run && loaded.version == Some(2) {
+            if cli_opts.dry_run {
+                let entries = sonda_core::compiler::prepare::prepare(compiled)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let format = dry_run::parse_format(cli_opts.format.as_deref())?;
                 dry_run::print_dry_run(&args.name, &entries, format)?;
                 return Ok(());
             }
 
+            if has_gates {
+                if verbosity == cli::Verbosity::Verbose {
+                    status::print_version();
+                }
+                sonda_core::schedule::multi_runner::run_multi_compiled(
+                    compiled,
+                    Arc::clone(running),
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                return Ok(());
+            }
+
+            let entries = sonda_core::compiler::prepare::prepare(compiled)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
             let prepared =
                 sonda_core::prepare_entries(entries).map_err(|e| anyhow::anyhow!("{}", e))?;
 

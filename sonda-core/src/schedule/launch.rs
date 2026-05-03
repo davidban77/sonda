@@ -8,17 +8,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::compiler::{DelayClause, WhileClause};
 use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
 use crate::config::{expand_entry, ScenarioEntry};
+use crate::schedule::core_loop::GateContext;
+use crate::schedule::gate_bus::GateBus;
 use crate::schedule::handle::ScenarioHandle;
-use crate::schedule::histogram_runner::run_with_sink as run_histogram_with_sink;
-use crate::schedule::log_runner::run_logs_with_sink;
-use crate::schedule::runner::run_with_sink;
+use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
+use crate::schedule::log_runner::run_logs_with_sink_gated;
+use crate::schedule::runner::run_with_sink_gated;
 use crate::schedule::stats::ScenarioStats;
-use crate::schedule::summary_runner::run_with_sink as run_summary_with_sink;
+use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
 use crate::sink::create_sink;
 use crate::{ConfigError, RuntimeError, SondaError};
 
@@ -67,6 +70,12 @@ pub struct PreparedEntry {
     ///
     /// `None` when no phase offset was configured or when the offset is zero.
     pub start_delay: Option<Duration>,
+    /// Compiler-assigned id used for `while:` / `after:` ref resolution.
+    pub id: Option<String>,
+    /// Continuous-coupling gate this entry waits on.
+    pub while_clause: Option<WhileClause>,
+    /// Open / close debounce windows applied to `while:` transitions.
+    pub delay_clause: Option<DelayClause>,
 }
 
 /// Expand, validate, and resolve phase offsets for a batch of scenario entries.
@@ -144,7 +153,13 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
             None => None,
         };
 
-        prepared.push(PreparedEntry { entry, start_delay });
+        prepared.push(PreparedEntry {
+            entry,
+            start_delay,
+            id: None,
+            while_clause: None,
+            delay_clause: None,
+        });
     }
 
     Ok(prepared)
@@ -183,6 +198,22 @@ pub fn launch_scenario(
     entry: ScenarioEntry,
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
+) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates(id, entry, shutdown, start_delay, None, None)
+}
+
+/// Launch a scenario with optional `while:` / `after:` gating wired in.
+///
+/// `upstream_bus` is the bus this scenario PUBLISHES into (for downstream
+/// gates to read its values). `gate_ctx` is what THIS scenario consumes
+/// from an upstream bus.
+pub fn launch_scenario_with_gates(
+    id: String,
+    entry: ScenarioEntry,
+    shutdown: Arc<AtomicBool>,
+    start_delay: Option<Duration>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
 ) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
@@ -239,38 +270,43 @@ pub fn launch_scenario(
             match entry {
                 ScenarioEntry::Metrics(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_with_sink(
+                    run_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        upstream_bus,
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Logs(config) => {
                     let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
-                    run_logs_with_sink(
+                    run_logs_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Histogram(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_histogram_with_sink(
+                    run_histogram_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Summary(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_summary_with_sink(
+                    run_summary_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
             }

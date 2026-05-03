@@ -330,7 +330,7 @@ pub struct AfterClause {
 /// `!=`) are rejected at deserialize time with a hint pointing to the
 /// strict alternatives — equality on `f64` over a continuous gate is
 /// numerically unsafe and forbidden by design.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
 pub enum WhileOp {
     #[cfg_attr(feature = "config", serde(rename = "<"))]
@@ -384,6 +384,9 @@ pub struct WhileClause {
 /// `true → false`. Either may be omitted (treated as `0s`). Validation
 /// requires `delay:` to be paired with `while:`; standalone `delay:`
 /// rejects at normalize time.
+///
+/// Durations are parsed from human-readable strings (`"250ms"`, `"5s"`)
+/// at YAML deserialization time, so the runtime never re-parses.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "config",
@@ -393,14 +396,71 @@ pub struct WhileClause {
 pub struct DelayClause {
     #[cfg_attr(
         feature = "config",
-        serde(default, skip_serializing_if = "Option::is_none")
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "delay_duration_opt"
+        )
     )]
-    pub open: Option<String>,
+    pub open: Option<std::time::Duration>,
     #[cfg_attr(
         feature = "config",
-        serde(default, skip_serializing_if = "Option::is_none")
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "delay_duration_opt"
+        )
     )]
-    pub close: Option<String>,
+    pub close: Option<std::time::Duration>,
+}
+
+#[cfg(feature = "config")]
+mod delay_duration_opt {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::config::validate::parse_duration;
+
+    pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(d) => serializer.serialize_str(&format_duration(*d)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw: Option<String> = Option::deserialize(deserializer)?;
+        match raw {
+            Some(s) => parse_duration(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+
+    fn format_duration(d: Duration) -> String {
+        let total_ms = d.as_millis();
+        if total_ms == 0 {
+            return "0ms".to_string();
+        }
+        if total_ms.is_multiple_of(3_600_000) {
+            return format!("{}h", total_ms / 3_600_000);
+        }
+        if total_ms.is_multiple_of(60_000) {
+            return format!("{}m", total_ms / 60_000);
+        }
+        if total_ms.is_multiple_of(1_000) {
+            return format!("{}s", total_ms / 1_000);
+        }
+        format!("{total_ms}ms")
+    }
 }
 
 /// Discriminator labeling an edge or diagnostic as `after:` vs `while:`.

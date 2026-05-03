@@ -12,6 +12,21 @@ use crate::model::metric::MetricEvent;
 /// The buffer is a circular deque: when full, the oldest event is evicted.
 pub const MAX_RECENT_METRICS: usize = 100;
 
+/// Lifecycle position of a scenario, surfaced for `while:`-gated runs.
+///
+/// `Pending` covers the pre-`after:` window for chained scenarios; `Running`
+/// and `Paused` reflect the live `while:` gate state; `Finished` marks the
+/// scenario as having exited (duration expired or shutdown received).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScenarioState {
+    #[default]
+    Pending,
+    Running,
+    Paused,
+    Finished,
+}
+
 /// Live statistics for a running scenario, updated by the runner each tick.
 ///
 /// These counters are written by the scenario thread and read by callers
@@ -55,6 +70,12 @@ pub struct ScenarioStats {
     /// consumed via a dedicated drain method, not via JSON stats responses.
     #[serde(skip)]
     pub recent_metrics: VecDeque<MetricEvent>,
+    /// Lifecycle state of the scenario.
+    ///
+    /// Hidden from serialization in this PR; the server's `state` field
+    /// stays driven from `is_running()` until the surface widens.
+    #[serde(skip)]
+    pub state: ScenarioState,
 }
 
 impl ScenarioStats {

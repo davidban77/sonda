@@ -18,12 +18,15 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
+use sonda_core::compiler::compile_after::CompiledFile;
 use sonda_core::compiler::expand::{
     classify_pack_reference, PackResolveError, PackResolveOrigin, PackResolver,
 };
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::packs::MetricPackDef;
-use sonda_core::{compile_scenario_file, CompileError, ScenarioEntry};
+use sonda_core::{
+    compile_scenario_file, compile_scenario_file_compiled, CompileError, ScenarioEntry,
+};
 
 use crate::packs::PackCatalog;
 use crate::scenarios::ScenarioCatalog;
@@ -57,6 +60,57 @@ pub fn compile_v2_yaml(
     compile_scenario_file(yaml, &resolver)
 }
 
+/// Compile a v2 scenario YAML to a [`CompiledFile`] (preserving `while:` /
+/// `delay:` clauses) using the CLI's filesystem-backed pack resolver.
+///
+/// Use this when the runtime needs the [`CompiledFile`] shape — for
+/// example, to drive
+/// [`run_multi_compiled`][sonda_core::schedule::multi_runner::run_multi_compiled]
+/// when any entry carries a `while:` clause that must be wired into a
+/// [`GateBus`][sonda_core::schedule::gate_bus::GateBus].
+pub fn compile_v2_yaml_compiled(
+    yaml: &str,
+    pack_catalog: &PackCatalog,
+) -> Result<CompiledFile, CompileError> {
+    let resolver = FilesystemPackResolver::new(pack_catalog);
+    compile_scenario_file_compiled(yaml, &resolver)
+}
+
+/// Returns `true` if any entry carries a `while:` clause that the runtime
+/// must wire into a [`GateBus`][sonda_core::schedule::gate_bus::GateBus].
+pub fn has_while_clause(file: &CompiledFile) -> bool {
+    file.entries.iter().any(|e| e.while_clause.is_some())
+}
+
+/// Resolve a scenario reference (path or `@name`) to a [`CompiledFile`].
+///
+/// Mirrors [`load_scenario_entries`] but returns the pre-prepare shape so
+/// callers can inspect `while:` / `delay:` clauses (e.g. to dispatch to
+/// [`run_multi_compiled`][sonda_core::schedule::multi_runner::run_multi_compiled]).
+pub fn load_scenario_compiled(
+    scenario_ref: &Path,
+    scenario_catalog: &ScenarioCatalog,
+    pack_catalog: &PackCatalog,
+) -> Result<CompiledFile> {
+    let yaml = crate::config::resolve_scenario_source(scenario_ref, scenario_catalog)?;
+    let version = detect_version(&yaml);
+    match version {
+        Some(2) => compile_v2_yaml_compiled(&yaml, pack_catalog).with_context(|| {
+            format!(
+                "failed to compile v2 scenario file {}",
+                scenario_ref.display()
+            )
+        }),
+        _ => bail!(
+            "scenario file {} is not a v2 scenario. \
+             Sonda only accepts v2 YAML (`version: 2` at the top level). \
+             Migrate this file to v2 — see docs/configuration/v2-scenarios.md \
+             for the migration guide.",
+            scenario_ref.display()
+        ),
+    }
+}
+
 /// The result of loading a scenario file: the prepared runtime entries
 /// plus the detected schema version.
 ///
@@ -67,6 +121,7 @@ pub fn compile_v2_yaml(
 /// formatter selection keeps a stable API and future schema versions can
 /// slot in without another signature churn.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LoadedScenario {
     /// The scenario entries, ready for `prepare_entries`.
     pub entries: Vec<ScenarioEntry>,
@@ -90,6 +145,7 @@ pub struct LoadedScenario {
 /// fails to declare `version: 2`, or any v2 compilation phase rejects the
 /// input. Compile errors are wrapped with [`anyhow::Context`] carrying the
 /// source path so the user can locate the offending file.
+#[allow(dead_code)]
 pub fn load_scenario_entries(
     scenario_ref: &Path,
     scenario_catalog: &ScenarioCatalog,

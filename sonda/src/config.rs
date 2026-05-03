@@ -1604,6 +1604,7 @@ pub fn parse_builtin_scenario(
 ///
 /// Returns an error if sink parsing fails (missing endpoint for network
 /// sinks) or encoder parsing fails (unknown format).
+#[allow(dead_code)]
 pub fn apply_run_overrides(
     entries: &mut [sonda_core::ScenarioEntry],
     args: &crate::cli::RunArgs,
@@ -1651,6 +1652,49 @@ pub fn apply_run_overrides(
                 // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary.
                 _ => bail!("cannot apply encoder override to unknown scenario variant"),
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply `sonda run` CLI overrides directly to a [`CompiledFile`].
+///
+/// Mirrors [`apply_run_overrides`] but operates on the pre-prepare
+/// [`sonda_core::compiler::compile_after::CompiledEntry`] shape, which the
+/// CLI must retain when any entry carries a `while:` clause (so the gated
+/// multi-runner can wire scenarios to a [`GateBus`][bus]).
+///
+/// [bus]: sonda_core::schedule::gate_bus::GateBus
+pub fn apply_run_overrides_compiled(
+    file: &mut sonda_core::compiler::compile_after::CompiledFile,
+    args: &crate::cli::RunArgs,
+) -> Result<()> {
+    let (sink_override, encoder_override) = resolve_run_overrides(args)?;
+
+    for entry in file.entries.iter_mut() {
+        if let Some(ref dur) = args.duration {
+            entry.duration = Some(dur.clone());
+        }
+        if let Some(rate) = args.rate {
+            entry.rate = rate;
+        }
+        if let Some(ref sink) = sink_override {
+            entry.sink = sink.clone();
+        }
+        if let Some(policy) = args.on_sink_error {
+            entry.on_sink_error = policy;
+        }
+        if !args.labels.is_empty() {
+            let map = entry
+                .labels
+                .get_or_insert_with(std::collections::BTreeMap::new);
+            for (k, v) in &args.labels {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        if let Some(ref enc) = encoder_override {
+            entry.encoder = enc.clone();
         }
     }
 

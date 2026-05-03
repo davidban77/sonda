@@ -304,13 +304,6 @@ pub enum CompileAfterError {
     },
 
     #[error(
-        "entry '{source_id}': `while:` clauses are not yet supported in this build \
-         (ships in v1 final). Use `after:` for one-shot triggers; `while:` continuous \
-         gating arrives in the next PR."
-    )]
-    WhileNotYetSupported { source_id: String },
-
-    #[error(
         "entry '{source_id}': `while:` cannot reference '{ref_id}' — it emits a literal NaN \
          ({nan}); strict comparisons against NaN never hold and would leave the scenario \
          permanently paused"
@@ -639,14 +632,6 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
     }
 
     let clock_groups = assign_clock_groups(&entries, &id_to_idx)?;
-
-    for entry in &entries {
-        if entry.while_clause.is_some() {
-            return Err(CompileAfterError::WhileNotYetSupported {
-                source_id: source_label(entry).into_owned(),
-            });
-        }
-    }
 
     let mut out: Vec<CompiledEntry> = Vec::with_capacity(n);
     for (i, entry) in entries.into_iter().enumerate() {
@@ -2307,7 +2292,7 @@ scenarios:
     }
 
     #[test]
-    fn while_yaml_rejected_with_while_not_yet_supported() {
+    fn while_yaml_compiles_and_propagates_clause() {
         let yaml = r#"
 version: 2
 defaults:
@@ -2324,17 +2309,18 @@ scenarios:
     generator: { type: constant, value: 1 }
     while: { ref: link, op: ">", value: 0 }
 "#;
-        let err = compile_after_from_yaml(yaml).expect_err("while: must reject");
-        match err {
-            CompileAfterError::WhileNotYetSupported { source_id } => {
-                assert_eq!(source_id, "dependent");
-            }
-            other => panic!("expected WhileNotYetSupported, got {other:?}"),
-        }
+        let compiled = compile_after_from_yaml(yaml).expect("while: must compile");
+        let dep = compiled
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("dependent"))
+            .expect("dependent entry present");
+        let w = dep.while_clause.as_ref().expect("while propagates");
+        assert_eq!(w.ref_id, "link");
     }
 
     #[test]
-    fn defaults_duration_satisfies_while_without_duration() {
+    fn defaults_duration_carries_into_while_compiled_entry() {
         let yaml = r#"
 version: 2
 defaults:
@@ -2351,11 +2337,14 @@ scenarios:
     generator: { type: constant, value: 1 }
     while: { ref: link, op: ">", value: 0 }
 "#;
-        let err = compile_after_from_yaml(yaml).expect_err("while: rejected");
-        assert!(
-            matches!(err, CompileAfterError::WhileNotYetSupported { .. }),
-            "defaults.duration must satisfy WhileWithoutDuration so the compiler reaches WhileNotYetSupported. got {err:?}"
-        );
+        let compiled = compile_after_from_yaml(yaml).expect("while: must compile");
+        let dep = compiled
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("dependent"))
+            .expect("dependent entry present");
+        assert!(dep.while_clause.is_some());
+        assert_eq!(dep.duration.as_deref(), Some("5m"));
     }
 
     #[test]
@@ -2422,7 +2411,7 @@ scenarios:
     }
 
     #[test]
-    fn deep_while_chain_completes_quickly() {
+    fn deep_while_chain_compiles_quickly() {
         use std::fmt::Write;
         let mut yaml =
             String::from("version: 2\ndefaults:\n  rate: 1\n  duration: 1h\nscenarios:\n");
@@ -2436,15 +2425,12 @@ scenarios:
                 prev = i - 1);
         }
         let start = std::time::Instant::now();
-        let err = compile_after_from_yaml(&yaml).expect_err("while: rejected");
+        let compiled = compile_after_from_yaml(&yaml).expect("deep chain must compile");
         let elapsed = start.elapsed();
-        assert!(
-            matches!(err, CompileAfterError::WhileNotYetSupported { .. }),
-            "expected WhileNotYetSupported, got {err:?}"
-        );
+        assert_eq!(compiled.entries.len(), 200);
         assert!(
             elapsed < std::time::Duration::from_secs(1),
-            "200-node while: chain took {elapsed:?}; cycle detection regressed"
+            "200-node while: chain took {elapsed:?}; compile pipeline regressed"
         );
     }
 
