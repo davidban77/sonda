@@ -86,7 +86,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{AfterClause, Defaults, Entry, ScenarioFile};
+use super::{AfterClause, Defaults, DelayClause, Entry, ScenarioFile, WhileClause};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
     OnSinkError,
@@ -116,6 +116,19 @@ pub enum NormalizeError {
         /// falling back to `pack`, falling back to `<unnamed>`.
         label: String,
     },
+
+    #[error(
+        "entry '{source_id}': scenarios with `while:` must have `duration:` set \
+         (either on the entry or via `defaults.duration`).\n\
+         Bounds the scenario's lifetime so paused state has a terminal point."
+    )]
+    WhileWithoutDuration { source_id: String },
+
+    #[error(
+        "entry '{source_id}': `delay:` requires `while:` on the same entry. \
+         `delay:` debounces `while:` transitions and has no meaning without it."
+    )]
+    DelayWithoutWhile { source_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +243,12 @@ pub struct NormalizedEntry {
     pub clock_group: Option<String>,
     /// Causal dependency on another signal's value.
     pub after: Option<AfterClause>,
+    /// Continuous lifecycle gate on another signal's value.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub while_clause: Option<WhileClause>,
+    /// Open / close debounce windows for `while_clause` transitions.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub delay_clause: Option<DelayClause>,
 
     // -- Pack-backed entry fields (carried through untouched) --
     /// Pack name or file path. Mutually exclusive with `generator`.
@@ -323,6 +342,7 @@ fn normalize_entry(
     defaults: Option<&Defaults>,
 ) -> Result<NormalizedEntry, NormalizeError> {
     let rate = resolve_rate(&entry, defaults, index)?;
+    let diagnostic_label = entry_label_for_diagnostic(&entry, index);
     let duration = entry
         .duration
         .or_else(|| defaults.and_then(|d| d.duration.clone()));
@@ -347,6 +367,24 @@ fn normalize_entry(
         .or_else(|| defaults.and_then(|d| d.on_sink_error))
         .unwrap_or_default();
 
+    let while_clause = entry
+        .while_clause
+        .or_else(|| defaults.and_then(|d| d.while_clause.clone()));
+    let delay_clause = entry
+        .delay_clause
+        .or_else(|| defaults.and_then(|d| d.delay_clause.clone()));
+
+    if delay_clause.is_some() && while_clause.is_none() {
+        return Err(NormalizeError::DelayWithoutWhile {
+            source_id: diagnostic_label,
+        });
+    }
+    if while_clause.is_some() && duration.is_none() {
+        return Err(NormalizeError::WhileWithoutDuration {
+            source_id: diagnostic_label,
+        });
+    }
+
     Ok(NormalizedEntry {
         id: entry.id,
         signal_type: entry.signal_type,
@@ -367,6 +405,8 @@ fn normalize_entry(
         phase_offset: entry.phase_offset,
         clock_group: entry.clock_group,
         after: entry.after,
+        while_clause,
+        delay_clause,
         pack: entry.pack,
         overrides: entry.overrides,
         distribution: entry.distribution,
@@ -408,6 +448,15 @@ fn entry_label(entry: &Entry) -> String {
         .or_else(|| entry.id.clone())
         .or_else(|| entry.pack.clone())
         .unwrap_or_else(|| "<unnamed>".to_string())
+}
+
+fn entry_label_for_diagnostic(entry: &Entry, index: usize) -> String {
+    entry
+        .id
+        .clone()
+        .or_else(|| entry.name.clone())
+        .or_else(|| entry.pack.clone())
+        .unwrap_or_else(|| format!("<entry {index}>"))
 }
 
 /// Return the built-in encoder default for a given signal type.
@@ -775,6 +824,7 @@ scenarios:
                 assert_eq!(index, 0);
                 assert_eq!(label, expected_label);
             }
+            other => panic!("expected MissingRate, got {other:?}"),
         }
     }
 
@@ -1266,5 +1316,104 @@ scenarios: []
     #[test]
     fn default_sink_is_stdout() {
         assert!(matches!(default_sink(), SinkConfig::Stdout));
+    }
+
+    #[test]
+    fn while_without_duration_is_rejected() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+"#;
+        let err = normalize_yaml(yaml).expect_err("missing duration must fail");
+        match err {
+            NormalizeError::WhileWithoutDuration { source_id } => {
+                assert_eq!(source_id, "gated");
+            }
+            other => panic!("expected WhileWithoutDuration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_duration_satisfies_while_without_duration() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+"#;
+        let file = normalize_yaml(yaml).expect("defaults.duration satisfies the gate");
+        assert!(file.entries[1].while_clause.is_some());
+        assert_eq!(file.entries[1].duration.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn delay_without_while_is_rejected() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    delay: { open: "5s", close: "10s" }
+"#;
+        let err = normalize_yaml(yaml).expect_err("delay without while must fail");
+        match err {
+            NormalizeError::DelayWithoutWhile { source_id } => {
+                assert_eq!(source_id, "gated");
+            }
+            other => panic!("expected DelayWithoutWhile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn while_inherits_from_defaults() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+  while: { ref: src, op: ">", value: 0 }
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+"#;
+        let file = normalize_yaml(yaml).expect("defaults while inherits");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        assert!(gated.while_clause.is_some());
     }
 }

@@ -400,6 +400,8 @@ mod tests {
             mean_shift_per_sec: None,
             seed: None,
             on_sink_error: crate::OnSinkError::Warn,
+            while_clause: None,
+            delay_clause: None,
         }
     }
 
