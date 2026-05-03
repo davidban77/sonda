@@ -153,16 +153,20 @@ fn full_lifecycle_metrics_and_logs() {
         "logs scenario must be in list"
     );
 
-    // Verify both show as running.
+    // Verify both show as a running-eq state. The list endpoint reads
+    // stats.state which advances asynchronously; the freshly launched
+    // scenarios may briefly report "pending" before the runner thread
+    // posts its first tick.
     for s in scenarios {
         if s["id"].as_str() == Some(metrics_id.as_str())
             || s["id"].as_str() == Some(logs_id.as_str())
         {
-            assert_eq!(
-                s["status"].as_str(),
-                Some("running"),
-                "scenario {} must be running",
-                s["id"]
+            let status = s["status"].as_str().unwrap_or("");
+            assert!(
+                matches!(status, "pending" | "running"),
+                "scenario {} must be pending or running, got {:?}",
+                s["id"],
+                status
             );
         }
     }
@@ -240,5 +244,85 @@ fn full_lifecycle_metrics_and_logs() {
         scenarios.is_empty(),
         "GET /scenarios must return empty list after all scenarios are deleted, got {} entries",
         scenarios.len()
+    );
+}
+
+const NON_GATED_METRIC_YAML: &str = r#"
+version: 2
+defaults:
+  rate: 5
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: state_lifecycle
+    signal_type: metrics
+    name: state_lifecycle
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+#[test]
+fn non_gated_scenario_state_transitions_running_to_finished() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("{base}/scenarios"))
+        .header("Content-Type", "text/yaml")
+        .body(NON_GATED_METRIC_YAML)
+        .send()
+        .expect("POST scenario must succeed");
+    assert_eq!(resp.status().as_u16(), 201, "POST must return 201");
+    let body: serde_json::Value = resp.json().expect("response must be valid JSON");
+    let id = body["id"]
+        .as_str()
+        .expect("response must have id")
+        .to_string();
+
+    let mut saw_running = false;
+    let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline {
+        let resp = client
+            .get(format!("{base}/scenarios/{id}/stats"))
+            .send()
+            .expect("GET stats must succeed");
+        assert_eq!(resp.status().as_u16(), 200);
+        let stats: serde_json::Value = resp.json().expect("stats JSON");
+        if stats["state"].as_str() == Some("running") {
+            saw_running = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        saw_running,
+        "non-gated scenario must transition through 'running' state on /stats"
+    );
+
+    let finish_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut last_state = String::new();
+    while std::time::Instant::now() < finish_deadline {
+        let resp = client
+            .get(format!("{base}/scenarios/{id}/stats"))
+            .send()
+            .expect("GET stats must succeed");
+        if resp.status().as_u16() != 200 {
+            break;
+        }
+        let stats: serde_json::Value = resp.json().expect("stats JSON");
+        last_state = stats["state"].as_str().unwrap_or("").to_string();
+        if last_state == "finished" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        last_state, "finished",
+        "non-gated scenario must terminate in 'finished' state after duration"
     );
 }

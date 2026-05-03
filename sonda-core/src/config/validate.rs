@@ -85,6 +85,35 @@ pub fn parse_duration(s: &str) -> Result<Duration, SondaError> {
     Ok(Duration::from_micros((total_ms * 1_000.0) as u64))
 }
 
+/// Parse a `delay:` open/close duration, accepting zero as `Duration::ZERO`.
+///
+/// `parse_duration` rejects zero values because a zero rate or zero scenario
+/// duration is meaningless. The `delay:` clause has the opposite semantics:
+/// `0s` / `0ms` / `0` are valid and mean "no debounce on this transition".
+pub fn parse_delay_duration(s: &str) -> Result<Duration, SondaError> {
+    match parse_duration(s) {
+        Ok(d) => Ok(d),
+        Err(e) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with('-') {
+                return Err(e);
+            }
+            let numeric_str = trimmed
+                .strip_suffix("ms")
+                .or_else(|| trimmed.strip_suffix('h'))
+                .or_else(|| trimmed.strip_suffix('m'))
+                .or_else(|| trimmed.strip_suffix('s'))
+                .unwrap_or(trimmed);
+            if let Ok(v) = numeric_str.parse::<f64>() {
+                if v == 0.0 {
+                    return Ok(Duration::ZERO);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Parse an optional phase offset string into a [`Duration`].
 ///
 /// Unlike [`parse_duration`], this function accepts zero values (e.g. `"0s"`)
@@ -881,6 +910,42 @@ mod tests {
     fn parse_duration_unknown_unit_returns_err() {
         let result = parse_duration("10d");
         assert!(result.is_err(), "'10d' must return Err (unknown unit)");
+    }
+
+    #[test]
+    fn parse_delay_duration_accepts_zero_seconds() {
+        let d = parse_delay_duration("0s").expect("'0s' must parse for delay");
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn parse_delay_duration_accepts_zero_milliseconds() {
+        let d = parse_delay_duration("0ms").expect("'0ms' must parse for delay");
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn parse_delay_duration_accepts_bare_zero() {
+        let d = parse_delay_duration("0").expect("'0' must parse for delay");
+        assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn parse_delay_duration_accepts_positive_value() {
+        let d = parse_delay_duration("5s").expect("'5s' must parse for delay");
+        assert_eq!(d.as_secs(), 5);
+    }
+
+    #[test]
+    fn parse_delay_duration_rejects_negative_value() {
+        let result = parse_delay_duration("-1s");
+        assert!(result.is_err(), "negative delay must be rejected");
+    }
+
+    #[test]
+    fn parse_delay_duration_rejects_garbage() {
+        let result = parse_delay_duration("not_a_duration");
+        assert!(result.is_err(), "non-duration string must be rejected");
     }
 
     // ---- validate_config: rate validation ------------------------------------

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stderr;
 
-use sonda_core::schedule::stats::ScenarioStats;
+use sonda_core::schedule::stats::{ScenarioState, ScenarioStats};
 
 /// How often to poll stats and redraw in TTY mode.
 const TTY_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -187,6 +187,12 @@ fn run_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
                 continue;
             }
             let stats = read_stats(&scenario.stats);
+            if stats.state == ScenarioState::Paused && scenario.alive.load(Ordering::SeqCst) {
+                let line = format_paused_line_tty(&scenario.name, &stats, elapsed);
+                let _ = write!(stderr, "\x1b[2K{line}\r\n");
+                live_count += 1;
+                continue;
+            }
             if !scenario.alive.load(Ordering::SeqCst) {
                 let banner = format_stopped_line_tty(&scenario.name, &stats, elapsed);
                 new_banners.push(banner);
@@ -232,12 +238,15 @@ fn run_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
 ///
 /// Emits a self-contained status line every [`NON_TTY_INTERVAL`]. No ANSI
 /// escape sequences are used. Each scenario receives a one-shot STOPPED
-/// banner the first iteration after its runner thread exits.
+/// banner the first iteration after its runner thread exits, and a one-shot
+/// PAUSED line on entry into [`ScenarioState::Paused`] so gated cascades
+/// surface the transition without waiting a full interval.
 fn run_non_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
     let start = Instant::now();
     let mut last_emit = Instant::now();
     let check_interval = Duration::from_millis(200);
     let mut banner_emitted: HashSet<String> = HashSet::new();
+    let mut paused_announced: HashSet<String> = HashSet::new();
 
     while !stop_flag.load(Ordering::SeqCst) {
         thread::sleep(check_interval);
@@ -260,6 +269,24 @@ fn run_non_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
             }
         }
 
+        // Detect Paused transitions eagerly. Re-arm when the scenario
+        // leaves Paused so a subsequent close-window emits another line.
+        for scenario in scenarios {
+            if banner_emitted.contains(&scenario.name) {
+                continue;
+            }
+            let stats = read_stats(&scenario.stats);
+            if stats.state == ScenarioState::Paused && scenario.alive.load(Ordering::SeqCst) {
+                if !paused_announced.contains(&scenario.name) {
+                    let line = format_paused_line_plain(&scenario.name, &stats, start.elapsed());
+                    eprintln!("{line}");
+                    paused_announced.insert(scenario.name.clone());
+                }
+            } else {
+                paused_announced.remove(&scenario.name);
+            }
+        }
+
         if last_emit.elapsed() < NON_TTY_INTERVAL {
             continue;
         }
@@ -272,6 +299,9 @@ fn run_non_tty_loop(scenarios: &[MonitoredScenario], stop_flag: &AtomicBool) {
                 continue;
             }
             let stats = read_stats(&scenario.stats);
+            if stats.state == ScenarioState::Paused && scenario.alive.load(Ordering::SeqCst) {
+                continue;
+            }
             let line = format_non_tty_line(&scenario.name, &stats, scenario.target_rate, elapsed);
             eprintln!("{line}");
         }
@@ -325,6 +355,14 @@ fn format_stopped_line_plain(name: &str, stats: &ScenarioStats, elapsed: Duratio
     )
 }
 
+fn format_paused_line_plain(name: &str, stats: &ScenarioStats, elapsed: Duration) -> String {
+    format!(
+        "[progress] {name}  PAUSED  events: {events} | rate: 0.0/s | elapsed: {elapsed_str}",
+        events = stats.total_events,
+        elapsed_str = format_elapsed_plain(elapsed),
+    )
+}
+
 /// Format a one-shot STOPPED banner for TTY output.
 fn format_stopped_line_tty(name: &str, stats: &ScenarioStats, elapsed: Duration) -> String {
     let bold_name = format!("{}", name.if_supports_color(Stderr, |t| t.bold()));
@@ -345,6 +383,21 @@ fn format_stopped_line_tty(name: &str, stats: &ScenarioStats, elapsed: Duration)
     let elapsed_value = format_elapsed(elapsed);
     format!(
         "  {label} {bold_name}{error_clause}  {events_label} {events_value} {pipe} {bytes_label} {bytes_value} {pipe} {elapsed_label} {elapsed_value}"
+    )
+}
+
+fn format_paused_line_tty(name: &str, stats: &ScenarioStats, elapsed: Duration) -> String {
+    let bold_name = format!("{}", name.if_supports_color(Stderr, |t| t.bold()));
+    let label = format!("{}", "PAUSED".if_supports_color(Stderr, |t| t.yellow()));
+    let pipe = format!("{}", "|".if_supports_color(Stderr, |t| t.dimmed()));
+    let events_label = format!("{}", "events:".if_supports_color(Stderr, |t| t.dimmed()));
+    let events_value = format_count(stats.total_events);
+    let rate_label = format!("{}", "rate:".if_supports_color(Stderr, |t| t.dimmed()));
+    let rate_value = format!("{}", "0.0/s".if_supports_color(Stderr, |t| t.dimmed()));
+    let elapsed_label = format!("{}", "elapsed:".if_supports_color(Stderr, |t| t.dimmed()));
+    let elapsed_value = format_elapsed(elapsed);
+    format!(
+        "  {label} {bold_name}  {events_label} {events_value} {pipe} {rate_label} {rate_value} {pipe} {elapsed_label} {elapsed_value}"
     )
 }
 
@@ -855,6 +908,55 @@ mod tests {
         // Strip ANSI for content check
         assert!(strip_ansi(&line).contains("STOPPED"));
         assert!(line.contains("svc"));
+    }
+
+    #[test]
+    fn format_paused_line_plain_includes_paused_label_and_zero_rate() {
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 42;
+        stats.state = ScenarioState::Paused;
+        let line = format_paused_line_plain("svc", &stats, Duration::from_secs(7));
+        assert!(line.contains("PAUSED"), "missing PAUSED in: {line}");
+        assert!(line.contains("svc"));
+        assert!(line.contains("events: 42"));
+        assert!(line.contains("rate: 0.0/s"));
+        assert!(line.contains("elapsed: 7.0s"));
+    }
+
+    #[test]
+    fn format_paused_line_plain_does_not_include_stopped_label() {
+        let stats = ScenarioStats::default();
+        let line = format_paused_line_plain("svc", &stats, Duration::from_secs(1));
+        assert!(!line.contains("STOPPED"));
+    }
+
+    #[test]
+    fn format_paused_line_tty_includes_paused_label_and_zero_rate() {
+        let mut stats = ScenarioStats::default();
+        stats.total_events = 100;
+        stats.state = ScenarioState::Paused;
+        let line = format_paused_line_tty("svc", &stats, Duration::from_secs(3));
+        let plain = strip_ansi(&line);
+        assert!(plain.contains("PAUSED"), "missing PAUSED in: {plain}");
+        assert!(plain.contains("svc"));
+        assert!(plain.contains("rate: 0.0/s"));
+    }
+
+    #[test]
+    fn format_paused_line_tty_distinct_from_stopped() {
+        let stats = ScenarioStats::default();
+        let paused = strip_ansi(&format_paused_line_tty(
+            "svc",
+            &stats,
+            Duration::from_secs(1),
+        ));
+        let stopped = strip_ansi(&format_stopped_line_tty(
+            "svc",
+            &stats,
+            Duration::from_secs(1),
+        ));
+        assert!(paused.contains("PAUSED") && !paused.contains("STOPPED"));
+        assert!(stopped.contains("STOPPED") && !stopped.contains("PAUSED"));
     }
 
     // -----------------------------------------------------------------------

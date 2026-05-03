@@ -1,0 +1,18 @@
+---
+source: sonda-server/src/routes/scenarios.rs
+assertion_line: 4189
+expression: resp
+---
+{
+  "total_events": 100,
+  "current_rate": 0.0,
+  "target_rate": 10.0,
+  "bytes_emitted": 4096,
+  "errors": 0,
+  "uptime_secs": "[uptime_secs]",
+  "state": "paused",
+  "in_gap": false,
+  "in_burst": false,
+  "consecutive_failures": 0,
+  "total_sink_failures": 0
+}

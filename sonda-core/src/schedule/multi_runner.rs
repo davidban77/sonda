@@ -98,14 +98,19 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
     shutdown.store(false, Ordering::SeqCst);
 }
 
-/// Run a compiled scenario file with `while:` / `after:` gating wired in.
+/// Launch a compiled scenario file with `while:` / `after:` gating wired in,
+/// returning the live handles without joining them.
 ///
-/// Pre-builds an `Arc<GateBus>` per metric scenario id, subscribes each
-/// downstream to its upstream's bus, and launches every scenario with the
-/// matching [`GateContext`]. Non-gated entries launch on the existing
-/// non-gated path with no per-tick overhead.
+/// Equivalent to the spawn portion of [`run_multi_compiled`]: pre-builds an
+/// `Arc<GateBus>` per metric scenario id, subscribes each downstream to its
+/// upstream's bus, and launches every scenario with the matching
+/// [`GateContext`]. Returns the launched [`ScenarioHandle`]s so callers can
+/// observe per-scenario stats (for progress displays) before joining.
 #[cfg(feature = "config")]
-pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
+pub fn launch_multi_compiled(
+    file: CompiledFile,
+    shutdown: Arc<AtomicBool>,
+) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
     let CompiledFile { entries, .. } = file;
 
     // Pre-build a bus for every entry that has an explicit id — downstream
@@ -208,6 +213,18 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
         )?;
         handles.push(handle);
     }
+
+    Ok(handles)
+}
+
+/// Run a compiled scenario file with `while:` / `after:` gating wired in.
+///
+/// Spawns every scenario via [`launch_multi_compiled`] and joins the threads.
+/// Non-gated entries launch on the existing non-gated path with no per-tick
+/// overhead.
+#[cfg(feature = "config")]
+pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
+    let handles = launch_multi_compiled(file, shutdown)?;
 
     let mut errors: Vec<String> = Vec::new();
     for mut handle in handles {
