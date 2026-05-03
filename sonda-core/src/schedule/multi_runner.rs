@@ -5,20 +5,29 @@
 //! all scenarios cleanly. Thread errors are collected and returned after all
 //! threads have finished.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::compiler::compile_after::CompiledFile;
-use crate::compiler::prepare::translate_entry;
-use crate::config::aliases::desugar_entry;
-use crate::config::{expand_entry, ScenarioEntry};
-use crate::schedule::core_loop::GateContext;
-use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
-use crate::schedule::launch::{
-    launch_scenario, launch_scenario_with_gates, prepare_entries, validate_entry,
-};
+use crate::config::ScenarioEntry;
+use crate::schedule::launch::{launch_scenario, prepare_entries};
 use crate::{RuntimeError, SondaError};
+
+#[cfg(feature = "config")]
+use std::collections::HashMap;
+#[cfg(feature = "config")]
+use crate::compiler::compile_after::CompiledFile;
+#[cfg(feature = "config")]
+use crate::compiler::prepare::translate_entry;
+#[cfg(feature = "config")]
+use crate::config::aliases::desugar_entry;
+#[cfg(feature = "config")]
+use crate::config::expand_entry;
+#[cfg(feature = "config")]
+use crate::schedule::core_loop::GateContext;
+#[cfg(feature = "config")]
+use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+#[cfg(feature = "config")]
+use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 ///
@@ -95,6 +104,7 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
 /// downstream to its upstream's bus, and launches every scenario with the
 /// matching [`GateContext`]. Non-gated entries launch on the existing
 /// non-gated path with no per-tick overhead.
+#[cfg(feature = "config")]
 pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
     let CompiledFile { entries, .. } = file;
 
@@ -216,6 +226,7 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
     }
 }
 
+#[cfg(feature = "config")]
 struct LaunchPlan {
     id: Option<String>,
     entry: ScenarioEntry,
