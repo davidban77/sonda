@@ -13,8 +13,6 @@ use crate::schedule::launch::{launch_scenario, prepare_entries};
 use crate::{RuntimeError, SondaError};
 
 #[cfg(feature = "config")]
-use std::collections::HashMap;
-#[cfg(feature = "config")]
 use crate::compiler::compile_after::CompiledFile;
 #[cfg(feature = "config")]
 use crate::compiler::prepare::translate_entry;
@@ -28,6 +26,8 @@ use crate::schedule::core_loop::GateContext;
 use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
 #[cfg(feature = "config")]
 use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
+#[cfg(feature = "config")]
+use std::collections::HashMap;
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 ///
