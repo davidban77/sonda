@@ -4,6 +4,7 @@
 //! *what* is being emitted — that is the generator and encoder's job.
 
 pub(crate) mod core_loop;
+pub mod gate_bus;
 pub mod handle;
 pub mod histogram_runner;
 pub mod launch;
@@ -12,6 +13,12 @@ pub mod multi_runner;
 pub mod runner;
 pub mod stats;
 pub mod summary_runner;
+
+pub use core_loop::GateContext;
+pub use gate_bus::{
+    strict_eval, AfterOpDir, AfterSpec, GateBus, GateEdge, GateReceiver, InitialState,
+    SubscriptionSpec, WhileSpec,
+};
 
 use std::time::Duration;
 

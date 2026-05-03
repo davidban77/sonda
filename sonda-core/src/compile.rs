@@ -18,7 +18,7 @@
 //! convenience wrapper; every error variant it returns is the same error the
 //! underlying phase would have produced — see [`CompileError`].
 
-use crate::compiler::compile_after::{compile_after, CompileAfterError};
+use crate::compiler::compile_after::{compile_after, CompileAfterError, CompiledFile};
 use crate::compiler::env_interpolate::{interpolate, InterpolateError};
 use crate::compiler::expand::{expand, ExpandError, PackResolver};
 use crate::compiler::normalize::{normalize, NormalizeError};
@@ -108,6 +108,24 @@ pub fn compile_scenario_file(
     yaml: &str,
     resolver: &dyn PackResolver,
 ) -> Result<Vec<ScenarioEntry>, CompileError> {
+    let compiled = compile_scenario_file_compiled(yaml, resolver)?;
+    Ok(prepare(compiled)?)
+}
+
+/// Compile a v2 scenario YAML to a [`CompiledFile`], preserving `while:` /
+/// `delay:` clauses for the gated multi-runner.
+///
+/// Use this entry point when the runtime needs to wire `while:` gates
+/// across scenarios. [`compile_scenario_file`] discards `while_clause` /
+/// `delay_clause` because [`ScenarioEntry`] has no fields for them — the
+/// gated multi-runner subscribes downstreams to upstream
+/// [`GateBus`][crate::schedule::gate_bus::GateBus]es via
+/// [`run_multi_compiled`][crate::schedule::multi_runner::run_multi_compiled],
+/// which consumes a [`CompiledFile`].
+pub fn compile_scenario_file_compiled(
+    yaml: &str,
+    resolver: &dyn PackResolver,
+) -> Result<CompiledFile, CompileError> {
     // `expand` uses a `Sized` generic bound, so wrap the trait object in a
     // local `Sized` adapter that forwards each call. This keeps the public
     // signature `&dyn PackResolver` (object-safe, no monomorphization blow-up
@@ -118,8 +136,7 @@ pub fn compile_scenario_file(
     let parsed = parse(&interpolated)?;
     let normalized = normalize(parsed)?;
     let expanded = expand(normalized, &wrapped)?;
-    let compiled = compile_after(expanded)?;
-    Ok(prepare(compiled)?)
+    Ok(compile_after(expanded)?)
 }
 
 /// Adapter that implements the `Sized` bound `expand` requires while

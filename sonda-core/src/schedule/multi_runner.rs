@@ -12,6 +12,23 @@ use crate::config::ScenarioEntry;
 use crate::schedule::launch::{launch_scenario, prepare_entries};
 use crate::{RuntimeError, SondaError};
 
+#[cfg(feature = "config")]
+use crate::compiler::compile_after::CompiledFile;
+#[cfg(feature = "config")]
+use crate::compiler::prepare::translate_entry;
+#[cfg(feature = "config")]
+use crate::config::aliases::desugar_entry;
+#[cfg(feature = "config")]
+use crate::config::expand_entry;
+#[cfg(feature = "config")]
+use crate::schedule::core_loop::GateContext;
+#[cfg(feature = "config")]
+use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+#[cfg(feature = "config")]
+use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
+#[cfg(feature = "config")]
+use std::collections::HashMap;
+
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 ///
 /// Each scenario thread runs until either:
@@ -79,6 +96,143 @@ pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Resu
 /// matching the ordering used by the signal handler in the CLI.
 pub fn signal_shutdown(shutdown: &AtomicBool) {
     shutdown.store(false, Ordering::SeqCst);
+}
+
+/// Run a compiled scenario file with `while:` / `after:` gating wired in.
+///
+/// Pre-builds an `Arc<GateBus>` per metric scenario id, subscribes each
+/// downstream to its upstream's bus, and launches every scenario with the
+/// matching [`GateContext`]. Non-gated entries launch on the existing
+/// non-gated path with no per-tick overhead.
+#[cfg(feature = "config")]
+pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
+    let CompiledFile { entries, .. } = file;
+
+    // Pre-build a bus for every entry that has an explicit id — downstream
+    // subscriptions reference upstreams by id. Logs / histogram / summary
+    // entries cannot be `while:` upstreams (compile-time NonMetricsTarget
+    // check), so we skip them, but a bus on a non-metrics entry is harmless
+    // — `tick()` is never called.
+    let mut buses: HashMap<String, Arc<GateBus>> = HashMap::new();
+    for entry in &entries {
+        if let Some(id) = entry.id.clone() {
+            buses.insert(id, Arc::new(GateBus::new()));
+        }
+    }
+
+    // Build (entry, gate_ctx, upstream_bus, start_delay, id) per scenario.
+    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(entries.len());
+    for compiled_entry in entries.into_iter() {
+        let id = compiled_entry.id.clone();
+        let while_clause = compiled_entry.while_clause.clone();
+        let delay_clause = compiled_entry.delay_clause.clone();
+        let phase_offset = compiled_entry.phase_offset.clone();
+
+        let translated = translate_entry(compiled_entry).map_err(|e| {
+            SondaError::Config(crate::ConfigError::invalid(format!("compile prepare: {e}")))
+        })?;
+
+        // Mirror the expand → desugar → validate pipeline that
+        // `prepare_entries` runs for non-gated launches. Skipping it
+        // here would let operational aliases (flap, saturation, etc.)
+        // reach `create_generator()` un-desugared and panic at runtime.
+        let mut expanded = expand_entry(translated)?;
+        let translated = match expanded.len() {
+            0 => continue,
+            1 => expanded.remove(0),
+            _ => {
+                return Err(SondaError::Config(crate::ConfigError::invalid(format!(
+                    "scenario id {:?}: csv_replay multi-column expansion is not supported \
+                     when `while:` is in use; specify a single column or remove the gate",
+                    id.as_deref().unwrap_or("(anonymous)"),
+                ))));
+            }
+        };
+        let translated = desugar_entry(translated)?;
+        validate_entry(&translated)?;
+
+        let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
+
+        let gate_ctx = if let Some(ref clause) = while_clause {
+            let upstream = buses.get(&clause.ref_id).ok_or_else(|| {
+                SondaError::Config(crate::ConfigError::invalid(format!(
+                    "while: ref '{}' not found among scenario ids",
+                    clause.ref_id
+                )))
+            })?;
+            let spec = SubscriptionSpec {
+                after: None,
+                while_: Some(WhileSpec {
+                    op: clause.op,
+                    threshold: clause.value,
+                }),
+            };
+            let (rx, init) = upstream.subscribe(spec);
+            Some(GateContext {
+                gate_rx: rx,
+                initial: init,
+                delay: delay_clause,
+                has_after: false,
+                has_while: true,
+            })
+        } else {
+            None
+        };
+
+        let start_delay = match phase_offset {
+            Some(s) => crate::config::validate::parse_phase_offset(&s).map_err(|e| {
+                SondaError::Config(crate::ConfigError::invalid(format!("phase_offset: {e}")))
+            })?,
+            None => None,
+        };
+
+        launches.push(LaunchPlan {
+            id: id.clone(),
+            entry: translated,
+            gate_ctx,
+            upstream_bus,
+            start_delay,
+        });
+    }
+
+    let mut handles = Vec::with_capacity(launches.len());
+    for (idx, plan) in launches.into_iter().enumerate() {
+        let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
+        let handle = launch_scenario_with_gates(
+            id,
+            plan.entry,
+            Arc::clone(&shutdown),
+            plan.start_delay,
+            plan.upstream_bus,
+            plan.gate_ctx,
+        )?;
+        handles.push(handle);
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    for mut handle in handles {
+        match handle.join(None) {
+            Ok(()) => {}
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(SondaError::Runtime(RuntimeError::ScenariosFailed(
+            errors.join("; "),
+        )))
+    }
+}
+
+#[cfg(feature = "config")]
+struct LaunchPlan {
+    id: Option<String>,
+    entry: ScenarioEntry,
+    gate_ctx: Option<GateContext>,
+    upstream_bus: Option<Arc<GateBus>>,
+    start_delay: Option<std::time::Duration>,
 }
 
 #[cfg(test)]
