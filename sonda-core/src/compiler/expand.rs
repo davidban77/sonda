@@ -141,7 +141,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::normalize::{NormalizedEntry, NormalizedFile};
-use super::AfterClause;
+use super::{AfterClause, DelayClause, WhileClause};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
     OnSinkError,
@@ -447,6 +447,15 @@ pub struct ExpandedEntry {
     /// parent pack entry's `after`; otherwise the parent's `after` is
     /// propagated verbatim. Resolution into timing offsets is Phase 4's job.
     pub after: Option<AfterClause>,
+    /// Continuous lifecycle gate on another signal's value.
+    ///
+    /// Override-level `while:` replaces entry-level `while:` for that
+    /// metric; otherwise the parent's `while:` is propagated verbatim.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub while_clause: Option<WhileClause>,
+    /// Open / close debounce windows for `while_clause` transitions.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub delay_clause: Option<DelayClause>,
 
     // -- Histogram / summary fields (inline entries only) --
     //
@@ -585,6 +594,8 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
         phase_offset: entry.phase_offset,
         clock_group: entry.clock_group,
         after: entry.after,
+        while_clause: entry.while_clause,
+        delay_clause: entry.delay_clause,
         distribution: entry.distribution,
         buckets: entry.buckets,
         quantiles: entry.quantiles,
@@ -685,6 +696,12 @@ fn expand_pack_entry<R: PackResolver>(
         let after = override_for_metric
             .and_then(|o| o.after.clone())
             .or_else(|| entry.after.clone());
+        let while_clause = override_for_metric
+            .and_then(|o| o.while_clause.clone())
+            .or_else(|| entry.while_clause.clone());
+        let delay_clause = override_for_metric
+            .and_then(|o| o.delay_clause.clone())
+            .or_else(|| entry.delay_clause.clone());
 
         let sub_signal_id = if duplicate_metric_names.contains(metric.name.as_str()) {
             format!("{}.{}#{}", effective_entry_id, metric.name, spec_index)
@@ -720,6 +737,8 @@ fn expand_pack_entry<R: PackResolver>(
             phase_offset: entry.phase_offset.clone(),
             clock_group: entry.clock_group.clone(),
             after,
+            while_clause,
+            delay_clause,
             distribution: None,
             buckets: None,
             quantiles: None,
@@ -1323,6 +1342,88 @@ scenarios:
             assert_eq!(after.ref_id, "head");
             assert!(matches!(after.op, AfterOp::GreaterThan));
         }
+    }
+
+    #[test]
+    fn entry_level_while_propagates_to_every_metric() {
+        let yaml = r#"
+version: 2
+defaults: { rate: 1, duration: 5m }
+scenarios:
+  - id: head
+    signal_type: metrics
+    name: head
+    generator: { type: constant, value: 1 }
+  - id: tail
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    while:
+      ref: head
+      op: ">"
+      value: 5
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let expanded = expand_yaml(yaml, &resolver);
+        let pack_subs: Vec<_> = expanded
+            .entries
+            .iter()
+            .filter(|e| {
+                e.id.as_deref()
+                    .map(|s| s.starts_with("tail."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(!pack_subs.is_empty());
+        for e in pack_subs {
+            let w = e.while_clause.as_ref().expect("while must be propagated");
+            assert_eq!(w.ref_id, "head");
+        }
+    }
+
+    #[test]
+    fn override_while_replaces_entry_while_for_that_metric() {
+        let yaml = r#"
+version: 2
+defaults: { rate: 1, duration: 5m }
+scenarios:
+  - id: head
+    signal_type: metrics
+    name: head
+    generator: { type: constant, value: 1 }
+  - id: other
+    signal_type: metrics
+    name: other
+    generator: { type: constant, value: 1 }
+  - id: tail
+    signal_type: metrics
+    pack: telegraf_snmp_interface
+    while:
+      ref: head
+      op: ">"
+      value: 5
+    overrides:
+      ifOperStatus:
+        while:
+          ref: other
+          op: "<"
+          value: 1
+"#;
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("telegraf_snmp_interface", telegraf_pack());
+        let expanded = expand_yaml(yaml, &resolver);
+        let oper = expanded
+            .entries
+            .iter()
+            .find(|e| e.name == "ifOperStatus")
+            .unwrap();
+        assert_eq!(oper.while_clause.as_ref().unwrap().ref_id, "other");
+        let in_octets = expanded
+            .entries
+            .iter()
+            .find(|e| e.name == "ifHCInOctets")
+            .unwrap();
+        assert_eq!(in_octets.while_clause.as_ref().unwrap().ref_id, "head");
     }
 
     #[test]

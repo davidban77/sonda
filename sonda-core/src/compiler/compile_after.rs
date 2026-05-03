@@ -128,7 +128,7 @@ use super::timing::{
     sequence_crossing_secs, sine_crossing_secs, spike_crossing_secs, step_crossing_secs,
     uniform_crossing_secs, Operator, TimingError,
 };
-use super::AfterOp;
+use super::{AfterOp, ClauseKind, DelayClause, WhileClause};
 use crate::config::validate::parse_duration;
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
@@ -151,21 +151,19 @@ use crate::sink::SinkConfig;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileAfterError {
-    /// An `after.ref` pointed to a signal id that does not exist in the
+    /// A clause's `ref` pointed to a signal id that does not exist in the
     /// expanded file.
     ///
     /// The `available` list contains every known signal id (sorted) so the
     /// user can spot the typo or missing entry quickly.
     #[error(
-        "entry '{source_id}': after.ref '{ref_id}' does not match any signal id in this file. \
+        "entry '{source_id}': {clause}.ref '{ref_id}' does not match any signal id in this file. \
          Available ids: [{available}]"
     )]
     UnknownRef {
-        /// The `id` (or descriptive label) of the entry whose `after` failed.
         source_id: String,
-        /// The unresolved reference as written in the scenario file.
         ref_id: String,
-        /// Comma-separated list of known ids in the file.
+        clause: ClauseKind,
         available: String,
     },
 
@@ -185,23 +183,23 @@ pub enum CompileAfterError {
         candidates: String,
     },
 
-    /// An entry's `after.ref` pointed to its own id.
-    #[error("entry '{source_id}': after.ref references itself")]
+    /// An entry's clause `ref` pointed to its own id.
+    #[error("entry '{source_id}': {clause}.ref references itself")]
     SelfReference {
-        /// The offending entry's id.
         source_id: String,
+        clause: ClauseKind,
     },
 
     /// The dependency graph contains a cycle.
     ///
-    /// `cycle` is a path of entry ids starting and ending at the same
-    /// vertex (e.g. `["A", "B", "C", "A"]`).
-    #[error("circular dependency detected: {}", .cycle.join(" -> "))]
-    CircularDependency {
-        /// Ordered list of entry ids forming the cycle, with the start
-        /// vertex repeated at the end.
-        cycle: Vec<String>,
-    },
+    /// `cycle` is a path of `(entry id, edge label)` pairs starting and
+    /// ending at the same vertex; the label on each pair tags the outgoing
+    /// edge from that vertex. The final pair carries the same label as the
+    /// edge that closes the cycle, so `(a, After) -> (b, While) -> (a, After)`
+    /// renders as `a --[after]--> b --[while]--> a`. Pure-`after:` cycles
+    /// preserve the existing `a -> b -> a` short form.
+    #[error("{}", format_cycle(.cycle))]
+    CircularDependency { cycle: Vec<(String, ClauseKind)> },
 
     /// The target of an `after.ref` uses a generator that does not support
     /// the requested operator.
@@ -274,22 +272,21 @@ pub enum CompileAfterError {
         second_group: String,
     },
 
-    /// The target of an `after.ref` is not a metrics signal.
+    /// The target of a clause `ref` is not a metrics signal.
     ///
-    /// Cross-signal-type `after` (spec §3.5) allows the **dependent** to be
+    /// Cross-signal-type clauses (spec §3.5) allow the **dependent** to be
     /// any type, but the **target** must be metrics so the compiler can
-    /// invert its analytical model for crossing math.
+    /// invert its analytical model for crossing math (and so a `while:`
+    /// gate has a continuous numeric value to compare).
     #[error(
-        "entry '{source_id}': after.ref '{ref_id}' resolves to a {signal_type} signal; \
-         only metrics signals can be `after` targets"
+        "entry '{source_id}': {clause}.ref '{ref_id}' resolves to a {target_signal} signal; \
+         only metrics signals can be `{clause}` targets"
     )]
     NonMetricsTarget {
-        /// The dependent entry.
         source_id: String,
-        /// The referenced target.
         ref_id: String,
-        /// The target's actual signal type.
-        signal_type: String,
+        clause: ClauseKind,
+        target_signal: String,
     },
 
     /// A duration string on `after.delay`, the entry's `phase_offset`, or
@@ -305,6 +302,74 @@ pub enum CompileAfterError {
         /// The underlying parse error message.
         reason: String,
     },
+
+    #[error(
+        "entry '{source_id}': `while:` clauses are not yet supported in this build \
+         (ships in v1 final). Use `after:` for one-shot triggers; `while:` continuous \
+         gating arrives in the next PR."
+    )]
+    WhileNotYetSupported { source_id: String },
+
+    #[error(
+        "entry '{source_id}': `while:` cannot reference '{ref_id}' — it emits a literal NaN \
+         ({nan}); strict comparisons against NaN never hold and would leave the scenario \
+         permanently paused"
+    )]
+    WhileNanSource {
+        source_id: String,
+        ref_id: String,
+        nan: NanSource,
+    },
+}
+
+/// Where in a generator config a literal NaN was found.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum NanSource {
+    Constant,
+    SequenceValue {
+        index: usize,
+    },
+    CsvCell {
+        path: String,
+        row: usize,
+        column: usize,
+    },
+}
+
+impl std::fmt::Display for NanSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NanSource::Constant => f.write_str("constant.value: NaN"),
+            NanSource::SequenceValue { index } => {
+                write!(f, "sequence.values[{index}]: NaN")
+            }
+            NanSource::CsvCell { path, row, column } => {
+                write!(f, "csv_replay file '{path}' row {row} column {column}: NaN")
+            }
+        }
+    }
+}
+
+fn format_cycle(cycle: &[(String, ClauseKind)]) -> String {
+    if cycle.is_empty() {
+        return "circular dependency detected: <unknown cycle>".to_string();
+    }
+    let edge_kinds = &cycle[..cycle.len().saturating_sub(1)];
+    let any_while = edge_kinds.iter().any(|(_, k)| *k == ClauseKind::While);
+    if !any_while {
+        let names: Vec<&str> = cycle.iter().map(|(name, _)| name.as_str()).collect();
+        return format!("circular dependency detected: {}", names.join(" -> "));
+    }
+    let mut out = String::from("circular dependency detected: ");
+    for (i, (name, kind)) in cycle.iter().enumerate() {
+        out.push_str(name);
+        if i + 1 < cycle.len() {
+            use std::fmt::Write;
+            let _ = write!(out, " --[{kind}]--> ");
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +476,11 @@ pub struct CompiledEntry {
     pub seed: Option<u64>,
     /// Resolved sink-error policy.
     pub on_sink_error: OnSinkError,
+    /// Continuous lifecycle gate. Does not contribute to `phase_offset`.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub while_clause: Option<WhileClause>,
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub delay_clause: Option<DelayClause>,
 }
 
 // ---------------------------------------------------------------------------
@@ -449,43 +519,29 @@ pub struct CompiledEntry {
 pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterError> {
     let ExpandedFile { version, entries } = file;
 
-    // -----------------------------------------------------------------
-    // Reference index
-    // -----------------------------------------------------------------
     let id_to_idx = build_id_index(&entries);
 
-    // -----------------------------------------------------------------
-    // Validate each `after` clause against the index (before any math).
-    // This catches unknown refs / ambiguous bare refs / self-references
-    // early, producing clean diagnostics even when the graph is malformed
-    // enough to thwart topological ordering.
-    // -----------------------------------------------------------------
     for entry in &entries {
-        let Some(clause) = &entry.after else { continue };
         let source_id = source_label(entry);
-
-        resolve_reference(&clause.ref_id, &id_to_idx, &source_id)?;
-
-        if let Some(own_id) = entry.id.as_deref() {
-            if own_id == clause.ref_id {
+        for (ref_id, clause) in outgoing_edges(entry) {
+            resolve_reference(ref_id, &id_to_idx, &source_id, clause)?;
+            if entry.id.as_deref() == Some(ref_id) {
                 return Err(CompileAfterError::SelfReference {
-                    source_id: source_id.into_owned(),
+                    source_id: source_id.clone().into_owned(),
+                    clause,
                 });
             }
         }
     }
 
-    // -----------------------------------------------------------------
-    // Topological sort (Kahn's algorithm with in-degree tracking)
-    // -----------------------------------------------------------------
     let n = entries.len();
     let mut in_degree = vec![0u32; n];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut dependents: Vec<Vec<(usize, ClauseKind)>> = vec![Vec::new(); n];
     for (i, entry) in entries.iter().enumerate() {
-        if let Some(clause) = &entry.after {
-            let dep_idx = id_to_idx[clause.ref_id.as_str()];
+        for (ref_id, clause) in outgoing_edges(entry) {
+            let dep_idx = id_to_idx[ref_id];
             in_degree[i] += 1;
-            dependents[dep_idx].push(i);
+            dependents[dep_idx].push((i, clause));
         }
     }
 
@@ -493,7 +549,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
     let mut sorted: Vec<usize> = Vec::with_capacity(n);
     while let Some(idx) = queue.pop_front() {
         sorted.push(idx);
-        for &dependent in &dependents[idx] {
+        for &(dependent, _) in &dependents[idx] {
             in_degree[dependent] -= 1;
             if in_degree[dependent] == 0 {
                 queue.push_back(dependent);
@@ -505,11 +561,35 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         return Err(CompileAfterError::CircularDependency { cycle });
     }
 
-    // -----------------------------------------------------------------
-    // Offset accumulation
-    // -----------------------------------------------------------------
+    for entry in &entries {
+        let Some(clause) = &entry.while_clause else {
+            continue;
+        };
+        let source_id = source_label(entry).into_owned();
+        let dep_idx = id_to_idx[clause.ref_id.as_str()];
+        let target = &entries[dep_idx];
+
+        if target.signal_type != "metrics" {
+            return Err(CompileAfterError::NonMetricsTarget {
+                source_id,
+                ref_id: clause.ref_id.clone(),
+                clause: ClauseKind::While,
+                target_signal: target.signal_type.clone(),
+            });
+        }
+        if let Some(generator) = target.generator.as_ref() {
+            if let Some(nan) = detect_nan_source(generator) {
+                return Err(CompileAfterError::WhileNanSource {
+                    source_id,
+                    ref_id: clause.ref_id.clone(),
+                    nan,
+                });
+            }
+        }
+    }
+
     let mut total_offsets = vec![0.0_f64; n];
-    let mut base_offsets = vec![0.0_f64; n]; // user-set phase_offset per entry
+    let mut base_offsets = vec![0.0_f64; n];
 
     for (i, entry) in entries.iter().enumerate() {
         if let Some(s) = entry.phase_offset.as_deref() {
@@ -528,21 +608,15 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         let dep_idx = id_to_idx[clause.ref_id.as_str()];
         let target = &entries[dep_idx];
 
-        // §3.5: only metrics signals can be `after` targets.
         if target.signal_type != "metrics" {
             return Err(CompileAfterError::NonMetricsTarget {
                 source_id,
                 ref_id: clause.ref_id.clone(),
-                signal_type: target.signal_type.clone(),
+                clause: ClauseKind::After,
+                target_signal: target.signal_type.clone(),
             });
         }
 
-        // Metrics non-pack inline entries are required to carry a `generator`
-        // by the parser (`ParseError::MissingGeneratorOrPack`), and pack
-        // expansion always materializes a generator on every sub-signal
-        // (falling back to `constant(0)` when the pack spec has none).
-        // Combined with the §3.5 metrics-target check above, a metrics
-        // target with `generator: None` cannot occur at this point.
         let generator = target.generator.as_ref().unwrap_or_else(|| {
             unreachable!(
                 "metrics target '{ref_id}' has no generator — parser and expand \
@@ -564,27 +638,24 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         total_offsets[idx] = base_offsets[idx] + total_offsets[dep_idx] + crossing + delay;
     }
 
-    // -----------------------------------------------------------------
-    // Clock-group assignment (spec §4.5)
-    // -----------------------------------------------------------------
     let clock_groups = assign_clock_groups(&entries, &id_to_idx)?;
 
-    // -----------------------------------------------------------------
-    // Build CompiledEntry list
-    // -----------------------------------------------------------------
+    for entry in &entries {
+        if entry.while_clause.is_some() {
+            return Err(CompileAfterError::WhileNotYetSupported {
+                source_id: source_label(entry).into_owned(),
+            });
+        }
+    }
+
     let mut out: Vec<CompiledEntry> = Vec::with_capacity(n);
     for (i, entry) in entries.into_iter().enumerate() {
         let phase_offset = if entry.after.is_some() || total_offsets[i] != 0.0 {
             Some(format_duration_secs(total_offsets[i]))
         } else {
-            // No `after:` and no user-set offset → leave None.
             entry.phase_offset.clone()
         };
 
-        // Resolve the clock_group + provenance:
-        // - Multi-node component: `clock_groups[i]` holds the assignment.
-        // - Single-node component (Unassigned): fall back to the entry's
-        //   own explicit value, which is by definition not auto-named.
         let (clock_group, clock_group_is_auto) = match &clock_groups[i] {
             ClockGroupAssignment::Resolved { name, is_auto } => (Some(name.clone()), *is_auto),
             ClockGroupAssignment::Unassigned => (entry.clock_group.clone(), false),
@@ -617,6 +688,8 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             mean_shift_per_sec: entry.mean_shift_per_sec,
             on_sink_error: entry.on_sink_error,
             seed: entry.seed,
+            while_clause: entry.while_clause,
+            delay_clause: entry.delay_clause,
         });
     }
 
@@ -624,6 +697,46 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         version,
         entries: out,
     })
+}
+
+/// Detect a literal NaN in a generator config. Returns `None` for analytical
+/// generators (sine, sawtooth, etc.) — runtime evaluation handles those.
+fn detect_nan_source(generator: &GeneratorConfig) -> Option<NanSource> {
+    match generator {
+        GeneratorConfig::Constant { value } if value.is_nan() => Some(NanSource::Constant),
+        GeneratorConfig::Sequence { values, .. } => values
+            .iter()
+            .position(|v| v.is_nan())
+            .map(|index| NanSource::SequenceValue { index }),
+        GeneratorConfig::CsvReplay { file, column, .. } => {
+            scan_csv_for_nan(file, column.unwrap_or(0))
+        }
+        _ => None,
+    }
+}
+
+fn scan_csv_for_nan(path: &str, column: usize) -> Option<NanSource> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    for (row, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut cells = trimmed.split(',');
+        let cell = cells.nth(column)?.trim();
+        if is_literal_nan(cell) {
+            return Some(NanSource::CsvCell {
+                path: path.to_string(),
+                row,
+                column,
+            });
+        }
+    }
+    None
+}
+
+fn is_literal_nan(cell: &str) -> bool {
+    matches!(cell.to_ascii_lowercase().as_str(), "nan" | "+nan" | "-nan")
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +758,7 @@ fn build_id_index(entries: &[ExpandedEntry]) -> BTreeMap<&str, usize> {
     idx
 }
 
-/// Resolve an `after.ref` against the reference index, producing a
+/// Resolve a clause `ref` against the reference index, producing a
 /// precise diagnostic for unknown or ambiguous references.
 ///
 /// Returns the resolved target index on success.
@@ -653,13 +766,12 @@ fn resolve_reference(
     ref_id: &str,
     id_to_idx: &BTreeMap<&str, usize>,
     source_id: &str,
+    clause: ClauseKind,
 ) -> Result<usize, CompileAfterError> {
     if let Some(&idx) = id_to_idx.get(ref_id) {
         return Ok(idx);
     }
 
-    // Ambiguous bare `{entry}.{metric}` against a duplicate-name pack?
-    // Look for ids of the form `{ref_id}#{n}`.
     let prefix = format!("{ref_id}#");
     let candidates: Vec<&str> = id_to_idx
         .keys()
@@ -667,8 +779,6 @@ fn resolve_reference(
         .copied()
         .collect();
     if !candidates.is_empty() {
-        // Strip everything after the final `.` to reconstruct the pack
-        // entry id for the diagnostic.
         let pack_entry_id = ref_id
             .rsplit_once('.')
             .map(|(left, _)| left.to_string())
@@ -684,8 +794,29 @@ fn resolve_reference(
     Err(CompileAfterError::UnknownRef {
         source_id: source_id.to_string(),
         ref_id: ref_id.to_string(),
+        clause,
         available: available.join(", "),
     })
+}
+
+/// Yield every outgoing edge from `entry` as `(target_ref_id, edge_label)`.
+///
+/// Order is `after:` first, then `while:` — used by index building, cycle
+/// detection, and reference validation. Adding a new clause type (e.g.
+/// v2's `gated_by:`) extends this iterator and reaches every cycle-aware
+/// site automatically.
+fn outgoing_edges(entry: &ExpandedEntry) -> impl Iterator<Item = (&str, ClauseKind)> {
+    entry
+        .after
+        .as_ref()
+        .map(|c| (c.ref_id.as_str(), ClauseKind::After))
+        .into_iter()
+        .chain(
+            entry
+                .while_clause
+                .as_ref()
+                .map(|c| (c.ref_id.as_str(), ClauseKind::While)),
+        )
 }
 
 /// Format an entry into a human-readable label for error messages.
@@ -1038,11 +1169,15 @@ fn auto_chain_name(members: &[usize], entries: &[ExpandedEntry]) -> String {
 
 /// Find a cycle in the directed dependency graph for error reporting.
 ///
-/// Uses DFS with gray/black coloring — on encountering a back-edge to a
-/// gray vertex, the recursion stack is replayed to reconstruct the cycle
-/// path. The first and last entries in the returned vector are always
-/// equal, giving a readable display like `A -> B -> C -> A`.
-fn find_cycle(entries: &[ExpandedEntry], id_to_idx: &BTreeMap<&str, usize>) -> Vec<String> {
+/// Walks `outgoing_edges` (both `after:` and `while:`) so cycles closed by
+/// a `while:` edge surface with the right edge labels. Each pair in the
+/// returned vector is `(node id, kind of edge OUT of this node toward the
+/// next pair)`. The first and last node ids match (the cycle close). The
+/// trailing pair's label echoes the closing edge's kind.
+fn find_cycle(
+    entries: &[ExpandedEntry],
+    id_to_idx: &BTreeMap<&str, usize>,
+) -> Vec<(String, ClauseKind)> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Color {
         White,
@@ -1052,59 +1187,58 @@ fn find_cycle(entries: &[ExpandedEntry], id_to_idx: &BTreeMap<&str, usize>) -> V
 
     let n = entries.len();
     let mut color = vec![Color::White; n];
-    let mut stack: Vec<usize> = Vec::new();
+    let mut path: Vec<(usize, ClauseKind)> = Vec::new();
 
-    // Recursive DFS with a path-reconstruction vector: `stack` records the
-    // current ancestor chain so that on a back-edge we can slice out the
-    // cycle from `dep` to `node` without re-traversing the graph. Back-edge
-    // detection is driven by `color[dep] == Gray`.
     fn dfs(
         node: usize,
         entries: &[ExpandedEntry],
         id_to_idx: &BTreeMap<&str, usize>,
         color: &mut [Color],
-        stack: &mut Vec<usize>,
-    ) -> Option<Vec<usize>> {
+        path: &mut Vec<(usize, ClauseKind)>,
+    ) -> Option<Vec<(usize, ClauseKind)>> {
         color[node] = Color::Gray;
-        stack.push(node);
+        path.push((node, ClauseKind::After));
 
-        if let Some(clause) = &entries[node].after {
-            if let Some(&dep) = id_to_idx.get(clause.ref_id.as_str()) {
-                match color[dep] {
-                    Color::White => {
-                        if let Some(cycle) = dfs(dep, entries, id_to_idx, color, stack) {
-                            return Some(cycle);
-                        }
-                    }
-                    Color::Gray => {
-                        // Back-edge: reconstruct the cycle from `dep` to `node`.
-                        let start = stack.iter().position(|&x| x == dep).unwrap_or(0);
-                        let mut cycle: Vec<usize> = stack[start..].to_vec();
-                        cycle.push(dep);
+        for (ref_id, clause) in outgoing_edges(&entries[node]) {
+            let Some(&dep) = id_to_idx.get(ref_id) else {
+                continue;
+            };
+            if let Some(last) = path.last_mut() {
+                last.1 = clause;
+            }
+            match color[dep] {
+                Color::White => {
+                    if let Some(cycle) = dfs(dep, entries, id_to_idx, color, path) {
                         return Some(cycle);
                     }
-                    Color::Black => {}
                 }
+                Color::Gray => {
+                    let start = path.iter().position(|&(x, _)| x == dep).unwrap_or(0);
+                    let mut cycle: Vec<(usize, ClauseKind)> = path[start..].to_vec();
+                    cycle.push((dep, clause));
+                    return Some(cycle);
+                }
+                Color::Black => {}
             }
         }
 
         color[node] = Color::Black;
-        stack.pop();
+        path.pop();
         None
     }
 
     for start in 0..n {
         if color[start] == Color::White {
-            if let Some(cycle) = dfs(start, entries, id_to_idx, &mut color, &mut stack) {
+            if let Some(cycle) = dfs(start, entries, id_to_idx, &mut color, &mut path) {
                 return cycle
                     .into_iter()
-                    .map(|i| source_label(&entries[i]).into_owned())
+                    .map(|(i, kind)| (source_label(&entries[i]).into_owned(), kind))
                     .collect();
             }
         }
     }
 
-    vec!["<unknown cycle>".to_string()]
+    vec![("<unknown cycle>".to_string(), ClauseKind::After)]
 }
 
 // ---------------------------------------------------------------------------
@@ -2109,6 +2243,397 @@ scenarios:
             (dur.as_secs_f64() - 92.307).abs() < 0.01,
             "got {}, expected ~92.307",
             dur.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn outgoing_edges_yields_after_then_while() {
+        use crate::compiler::{WhileClause, WhileOp};
+        let mut e = ExpandedEntry {
+            id: Some("x".to_string()),
+            signal_type: "metrics".to_string(),
+            name: "x".to_string(),
+            rate: 1.0,
+            duration: None,
+            generator: None,
+            log_generator: None,
+            labels: None,
+            dynamic_labels: None,
+            encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
+            sink: crate::sink::SinkConfig::Stdout,
+            jitter: None,
+            jitter_seed: None,
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            phase_offset: None,
+            clock_group: None,
+            after: Some(crate::compiler::AfterClause {
+                ref_id: "a_target".to_string(),
+                op: AfterOp::GreaterThan,
+                value: 0.0,
+                delay: None,
+            }),
+            while_clause: Some(WhileClause {
+                ref_id: "w_target".to_string(),
+                op: WhileOp::LessThan,
+                value: 0.0,
+            }),
+            delay_clause: None,
+            distribution: None,
+            buckets: None,
+            quantiles: None,
+            observations_per_tick: None,
+            mean_shift_per_sec: None,
+            seed: None,
+            on_sink_error: crate::OnSinkError::Warn,
+        };
+        let edges: Vec<_> = outgoing_edges(&e).collect();
+        assert_eq!(
+            edges,
+            vec![
+                ("a_target", ClauseKind::After),
+                ("w_target", ClauseKind::While)
+            ]
+        );
+
+        e.while_clause = None;
+        let edges_after_only: Vec<_> = outgoing_edges(&e).collect();
+        assert_eq!(edges_after_only, vec![("a_target", ClauseKind::After)]);
+
+        e.after = None;
+        let edges_none: Vec<_> = outgoing_edges(&e).collect();
+        assert!(edges_none.is_empty());
+    }
+
+    #[test]
+    fn while_yaml_rejected_with_while_not_yet_supported() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator: { type: constant, value: 1 }
+    while: { ref: link, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("while: must reject");
+        match err {
+            CompileAfterError::WhileNotYetSupported { source_id } => {
+                assert_eq!(source_id, "dependent");
+            }
+            other => panic!("expected WhileNotYetSupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defaults_duration_satisfies_while_without_duration() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator: { type: constant, value: 1 }
+    while: { ref: link, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("while: rejected");
+        assert!(
+            matches!(err, CompileAfterError::WhileNotYetSupported { .. }),
+            "defaults.duration must satisfy WhileWithoutDuration so the compiler reaches WhileNotYetSupported. got {err:?}"
+        );
+    }
+
+    #[test]
+    fn mixed_after_while_cycle_uses_labeled_format() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 10m
+scenarios:
+  - id: a
+    signal_type: metrics
+    name: a
+    generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    after: { ref: b, op: ">", value: 1 }
+  - id: b
+    signal_type: metrics
+    name: b
+    generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    while: { ref: a, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("mixed cycle must fail");
+        match err {
+            CompileAfterError::CircularDependency { ref cycle } => {
+                let edge_kinds: Vec<_> = cycle[..cycle.len() - 1].iter().map(|(_, k)| *k).collect();
+                assert!(
+                    edge_kinds.contains(&ClauseKind::While),
+                    "mixed cycle must include a While edge: {cycle:?}"
+                );
+                let display = err.to_string();
+                assert!(
+                    display.contains("--[after]-->") && display.contains("--[while]-->"),
+                    "mixed cycle must render labeled arrows. got: {display}"
+                );
+            }
+            other => panic!("expected CircularDependency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pure_after_cycle_keeps_short_arrow_format() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+scenarios:
+  - id: a
+    signal_type: metrics
+    name: a
+    generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    after: { ref: b, op: ">", value: 1 }
+  - id: b
+    signal_type: metrics
+    name: b
+    generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    after: { ref: a, op: ">", value: 1 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("pure-after cycle must fail");
+        let display = err.to_string();
+        assert!(
+            display.contains(" -> ") && !display.contains("--["),
+            "pure-after cycles must use the short arrow form. got: {display}"
+        );
+    }
+
+    #[test]
+    fn deep_while_chain_completes_quickly() {
+        use std::fmt::Write;
+        let mut yaml =
+            String::from("version: 2\ndefaults:\n  rate: 1\n  duration: 1h\nscenarios:\n");
+        let _ = writeln!(
+            yaml,
+            "  - id: n0\n    signal_type: metrics\n    name: n0\n    generator: {{ type: constant, value: 1 }}"
+        );
+        for i in 1..200 {
+            let _ = writeln!(yaml,
+                "  - id: n{i}\n    signal_type: metrics\n    name: n{i}\n    generator: {{ type: constant, value: 1 }}\n    while: {{ ref: n{prev}, op: \">\", value: 0 }}",
+                prev = i - 1);
+        }
+        let start = std::time::Instant::now();
+        let err = compile_after_from_yaml(&yaml).expect_err("while: rejected");
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(err, CompileAfterError::WhileNotYetSupported { .. }),
+            "expected WhileNotYetSupported, got {err:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "200-node while: chain took {elapsed:?}; cycle detection regressed"
+        );
+    }
+
+    #[test]
+    fn self_while_reference_is_rejected_with_while_kind() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: loop_w
+    signal_type: metrics
+    name: loop_w
+    generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    while: { ref: loop_w, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("self-while must fail");
+        match err {
+            CompileAfterError::SelfReference { source_id, clause } => {
+                assert_eq!(source_id, "loop_w");
+                assert_eq!(clause, ClauseKind::While);
+            }
+            other => panic!("expected SelfReference(While), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn while_targeting_logs_signal_is_rejected() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: log_src
+    signal_type: logs
+    name: lg
+    log_generator: { type: template, templates: [{ message: "hi" }] }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: log_src, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("non-metrics while target must fail");
+        match err {
+            CompileAfterError::NonMetricsTarget {
+                ref_id,
+                clause,
+                target_signal,
+                ..
+            } => {
+                assert_eq!(ref_id, "log_src");
+                assert_eq!(clause, ClauseKind::While);
+                assert_eq!(target_signal, "logs");
+            }
+            other => panic!("expected NonMetricsTarget(While), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn while_against_nan_constant_is_rejected() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: .nan }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("constant NaN must reject");
+        match err {
+            CompileAfterError::WhileNanSource {
+                ref_id,
+                nan: NanSource::Constant,
+                ..
+            } => {
+                assert_eq!(ref_id, "src");
+            }
+            other => panic!("expected WhileNanSource(Constant), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn while_against_nan_sequence_value_is_rejected() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: sequence, values: [1, 2, .nan, 3], repeat: false }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("sequence NaN must reject");
+        match err {
+            CompileAfterError::WhileNanSource {
+                nan: NanSource::SequenceValue { index },
+                ..
+            } => {
+                assert_eq!(index, 2);
+            }
+            other => panic!("expected WhileNanSource(SequenceValue), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn while_against_csv_with_nan_cell_is_rejected() {
+        let dir = std::env::temp_dir().join("sonda-while-nan-csv");
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let path = dir.join("nan.csv");
+        std::fs::write(&path, "1\n2\nNaN\n3\n").expect("write csv");
+        let yaml = format!(
+            r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: {{ type: csv_replay, file: "{path}" }}
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: {{ type: constant, value: 1 }}
+    while: {{ ref: src, op: ">", value: 0 }}
+"#,
+            path = path.display()
+        );
+        let err = compile_after_from_yaml(&yaml).expect_err("csv NaN must reject");
+        assert!(
+            matches!(
+                err,
+                CompileAfterError::WhileNanSource {
+                    nan: NanSource::CsvCell { .. },
+                    ..
+                }
+            ),
+            "expected WhileNanSource(CsvCell), got {err:?}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::le("<=")]
+    #[case::ge(">=")]
+    #[case::eq("==")]
+    #[case::ne("!=")]
+    fn while_strict_operators_reject_non_strict(#[case] op: &str) {
+        let yaml = format!(r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: {{ type: constant, value: 1 }}
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: {{ type: constant, value: 1 }}
+    while: {{ ref: src, op: "{op}", value: 1 }}
+"#);
+        let err = parse(&yaml).expect_err("non-strict op must fail at parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("strict") || msg.contains("'<' or '>'"),
+            "error must point at strict alternatives. got: {msg}"
         );
     }
 }

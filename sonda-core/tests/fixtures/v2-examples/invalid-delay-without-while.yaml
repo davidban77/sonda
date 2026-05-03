@@ -1,0 +1,16 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 1m
+
+scenarios:
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1
+    delay:
+      open: 5s
+      close: 10s

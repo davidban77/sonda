@@ -302,3 +302,29 @@ fn invalid_missing_rate_rejected() {
         other => panic!("expected MissingRate, got {other:?}"),
     }
 }
+
+#[test]
+fn invalid_while_without_duration_rejected() {
+    let yaml = example_fixture("invalid-while-without-duration.yaml");
+    let parsed = parse(&yaml).expect("parse");
+    let err = normalize(parsed).expect_err("missing duration must fail");
+    match err {
+        NormalizeError::WhileWithoutDuration { source_id } => {
+            assert_eq!(source_id, "gated");
+        }
+        other => panic!("expected WhileWithoutDuration, got {other:?}"),
+    }
+}
+
+#[test]
+fn invalid_delay_without_while_rejected() {
+    let yaml = example_fixture("invalid-delay-without-while.yaml");
+    let parsed = parse(&yaml).expect("parse");
+    let err = normalize(parsed).expect_err("delay without while must fail");
+    match err {
+        NormalizeError::DelayWithoutWhile { source_id } => {
+            assert_eq!(source_id, "gated");
+        }
+        other => panic!("expected DelayWithoutWhile, got {other:?}"),
+    }
+}

@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::compiler::AfterClause;
+use crate::compiler::{AfterClause, DelayClause, WhileClause};
 use crate::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use crate::encoder::EncoderConfig;
 use crate::generator::GeneratorConfig;
@@ -170,6 +170,20 @@ pub struct MetricOverride {
     /// expansion ignores the field.
     #[cfg_attr(feature = "config", serde(default))]
     pub after: Option<AfterClause>,
+    /// Per-metric `while:` clause; replaces any entry-level `while:` for
+    /// this expanded signal.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "while", skip_serializing_if = "Option::is_none")
+    )]
+    pub while_clause: Option<WhileClause>,
+    /// Per-metric `delay:` clause; replaces any entry-level `delay:` for
+    /// this expanded signal.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "delay", skip_serializing_if = "Option::is_none")
+    )]
+    pub delay_clause: Option<DelayClause>,
 }
 
 #[cfg(feature = "config")]
@@ -454,6 +468,8 @@ mod tests {
                 generator: Some(GeneratorConfig::Constant { value: 42.0 }),
                 labels: None,
                 after: None,
+                while_clause: None,
+                delay_clause: None,
             },
         );
 
@@ -639,6 +655,8 @@ mod tests {
                 generator: None,
                 labels: None,
                 after: None,
+                while_clause: None,
+                delay_clause: None,
             },
         );
 
@@ -688,6 +706,8 @@ mod tests {
                 generator: None,
                 labels: Some(override_labels),
                 after: None,
+                while_clause: None,
+                delay_clause: None,
             },
         );
 
