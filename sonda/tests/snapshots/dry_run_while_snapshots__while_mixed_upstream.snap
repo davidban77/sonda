@@ -1,0 +1,45 @@
+---
+source: sonda/tests/dry_run_while_snapshots.rs
+assertion_line: 194
+expression: stderr
+---
+[config] file: <fixture> (version: 2, 3 scenarios)
+
+[config] [1/3] trigger_metric
+
+    name:           trigger_metric
+    signal:         metrics
+    rate:           5/s
+    duration:       5m
+    generator:      step (start: 0, step_size: 1)
+    encoder:        prometheus_text
+    sink:           stdout
+    clock_group:    chain_traffic (auto)
+---
+
+[config] [2/3] link_state
+
+    name:           link_state
+    signal:         metrics
+    rate:           5/s
+    duration:       5m
+    generator:      sawtooth (min: 0, max: 100, period_secs: 60)
+    encoder:        prometheus_text
+    sink:           stdout
+---
+
+[config] [3/3] backup_traffic
+
+    name:           backup_traffic
+    signal:         metrics
+    rate:           5/s
+    duration:       5m
+    generator:      constant (value: 50)
+    encoder:        prometheus_text
+    sink:           stdout
+    phase_offset:   1.2s
+    clock_group:    chain_traffic (auto)
+    while:          upstream='link' op='>' value=50
+    first_open:     ~30s
+
+Validation: OK (3 scenarios)

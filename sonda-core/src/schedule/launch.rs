@@ -20,7 +20,7 @@ use crate::schedule::handle::ScenarioHandle;
 use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
 use crate::schedule::log_runner::run_logs_with_sink_gated;
 use crate::schedule::runner::run_with_sink_gated;
-use crate::schedule::stats::ScenarioStats;
+use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
 use crate::sink::create_sink;
 use crate::{ConfigError, RuntimeError, SondaError};
@@ -238,6 +238,9 @@ pub fn launch_scenario_with_gates(
     // Ensure `running` ordering is visible from the new thread.
     shutdown.store(true, Ordering::SeqCst);
 
+    let stats_for_state = Arc::clone(&stats);
+    let is_gated = gate_ctx.is_some();
+
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
@@ -247,6 +250,19 @@ pub fn launch_scenario_with_gates(
             let _guard = AliveGuard {
                 flag: alive_for_thread,
             };
+
+            // Drop guard writes ScenarioState::Finished on every exit path.
+            let _state_guard = StateGuard {
+                stats: Arc::clone(&stats_for_state),
+            };
+
+            // gated_loop owns Pending/Running/Paused transitions itself.
+            // Non-gated scenarios have nothing else writing Running, so do it here.
+            if !is_gated {
+                if let Ok(mut st) = stats_for_state.write() {
+                    st.state = ScenarioState::Running;
+                }
+            }
 
             // If a start delay is configured, sleep before entering the event
             // loop. This enables phase-offset correlation between scenarios
@@ -332,6 +348,18 @@ struct AliveGuard {
 impl Drop for AliveGuard {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
+struct StateGuard {
+    stats: Arc<RwLock<ScenarioStats>>,
+}
+
+impl Drop for StateGuard {
+    fn drop(&mut self) {
+        if let Ok(mut st) = self.stats.write() {
+            st.state = ScenarioState::Finished;
+        }
     }
 }
 
@@ -1443,6 +1471,74 @@ mod tests {
         assert!(
             !alive.load(Ordering::SeqCst),
             "AliveGuard Drop must clear the alive flag even when the thread panics"
+        );
+    }
+
+    #[test]
+    fn state_guard_writes_finished_on_drop() {
+        let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            st.state = ScenarioState::Running;
+        }
+        {
+            let _g = StateGuard {
+                stats: Arc::clone(&stats),
+            };
+        }
+        assert_eq!(stats.read().unwrap().state, ScenarioState::Finished);
+    }
+
+    #[test]
+    fn state_guard_writes_finished_on_thread_panic() {
+        let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+        let stats_for_thread = Arc::clone(&stats);
+
+        let thread = std::thread::Builder::new()
+            .name("state-guard-panic".to_string())
+            .spawn(move || {
+                let _g = StateGuard {
+                    stats: stats_for_thread,
+                };
+                let always_none: Option<u32> = None;
+                always_none.expect("intentional panic for StateGuard test");
+            })
+            .expect("spawn must succeed");
+
+        let result = thread.join();
+        assert!(result.is_err(), "thread must panic");
+        assert_eq!(
+            stats.read().unwrap().state,
+            ScenarioState::Finished,
+            "StateGuard Drop must write Finished even on panic"
+        );
+    }
+
+    #[test]
+    fn launch_non_gated_scenario_state_transitions_through_running_to_finished() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = metrics_entry("state_lifecycle");
+        let mut handle = launch_scenario("state-id".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
+
+        let mut saw_running = false;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            if handle.stats_snapshot().state == ScenarioState::Running {
+                saw_running = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_running, "non-gated scenario must reach Running");
+
+        handle
+            .join(Some(Duration::from_secs(2)))
+            .expect("join must succeed");
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Finished,
+            "non-gated scenario must end in Finished"
         );
     }
 

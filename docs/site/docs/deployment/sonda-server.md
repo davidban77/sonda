@@ -503,7 +503,7 @@ curl -s http://localhost:8080/scenarios | jq .
 }
 ```
 
-Each entry carries `id`, `name`, `status` (`running` or `stopped`), and `elapsed_secs`. To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
+Each entry carries `id`, `name`, `status`, and `elapsed_secs`. The `status` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`). To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
 
 ### `/scenarios/{id}/stats`
 
@@ -537,7 +537,7 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 | `bytes_emitted` | integer | Total bytes written to the sink. |
 | `errors` | integer | Encode or sink-write errors observed. |
 | `uptime_secs` | float | Seconds since the scenario was launched. |
-| `state` | string | `running` or `stopped`. |
+| `state` | string | One of `pending`, `running`, `paused`, `finished`. See the [`while:` lifecycle diagram](../configuration/v2-scenarios.md#lifecycle-states). |
 | `in_gap` | bool | `true` while a [gap window](../configuration/scenario-fields.md#gap-window) is suppressing output. |
 | `in_burst` | bool | `true` while a [burst window](../configuration/scenario-fields.md#burst-window) is elevating the rate. |
 | `consecutive_failures` | integer | Sink errors observed since the most recent successful write. Resets to `0` on the next successful write. |
@@ -545,7 +545,10 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 | `last_sink_error` | string \| null | Text of the most recent sink error, or `null` if none has been observed. |
 | `last_successful_write_at` | integer \| null | Wall-clock time of the most recent successful write, expressed as Unix nanoseconds. `null` until the first write succeeds. |
 
-The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/v2-scenarios.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `stopped`.
+The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/v2-scenarios.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
+
+!!! note "`pending -> paused` is a reachable direct transition"
+    A scenario carrying both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly, skipping `running`. Clients building a state-machine assertion should not assume `pending` always precedes `running` -- watch for `paused` from the `pending` state too.
 
 !!! tip "Detecting a wedged sink"
     Compute "degraded" yourself by thresholding `total_sink_failures` and the staleness of `last_successful_write_at`. Pick a staleness window that fits your scenario's rate and your tolerance for transient blips:

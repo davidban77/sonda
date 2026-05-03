@@ -1391,6 +1391,66 @@ scenarios:
     }
 
     #[test]
+    fn delay_open_zero_is_accepted() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+    delay: { open: "0s", close: "5s" }
+"#;
+        let file = normalize_yaml(yaml).expect("delay open=0s must parse and normalize");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        let delay = gated.delay_clause.as_ref().expect("delay clause present");
+        assert_eq!(delay.open, Some(std::time::Duration::ZERO));
+        assert_eq!(delay.close, Some(std::time::Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn delay_close_zero_is_accepted() {
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+    delay: { open: "250ms", close: "0ms" }
+"#;
+        let file = normalize_yaml(yaml).expect("delay close=0ms must parse and normalize");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        let delay = gated.delay_clause.as_ref().expect("delay clause present");
+        assert_eq!(delay.open, Some(std::time::Duration::from_millis(250)));
+        assert_eq!(delay.close, Some(std::time::Duration::ZERO));
+    }
+
+    #[test]
     fn while_inherits_from_defaults() {
         let yaml = r#"
 version: 2

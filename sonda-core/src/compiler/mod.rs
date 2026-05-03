@@ -420,7 +420,7 @@ mod delay_duration_opt {
 
     use serde::{Deserialize, Deserializer, Serializer};
 
-    use crate::config::validate::parse_duration;
+    use crate::config::validate::parse_delay_duration;
 
     pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -438,7 +438,7 @@ mod delay_duration_opt {
     {
         let raw: Option<String> = Option::deserialize(deserializer)?;
         match raw {
-            Some(s) => parse_duration(&s)
+            Some(s) => parse_delay_duration(&s)
                 .map(Some)
                 .map_err(serde::de::Error::custom),
             None => Ok(None),

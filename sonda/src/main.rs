@@ -145,11 +145,9 @@ fn run() -> anyhow::Result<()> {
             let has_gates = scenario_loader::has_while_clause(&compiled);
 
             if cli.dry_run {
-                let entries = sonda_core::compiler::prepare::prepare(compiled)
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let format = dry_run::parse_format(cli.format.as_deref())?;
                 let label = args.scenario.display().to_string();
-                dry_run::print_dry_run(&label, &entries, format)?;
+                dry_run::print_dry_run_compiled(&label, &compiled, format)?;
                 return Ok(());
             }
 
@@ -157,11 +155,7 @@ fn run() -> anyhow::Result<()> {
                 if verbosity == cli::Verbosity::Verbose {
                     status::print_version();
                 }
-                sonda_core::schedule::multi_runner::run_multi_compiled(
-                    compiled,
-                    Arc::clone(&running),
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                run_compiled_with_progress(compiled, &running, verbosity)?;
             } else {
                 let entries = sonda_core::compiler::prepare::prepare(compiled)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -437,10 +431,8 @@ fn run_catalog_run(
             let has_gates = scenario_loader::has_while_clause(&compiled);
 
             if cli_opts.dry_run {
-                let entries = sonda_core::compiler::prepare::prepare(compiled)
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
                 let format = dry_run::parse_format(cli_opts.format.as_deref())?;
-                dry_run::print_dry_run(&args.name, &entries, format)?;
+                dry_run::print_dry_run_compiled(&args.name, &compiled, format)?;
                 return Ok(());
             }
 
@@ -448,11 +440,7 @@ fn run_catalog_run(
                 if verbosity == cli::Verbosity::Verbose {
                     status::print_version();
                 }
-                sonda_core::schedule::multi_runner::run_multi_compiled(
-                    compiled,
-                    Arc::clone(running),
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                run_compiled_with_progress(compiled, running, verbosity)?;
                 return Ok(());
             }
 
@@ -1108,6 +1096,41 @@ fn launch_and_join_prepared(
         status::print_summary_by_clock_group(&grouped, &agg, total_elapsed, verbosity);
     } else {
         status::print_summary(&agg, total_elapsed, verbosity);
+    }
+
+    if !errors.is_empty() {
+        return Err(anyhow::anyhow!("{}", errors.join("; ")));
+    }
+
+    Ok(())
+}
+
+/// Launch a compiled (gated) scenario file and stream live progress to stderr.
+///
+/// Mirrors [`launch_and_join_prepared`] for the gated path: spawns every
+/// scenario via `launch_multi_compiled`, starts a `ProgressDisplay` so PAUSED
+/// transitions surface in non-quiet modes, joins the handles, and returns a
+/// combined error if any scenario failed.
+fn run_compiled_with_progress(
+    compiled: sonda_core::compiler::compile_after::CompiledFile,
+    running: &Arc<AtomicBool>,
+    verbosity: Verbosity,
+) -> anyhow::Result<()> {
+    let handles =
+        sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, Arc::clone(running))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let progress = maybe_start_progress_multi(&handles, verbosity);
+
+    let mut errors: Vec<String> = Vec::new();
+    for mut handle in handles {
+        if let Err(e) = handle.join(None) {
+            errors.push(e.to_string());
+        }
+    }
+
+    if let Some(p) = progress {
+        p.stop();
     }
 
     if !errors.is_empty() {

@@ -52,7 +52,7 @@ pub use model::metric::ValidatedMetricName;
 pub use scenarios::BuiltinScenario;
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
-pub use schedule::stats::ScenarioStats;
+pub use schedule::stats::{ScenarioState, ScenarioStats};
 
 #[cfg(feature = "config")]
 pub use compiler::prepare::PrepareError;

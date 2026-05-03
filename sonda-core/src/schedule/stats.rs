@@ -71,10 +71,6 @@ pub struct ScenarioStats {
     #[serde(skip)]
     pub recent_metrics: VecDeque<MetricEvent>,
     /// Lifecycle state of the scenario.
-    ///
-    /// Hidden from serialization in this PR; the server's `state` field
-    /// stays driven from `is_running()` until the surface widens.
-    #[serde(skip)]
     pub state: ScenarioState,
 }
 

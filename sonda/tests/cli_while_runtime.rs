@@ -1,4 +1,4 @@
-//! End-to-end CLI test for `sonda run` honoring `while:` clauses.
+//! End-to-end CLI tests for `sonda run` honoring `while:` clauses.
 
 mod common;
 
@@ -43,5 +43,29 @@ fn run_while_cascade_gates_downstream_emission() {
         "while: gate must suppress downstream events; \
          backup_saturation={backup_count}, primary_flap={primary_count}, \
          expected backup < 50% of primary\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn run_while_cascade_progress_emits_paused_line() {
+    let fixture = cli_fixtures_dir().join("while-cascade.v2.yaml");
+    let output = Command::new(sonda_bin())
+        .args(["run", "--scenario"])
+        .arg(&fixture)
+        .output()
+        .expect("must spawn sonda");
+
+    assert!(
+        output.status.success(),
+        "sonda run must succeed; status={:?} stderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("PAUSED"),
+        "stderr must contain a PAUSED progress line for the gated downstream during a flap close-window\n\
+         stderr:\n{stderr}"
     );
 }

@@ -36,3 +36,5 @@ dialoguer = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
+insta = { workspace = true, features = ["filters"] }
+rstest = { workspace = true }

@@ -30,7 +30,7 @@ use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
 use sonda_core::encoder::Encoder;
-use sonda_core::ScenarioStats;
+use sonda_core::{ScenarioState, ScenarioStats};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -93,7 +93,7 @@ pub struct ScenarioSummary {
     pub id: String,
     /// Human-readable scenario name.
     pub name: String,
-    /// Current status: "running" or "stopped".
+    /// Current status: `pending`, `running`, `paused`, or `finished`.
     pub status: String,
     /// Seconds elapsed since the scenario was launched.
     pub elapsed_secs: f64,
@@ -113,7 +113,7 @@ pub struct ScenarioDetail {
     pub id: String,
     /// Human-readable scenario name.
     pub name: String,
-    /// Current status: "running" or "stopped".
+    /// Current status: `pending`, `running`, `paused`, or `finished`.
     pub status: String,
     /// Seconds elapsed since the scenario was launched.
     pub elapsed_secs: f64,
@@ -191,7 +191,7 @@ pub struct DetailedStatsResponse {
     pub errors: u64,
     /// Seconds elapsed since the scenario was launched.
     pub uptime_secs: f64,
-    /// Current state: `"running"` or `"stopped"`.
+    /// Current state: `"pending"`, `"running"`, `"paused"`, or `"finished"`.
     pub state: String,
     /// Whether the scenario is currently in a gap window (no events emitted).
     pub in_gap: bool,
@@ -235,12 +235,13 @@ fn internal_error(detail: impl std::fmt::Display) -> Response {
 
 // ---- Helpers ----------------------------------------------------------------
 
-/// Derive the status string from whether the scenario handle is still running.
-fn status_string(running: bool) -> String {
-    if running {
-        "running".to_string()
-    } else {
-        "stopped".to_string()
+/// Map [`ScenarioStats::state`] to its lowercase wire string.
+fn state_string(stats: &ScenarioStats) -> &'static str {
+    match stats.state {
+        ScenarioState::Pending => "pending",
+        ScenarioState::Running => "running",
+        ScenarioState::Paused => "paused",
+        ScenarioState::Finished => "finished",
     }
 }
 
@@ -603,11 +604,14 @@ pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoRe
 
     let summaries: Vec<ScenarioSummary> = scenarios
         .iter()
-        .map(|(id, handle)| ScenarioSummary {
-            id: id.clone(),
-            name: handle.name.clone(),
-            status: status_string(handle.is_running()),
-            elapsed_secs: handle.elapsed().as_secs_f64(),
+        .map(|(id, handle)| {
+            let snap = handle.stats_snapshot();
+            ScenarioSummary {
+                id: id.clone(),
+                name: handle.name.clone(),
+                status: state_string(&snap).to_string(),
+                elapsed_secs: handle.elapsed().as_secs_f64(),
+            }
         })
         .collect();
 
@@ -634,12 +638,13 @@ pub async fn get_scenario(
         .get(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
+    let snap = handle.stats_snapshot();
     let detail = ScenarioDetail {
         id: id.clone(),
         name: handle.name.clone(),
-        status: status_string(handle.is_running()),
+        status: state_string(&snap).to_string(),
         elapsed_secs: handle.elapsed().as_secs_f64(),
-        stats: handle.stats_snapshot().into(),
+        stats: snap.into(),
     };
 
     Ok(Json(detail))
@@ -708,7 +713,8 @@ pub async fn delete_scenario(
 ///
 /// Returns all stats fields from the runner thread plus derived fields:
 /// `target_rate` (configured rate from the scenario config), `uptime_secs`
-/// (computed from `handle.elapsed()`), and `state` (from `handle.is_running()`).
+/// (computed from `handle.elapsed()`), and `state` (one of `pending`,
+/// `running`, `paused`, `finished`).
 ///
 /// This is a read-only endpoint that acquires only a read lock on the
 /// scenario map. No write lock is needed.
@@ -728,6 +734,7 @@ pub async fn get_scenario_stats(
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
     let snap = handle.stats_snapshot();
+    let state = state_string(&snap).to_string();
     let response = DetailedStatsResponse {
         total_events: snap.total_events,
         current_rate: snap.current_rate,
@@ -735,7 +742,7 @@ pub async fn get_scenario_stats(
         bytes_emitted: snap.bytes_emitted,
         errors: snap.errors,
         uptime_secs: handle.elapsed().as_secs_f64(),
-        state: status_string(handle.is_running()),
+        state,
         in_gap: snap.in_gap,
         in_burst: snap.in_burst,
         consecutive_failures: snap.consecutive_failures,
@@ -1163,6 +1170,9 @@ scenarios:
             1000,
             Duration::from_millis(50),
         );
+        if let Ok(mut s) = h.stats.write() {
+            s.state = ScenarioState::Running;
+        }
         let app = router_with_handles(vec![h]);
 
         // Small delay to ensure elapsed > 0.
@@ -1318,12 +1328,14 @@ scenarios:
         );
     }
 
-    // ---- GET /scenarios/{id}: stopped scenario reports "stopped" --------------
+    // ---- GET /scenarios/{id}: finished scenario reports "finished" ------------
 
-    /// A scenario whose thread has exited reports status "stopped".
     #[tokio::test]
-    async fn get_scenario_stopped_reports_stopped_status() {
-        let h = make_stopped_handle("id-stopped", "stopped_scenario");
+    async fn get_scenario_finished_reports_finished_status() {
+        let h = make_stopped_handle("id-stopped", "finished_scenario");
+        if let Ok(mut s) = h.stats.write() {
+            s.state = ScenarioState::Finished;
+        }
         let app = router_with_handles(vec![h]);
 
         let req = Request::builder()
@@ -1337,8 +1349,8 @@ scenarios:
         let body = body_json(resp).await;
         assert_eq!(
             body["status"].as_str().unwrap(),
-            "stopped",
-            "a finished scenario must have status 'stopped'"
+            "finished",
+            "a finished scenario must have status 'finished'"
         );
     }
 
@@ -1429,18 +1441,19 @@ scenarios:
         assert_eq!(resp.errors, 3);
     }
 
-    // ---- status_string helper ------------------------------------------------
+    // ---- state_string helper -------------------------------------------------
 
-    /// status_string(true) returns "running".
     #[test]
-    fn status_string_true_returns_running() {
-        assert_eq!(status_string(true), "running");
-    }
-
-    /// status_string(false) returns "stopped".
-    #[test]
-    fn status_string_false_returns_stopped() {
-        assert_eq!(status_string(false), "stopped");
+    fn state_string_maps_each_variant_to_lowercase_wire_string() {
+        let mut s = ScenarioStats::default();
+        s.state = ScenarioState::Pending;
+        assert_eq!(state_string(&s), "pending");
+        s.state = ScenarioState::Running;
+        assert_eq!(state_string(&s), "running");
+        s.state = ScenarioState::Paused;
+        assert_eq!(state_string(&s), "paused");
+        s.state = ScenarioState::Finished;
+        assert_eq!(state_string(&s), "finished");
     }
 
     // ---- Serialization: response structs produce valid JSON ------------------
@@ -2548,6 +2561,7 @@ scenarios:
         stats.errors = 2;
         stats.in_gap = false;
         stats.in_burst = true;
+        stats.state = ScenarioState::Running;
         let h = make_handle_with_stats("id-stats-all", "all_fields", 100.0, stats, true);
         let app = router_with_handles(vec![h]);
 
@@ -2686,11 +2700,10 @@ scenarios:
         );
     }
 
-    // ---- After scenario stopped: returns final stats with state "stopped" ----
+    // ---- After scenario finished: returns final stats with state "finished" ----
 
-    /// When a scenario has stopped, GET /scenarios/{id}/stats returns state "stopped".
     #[tokio::test]
-    async fn stats_endpoint_returns_stopped_state_for_finished_scenario() {
+    async fn stats_endpoint_returns_finished_state_for_finished_scenario() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 1000;
         stats.bytes_emitted = 64000;
@@ -2698,17 +2711,18 @@ scenarios:
         stats.errors = 5;
         stats.in_gap = false;
         stats.in_burst = false;
-        let h = make_handle_with_stats("id-stats-stopped", "stopped_test", 200.0, stats, false);
+        stats.state = ScenarioState::Finished;
+        let h = make_handle_with_stats("id-stats-finished", "finished_test", 200.0, stats, false);
         let app = router_with_handles(vec![h]);
 
-        let resp = get_stats_req(app, "id-stats-stopped").await;
+        let resp = get_stats_req(app, "id-stats-finished").await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_json(resp).await;
         assert_eq!(
             body["state"].as_str().unwrap(),
-            "stopped",
-            "state must be 'stopped' for a finished scenario"
+            "finished",
+            "state must be 'finished' for a finished scenario"
         );
         assert_eq!(
             body["total_events"].as_u64().unwrap(),
@@ -4110,6 +4124,8 @@ scenarios:
     fn snapshot_settings() -> insta::Settings {
         let mut s = insta::Settings::clone_current();
         s.set_sort_maps(true);
+        s.add_filter(r#"(?m)^\s+"[^"]+": null,\n"#, "");
+        s.add_filter(r#",\n(\s+"[^"]+": null\n)"#, "\n");
         s
     }
 
@@ -4132,6 +4148,51 @@ scenarios:
         };
         snapshot_settings().bind(|| {
             insta::assert_json_snapshot!("detailed_stats_response", resp);
+        });
+    }
+
+    #[rstest::rstest]
+    #[case::pending(ScenarioState::Pending, "pending")]
+    #[case::running(ScenarioState::Running, "running")]
+    #[case::paused(ScenarioState::Paused, "paused")]
+    #[case::finished(ScenarioState::Finished, "finished")]
+    fn detailed_stats_response_state_snapshot(
+        #[case] state: ScenarioState,
+        #[case] wire: &'static str,
+    ) {
+        let mut snap = ScenarioStats::default();
+        snap.total_events = 100;
+        snap.current_rate = if state == ScenarioState::Paused {
+            0.0
+        } else {
+            10.0
+        };
+        snap.bytes_emitted = 4096;
+        snap.state = state;
+        let resp = DetailedStatsResponse {
+            total_events: snap.total_events,
+            current_rate: snap.current_rate,
+            target_rate: 10.0,
+            bytes_emitted: snap.bytes_emitted,
+            errors: 0,
+            uptime_secs: 5.0,
+            state: state_string(&snap).to_string(),
+            in_gap: false,
+            in_burst: false,
+            consecutive_failures: 0,
+            total_sink_failures: 0,
+            last_sink_error: None,
+            last_successful_write_at: None,
+        };
+        assert_eq!(resp.state, wire);
+        snapshot_settings().bind(|| {
+            insta::assert_json_snapshot!(
+                format!("detailed_stats_response_state_{wire}"),
+                resp,
+                {
+                    ".uptime_secs" => "[uptime_secs]",
+                }
+            );
         });
     }
 
