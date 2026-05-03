@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0](https://github.com/davidban77/sonda/compare/v1.3.0...v1.4.0) (2026-05-02)
+
+
+### Features
+
+* sink-error policy and runner self-observability ([#293](https://github.com/davidban77/sonda/issues/293)) ([8993083](https://github.com/davidban77/sonda/commit/8993083d5c41d6466de88bf3f45640e8dfc7e722))
+
+
+### Documentation
+
+* **scenarios:** clarify v2 cascade duration semantics ([#291](https://github.com/davidban77/sonda/issues/291)) ([9b60b2d](https://github.com/davidban77/sonda/commit/9b60b2d1a007f9c97b55b3c6af4c129f353d8c09))
+
+
+### Miscellaneous
+
+* speed up tests with nextest + bound target/ size ([#298](https://github.com/davidban77/sonda/issues/298)) ([b7de2bd](https://github.com/davidban77/sonda/commit/b7de2bd40bd7338a897f9977be9d7b6a4180751b))
+
 ## [1.3.0](https://github.com/davidban77/sonda/compare/v1.2.2...v1.3.0) (2026-04-29)
 
 
