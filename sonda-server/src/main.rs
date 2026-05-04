@@ -118,12 +118,21 @@ async fn main() -> anyhow::Result<()> {
     let bound_addr = listener
         .local_addr()
         .context("failed to read local address from bound listener")?;
+
+    #[cfg(unix)]
+    let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("failed to install SIGTERM handler")?;
+
     announce_bound_port(bound_addr.port())?;
 
     info!(addr = %bound_addr, "sonda-server listening");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(state))
+        .with_graceful_shutdown(shutdown_signal(
+            state,
+            #[cfg(unix)]
+            sigterm,
+        ))
         .await
         .context("server error")?;
 
@@ -186,7 +195,7 @@ fn announce_bound_port(port: u16) -> anyhow::Result<()> {
 /// Wait for Ctrl+C or SIGTERM, then stop all running scenarios and signal
 /// shutdown. SIGTERM coverage is what `docker stop` and Kubernetes pod eviction
 /// rely on; without it the process is SIGKILLed after the grace period.
-async fn shutdown_signal(state: AppState) {
+async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -195,10 +204,7 @@ async fn shutdown_signal(state: AppState) {
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        sigterm.recv().await;
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
