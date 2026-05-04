@@ -19,6 +19,7 @@ pub const MAX_RECENT_METRICS: usize = 100;
 /// scenario as having exited (duration expired or shutdown received).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ScenarioState {
     #[default]
     Pending,

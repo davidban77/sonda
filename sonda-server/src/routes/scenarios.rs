@@ -217,6 +217,7 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
         ScenarioState::Running => "running",
         ScenarioState::Paused => "paused",
         ScenarioState::Finished => "finished",
+        _ => "unknown",
     }
 }
 

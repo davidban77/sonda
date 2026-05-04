@@ -503,6 +503,50 @@ Pair `while:` with `delay:` to debounce noisy upstream signals.
 
 `open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time.
 
+### Combining with `after:`
+
+`after:` and `while:` compose on the same entry. `after:` defers the scenario's first emission until an upstream crosses a threshold; `while:` then continuously gates the entry on every later edge. Pair them when a downstream should wait for a triggering event AND track the upstream's state thereafter -- a BGP session that opens once a link drops, then pauses every time the link briefly recovers.
+
+```yaml title="scenarios/bgp-session-cascade.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: bgp_session
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: primary_link
+      op: "<"
+      value: 1
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+```
+
+`bgp_session` stays `pending` until `after:` fires the first time `primary_link` drops below `1`. From that moment on `while:` takes over: the gate opens whenever the link is down, pauses when the link flaps back up, and reopens on the next drop. A scenario that uses both clauses with the gate already closed when `after:` fires enters `paused` directly -- the lifecycle skips `running` until the next gate-open edge.
+
+The two clauses may also reference different upstreams (e.g. `after:` on a link event, `while:` on a separate health signal); the compiler tracks the dependency graph for both edges independently.
+
 ### `--dry-run` preview
 
 `sonda run --scenario scenarios/link-traffic.yaml --dry-run` renders the gate plumbing alongside the existing layout:

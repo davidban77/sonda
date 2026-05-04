@@ -77,6 +77,26 @@ pub enum CompileError {
     /// [`prepare`][crate::compiler::prepare::prepare].
     #[error("prepare error")]
     Prepare(#[from] PrepareError),
+
+    /// The YAML uses `while:` or `delay:` clauses, which require the
+    /// gated runtime. [`compile_scenario_file`] returns
+    /// `Vec<ScenarioEntry>`, a shape that has no fields for these
+    /// clauses, so silently accepting such input would drop the gate
+    /// semantics and run the downstream as ungated. Call
+    /// [`compile_scenario_file_compiled`] instead and feed the
+    /// resulting [`CompiledFile`] to
+    /// [`run_multi_compiled`][crate::schedule::multi_runner::run_multi_compiled].
+    #[error(
+        "scenario `{id}` uses {clause} (continuous coupling); call \
+         `compile_scenario_file_compiled` and feed the result to \
+         `run_multi_compiled` to preserve gate semantics"
+    )]
+    GatedClauseRequiresCompiledPath {
+        /// The id of the entry that carries the gated clause.
+        id: String,
+        /// Which clause kind tripped the check (`"while:"` or `"delay:"`).
+        clause: &'static str,
+    },
 }
 
 /// Compile a v2 scenario YAML into the runtime's `Vec<ScenarioEntry>` input
@@ -109,6 +129,21 @@ pub fn compile_scenario_file(
     resolver: &dyn PackResolver,
 ) -> Result<Vec<ScenarioEntry>, CompileError> {
     let compiled = compile_scenario_file_compiled(yaml, resolver)?;
+    for (idx, entry) in compiled.entries.iter().enumerate() {
+        let entry_label = || entry.id.clone().unwrap_or_else(|| format!("entry[{idx}]"));
+        if entry.while_clause.is_some() {
+            return Err(CompileError::GatedClauseRequiresCompiledPath {
+                id: entry_label(),
+                clause: "while:",
+            });
+        }
+        if entry.delay_clause.is_some() {
+            return Err(CompileError::GatedClauseRequiresCompiledPath {
+                id: entry_label(),
+                clause: "delay:",
+            });
+        }
+    }
     Ok(prepare(compiled)?)
 }
 
@@ -201,6 +236,94 @@ scenarios:
             matches!(err, CompileError::Parse(_)),
             "v1 version must surface as Parse, got {err:?}"
         );
+    }
+
+    #[test]
+    fn yaml_with_while_clause_rejected_with_compiled_path_hint() {
+        let yaml = r#"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: flap
+      up_duration: 5s
+      down_duration: 5s
+
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: "<"
+      value: 1
+"#;
+        let resolver = empty_resolver();
+        let err = compile_scenario_file(yaml, &resolver)
+            .expect_err("while: must reject through the lossy entry point");
+        match err {
+            CompileError::GatedClauseRequiresCompiledPath { id, clause } => {
+                assert_eq!(id, "downstream");
+                assert_eq!(clause, "while:");
+            }
+            other => panic!("expected GatedClauseRequiresCompiledPath, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yaml_with_delay_clause_rejected_with_compiled_path_hint() {
+        let yaml = r#"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: flap
+      up_duration: 5s
+      down_duration: 5s
+
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: "<"
+      value: 1
+    delay:
+      open: 2s
+      close: 0s
+"#;
+        let resolver = empty_resolver();
+        let err = compile_scenario_file(yaml, &resolver)
+            .expect_err("delay: must reject through the lossy entry point");
+        match err {
+            CompileError::GatedClauseRequiresCompiledPath { id, clause } => {
+                assert_eq!(id, "downstream");
+                assert!(
+                    clause == "while:" || clause == "delay:",
+                    "expected while: or delay:, got {clause}"
+                );
+            }
+            other => panic!("expected GatedClauseRequiresCompiledPath, got {other:?}"),
+        }
     }
 
     /// `normalize` failures surface as `CompileError::Normalize`.

@@ -65,7 +65,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     {
       "id": "a1b2c3d4-...",
       "name": "up",
-      "status": "running",
+      "state": "running",
       "warnings": [
         "scenario entry 'up' sink `http_push` targets `http://localhost:8428/api/v1/write` — this host resolves to the sonda-server container's own loopback, not your host. Use a Docker Compose service name (e.g. `victoriametrics:8428`) or a Kubernetes Service DNS name instead. See docs/deployment/endpoints.md."
       ]
@@ -108,7 +108,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     ```
 
     ```json title="Response"
-    {"id":"a1b2c3d4-...","name":"up","status":"running"}
+    {"id":"a1b2c3d4-...","name":"up","state":"running"}
     ```
 
 === "JSON"
@@ -141,10 +141,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     as the YAML path. Any valid v2 scenario file can be posted as JSON by converting the YAML
     to its JSON equivalent.
 
-The response shape depends on how many entries the compiler produces, not on the request
-format. A single-entry result returns the flat `{"id", "name", "status"}` body; anything that
-compiles to two or more entries (for example, a pack-backed entry that fans out) returns
-`{"scenarios": [...]}`.
+The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body; anything that compiles to two or more entries (for example, a pack-backed entry that fans out) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time and takes one of `"pending"`, `"running"`, `"paused"`, or `"finished"` (see [`/scenarios/{id}/stats`](#scenariosidstats) for the full enum and the `pending -> paused` transition note).
 
 ### Multi-scenario body
 
@@ -232,8 +229,8 @@ The response wraps each launched scenario in a `scenarios` array:
 ```json
 {
   "scenarios": [
-    { "id": "a1b2c3d4-...", "name": "cpu_usage", "status": "running" },
-    { "id": "e5f6a7b8-...", "name": "app_logs", "status": "running" }
+    { "id": "a1b2c3d4-...", "name": "cpu_usage", "state": "running" },
+    { "id": "e5f6a7b8-...", "name": "app_logs", "state": "running" }
   ]
 }
 ```
@@ -496,14 +493,14 @@ curl -s http://localhost:8080/scenarios | jq .
     {
       "id": "a1b2c3d4-...",
       "name": "noisy_logs",
-      "status": "running",
+      "state": "running",
       "elapsed_secs": 184.2
     }
   ]
 }
 ```
 
-Each entry carries `id`, `name`, `status`, and `elapsed_secs`. The `status` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`). To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
+Each entry carries `id`, `name`, `state`, and `elapsed_secs`. The `state` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`). To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
 
 ### `/scenarios/{id}/stats`
 
@@ -549,6 +546,9 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
 !!! note "`pending -> paused` is a reachable direct transition"
     A scenario carrying both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly, skipping `running`. Clients building a state-machine assertion should not assume `pending` always precedes `running` -- watch for `paused` from the `pending` state too.
+
+!!! warning "Upgrading from a release without `pending`?"
+    Earlier Sonda releases reported only `running`, `paused`, and `finished` on `/scenarios/{id}/stats`. The `pending` value is new and arrives when a scenario is waiting on `after:` or on the first eligible upstream tick of a `while:` gate. Before rolling out, grep your Prometheus recording rules and Grafana dashboards for label matchers like `state=~"running|paused|finished"` -- exhaustive enumerations silently drop scenarios in `pending`. Either add `pending` to the alternation (`state=~"pending|running|paused|finished"`) or rewrite the matcher as a negation (`state!="finished"`) so new lifecycle values surface without another patch.
 
 !!! tip "Detecting a wedged sink"
     Compute "degraded" yourself by thresholding `total_sink_failures` and the staleness of `last_successful_write_at`. Pick a staleness window that fits your scenario's rate and your tolerance for transient blips:
