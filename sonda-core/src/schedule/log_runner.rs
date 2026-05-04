@@ -102,56 +102,58 @@ pub fn run_logs_with_sink_gated(
         Labels::default()
     };
 
-    // Pre-allocate encode buffer — reused every tick to avoid per-event allocation.
     let mut buf: Vec<u8> = Vec::with_capacity(512);
 
-    // Build the per-tick closure that performs log-specific work:
-    // generate log event → inject labels + spike labels → encode → write.
-    let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-        // Generate the log event and inject scenario-level labels.
-        let mut event = generator.generate(ctx.tick);
+    let mut tick_fn =
+        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+            let mut event = generator.generate(ctx.tick);
 
-        // Inject dynamic labels and cardinality spike labels.
-        // Dynamic labels are always-on; spike labels are time-windowed.
-        let needs_dynamic = !ctx.dynamic_labels.is_empty();
-        if ctx.spike_windows.is_empty() && !needs_dynamic {
-            event.labels = labels.clone();
-        } else {
-            let mut tl = labels.clone();
-            // Inject dynamic labels (always-on, every tick).
-            for dl in ctx.dynamic_labels {
-                tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-            }
-            // Inject cardinality spike labels (time-windowed).
-            for sw in ctx.spike_windows {
-                if is_in_spike(ctx.elapsed, sw) {
-                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+            let needs_dynamic = !ctx.dynamic_labels.is_empty();
+            if ctx.spike_windows.is_empty() && !needs_dynamic {
+                event.labels = labels.clone();
+            } else {
+                let mut tl = labels.clone();
+                for dl in ctx.dynamic_labels {
+                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
                 }
+                for sw in ctx.spike_windows {
+                    if is_in_spike(ctx.elapsed, sw) {
+                        tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    }
+                }
+                event.labels = tl;
             }
-            event.labels = tl;
-        }
 
-        // Encode and write.
-        buf.clear();
-        encoder.encode_log(&event, &mut buf)?;
-        let bytes_written = buf.len() as u64;
-        sink.write(&buf)?;
+            buf.clear();
+            encoder.encode_log(&event, &mut buf)?;
+            let bytes_written = buf.len() as u64;
+            sink.write(&buf)?;
 
-        Ok(TickResult {
-            bytes_written,
-            metric_event: None,
-        })
-    };
+            Ok(TickResult {
+                bytes_written,
+                metric_event: None,
+            })
+        };
 
-    // Run the shared schedule loop. The tick closure owns the sink borrow for
-    // per-tick writes; the loop itself handles rate control, gap/burst/spike
-    // windows, stats tracking, and shutdown. We flush after the loop returns.
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {
-        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
-        Some(ctx) => {
-            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
-        }
+        None => core_loop::run_schedule_loop(
+            &schedule,
+            config.rate,
+            shutdown,
+            stats,
+            sink,
+            &mut tick_fn,
+        ),
+        Some(ctx) => core_loop::gated_loop(
+            &schedule,
+            config.rate,
+            shutdown,
+            stats,
+            ctx,
+            sink,
+            &mut tick_fn,
+        ),
     };
 
     let flush_result = sink.flush();

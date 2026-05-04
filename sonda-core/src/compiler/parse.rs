@@ -1569,9 +1569,7 @@ defaults:
         );
     }
 
-    // ======================================================================
-    // Catalog metadata roundtrip tests (Option 1 of ADR
-    // `docs/refactor/adr-v2-catalog-metadata.md`)
+    // Catalog metadata roundtrip tests.
     //
     // `scenario_name`, `category`, and `description` are optional top-level
     // fields on [`ScenarioFile`]. They are metadata consumed by the CLI

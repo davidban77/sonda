@@ -143,94 +143,108 @@ pub fn run_with_sink_gated(
     // Pre-allocate encode buffer.
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
-    let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-        let wall_now = std::time::SystemTime::now();
+    let mut tick_fn =
+        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+            let wall_now = std::time::SystemTime::now();
 
-        // Advance the summary generator.
-        let sample = summary_gen.observe(ctx.tick);
+            // Advance the summary generator.
+            let sample = summary_gen.observe(ctx.tick);
 
-        // Determine whether dynamic labels or spikes are active this tick.
-        let needs_dynamic = !ctx.dynamic_labels.is_empty();
-        let has_active_spike = ctx
-            .spike_windows
-            .iter()
-            .any(|sw| is_in_spike(ctx.elapsed, sw));
-        let needs_clone = needs_dynamic || has_active_spike;
+            // Determine whether dynamic labels or spikes are active this tick.
+            let needs_dynamic = !ctx.dynamic_labels.is_empty();
+            let has_active_spike = ctx
+                .spike_windows
+                .iter()
+                .any(|sw| is_in_spike(ctx.elapsed, sw));
+            let needs_clone = needs_dynamic || has_active_spike;
 
-        let mut total_bytes: u64 = 0;
+            let mut total_bytes: u64 = 0;
 
-        // Emit one event per quantile.
-        for (i, &(_q_target, q_value)) in sample.quantiles.iter().enumerate() {
-            let quantile_labels = if needs_clone {
-                let mut ql = (*prebuilt_quantile_labels[i]).clone();
+            // Emit one event per quantile.
+            for (i, &(_q_target, q_value)) in sample.quantiles.iter().enumerate() {
+                let quantile_labels = if needs_clone {
+                    let mut ql = (*prebuilt_quantile_labels[i]).clone();
+                    for dl in ctx.dynamic_labels {
+                        ql.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                    }
+                    for sw in ctx.spike_windows {
+                        if is_in_spike(ctx.elapsed, sw) {
+                            ql.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                        }
+                    }
+                    Arc::new(ql)
+                } else {
+                    Arc::clone(&prebuilt_quantile_labels[i])
+                };
+                let event =
+                    MetricEvent::from_parts(base_name.clone(), q_value, quantile_labels, wall_now);
+                buf.clear();
+                encoder.encode_metric(&event, &mut buf)?;
+                total_bytes += buf.len() as u64;
+                sink.write(&buf)?;
+            }
+
+            // Build labels for _count and _sum (no `quantile` label).
+            let count_sum_labels = if needs_clone {
+                let mut bl = (*prebuilt_count_sum_labels).clone();
                 for dl in ctx.dynamic_labels {
-                    ql.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                    bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
                 }
                 for sw in ctx.spike_windows {
                     if is_in_spike(ctx.elapsed, sw) {
-                        ql.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                        bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
                     }
                 }
-                Arc::new(ql)
+                Arc::new(bl)
             } else {
-                Arc::clone(&prebuilt_quantile_labels[i])
+                Arc::clone(&prebuilt_count_sum_labels)
             };
-            let event =
-                MetricEvent::from_parts(base_name.clone(), q_value, quantile_labels, wall_now);
+
+            // Emit _count event.
+            let count_event = MetricEvent::from_parts(
+                count_name.clone(),
+                sample.count as f64,
+                Arc::clone(&count_sum_labels),
+                wall_now,
+            );
             buf.clear();
-            encoder.encode_metric(&event, &mut buf)?;
+            encoder.encode_metric(&count_event, &mut buf)?;
             total_bytes += buf.len() as u64;
             sink.write(&buf)?;
-        }
 
-        // Build labels for _count and _sum (no `quantile` label).
-        let count_sum_labels = if needs_clone {
-            let mut bl = (*prebuilt_count_sum_labels).clone();
-            for dl in ctx.dynamic_labels {
-                bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-            }
-            for sw in ctx.spike_windows {
-                if is_in_spike(ctx.elapsed, sw) {
-                    bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                }
-            }
-            Arc::new(bl)
-        } else {
-            Arc::clone(&prebuilt_count_sum_labels)
+            // Emit _sum event.
+            let sum_event =
+                MetricEvent::from_parts(sum_name.clone(), sample.sum, count_sum_labels, wall_now);
+            buf.clear();
+            encoder.encode_metric(&sum_event, &mut buf)?;
+            total_bytes += buf.len() as u64;
+            sink.write(&buf)?;
+
+            Ok(TickResult {
+                bytes_written: total_bytes,
+                metric_event: Some(count_event),
+            })
         };
-
-        // Emit _count event.
-        let count_event = MetricEvent::from_parts(
-            count_name.clone(),
-            sample.count as f64,
-            Arc::clone(&count_sum_labels),
-            wall_now,
-        );
-        buf.clear();
-        encoder.encode_metric(&count_event, &mut buf)?;
-        total_bytes += buf.len() as u64;
-        sink.write(&buf)?;
-
-        // Emit _sum event.
-        let sum_event =
-            MetricEvent::from_parts(sum_name.clone(), sample.sum, count_sum_labels, wall_now);
-        buf.clear();
-        encoder.encode_metric(&sum_event, &mut buf)?;
-        total_bytes += buf.len() as u64;
-        sink.write(&buf)?;
-
-        Ok(TickResult {
-            bytes_written: total_bytes,
-            metric_event: Some(count_event),
-        })
-    };
 
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {
-        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
-        Some(ctx) => {
-            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
-        }
+        None => core_loop::run_schedule_loop(
+            &schedule,
+            config.rate,
+            shutdown,
+            stats,
+            sink,
+            &mut tick_fn,
+        ),
+        Some(ctx) => core_loop::gated_loop(
+            &schedule,
+            config.rate,
+            shutdown,
+            stats,
+            ctx,
+            sink,
+            &mut tick_fn,
+        ),
     };
 
     let flush_result = sink.flush();

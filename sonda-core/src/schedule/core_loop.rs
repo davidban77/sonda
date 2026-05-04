@@ -11,6 +11,7 @@ use crate::model::metric::MetricEvent;
 use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
+use crate::sink::Sink;
 use crate::SondaError;
 
 use super::ParsedSchedule;
@@ -98,23 +99,29 @@ pub(crate) struct TickContext<'a> {
 
 /// A per-tick callback that performs signal-specific work.
 ///
-/// Called once per scheduled tick. The callback is responsible for:
-/// 1. Evaluating spike windows and building the tick's label set.
-/// 2. Generating the event (metric value or log event).
-/// 3. Encoding the event into the buffer.
-/// 4. Writing the encoded bytes to the sink.
+/// Called once per scheduled tick with the sink threaded as a parameter so
+/// that gated runs can additionally invoke a separate close-emit closure on
+/// the same sink without a borrow split.
+pub(crate) type TickFn<'a> =
+    dyn FnMut(&TickContext<'_>, &mut dyn Sink) -> Result<TickResult, SondaError> + 'a;
+
+/// Reason a [`CloseEmitFn`] is being invoked at gate-close commit time.
 ///
-/// Returns a [`TickResult`] with the bytes written and an optional metric event
-/// for stats buffering.
-///
-/// # Parameters
-///
-/// * `ctx` — context for this tick (tick index, spike windows, elapsed time).
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if encoding or sink writing fails.
-pub(crate) type TickFn<'a> = dyn FnMut(&TickContext<'_>) -> Result<TickResult, SondaError> + 'a;
+/// Resolved once at runner-build time and captured into the closure; the
+/// gated loop no longer re-derives this on each commit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CloseSignal {
+    /// Emit a Prometheus stale-NaN sample for every recently-active series.
+    StaleMarker,
+    /// Emit one literal sample with this value for every recently-active series.
+    SnapTo(f64),
+}
+
+/// Per-scenario callback invoked on every committed `running → paused`
+/// transition. Logs/histograms/summaries pass `None`. The [`CloseSignal`]
+/// (StaleMarker vs SnapTo) is captured at build time, so the closure takes
+/// only the sink to write into.
+pub type CloseEmitFn = Box<dyn FnMut(&mut dyn Sink) -> Result<(), SondaError> + Send>;
 
 /// Run the shared schedule loop until duration expires or shutdown is signalled.
 ///
@@ -143,9 +150,10 @@ pub(crate) fn run_schedule_loop(
     rate: f64,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
+    sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
-    run_schedule_loop_with_initial_tick(schedule, rate, shutdown, stats, 0, None, tick_fn)
+    run_schedule_loop_with_initial_tick(schedule, rate, shutdown, stats, 0, None, sink, tick_fn)
 }
 
 /// Run the schedule loop starting from `initial_tick`, optionally reporting the
@@ -159,6 +167,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     initial_tick: u64,
     last_tick_out: Option<&AtomicU64>,
+    sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let base_interval = Duration::from_secs_f64(1.0 / rate);
@@ -249,7 +258,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
             dynamic_labels: &schedule.dynamic_labels,
             elapsed,
         };
-        let tick_outcome = tick_fn(&ctx);
+        let tick_outcome = tick_fn(&ctx, sink);
 
         // Determine spike state for stats (check all spike windows).
         let currently_in_spike = schedule
@@ -364,6 +373,47 @@ pub(crate) fn apply_flush_policy(
     }
 }
 
+/// Apply the scenario's sink-error policy to a close-emit invocation error.
+///
+/// On `Warn`, logs via the dedicated rate-limiter and swallows the error so
+/// the gate transition still commits. On `Fail`, propagates.
+fn apply_close_emit_policy(
+    schedule: &ParsedSchedule,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    limiter: &mut SinkErrorRateLimiter,
+    err: SondaError,
+) -> Result<(), SondaError> {
+    match err {
+        SondaError::Sink(io_err) => match schedule.on_sink_error {
+            OnSinkError::Warn => {
+                limiter.observe(&schedule.name, &io_err);
+                if let Some(s) = stats {
+                    if let Ok(mut st) = s.write() {
+                        st.errors = st.errors.saturating_add(1);
+                        st.total_sink_failures = st.total_sink_failures.saturating_add(1);
+                        st.last_sink_error = Some(io_err.to_string());
+                    }
+                }
+                Ok(())
+            }
+            OnSinkError::Fail => Err(SondaError::Sink(io_err)),
+        },
+        other => Err(other),
+    }
+}
+
+fn apply_close_emit_policy_flush(
+    schedule: &ParsedSchedule,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    limiter: &mut SinkErrorRateLimiter,
+    flush_result: Result<(), SondaError>,
+) -> Result<(), SondaError> {
+    match flush_result {
+        Ok(()) => Ok(()),
+        Err(e) => apply_close_emit_policy(schedule, stats, limiter, e),
+    }
+}
+
 /// Maximum time spent blocked on a gate edge before re-checking shutdown.
 ///
 /// 100ms keeps shutdown responsive while paused without burning CPU on
@@ -382,6 +432,10 @@ pub struct GateContext {
     pub has_after: bool,
     /// Whether this scenario carries a `while:` clause (drives Paused entries).
     pub has_while: bool,
+    /// Optional close-emit hook invoked on every committed `running → paused`
+    /// transition. Metric runners with a `RemoteWrite` sink set this; logs,
+    /// histograms, and summaries leave it `None`.
+    pub close_emit: Option<CloseEmitFn>,
 }
 
 /// Run a signal scenario through the four-state lifecycle gate.
@@ -406,7 +460,8 @@ pub(crate) fn gated_loop(
     rate: f64,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
-    gate_ctx: GateContext,
+    mut gate_ctx: GateContext,
+    sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let started_at = Instant::now();
@@ -424,6 +479,8 @@ pub(crate) fn gated_loop(
     };
 
     let mut debounce = DebounceState::from_clause(gate_ctx.delay.as_ref());
+
+    let mut close_warn_limiter = SinkErrorRateLimiter::new();
 
     // Carry the next tick across pause/resume so generators don't restart.
     let mut next_tick: u64 = 0;
@@ -494,6 +551,7 @@ pub(crate) fn gated_loop(
                     &segment_running,
                     next_tick,
                     Arc::clone(&last_tick),
+                    sink,
                     tick_fn,
                 )?;
                 next_tick = last_tick.load(Ordering::SeqCst);
@@ -512,6 +570,26 @@ pub(crate) fn gated_loop(
                     // — stay Running.
                     while_open = true;
                     continue;
+                }
+                if exit == SegmentExit::WhileClose {
+                    if let Some(emit) = gate_ctx.close_emit.as_mut() {
+                        if let Err(e) = emit(sink) {
+                            apply_close_emit_policy(
+                                schedule,
+                                stats.as_ref(),
+                                &mut close_warn_limiter,
+                                e,
+                            )?;
+                        } else {
+                            let flush = sink.flush();
+                            apply_close_emit_policy_flush(
+                                schedule,
+                                stats.as_ref(),
+                                &mut close_warn_limiter,
+                                flush,
+                            )?;
+                        }
+                    }
                 }
                 state = ScenarioState::Paused;
                 while_open = false;
@@ -686,6 +764,7 @@ fn run_running_segment(
     segment_running: &Arc<AtomicBool>,
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
+    sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<SegmentExit, SondaError> {
     let saw_close = Arc::new(AtomicBool::new(false));
@@ -698,10 +777,11 @@ fn run_running_segment(
     let saw_close_for_wrapper = Arc::clone(&saw_close);
     let gate_rx = &gate_ctx.gate_rx;
 
-    type WrappedTick<'a> = Box<dyn FnMut(&TickContext<'_>) -> Result<TickResult, SondaError> + 'a>;
+    type WrappedTick<'a> =
+        Box<dyn FnMut(&TickContext<'_>, &mut dyn Sink) -> Result<TickResult, SondaError> + 'a>;
     let mut wrapped: WrappedTick<'_> = Box::new(
-        move |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            let outcome = tick_fn(ctx);
+        move |ctx: &TickContext<'_>, s: &mut dyn Sink| -> Result<TickResult, SondaError> {
+            let outcome = tick_fn(ctx, s);
 
             // Poll for gate edges after the tick. On WhileClose, break out.
             while let Some(edge) = gate_rx.try_recv() {
@@ -737,6 +817,7 @@ fn run_running_segment(
         stats,
         initial_tick,
         Some(last_tick.as_ref()),
+        sink,
         wrapped.as_mut(),
     )?;
 
@@ -836,6 +917,16 @@ mod tests {
     use super::*;
     use crate::schedule::{BurstWindow, GapWindow};
 
+    struct NullSink;
+    impl Sink for NullSink {
+        fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
     /// Build a minimal ParsedSchedule for testing.
     fn minimal_schedule(duration: Option<Duration>) -> ParsedSchedule {
         ParsedSchedule {
@@ -857,19 +948,21 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(500)));
 
         let mut event_count: u64 = 0;
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            event_count += 1;
-            Ok(TickResult {
-                bytes_written: 6,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                event_count += 1;
+                Ok(TickResult {
+                    bytes_written: 6,
+                    metric_event: None,
+                })
+            };
 
         run_schedule_loop(
             &schedule,
             20.0, // 20 events/sec for 500ms = ~10 events
             None,
             None,
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("loop must succeed");
@@ -902,19 +995,21 @@ mod tests {
             flag_clone.store(false, Ordering::SeqCst);
         });
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            event_count += 1;
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                event_count += 1;
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
         run_schedule_loop(
             &schedule,
             50.0,
             Some(shutdown_arc.as_ref()),
             None,
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("loop must succeed");
@@ -946,15 +1041,17 @@ mod tests {
         };
 
         let mut event_count: u64 = 0;
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            event_count += 1;
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                event_count += 1;
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
-        run_schedule_loop(&schedule, 100.0, None, None, &mut tick_fn).expect("loop must succeed");
+        run_schedule_loop(&schedule, 100.0, None, None, &mut NullSink, &mut tick_fn)
+            .expect("loop must succeed");
 
         // Only ~100 events from the first 1s before the gap kicks in.
         assert!(
@@ -983,15 +1080,17 @@ mod tests {
         };
 
         let mut event_count: u64 = 0;
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            event_count += 1;
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                event_count += 1;
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
-        run_schedule_loop(&schedule, 10.0, None, None, &mut tick_fn).expect("loop must succeed");
+        run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn)
+            .expect("loop must succeed");
 
         // Without burst: ~10 events. With 5x burst: ~50 events.
         assert!(
@@ -1008,18 +1107,20 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Ok(TickResult {
-                bytes_written: 42,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Ok(TickResult {
+                    bytes_written: 42,
+                    metric_event: None,
+                })
+            };
 
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("loop must succeed");
@@ -1047,20 +1148,22 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            let event = MetricEvent::new("test".to_string(), 1.0, Labels::default())
-                .expect("valid metric name");
-            Ok(TickResult {
-                bytes_written: 10,
-                metric_event: Some(event),
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                let event = MetricEvent::new("test".to_string(), 1.0, Labels::default())
+                    .expect("valid metric name");
+                Ok(TickResult {
+                    bytes_written: 10,
+                    metric_event: Some(event),
+                })
+            };
 
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("loop must succeed");
@@ -1099,17 +1202,19 @@ mod tests {
         };
 
         let mut saw_spike_windows = false;
-        let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            if !ctx.spike_windows.is_empty() {
-                saw_spike_windows = true;
-            }
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                if !ctx.spike_windows.is_empty() {
+                    saw_spike_windows = true;
+                }
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
-        run_schedule_loop(&schedule, 100.0, None, None, &mut tick_fn).expect("loop must succeed");
+        run_schedule_loop(&schedule, 100.0, None, None, &mut NullSink, &mut tick_fn)
+            .expect("loop must succeed");
 
         assert!(
             saw_spike_windows,
@@ -1123,13 +1228,14 @@ mod tests {
     fn loop_propagates_encoder_error_under_warn_policy() {
         let schedule = minimal_schedule(Some(Duration::from_secs(10)));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Err(SondaError::Encoder(crate::EncoderError::NotSupported(
-                "synthetic encoder failure".to_string(),
-            )))
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Err(SondaError::Encoder(crate::EncoderError::NotSupported(
+                    "synthetic encoder failure".to_string(),
+                )))
+            };
 
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut tick_fn);
+        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn);
 
         assert!(
             matches!(result, Err(SondaError::Encoder(_))),
@@ -1142,14 +1248,15 @@ mod tests {
         let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
         schedule.on_sink_error = OnSinkError::Fail;
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Err(SondaError::Sink(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "test error",
-            )))
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "test error",
+                )))
+            };
 
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut tick_fn);
+        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn);
 
         assert!(
             matches!(result, Err(SondaError::Sink(_))),
@@ -1163,18 +1270,20 @@ mod tests {
         schedule.on_sink_error = OnSinkError::Fail;
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Err(SondaError::Sink(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "fail-before-die",
-            )))
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "fail-before-die",
+                )))
+            };
 
         let result = run_schedule_loop(
             &schedule,
             10.0,
             None,
             Some(Arc::clone(&stats)),
+            &mut NullSink,
             &mut tick_fn,
         );
 
@@ -1212,14 +1321,15 @@ mod tests {
         // must complete without propagating.
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Err(SondaError::Sink(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "transient",
-            )))
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "transient",
+                )))
+            };
 
-        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut tick_fn);
+        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut NullSink, &mut tick_fn);
 
         assert!(
             result.is_ok(),
@@ -1232,18 +1342,20 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Err(SondaError::Sink(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "boom",
-            )))
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Err(SondaError::Sink(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "boom",
+                )))
+            };
 
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("warn policy must complete");
@@ -1271,26 +1383,28 @@ mod tests {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         let mut counter: u64 = 0;
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            counter += 1;
-            if counter % 2 == 0 {
-                Ok(TickResult {
-                    bytes_written: 8,
-                    metric_event: None,
-                })
-            } else {
-                Err(SondaError::Sink(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "alt",
-                )))
-            }
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                counter += 1;
+                if counter % 2 == 0 {
+                    Ok(TickResult {
+                        bytes_written: 8,
+                        metric_event: None,
+                    })
+                } else {
+                    Err(SondaError::Sink(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "alt",
+                    )))
+                }
+            };
 
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("warn must succeed");
@@ -1352,7 +1466,7 @@ mod tests {
         let mut schedule = minimal_schedule(Some(Duration::from_millis(150)));
         schedule.on_sink_error = policy;
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+        let mut tick_fn = |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
             match err_kind {
                 ErrKind::Sink => Err(SondaError::Sink(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -1365,7 +1479,7 @@ mod tests {
             }
         };
 
-        let result = run_schedule_loop(&schedule, 30.0, None, None, &mut tick_fn);
+        let result = run_schedule_loop(&schedule, 30.0, None, None, &mut NullSink, &mut tick_fn);
 
         match expected {
             PolicyOutcome::Ok => assert!(result.is_ok(), "must complete: {result:?}"),
@@ -1441,19 +1555,29 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let observed_first = std::sync::Mutex::new(None::<u64>);
 
-        let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            let mut g = observed_first.lock().unwrap();
-            if g.is_none() {
-                *g = Some(ctx.tick);
-            }
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                let mut g = observed_first.lock().unwrap();
+                if g.is_none() {
+                    *g = Some(ctx.tick);
+                }
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
-        run_schedule_loop_with_initial_tick(&schedule, 50.0, None, None, 30, None, &mut tick_fn)
-            .expect("loop must succeed");
+        run_schedule_loop_with_initial_tick(
+            &schedule,
+            50.0,
+            None,
+            None,
+            30,
+            None,
+            &mut NullSink,
+            &mut tick_fn,
+        )
+        .expect("loop must succeed");
 
         assert_eq!(
             *observed_first.lock().unwrap(),
@@ -1467,12 +1591,13 @@ mod tests {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let last_tick = AtomicU64::new(0);
 
-        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-            Ok(TickResult {
-                bytes_written: 0,
-                metric_event: None,
-            })
-        };
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Ok(TickResult {
+                    bytes_written: 0,
+                    metric_event: None,
+                })
+            };
 
         run_schedule_loop_with_initial_tick(
             &schedule,
@@ -1481,6 +1606,7 @@ mod tests {
             None,
             10,
             Some(&last_tick),
+            &mut NullSink,
             &mut tick_fn,
         )
         .expect("loop must succeed");

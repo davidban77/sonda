@@ -129,6 +129,12 @@ pub enum NormalizeError {
          `delay:` debounces `while:` transitions and has no meaning without it."
     )]
     DelayWithoutWhile { source_id: String },
+
+    #[error(
+        "entry '{source_id}': delay.close.snap_to already replaces the stale marker; \
+         do not also set delay.close.stale_marker: false"
+    )]
+    CloseEmitConflict { source_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +389,13 @@ fn normalize_entry(
         return Err(NormalizeError::WhileWithoutDuration {
             source_id: diagnostic_label,
         });
+    }
+    if let Some(d) = delay_clause.as_ref() {
+        if d.close_snap_to.is_some() && d.close_stale_marker == Some(false) {
+            return Err(NormalizeError::CloseEmitConflict {
+                source_id: diagnostic_label,
+            });
+        }
     }
 
     Ok(NormalizedEntry {

@@ -173,6 +173,7 @@ pub fn launch_multi_compiled(
                 delay: delay_clause,
                 has_after: false,
                 has_while: true,
+                close_emit: None,
             })
         } else {
             None
