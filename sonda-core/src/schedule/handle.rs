@@ -8,6 +8,19 @@ use std::time::{Duration, Instant};
 use crate::schedule::stats::ScenarioStats;
 use crate::{RuntimeError, SondaError};
 
+/// Returned by [`ScenarioHandle::join_timeout`] when the thread did not finish
+/// within the requested deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinTimeout;
+
+impl std::fmt::Display for JoinTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("scenario thread did not exit within join_timeout")
+    }
+}
+
+impl std::error::Error for JoinTimeout {}
+
 /// A running scenario's lifecycle handle.
 ///
 /// Returned by [`crate::schedule::launch::launch_scenario`]. Provides shutdown,
@@ -125,6 +138,36 @@ impl ScenarioHandle {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(SondaError::Runtime(RuntimeError::ThreadPanicked)),
+        }
+    }
+
+    /// Best-effort timed join: poll the underlying thread until it finishes
+    /// or `timeout` elapses. On timeout the thread is left detached and
+    /// `Err(JoinTimeout)` is returned. On success the inner `JoinHandle`
+    /// is consumed.
+    pub fn join_timeout(&mut self, timeout: Duration) -> Result<(), JoinTimeout> {
+        if self.thread.is_none() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        let poll_interval = Duration::from_millis(10);
+        loop {
+            if self
+                .thread
+                .as_ref()
+                .map(|t| t.is_finished())
+                .unwrap_or(true)
+            {
+                if let Some(handle) = self.thread.take() {
+                    let _ = handle.join();
+                }
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(JoinTimeout);
+            }
+            std::thread::sleep((deadline - now).min(poll_interval));
         }
     }
 
@@ -569,5 +612,45 @@ mod tests {
     fn scenario_handle_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<ScenarioHandle>();
+    }
+
+    #[test]
+    fn join_timeout_returns_ok_when_handle_exits_within_window() {
+        let mut handle = make_handle("jt-1", "fast", 1, Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(50));
+        let result = handle.join_timeout(Duration::from_millis(500));
+        assert!(
+            result.is_ok(),
+            "join_timeout must return Ok when thread already exited: {result:?}"
+        );
+        assert!(handle.thread.is_none(), "JoinHandle must be consumed on Ok");
+    }
+
+    #[test]
+    fn join_timeout_returns_err_when_thread_still_running() {
+        let mut handle = make_handle("jt-2", "slow", 100, Duration::from_millis(50));
+        let result = handle.join_timeout(Duration::from_millis(20));
+        assert!(
+            result.is_err(),
+            "join_timeout must return Err when timeout expires before exit"
+        );
+        assert!(
+            handle.thread.is_some(),
+            "JoinHandle must be retained on timeout"
+        );
+        // Clean up.
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn join_timeout_is_idempotent_when_thread_already_consumed() {
+        let mut handle = make_handle("jt-3", "consumed", 1, Duration::from_millis(1));
+        handle.join(None).expect("first join must succeed");
+        let result = handle.join_timeout(Duration::from_millis(50));
+        assert!(
+            result.is_ok(),
+            "join_timeout on consumed handle must return Ok"
+        );
     }
 }

@@ -181,6 +181,10 @@ struct FlatFile {
     clock_group: Option<String>,
     #[serde(default)]
     after: Option<super::AfterClause>,
+    #[serde(default, rename = "while")]
+    while_clause: Option<super::WhileClause>,
+    #[serde(default, rename = "delay")]
+    delay_clause: Option<super::DelayClause>,
 
     // Pack fields
     #[serde(default)]
@@ -242,6 +246,8 @@ impl FlatFile {
             phase_offset: self.phase_offset,
             clock_group: self.clock_group,
             after: self.after,
+            while_clause: self.while_clause,
+            delay_clause: self.delay_clause,
             pack: self.pack,
             overrides: self.overrides,
             distribution: self.distribution,

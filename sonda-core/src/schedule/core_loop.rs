@@ -1,13 +1,15 @@
 //! Shared schedule loop for metrics, logs, histograms, and summaries.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::compiler::DelayClause;
 use crate::config::OnSinkError;
 use crate::model::metric::MetricEvent;
-use crate::schedule::stats::ScenarioStats;
+use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
+use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
 use crate::SondaError;
 
@@ -143,11 +145,27 @@ pub(crate) fn run_schedule_loop(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
+    run_schedule_loop_with_initial_tick(schedule, rate, shutdown, stats, 0, None, tick_fn)
+}
+
+/// Run the schedule loop starting from `initial_tick`, optionally reporting the
+/// last tick reached on exit through `last_tick_out`. Used by `gated_loop` to
+/// continue the tick counter across pause/resume instead of restarting at 0.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_schedule_loop_with_initial_tick(
+    schedule: &ParsedSchedule,
+    rate: f64,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    initial_tick: u64,
+    last_tick_out: Option<&AtomicU64>,
+    tick_fn: &mut TickFn<'_>,
+) -> Result<(), SondaError> {
     let base_interval = Duration::from_secs_f64(1.0 / rate);
 
     let start = Instant::now();
     let mut next_deadline = start;
-    let mut tick: u64 = 0;
+    let mut tick: u64 = initial_tick;
 
     // Stats tracking: snapshot of tick count and wall clock taken once per
     // second to compute current_rate.
@@ -193,7 +211,8 @@ pub(crate) fn run_schedule_loop(
                 // tick from elapsed time at base rate.
                 let now = Instant::now();
                 next_deadline = now;
-                tick = (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
+                tick = initial_tick
+                    + (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
                 continue;
             }
         }
@@ -304,6 +323,9 @@ pub(crate) fn run_schedule_loop(
         tick += 1;
     }
 
+    if let Some(out) = last_tick_out {
+        out.store(tick, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -339,6 +361,473 @@ pub(crate) fn apply_flush_policy(
             OnSinkError::Fail => Err(SondaError::Sink(io_err)),
         },
         Err(other) => Err(other),
+    }
+}
+
+/// Maximum time spent blocked on a gate edge before re-checking shutdown.
+///
+/// 100ms keeps shutdown responsive while paused without burning CPU on
+/// shorter polls; debounce timers can shorten any individual wakeup.
+const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Gate-side context attached to a `gated_loop` run.
+pub struct GateContext {
+    /// Receiver for `after:` and/or `while:` edges from the upstream bus.
+    pub gate_rx: GateReceiver,
+    /// Snapshot of the upstream gate state at subscription time.
+    pub initial: InitialState,
+    /// Open / close debounce windows applied to `while:` transitions.
+    pub delay: Option<DelayClause>,
+    /// Whether this scenario carries an `after:` clause (drives Pending entry).
+    pub has_after: bool,
+    /// Whether this scenario carries a `while:` clause (drives Paused entries).
+    pub has_while: bool,
+}
+
+/// Run a signal scenario through the four-state lifecycle gate.
+///
+/// The wrapper owns the `pending → running ↔ paused → finished` state
+/// machine. Each `Running` segment delegates to a fresh
+/// [`run_schedule_loop`] call. The deadline resets to `Instant::now()`
+/// on resume so no catch-up burst fires, but the tick counter is
+/// preserved across pauses: a generator that emitted N events before
+/// pause continues from tick N on resume.
+///
+/// On `WhileClose` the wrapper breaks out of the inner loop via a
+/// segment-scoped flag, transitions to `Paused`, and blocks on
+/// `recv_timeout` until either the gate reopens or shutdown arrives.
+///
+/// Stats updates: `state` is written on every transition. While paused,
+/// `current_rate` is reset to 0.0 and `elapsed_secs` keeps wall-clocking
+/// (the underlying `started_at` Instant inside `ScenarioHandle` runs
+/// against wall time regardless of pause state).
+pub(crate) fn gated_loop(
+    schedule: &ParsedSchedule,
+    rate: f64,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: GateContext,
+    tick_fn: &mut TickFn<'_>,
+) -> Result<(), SondaError> {
+    let started_at = Instant::now();
+
+    let mut state = ScenarioState::Pending;
+    let mut after_satisfied = if gate_ctx.has_after {
+        gate_ctx.initial.after_already_fired
+    } else {
+        true
+    };
+    let mut while_open = if gate_ctx.has_while {
+        gate_ctx.initial.while_gate_open.unwrap_or(false)
+    } else {
+        true
+    };
+
+    let mut debounce = DebounceState::from_clause(gate_ctx.delay.as_ref());
+
+    // Carry the next tick across pause/resume so generators don't restart.
+    let mut next_tick: u64 = 0;
+
+    write_state(&stats, ScenarioState::Pending, false);
+
+    loop {
+        // Top-level shutdown / duration check applies in every state.
+        if shutdown_requested(shutdown) {
+            return finish(stats);
+        }
+        if duration_expired(schedule, started_at) {
+            return finish(stats);
+        }
+
+        match state {
+            ScenarioState::Pending => {
+                // Pending exits when after fires (or no after clause). The
+                // resulting state depends on the gate: open → Running,
+                // closed → Paused (and the delay.open debounce still
+                // applies to the implicit pending→paused entry path).
+                if !after_satisfied {
+                    match gate_ctx.gate_rx.recv_timeout(remaining_until(
+                        schedule,
+                        started_at,
+                        PAUSED_POLL_INTERVAL,
+                    )) {
+                        Some(GateEdge::AfterFired) => {
+                            after_satisfied = true;
+                        }
+                        Some(GateEdge::WhileOpen) => {
+                            while_open = true;
+                        }
+                        Some(GateEdge::WhileClose) => {
+                            while_open = false;
+                        }
+                        None => {
+                            // Loop top will re-check shutdown / duration.
+                            continue;
+                        }
+                    }
+                    continue;
+                }
+                if !gate_ctx.has_while {
+                    state = ScenarioState::Running;
+                    write_state(&stats, ScenarioState::Running, false);
+                    continue;
+                }
+                if while_open {
+                    state = ScenarioState::Running;
+                    write_state(&stats, ScenarioState::Running, false);
+                } else {
+                    state = ScenarioState::Paused;
+                    write_state(&stats, ScenarioState::Paused, true);
+                }
+            }
+            ScenarioState::Running => {
+                // Run a fresh schedule segment. Break out on WhileClose,
+                // user shutdown, or duration expiry.
+                let segment_running = Arc::new(AtomicBool::new(true));
+                let last_tick = Arc::new(AtomicU64::new(next_tick));
+                let exit = run_running_segment(
+                    schedule,
+                    rate,
+                    shutdown,
+                    stats.clone(),
+                    &gate_ctx,
+                    &segment_running,
+                    next_tick,
+                    Arc::clone(&last_tick),
+                    tick_fn,
+                )?;
+                next_tick = last_tick.load(Ordering::SeqCst);
+
+                // Distinguish reasons: user shutdown / duration → Finished;
+                // WhileClose → Paused (debounced by delay.close).
+                if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
+                    return finish(stats);
+                }
+                if exit == SegmentExit::WhileClose
+                    && !debounce_close_to_paused(
+                        schedule, started_at, shutdown, &gate_ctx, &debounce,
+                    )
+                {
+                    // A fresh WhileOpen arrived during the close debounce
+                    // — stay Running.
+                    while_open = true;
+                    continue;
+                }
+                state = ScenarioState::Paused;
+                while_open = false;
+                write_state(&stats, ScenarioState::Paused, true);
+                debounce.reset();
+            }
+            ScenarioState::Paused => {
+                // Block on the gate channel up to PAUSED_POLL_INTERVAL (or
+                // until the next debounce wakeup, whichever is sooner).
+                let now = Instant::now();
+                let mut wakeup = PAUSED_POLL_INTERVAL;
+                if let Some(d) = debounce.next_wakeup(now) {
+                    wakeup = wakeup.min(d);
+                }
+                if let Some(remaining) = remaining_duration(schedule, started_at) {
+                    wakeup = wakeup.min(remaining);
+                }
+
+                let recv = gate_ctx.gate_rx.recv_timeout(wakeup);
+                let now = Instant::now();
+                match recv {
+                    Some(GateEdge::WhileOpen) => {
+                        while_open = true;
+                        debounce.observe(GateEdge::WhileOpen, now);
+                    }
+                    Some(GateEdge::WhileClose) => {
+                        while_open = false;
+                        debounce.observe(GateEdge::WhileClose, now);
+                    }
+                    Some(GateEdge::AfterFired) => {
+                        after_satisfied = true;
+                    }
+                    None => {}
+                }
+
+                if let Some(due) = debounce.fire_if_due(now) {
+                    match due {
+                        GateEdge::WhileOpen => {
+                            if while_open {
+                                state = ScenarioState::Running;
+                                write_state(&stats, ScenarioState::Running, false);
+                            }
+                        }
+                        GateEdge::WhileClose => {
+                            // Closing while paused is a no-op state-wise.
+                        }
+                        GateEdge::AfterFired => {}
+                    }
+                }
+            }
+            ScenarioState::Finished => {
+                return finish(stats);
+            }
+        }
+    }
+}
+
+fn shutdown_requested(shutdown: Option<&AtomicBool>) -> bool {
+    shutdown.map(|f| !f.load(Ordering::SeqCst)).unwrap_or(false)
+}
+
+fn duration_expired(schedule: &ParsedSchedule, started_at: Instant) -> bool {
+    schedule
+        .total_duration
+        .map(|total| started_at.elapsed() >= total)
+        .unwrap_or(false)
+}
+
+fn remaining_duration(schedule: &ParsedSchedule, started_at: Instant) -> Option<Duration> {
+    schedule.total_duration.map(|total| {
+        let elapsed = started_at.elapsed();
+        if elapsed >= total {
+            Duration::ZERO
+        } else {
+            total - elapsed
+        }
+    })
+}
+
+fn remaining_until(schedule: &ParsedSchedule, started_at: Instant, default: Duration) -> Duration {
+    match remaining_duration(schedule, started_at) {
+        Some(r) => r.min(default),
+        None => default,
+    }
+}
+
+fn write_state(
+    stats: &Option<Arc<RwLock<ScenarioStats>>>,
+    state: ScenarioState,
+    paused_zero_rate: bool,
+) {
+    if let Some(ref s) = stats {
+        if let Ok(mut st) = s.write() {
+            st.state = state;
+            if paused_zero_rate {
+                st.current_rate = 0.0;
+            }
+        }
+    }
+}
+
+fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
+    if let Some(s) = stats {
+        if let Ok(mut st) = s.write() {
+            st.state = ScenarioState::Finished;
+        }
+    }
+    Ok(())
+}
+
+/// Reason a `Running` segment exited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentExit {
+    /// Upstream gate transitioned to closed.
+    WhileClose,
+    /// User-shutdown flag cleared, or scenario duration expired.
+    ShutdownOrDuration,
+}
+
+/// Wait `delay.close` for either a fresh `WhileOpen` (cancel) or the
+/// debounce timer to fire (commit). Returns `true` when the transition
+/// to `Paused` should commit, `false` when the close was cancelled by a
+/// reopen within the debounce window.
+fn debounce_close_to_paused(
+    schedule: &ParsedSchedule,
+    started_at: Instant,
+    shutdown: Option<&AtomicBool>,
+    gate_ctx: &GateContext,
+    debounce: &DebounceState,
+) -> bool {
+    if debounce.delay_close.is_zero() {
+        return true;
+    }
+
+    let deadline = Instant::now() + debounce.delay_close;
+    loop {
+        if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        let mut wait = (deadline - now).min(PAUSED_POLL_INTERVAL);
+        if let Some(remaining) = remaining_duration(schedule, started_at) {
+            wait = wait.min(remaining);
+        }
+        match gate_ctx.gate_rx.recv_timeout(wait) {
+            Some(GateEdge::WhileOpen) => return false,
+            Some(GateEdge::WhileClose) => {}
+            Some(GateEdge::AfterFired) => {}
+            None => {}
+        }
+    }
+}
+
+/// Run one `Running` segment: a fresh `run_schedule_loop` with a wrapped
+/// `tick_fn` that polls the gate channel after every successful tick.
+/// On `WhileClose` the segment_running flag is cleared so the inner loop
+/// exits at its top-of-loop shutdown check.
+///
+/// `initial_tick` seeds the inner loop's tick counter on resume; `last_tick`
+/// captures the next tick the inner loop would have fired so the next segment
+/// continues from there.
+#[allow(clippy::too_many_arguments)]
+fn run_running_segment(
+    schedule: &ParsedSchedule,
+    rate: f64,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: &GateContext,
+    segment_running: &Arc<AtomicBool>,
+    initial_tick: u64,
+    last_tick: Arc<AtomicU64>,
+    tick_fn: &mut TickFn<'_>,
+) -> Result<SegmentExit, SondaError> {
+    let saw_close = Arc::new(AtomicBool::new(false));
+
+    // The inner loop's `shutdown` parameter wants "true = keep running."
+    // We pass our segment flag, and we additionally drain the user
+    // shutdown into the segment flag inside the wrapped tick.
+    let user_shutdown_for_wrapper = shutdown;
+    let segment_for_wrapper = Arc::clone(segment_running);
+    let saw_close_for_wrapper = Arc::clone(&saw_close);
+    let gate_rx = &gate_ctx.gate_rx;
+
+    type WrappedTick<'a> = Box<dyn FnMut(&TickContext<'_>) -> Result<TickResult, SondaError> + 'a>;
+    let mut wrapped: WrappedTick<'_> = Box::new(
+        move |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            let outcome = tick_fn(ctx);
+
+            // Poll for gate edges after the tick. On WhileClose, break out.
+            while let Some(edge) = gate_rx.try_recv() {
+                match edge {
+                    GateEdge::WhileClose => {
+                        saw_close_for_wrapper.store(true, Ordering::SeqCst);
+                        segment_for_wrapper.store(false, Ordering::SeqCst);
+                    }
+                    GateEdge::WhileOpen => {
+                        // Already running; ignore.
+                    }
+                    GateEdge::AfterFired => {
+                        // Already past the after gate.
+                    }
+                }
+            }
+
+            // Honor user shutdown immediately (don't wait for next loop iter).
+            if let Some(user) = user_shutdown_for_wrapper {
+                if !user.load(Ordering::SeqCst) {
+                    segment_for_wrapper.store(false, Ordering::SeqCst);
+                }
+            }
+
+            outcome
+        },
+    );
+
+    run_schedule_loop_with_initial_tick(
+        schedule,
+        rate,
+        Some(segment_running.as_ref()),
+        stats,
+        initial_tick,
+        Some(last_tick.as_ref()),
+        wrapped.as_mut(),
+    )?;
+
+    Ok(if saw_close.load(Ordering::SeqCst) {
+        SegmentExit::WhileClose
+    } else {
+        SegmentExit::ShutdownOrDuration
+    })
+}
+
+/// Open / close debounce timers for `while:` transitions.
+struct DebounceState {
+    delay_open: Duration,
+    delay_close: Duration,
+    pending_open_at: Option<Instant>,
+    pending_close_at: Option<Instant>,
+}
+
+impl DebounceState {
+    fn from_clause(clause: Option<&DelayClause>) -> Self {
+        let (delay_open, delay_close) = match clause {
+            Some(c) => (
+                c.open.unwrap_or(Duration::ZERO),
+                c.close.unwrap_or(Duration::ZERO),
+            ),
+            None => (Duration::ZERO, Duration::ZERO),
+        };
+        Self {
+            delay_open,
+            delay_close,
+            pending_open_at: None,
+            pending_close_at: None,
+        }
+    }
+
+    fn observe(&mut self, edge: GateEdge, now: Instant) {
+        match edge {
+            GateEdge::WhileOpen => {
+                self.pending_close_at = None;
+                if self.delay_open.is_zero() {
+                    self.pending_open_at = Some(now);
+                } else {
+                    self.pending_open_at = Some(now + self.delay_open);
+                }
+            }
+            GateEdge::WhileClose => {
+                self.pending_open_at = None;
+                if self.delay_close.is_zero() {
+                    self.pending_close_at = Some(now);
+                } else {
+                    self.pending_close_at = Some(now + self.delay_close);
+                }
+            }
+            GateEdge::AfterFired => {}
+        }
+    }
+
+    fn next_wakeup(&self, now: Instant) -> Option<Duration> {
+        let mut soonest: Option<Duration> = None;
+        for t in [self.pending_open_at, self.pending_close_at]
+            .into_iter()
+            .flatten()
+        {
+            let d = t.saturating_duration_since(now);
+            soonest = Some(match soonest {
+                Some(s) => s.min(d),
+                None => d,
+            });
+        }
+        soonest
+    }
+
+    fn fire_if_due(&mut self, now: Instant) -> Option<GateEdge> {
+        if let Some(t) = self.pending_open_at {
+            if now >= t {
+                self.pending_open_at = None;
+                return Some(GateEdge::WhileOpen);
+            }
+        }
+        if let Some(t) = self.pending_close_at {
+            if now >= t {
+                self.pending_close_at = None;
+                return Some(GateEdge::WhileClose);
+            }
+        }
+        None
+    }
+
+    fn reset(&mut self) {
+        self.pending_open_at = None;
+        self.pending_close_at = None;
     }
 }
 
@@ -946,6 +1435,62 @@ mod tests {
     }
 
     // ---- Contract: TickResult fields ----------------------------------------
+
+    #[test]
+    fn run_schedule_loop_with_initial_tick_seeds_first_tick_value() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        let observed_first = std::sync::Mutex::new(None::<u64>);
+
+        let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            let mut g = observed_first.lock().unwrap();
+            if g.is_none() {
+                *g = Some(ctx.tick);
+            }
+            Ok(TickResult {
+                bytes_written: 0,
+                metric_event: None,
+            })
+        };
+
+        run_schedule_loop_with_initial_tick(&schedule, 50.0, None, None, 30, None, &mut tick_fn)
+            .expect("loop must succeed");
+
+        assert_eq!(
+            *observed_first.lock().unwrap(),
+            Some(30),
+            "first tick must equal initial_tick when initial_tick > 0"
+        );
+    }
+
+    #[test]
+    fn run_schedule_loop_with_initial_tick_reports_last_tick() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        let last_tick = AtomicU64::new(0);
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Ok(TickResult {
+                bytes_written: 0,
+                metric_event: None,
+            })
+        };
+
+        run_schedule_loop_with_initial_tick(
+            &schedule,
+            50.0,
+            None,
+            None,
+            10,
+            Some(&last_tick),
+            &mut tick_fn,
+        )
+        .expect("loop must succeed");
+
+        let final_tick = last_tick.load(Ordering::SeqCst);
+        assert!(
+            final_tick > 10,
+            "last_tick must advance past initial_tick, got {final_tick}"
+        );
+    }
 
     /// TickResult correctly carries bytes_written and metric_event.
     #[test]

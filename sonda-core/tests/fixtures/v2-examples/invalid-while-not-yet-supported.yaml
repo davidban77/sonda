@@ -1,0 +1,25 @@
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: gated
+    signal_type: metrics
+    name: gated_metric
+    generator:
+      type: constant
+      value: 1
+    while:
+      ref: link
+      op: ">"
+      value: 0

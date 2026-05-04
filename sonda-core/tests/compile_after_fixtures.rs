@@ -18,6 +18,7 @@ use common::{
 };
 use sonda_core::compiler::compile_after::{compile_after, CompileAfterError};
 use sonda_core::compiler::expand::InMemoryPackResolver;
+use sonda_core::compiler::ClauseKind;
 
 fn compile_err(yaml: &str, resolver: &InMemoryPackResolver) -> CompileAfterError {
     let expanded = compile_to_expanded(yaml, resolver);
@@ -168,7 +169,11 @@ fn invalid_compile_cycle_rejected() {
     match compile_err(&yaml, &resolver) {
         CompileAfterError::CircularDependency { cycle } => {
             assert!(cycle.len() >= 2);
-            assert_eq!(cycle.first(), cycle.last());
+            assert_eq!(cycle.first().map(|t| &t.0), cycle.last().map(|t| &t.0));
+            assert!(
+                cycle.iter().all(|(_, k)| *k == ClauseKind::After),
+                "pure-after fixture must tag every edge as After: {cycle:?}"
+            );
         }
         other => panic!("wrong variant: {other:?}"),
     }
@@ -179,8 +184,9 @@ fn invalid_compile_self_reference_rejected() {
     let yaml = example_fixture("invalid-compile-self-reference.yaml");
     let resolver = builtin_pack_resolver();
     match compile_err(&yaml, &resolver) {
-        CompileAfterError::SelfReference { source_id } => {
+        CompileAfterError::SelfReference { source_id, clause } => {
             assert_eq!(source_id, "loop_entry");
+            assert_eq!(clause, ClauseKind::After);
         }
         other => panic!("wrong variant: {other:?}"),
     }
@@ -263,17 +269,50 @@ fn invalid_compile_ambiguous_pack_ref_rejected() {
 }
 
 #[test]
+fn while_runtime_yaml_compiles_and_propagates_clause() {
+    let yaml = example_fixture("invalid-while-not-yet-supported.yaml");
+    let resolver = builtin_pack_resolver();
+    let compiled = common::compile_to_compiled(&yaml, &resolver);
+    let dep = compiled
+        .entries
+        .iter()
+        .find(|e| e.id.as_deref() == Some("gated"))
+        .expect("gated entry present");
+    assert!(dep.while_clause.is_some(), "while clause must propagate");
+}
+
+#[test]
+fn invalid_while_mixed_cycle_uses_labeled_format() {
+    let yaml = example_fixture("invalid-while-mixed-cycle.yaml");
+    let resolver = builtin_pack_resolver();
+    let err = compile_err(&yaml, &resolver);
+    match err {
+        CompileAfterError::CircularDependency { ref cycle } => {
+            assert!(cycle.iter().any(|(_, k)| *k == ClauseKind::While));
+            let display = err.to_string();
+            assert!(
+                display.contains("--[after]-->") && display.contains("--[while]-->"),
+                "labeled mixed cycle expected: {display}"
+            );
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn invalid_compile_non_metrics_target_rejected() {
     let yaml = example_fixture("invalid-compile-non-metrics-target.yaml");
     let resolver = builtin_pack_resolver();
     match compile_err(&yaml, &resolver) {
         CompileAfterError::NonMetricsTarget {
-            signal_type,
+            target_signal,
             ref_id,
+            clause,
             ..
         } => {
-            assert_eq!(signal_type, "logs");
+            assert_eq!(target_signal, "logs");
             assert_eq!(ref_id, "log_src");
+            assert_eq!(clause, ClauseKind::After);
         }
         other => panic!("wrong variant: {other:?}"),
     }

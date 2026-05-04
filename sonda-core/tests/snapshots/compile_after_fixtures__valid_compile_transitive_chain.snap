@@ -47,7 +47,8 @@ expression: compiled
       "phase_offset": "1m",
       "clock_group": "chain_latency",
       "clock_group_is_auto": true,
-      "on_sink_error": "warn"
+      "on_sink_error": "warn",
+      "after_ref": "link"
     },
     {
       "id": "latency",
@@ -70,7 +71,8 @@ expression: compiled
       "phase_offset": "152.308s",
       "clock_group": "chain_latency",
       "clock_group_is_auto": true,
-      "on_sink_error": "warn"
+      "on_sink_error": "warn",
+      "after_ref": "util"
     }
   ]
 }

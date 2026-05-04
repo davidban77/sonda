@@ -22,7 +22,7 @@ use crate::encoder::create_encoder;
 use crate::generator::histogram::to_distribution;
 use crate::generator::summary::{SummaryGenerator, DEFAULT_SUMMARY_QUANTILES};
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{self, TickContext, TickResult};
+use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -65,6 +65,20 @@ pub fn run_with_sink(
     sink: &mut dyn Sink,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
+) -> Result<(), SondaError> {
+    run_with_sink_gated(config, sink, shutdown, stats, None)
+}
+
+/// Run a summary scenario with optional `while:` / `after:` gating.
+///
+/// Summaries cannot be `while:` upstreams (compile-time
+/// `NonMetricsTarget`), but they can be `while:`-gated downstreams.
+pub fn run_with_sink_gated(
+    config: &SummaryScenarioConfig,
+    sink: &mut dyn Sink,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
     let schedule = ParsedSchedule::from_base_config(&config.base)?;
 
@@ -212,8 +226,12 @@ pub fn run_with_sink(
     };
 
     let stats_for_flush = stats.clone();
-    let loop_result =
-        core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn);
+    let loop_result = match gate_ctx {
+        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
+        Some(ctx) => {
+            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
+        }
+    };
 
     let flush_result = sink.flush();
     match loop_result {

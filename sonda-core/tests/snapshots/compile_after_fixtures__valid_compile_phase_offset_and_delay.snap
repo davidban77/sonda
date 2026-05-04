@@ -45,7 +45,8 @@ expression: compiled
       "phase_offset": "85s",
       "clock_group": "chain_backup",
       "clock_group_is_auto": true,
-      "on_sink_error": "warn"
+      "on_sink_error": "warn",
+      "after_ref": "link"
     }
   ]
 }

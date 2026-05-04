@@ -2,12 +2,12 @@
 //!
 //! Implements:
 //! - `POST /scenarios` — start one or more scenarios from a v2 YAML or JSON
-//!   body. Every body is compiled via [`sonda_core::compile_scenario_file`]
-//!   through the v2 pipeline; v1 YAML shapes are rejected with a migration
-//!   hint. A single compiled entry returns the flat `{id, name, status}`
-//!   shape; multi-entry compilations (or explicit multi-scenario bodies)
-//!   return the `{scenarios: [...]}` wrapper. Launches are atomic: all
-//!   entries validate before any threads spawn.
+//!   body. Every body is compiled via [`sonda_core::compile_scenario_file_compiled`]
+//!   and launched through the gated multi-runner so `while:` clauses
+//!   reach the runtime. v1 YAML shapes are rejected with a migration hint.
+//!   A single launched handle returns the flat `{id, name, state}` shape;
+//!   two or more handles return the `{scenarios: [...]}` wrapper. Launches
+//!   are atomic: all entries validate before any threads spawn.
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/{id}` — inspect a single scenario with full detail and stats.
 //! - `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
@@ -30,13 +30,15 @@ use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
 use sonda_core::encoder::Encoder;
-use sonda_core::ScenarioStats;
+use sonda_core::{ScenarioState, ScenarioStats};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use sonda_core::compile_scenario_file;
+use sonda_core::compile_scenario_file_compiled;
+use sonda_core::compiler::compile_after::CompiledFile;
 use sonda_core::config::ScenarioEntry;
-use sonda_core::schedule::launch::{launch_scenario, prepare_entries};
+use sonda_core::schedule::launch::prepare_entries;
+use sonda_core::schedule::multi_runner::launch_multi_compiled;
 
 use crate::routes::sink_warnings::{log_warnings, sink_loopback_warnings};
 use crate::state::AppState;
@@ -46,42 +48,22 @@ use crate::state::AppState;
 /// Response body for a successfully created scenario.
 #[derive(Debug, Serialize)]
 pub struct CreatedScenario {
-    /// Unique identifier for the scenario instance.
     pub id: String,
-    /// Human-readable scenario name from the config.
     pub name: String,
-    /// Always `"running"` for a freshly launched scenario.
-    pub status: &'static str,
+    /// Live state at POST-response time. One of `"pending"`, `"running"`,
+    /// `"paused"`, `"finished"`. Snapshot only — clients should poll
+    /// `/scenarios/{id}` for live state thereafter.
+    pub state: String,
     /// Non-fatal warnings raised while validating the posted body.
-    ///
-    /// Populated, for example, when a sink URL points at `localhost` — which
-    /// resolves to the `sonda-server` container's own loopback rather than
-    /// the operator's host. The scenario still launches; the warnings exist
-    /// so operators can spot the misconfiguration without grepping logs.
-    ///
-    /// Omitted from the JSON response when no warnings were raised so
-    /// clients that predate this field continue to parse cleanly.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub warnings: Vec<String>,
 }
 
 /// Response body for a successfully created multi-scenario batch.
-///
-/// Returned when `POST /scenarios` receives a multi-scenario YAML/JSON body
-/// (one with a top-level `scenarios:` array). Each element describes one
-/// launched scenario.
 #[derive(Debug, Serialize)]
 pub struct CreatedScenariosResponse {
-    /// One entry per launched scenario, in the same order as the input.
     pub scenarios: Vec<CreatedScenario>,
     /// Non-fatal warnings raised while validating the posted body.
-    ///
-    /// Collected across every entry in the batch — one string per flagged
-    /// sink. See [`CreatedScenario::warnings`] for the per-entry shape;
-    /// the batch response aggregates them at the top level so clients do
-    /// not need to walk the `scenarios` array to surface operator hints.
-    ///
-    /// Omitted from the JSON response when no warnings were raised.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub warnings: Vec<String>,
 }
@@ -89,13 +71,10 @@ pub struct CreatedScenariosResponse {
 /// Summary of a single scenario in the list response.
 #[derive(Debug, Serialize)]
 pub struct ScenarioSummary {
-    /// Unique scenario ID.
     pub id: String,
-    /// Human-readable scenario name.
     pub name: String,
-    /// Current status: "running" or "stopped".
-    pub status: String,
-    /// Seconds elapsed since the scenario was launched.
+    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
+    pub state: String,
     pub elapsed_secs: f64,
 }
 
@@ -109,26 +88,22 @@ pub struct ListScenariosResponse {
 /// Detailed view of a single scenario, including live stats.
 #[derive(Debug, Serialize)]
 pub struct ScenarioDetail {
-    /// Unique scenario ID.
     pub id: String,
-    /// Human-readable scenario name.
     pub name: String,
-    /// Current status: "running" or "stopped".
-    pub status: String,
-    /// Seconds elapsed since the scenario was launched.
+    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
+    pub state: String,
     pub elapsed_secs: f64,
-    /// Live statistics from the runner thread.
     pub stats: StatsResponse,
 }
 
 /// Response body for a successfully deleted (stopped) scenario.
 #[derive(Debug, Serialize)]
 pub struct DeletedScenario {
-    /// Unique scenario ID.
     pub id: String,
-    /// Final status: `"stopped"` or `"force_stopped"` if the join timed out.
+    /// Join outcome — `"stopped"` when the runner thread exited, or
+    /// `"force_stopped"` when the join timed out. Distinct from the
+    /// lifecycle state surfaced on `/scenarios/{id}`.
     pub status: String,
-    /// Total number of events emitted over the scenario's lifetime.
     pub total_events: u64,
 }
 
@@ -191,7 +166,7 @@ pub struct DetailedStatsResponse {
     pub errors: u64,
     /// Seconds elapsed since the scenario was launched.
     pub uptime_secs: f64,
-    /// Current state: `"running"` or `"stopped"`.
+    /// Current state: `"pending"`, `"running"`, `"paused"`, or `"finished"`.
     pub state: String,
     /// Whether the scenario is currently in a gap window (no events emitted).
     pub in_gap: bool,
@@ -235,12 +210,14 @@ fn internal_error(detail: impl std::fmt::Display) -> Response {
 
 // ---- Helpers ----------------------------------------------------------------
 
-/// Derive the status string from whether the scenario handle is still running.
-fn status_string(running: bool) -> String {
-    if running {
-        "running".to_string()
-    } else {
-        "stopped".to_string()
+/// Map [`ScenarioStats::state`] to its lowercase wire string.
+fn state_string(stats: &ScenarioStats) -> &'static str {
+    match stats.state {
+        ScenarioState::Pending => "pending",
+        ScenarioState::Running => "running",
+        ScenarioState::Paused => "paused",
+        ScenarioState::Finished => "finished",
+        _ => "unknown",
     }
 }
 
@@ -267,46 +244,15 @@ fn is_yaml_content_type(headers: &HeaderMap) -> bool {
 }
 
 /// The result of parsing a `POST /scenarios` body.
-///
-/// Distinguishes between a compilation that produced exactly one entry
-/// (legacy flat response shape) and one that produced two or more
-/// (`{scenarios: [...]}` wrapper). The handler uses this to decide the
-/// response shape.
 #[derive(Debug)]
 enum ParsedBody {
-    /// A single scenario entry — returned as the flat `{id, name, status}`
-    /// JSON body.
+    /// A compiled v2 scenario file ready for the gated multi-runner.
     ///
-    /// Boxed to avoid a large size difference between variants (clippy
-    /// `large_enum_variant`). `ScenarioEntry` is ~656 bytes while `Vec` is 24.
-    Single(Box<ScenarioEntry>),
-    /// Two or more scenario entries — returned as `{scenarios: [...]}`.
-    Multi(Vec<ScenarioEntry>),
+    /// Boxed to avoid a large size difference between variants
+    /// (clippy `large_enum_variant`).
+    Compiled(Box<CompiledFile>),
 }
 
-/// Parse and compile a POST body into one or more [`ScenarioEntry`] values.
-///
-/// The body must be a v2 scenario (`version: 2` at the top level) serialized
-/// as either YAML or JSON. v1 shapes are rejected up front with a migration
-/// hint so operators are not confused by downstream parse errors.
-///
-/// YAML bodies are fed into [`detect_version`] + [`compile_scenario_file`].
-/// JSON bodies are transcoded to YAML first (via `serde_yaml_ng::to_string`)
-/// because the v2 compiler's front-end is a YAML parser — JSON is a strict
-/// subset of YAML, so the transcoded text parses byte-for-byte identically
-/// to the equivalent hand-written YAML.
-///
-/// Pack references (`pack: <name>`) are resolved against the server's startup
-/// pack catalog (loaded from `SONDA_PACK_PATH`). Bodies referencing a pack
-/// that is not in the catalog surface as a compile error with the missing
-/// pack name and the searched paths.
-///
-/// Returns a descriptive error string on failure. The handler maps all
-/// failures to `400 Bad Request` because the server contract is "POST v2
-/// YAML/JSON"; anything else is ill-formed by contract.
-/// Walk the error source chain and join Display strings with `: `, so a 400
-/// response carries the failing pack name / search path detail instead of a
-/// bare `expand error`.
 fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut out = err.to_string();
     let mut cause: Option<&(dyn std::error::Error + 'static)> = err.source();
@@ -330,26 +276,18 @@ fn parse_body(
         return Err(format!("body is not a v2 scenario. {V1_REJECTION_HINT}"));
     }
 
-    let entries = compile_scenario_file(&text, pack_resolver).map_err(|e| {
+    let compiled = compile_scenario_file_compiled(&text, pack_resolver).map_err(|e| {
         format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
         )
     })?;
 
-    if entries.is_empty() {
+    if compiled.entries.is_empty() {
         return Err("v2 scenario body produced zero entries".to_string());
     }
 
-    if entries.len() == 1 {
-        let entry = entries
-            .into_iter()
-            .next()
-            .expect("len checked above — exactly one entry");
-        Ok(ParsedBody::Single(Box::new(entry)))
-    } else {
-        Ok(ParsedBody::Multi(entries))
-    }
+    Ok(ParsedBody::Compiled(Box::new(compiled)))
 }
 
 /// Convert the raw request body into YAML text for the v2 compiler.
@@ -374,19 +312,16 @@ fn yaml_body_text(body: &[u8], headers: &HeaderMap) -> Result<String, String> {
 
 /// `POST /scenarios` — start scenarios from a v2 YAML or JSON body.
 ///
-/// The body is always compiled through the v2 pipeline via
-/// [`compile_scenario_file`]. v1 YAML shapes (flat single-signal,
-/// top-level `scenarios:` without `version: 2`, `pack:` shorthand) are
-/// rejected with a migration hint.
+/// The body is compiled via [`compile_scenario_file_compiled`] and launched
+/// through the gated multi-runner so `while:` clauses reach the runtime.
+/// v1 YAML shapes are rejected with a migration hint.
 ///
-/// **Single entry after compile**: Returns `201 Created` with the flat
-/// `{"id", "name", "status": "running"}` body.
+/// **One launched handle**: Returns `201 Created` with the flat
+/// `{"id", "name", "state"}` body.
 ///
-/// **Multiple entries after compile** (multi-entry v2 file or a pack
-/// expansion that fanned out): Returns `201 Created` with
-/// `{"scenarios": [{"id", "name", "status"}, ...]}`. All entries are
-/// validated atomically before any are launched — if any entry fails
-/// validation, nothing is launched and the entire request fails.
+/// **Multiple launched handles** (multi-entry body or pack expansion that
+/// fanned out): Returns `201 Created` with `{"scenarios": [...]}`. All
+/// entries validate atomically before any threads spawn.
 ///
 /// # Error responses
 /// - `400 Bad Request` — body cannot be parsed, v1 shape is rejected, or the
@@ -399,98 +334,85 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    // 1. Parse the body, detecting single vs multi-scenario.
     let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|msg| {
         warn!(error = %msg, "POST /scenarios: invalid request body");
         bad_request(msg)
     })?;
 
-    // 2. Pre-flight sink check: warn (do not reject) when a sink URL points
-    //    at loopback, which in a containerized server resolves to the
-    //    server's own network namespace rather than the operator's host.
-    //    The warnings are logged and returned in the response — operators
-    //    can ignore them if the loopback target is intentional.
-    let warnings = match &parsed {
-        ParsedBody::Single(entry) => sink_loopback_warnings(std::slice::from_ref(entry.as_ref())),
-        ParsedBody::Multi(entries) => sink_loopback_warnings(entries),
-    };
-    log_warnings("POST /scenarios", &warnings);
+    let ParsedBody::Compiled(compiled) = parsed;
 
-    match parsed {
-        ParsedBody::Single(entry) => post_single_scenario(state, *entry, warnings).await,
-        ParsedBody::Multi(entries) => post_multi_scenario(state, entries, warnings).await,
-    }
-}
-
-/// Handle a single-scenario POST (backward-compatible path).
-///
-/// Uses [`prepare_entries`] for the same expand -> validate -> phase_offset
-/// pipeline as the multi-scenario path. This ensures identical behavior
-/// regardless of whether a scenario is posted alone or inside a `scenarios:`
-/// array.
-async fn post_single_scenario(
-    state: AppState,
-    entry: ScenarioEntry,
-    warnings: Vec<String>,
-) -> Result<Response, Response> {
-    // Use the shared pipeline for expansion, validation, and phase offset.
-    let mut prepared = prepare_entries(vec![entry]).map_err(|e| {
+    // Derive ScenarioEntry values for the loopback warning helper, which
+    // operates on the runtime input shape. prepare_entries doubles as
+    // pre-flight validation — surfacing rate=0, bad phase_offset, etc. as
+    // 422 before any thread spawns.
+    let prepared_entries = sonda_core::compiler::prepare::prepare(compiled.as_ref().clone())
+        .map_err(|e| {
+            warn!(error = %e, "POST /scenarios: prepare failed");
+            unprocessable(e)
+        })?;
+    let prepared = prepare_entries(prepared_entries).map_err(|e| {
         warn!(error = %e, "POST /scenarios: validation failed");
         unprocessable(e)
     })?;
+    let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
+    let warnings = sink_loopback_warnings(&warning_entries);
+    log_warnings("POST /scenarios", &warnings);
+    drop(warning_entries);
 
-    // After expansion a single entry may fan out into multiple entries
-    // (e.g. multi-column csv_replay). Launch all of them.
-    let mut created: Vec<CreatedScenario> = Vec::with_capacity(prepared.len());
-    let mut handles_to_store: Vec<(String, sonda_core::ScenarioHandle)> =
-        Vec::with_capacity(prepared.len());
+    launch_compiled(state, *compiled, warnings).await
+}
 
-    for prepared_entry in prepared.drain(..) {
-        let id = Uuid::new_v4().to_string();
-        let name = prepared_entry.entry.base().name.clone();
-        let shutdown = Arc::new(AtomicBool::new(true));
+/// Launch every entry in `compiled` through the gated multi-runner and store
+/// the resulting handles in [`AppState`]. Single-vs-multi response shape is
+/// decided post-launch from the count of returned handles.
+async fn launch_compiled(
+    state: AppState,
+    compiled: CompiledFile,
+    warnings: Vec<String>,
+) -> Result<Response, Response> {
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let mut handles = launch_multi_compiled(compiled, shutdown).map_err(|e| {
+        warn!(error = %e, "POST /scenarios: failed to launch scenarios");
+        match e {
+            sonda_core::SondaError::Config(_) => unprocessable(e),
+            _ => internal_error(e),
+        }
+    })?;
 
-        let handle = launch_scenario(
-            id.clone(),
-            prepared_entry.entry,
-            shutdown,
-            prepared_entry.start_delay,
-        )
-        .map_err(|e| {
-            for (_, ref h) in &handles_to_store {
-                h.stop();
-            }
-            warn!(error = %e, "POST /scenarios: failed to launch scenario");
-            internal_error(e)
-        })?;
-
-        info!(id = %id, name = %name, "scenario launched");
-
-        created.push(CreatedScenario {
-            id: id.clone(),
-            name,
-            status: "running",
-            warnings: Vec::new(),
-        });
-        handles_to_store.push((id, handle));
+    if handles.is_empty() {
+        warn!("POST /scenarios: gated launch produced zero handles");
+        return Err(bad_request(
+            "v2 scenario body produced zero runnable entries",
+        ));
     }
 
-    // Store all handles in shared state.
+    let mut created: Vec<CreatedScenario> = Vec::with_capacity(handles.len());
+    for handle in handles.iter_mut() {
+        let new_id = Uuid::new_v4().to_string();
+        handle.id = new_id.clone();
+        let name = handle.name.clone();
+        let state_str = state_string(&handle.stats_snapshot()).to_string();
+        info!(id = %new_id, name = %name, state = %state_str, "scenario launched");
+        created.push(CreatedScenario {
+            id: new_id,
+            name,
+            state: state_str,
+            warnings: Vec::new(),
+        });
+    }
+
     let mut scenarios = state.scenarios.write().map_err(|e| {
-        for (_, ref h) in &handles_to_store {
-            h.stop();
+        for handle in &handles {
+            handle.stop();
         }
         warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
         internal_error("internal state lock is poisoned")
     })?;
-    for (id, handle) in handles_to_store {
-        scenarios.insert(id, handle);
+    for (created_entry, handle) in created.iter().zip(handles) {
+        scenarios.insert(created_entry.id.clone(), handle);
     }
     drop(scenarios);
 
-    // Respond based on whether expansion produced a single or multiple
-    // entries. Warnings (if any) attach at the top level in both shapes so
-    // clients see them without walking the `scenarios` array.
     if created.len() == 1 {
         let mut single = created.into_iter().next().expect("len checked above");
         single.warnings = warnings;
@@ -507,89 +429,6 @@ async fn post_single_scenario(
     }
 }
 
-/// Handle a multi-scenario POST (batch path).
-///
-/// Atomic batch semantics: all entries are expanded, validated, and have their
-/// phase offsets resolved before any are launched. If any entry fails, the
-/// entire request returns an error and nothing is launched.
-async fn post_multi_scenario(
-    state: AppState,
-    entries: Vec<ScenarioEntry>,
-    warnings: Vec<String>,
-) -> Result<Response, Response> {
-    // Reject empty batches.
-    if entries.is_empty() {
-        warn!("POST /scenarios: empty scenarios array");
-        return Err(bad_request("scenarios array must not be empty"));
-    }
-
-    // Expand, validate, and resolve phase offsets atomically.
-    let prepared = prepare_entries(entries).map_err(|e| {
-        warn!(error = %e, "POST /scenarios: multi-scenario validation failed");
-        unprocessable(e)
-    })?;
-
-    // Launch all scenarios and collect response entries.
-    let mut created: Vec<CreatedScenario> = Vec::with_capacity(prepared.len());
-    let mut handles_to_store: Vec<(String, sonda_core::ScenarioHandle)> =
-        Vec::with_capacity(prepared.len());
-
-    for prepared_entry in prepared {
-        let id = Uuid::new_v4().to_string();
-        let name = prepared_entry.entry.base().name.clone();
-        let shutdown = Arc::new(AtomicBool::new(true));
-
-        let handle = launch_scenario(
-            id.clone(),
-            prepared_entry.entry,
-            shutdown,
-            prepared_entry.start_delay,
-        )
-        .map_err(|e| {
-            // If a launch fails, stop any already-launched scenarios.
-            for (_, ref h) in &handles_to_store {
-                h.stop();
-            }
-            warn!(error = %e, "POST /scenarios: failed to launch scenario in batch");
-            internal_error(e)
-        })?;
-
-        info!(id = %id, name = %name, "scenario launched (batch)");
-
-        created.push(CreatedScenario {
-            id: id.clone(),
-            name,
-            status: "running",
-            warnings: Vec::new(),
-        });
-        handles_to_store.push((id, handle));
-    }
-
-    // Store all handles in shared state.
-    let mut scenarios = state.scenarios.write().map_err(|e| {
-        // Stop all launched scenarios before returning the error to prevent
-        // orphaned threads that run indefinitely without a way to stop them.
-        for (_, ref h) in &handles_to_store {
-            h.stop();
-        }
-        warn!(error = %e, "POST /scenarios: scenarios lock is poisoned");
-        internal_error("internal state lock is poisoned")
-    })?;
-    for (id, handle) in handles_to_store {
-        scenarios.insert(id, handle);
-    }
-    drop(scenarios);
-
-    // Respond with 201 Created. Warnings attach at the top level of the
-    // batch response; the per-entry `warnings` field stays empty to keep
-    // the shape predictable for clients.
-    let response_body = CreatedScenariosResponse {
-        scenarios: created,
-        warnings,
-    };
-    Ok((StatusCode::CREATED, Json(response_body)).into_response())
-}
-
 /// `GET /scenarios` — list all scenarios with summary information.
 ///
 /// Returns a JSON object with a `scenarios` array containing each scenario's
@@ -603,11 +442,14 @@ pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoRe
 
     let summaries: Vec<ScenarioSummary> = scenarios
         .iter()
-        .map(|(id, handle)| ScenarioSummary {
-            id: id.clone(),
-            name: handle.name.clone(),
-            status: status_string(handle.is_running()),
-            elapsed_secs: handle.elapsed().as_secs_f64(),
+        .map(|(id, handle)| {
+            let snap = handle.stats_snapshot();
+            ScenarioSummary {
+                id: id.clone(),
+                name: handle.name.clone(),
+                state: state_string(&snap).to_string(),
+                elapsed_secs: handle.elapsed().as_secs_f64(),
+            }
         })
         .collect();
 
@@ -634,12 +476,13 @@ pub async fn get_scenario(
         .get(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
+    let snap = handle.stats_snapshot();
     let detail = ScenarioDetail {
         id: id.clone(),
         name: handle.name.clone(),
-        status: status_string(handle.is_running()),
+        state: state_string(&snap).to_string(),
         elapsed_secs: handle.elapsed().as_secs_f64(),
-        stats: handle.stats_snapshot().into(),
+        stats: snap.into(),
     };
 
     Ok(Json(detail))
@@ -708,7 +551,8 @@ pub async fn delete_scenario(
 ///
 /// Returns all stats fields from the runner thread plus derived fields:
 /// `target_rate` (configured rate from the scenario config), `uptime_secs`
-/// (computed from `handle.elapsed()`), and `state` (from `handle.is_running()`).
+/// (computed from `handle.elapsed()`), and `state` (one of `pending`,
+/// `running`, `paused`, `finished`).
 ///
 /// This is a read-only endpoint that acquires only a read lock on the
 /// scenario map. No write lock is needed.
@@ -728,6 +572,7 @@ pub async fn get_scenario_stats(
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
     let snap = handle.stats_snapshot();
+    let state = state_string(&snap).to_string();
     let response = DetailedStatsResponse {
         total_events: snap.total_events,
         current_rate: snap.current_rate,
@@ -735,7 +580,7 @@ pub async fn get_scenario_stats(
         bytes_emitted: snap.bytes_emitted,
         errors: snap.errors,
         uptime_secs: handle.elapsed().as_secs_f64(),
-        state: status_string(handle.is_running()),
+        state,
         in_gap: snap.in_gap,
         in_burst: snap.in_burst,
         consecutive_failures: snap.consecutive_failures,
@@ -1145,7 +990,7 @@ scenarios:
 
         assert!(entry["id"].is_string(), "id must be a string");
         assert!(entry["name"].is_string(), "name must be a string");
-        assert!(entry["status"].is_string(), "status must be a string");
+        assert!(entry["state"].is_string(), "state must be a string");
         assert!(
             entry["elapsed_secs"].is_f64(),
             "elapsed_secs must be a number"
@@ -1163,6 +1008,9 @@ scenarios:
             1000,
             Duration::from_millis(50),
         );
+        if let Ok(mut s) = h.stats.write() {
+            s.state = ScenarioState::Running;
+        }
         let app = router_with_handles(vec![h]);
 
         // Small delay to ensure elapsed > 0.
@@ -1180,9 +1028,9 @@ scenarios:
         assert_eq!(body["id"].as_str().unwrap(), "id-detail");
         assert_eq!(body["name"].as_str().unwrap(), "detail_scenario");
         assert_eq!(
-            body["status"].as_str().unwrap(),
+            body["state"].as_str().unwrap(),
             "running",
-            "a live scenario must have status 'running'"
+            "a live scenario must have state 'running'"
         );
         let elapsed = body["elapsed_secs"].as_f64().unwrap();
         assert!(
@@ -1318,12 +1166,14 @@ scenarios:
         );
     }
 
-    // ---- GET /scenarios/{id}: stopped scenario reports "stopped" --------------
+    // ---- GET /scenarios/{id}: finished scenario reports "finished" ------------
 
-    /// A scenario whose thread has exited reports status "stopped".
     #[tokio::test]
-    async fn get_scenario_stopped_reports_stopped_status() {
-        let h = make_stopped_handle("id-stopped", "stopped_scenario");
+    async fn get_scenario_finished_reports_finished_status() {
+        let h = make_stopped_handle("id-stopped", "finished_scenario");
+        if let Ok(mut s) = h.stats.write() {
+            s.state = ScenarioState::Finished;
+        }
         let app = router_with_handles(vec![h]);
 
         let req = Request::builder()
@@ -1336,9 +1186,9 @@ scenarios:
 
         let body = body_json(resp).await;
         assert_eq!(
-            body["status"].as_str().unwrap(),
-            "stopped",
-            "a finished scenario must have status 'stopped'"
+            body["state"].as_str().unwrap(),
+            "finished",
+            "a finished scenario must have state 'finished'"
         );
     }
 
@@ -1429,18 +1279,19 @@ scenarios:
         assert_eq!(resp.errors, 3);
     }
 
-    // ---- status_string helper ------------------------------------------------
+    // ---- state_string helper -------------------------------------------------
 
-    /// status_string(true) returns "running".
     #[test]
-    fn status_string_true_returns_running() {
-        assert_eq!(status_string(true), "running");
-    }
-
-    /// status_string(false) returns "stopped".
-    #[test]
-    fn status_string_false_returns_stopped() {
-        assert_eq!(status_string(false), "stopped");
+    fn state_string_maps_each_variant_to_lowercase_wire_string() {
+        let mut s = ScenarioStats::default();
+        s.state = ScenarioState::Pending;
+        assert_eq!(state_string(&s), "pending");
+        s.state = ScenarioState::Running;
+        assert_eq!(state_string(&s), "running");
+        s.state = ScenarioState::Paused;
+        assert_eq!(state_string(&s), "paused");
+        s.state = ScenarioState::Finished;
+        assert_eq!(state_string(&s), "finished");
     }
 
     // ---- Serialization: response structs produce valid JSON ------------------
@@ -1451,13 +1302,13 @@ scenarios:
         let s = ScenarioSummary {
             id: "abc".to_string(),
             name: "test".to_string(),
-            status: "running".to_string(),
+            state: "running".to_string(),
             elapsed_secs: 1.5,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["id"], "abc");
         assert_eq!(json["name"], "test");
-        assert_eq!(json["status"], "running");
+        assert_eq!(json["state"], "running");
         assert_eq!(json["elapsed_secs"], 1.5);
     }
 
@@ -1467,7 +1318,7 @@ scenarios:
         let d = ScenarioDetail {
             id: "xyz".to_string(),
             name: "detail".to_string(),
-            status: "stopped".to_string(),
+            state: "stopped".to_string(),
             elapsed_secs: 42.0,
             stats: StatsResponse {
                 total_events: 100,
@@ -1513,9 +1364,10 @@ scenarios:
             body["name"], "test_metric",
             "response name must match the scenario name"
         );
-        assert_eq!(
-            body["status"], "running",
-            "status must be 'running' for a freshly launched scenario"
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
         );
 
         // Verify the handle was stored in AppState.
@@ -1554,7 +1406,11 @@ scenarios:
             body["name"], "test_logs",
             "response name must match the logs scenario name"
         );
-        assert_eq!(body["status"], "running");
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running', got {s:?}"
+        );
 
         cleanup_scenarios(&state);
     }
@@ -1578,7 +1434,11 @@ scenarios:
             body["name"], "tagged_metric",
             "name must match the tagged scenario name"
         );
-        assert_eq!(body["status"], "running");
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running', got {s:?}"
+        );
 
         cleanup_scenarios(&state);
     }
@@ -1753,7 +1613,11 @@ scenarios:
 
         let body = body_json(response).await;
         assert_eq!(body["name"], "json_metric");
-        assert_eq!(body["status"], "running");
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running', got {s:?}"
+        );
 
         cleanup_scenarios(&state);
     }
@@ -1808,13 +1672,13 @@ scenarios:
         assert!(obj.contains_key("id"), "response must contain key 'id'");
         assert!(obj.contains_key("name"), "response must contain key 'name'");
         assert!(
-            obj.contains_key("status"),
-            "response must contain key 'status'"
+            obj.contains_key("state"),
+            "response must contain key 'state'"
         );
         assert_eq!(
             obj.len(),
             3,
-            "response must contain exactly 3 keys (id, name, status)"
+            "response must contain exactly 3 keys (id, name, state)"
         );
 
         cleanup_scenarios(&state);
@@ -1869,7 +1733,7 @@ scenarios:
 
     // ---- Test: parse_body unit tests -------------------------------------------
 
-    /// `parse_body` accepts a v2 metrics YAML and returns a single entry.
+    /// `parse_body` accepts a v2 metrics YAML and returns a single-entry CompiledFile.
     #[test]
     fn parse_body_accepts_v2_metrics_yaml() {
         let mut headers = HeaderMap::new();
@@ -1880,16 +1744,13 @@ scenarios:
             &InMemoryPackResolver::new(),
         )
         .expect("v2 metrics body must parse");
-        match parsed {
-            ParsedBody::Single(entry) => match *entry {
-                ScenarioEntry::Metrics(c) => assert_eq!(c.name, "test_metric"),
-                other => panic!("expected ScenarioEntry::Metrics, got: {other:?}"),
-            },
-            ParsedBody::Multi(_) => panic!("single-entry v2 body must parse as Single"),
-        }
+        let ParsedBody::Compiled(compiled) = parsed;
+        assert_eq!(compiled.entries.len(), 1);
+        assert_eq!(compiled.entries[0].signal_type, "metrics");
+        assert_eq!(compiled.entries[0].name, "test_metric");
     }
 
-    /// `parse_body` accepts a v2 logs YAML and returns a single Logs entry.
+    /// `parse_body` accepts a v2 logs YAML and returns a single-entry CompiledFile.
     #[test]
     fn parse_body_accepts_v2_logs_yaml() {
         let mut headers = HeaderMap::new();
@@ -1900,13 +1761,10 @@ scenarios:
             &InMemoryPackResolver::new(),
         )
         .expect("v2 logs body must parse");
-        match parsed {
-            ParsedBody::Single(entry) => match *entry {
-                ScenarioEntry::Logs(c) => assert_eq!(c.name, "test_logs"),
-                other => panic!("expected ScenarioEntry::Logs, got: {other:?}"),
-            },
-            ParsedBody::Multi(_) => panic!("single-entry v2 body must parse as Single"),
-        }
+        let ParsedBody::Compiled(compiled) = parsed;
+        assert_eq!(compiled.entries.len(), 1);
+        assert_eq!(compiled.entries[0].signal_type, "logs");
+        assert_eq!(compiled.entries[0].name, "test_logs");
     }
 
     /// `parse_body` rejects a v1 flat metrics YAML (no `version: 2`).
@@ -1993,7 +1851,8 @@ scenarios:
             &InMemoryPackResolver::new(),
         )
         .expect("v2 JSON body must parse");
-        assert!(matches!(parsed, ParsedBody::Single(_)));
+        let ParsedBody::Compiled(compiled) = parsed;
+        assert_eq!(compiled.entries.len(), 1);
     }
 
     /// `parse_body` rejects invalid JSON with a descriptive error.
@@ -2048,13 +1907,13 @@ scenarios:
         let cs = CreatedScenario {
             id: "abc-123".to_string(),
             name: "my_scenario".to_string(),
-            status: "running",
+            state: "running".to_string(),
             warnings: Vec::new(),
         };
         let json = serde_json::to_value(&cs).expect("must serialize");
         assert_eq!(json["id"], "abc-123");
         assert_eq!(json["name"], "my_scenario");
-        assert_eq!(json["status"], "running");
+        assert_eq!(json["state"], "running");
         assert!(
             json.get("warnings").is_none(),
             "empty warnings vec must be omitted from JSON"
@@ -2067,7 +1926,7 @@ scenarios:
         let cs = CreatedScenario {
             id: "abc-123".to_string(),
             name: "my_scenario".to_string(),
-            status: "running",
+            state: "running".to_string(),
             warnings: vec!["loopback warning".to_string()],
         };
         let json = serde_json::to_value(&cs).expect("must serialize");
@@ -2548,6 +2407,7 @@ scenarios:
         stats.errors = 2;
         stats.in_gap = false;
         stats.in_burst = true;
+        stats.state = ScenarioState::Running;
         let h = make_handle_with_stats("id-stats-all", "all_fields", 100.0, stats, true);
         let app = router_with_handles(vec![h]);
 
@@ -2686,11 +2546,10 @@ scenarios:
         );
     }
 
-    // ---- After scenario stopped: returns final stats with state "stopped" ----
+    // ---- After scenario finished: returns final stats with state "finished" ----
 
-    /// When a scenario has stopped, GET /scenarios/{id}/stats returns state "stopped".
     #[tokio::test]
-    async fn stats_endpoint_returns_stopped_state_for_finished_scenario() {
+    async fn stats_endpoint_returns_finished_state_for_finished_scenario() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 1000;
         stats.bytes_emitted = 64000;
@@ -2698,17 +2557,18 @@ scenarios:
         stats.errors = 5;
         stats.in_gap = false;
         stats.in_burst = false;
-        let h = make_handle_with_stats("id-stats-stopped", "stopped_test", 200.0, stats, false);
+        stats.state = ScenarioState::Finished;
+        let h = make_handle_with_stats("id-stats-finished", "finished_test", 200.0, stats, false);
         let app = router_with_handles(vec![h]);
 
-        let resp = get_stats_req(app, "id-stats-stopped").await;
+        let resp = get_stats_req(app, "id-stats-finished").await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_json(resp).await;
         assert_eq!(
             body["state"].as_str().unwrap(),
-            "stopped",
-            "state must be 'stopped' for a finished scenario"
+            "finished",
+            "state must be 'finished' for a finished scenario"
         );
         assert_eq!(
             body["total_events"].as_u64().unwrap(),
@@ -3627,9 +3487,10 @@ scenarios:
                 entry["name"].is_string(),
                 "scenario[{i}] must have a name string"
             );
-            assert_eq!(
-                entry["status"], "running",
-                "scenario[{i}] status must be 'running'"
+            let s = entry["state"].as_str().unwrap_or("");
+            assert!(
+                matches!(s, "pending" | "running"),
+                "scenario[{i}] state must be 'pending' or 'running', got {s:?}"
             );
         }
 
@@ -3811,10 +3672,14 @@ scenarios:
             body.get("scenarios").is_none(),
             "single-scenario POST must not return a 'scenarios' wrapper"
         );
-        // Must have the flat {id, name, status} shape.
+        // Must have the flat {id, name, state} shape.
         assert!(body["id"].is_string());
         assert_eq!(body["name"], "test_metric");
-        assert_eq!(body["status"], "running");
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running', got {s:?}"
+        );
 
         cleanup_scenarios(&state);
     }
@@ -3978,10 +3843,10 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    /// `parse_body` returns `ParsedBody::Multi` for a v2 body that compiles
-    /// into multiple entries.
+    /// `parse_body` returns a multi-entry CompiledFile for a v2 body that
+    /// compiles into multiple entries.
     #[test]
-    fn parse_body_returns_multi_for_v2_scenarios_array() {
+    fn parse_body_returns_multi_entry_compiled_for_v2_scenarios_array() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
         let parsed = parse_body(
@@ -3990,14 +3855,12 @@ scenarios:
             &InMemoryPackResolver::new(),
         )
         .expect("v2 multi YAML body must parse");
-        match parsed {
-            ParsedBody::Multi(entries) => {
-                assert_eq!(entries.len(), 2, "multi YAML must produce 2 entries");
-            }
-            ParsedBody::Single(_) => {
-                panic!("v2 multi YAML must produce ParsedBody::Multi, got Single");
-            }
-        }
+        let ParsedBody::Compiled(compiled) = parsed;
+        assert_eq!(
+            compiled.entries.len(),
+            2,
+            "multi YAML must produce 2 entries"
+        );
     }
 
     /// CreatedScenariosResponse serializes to expected JSON structure.
@@ -4008,13 +3871,13 @@ scenarios:
                 CreatedScenario {
                     id: "id-1".to_string(),
                     name: "s1".to_string(),
-                    status: "running",
+                    state: "running".to_string(),
                     warnings: Vec::new(),
                 },
                 CreatedScenario {
                     id: "id-2".to_string(),
                     name: "s2".to_string(),
-                    status: "running",
+                    state: "running".to_string(),
                     warnings: Vec::new(),
                 },
             ],
@@ -4038,7 +3901,7 @@ scenarios:
             scenarios: vec![CreatedScenario {
                 id: "id-1".to_string(),
                 name: "s1".to_string(),
-                status: "running",
+                state: "running".to_string(),
                 warnings: Vec::new(),
             }],
             warnings: vec!["loopback warning".to_string()],
@@ -4086,7 +3949,11 @@ scenarios:
 
         let body = body_json(response).await;
         assert_eq!(body["name"], "single_offset");
-        assert_eq!(body["status"], "running");
+        let s = body["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running', got {s:?}"
+        );
 
         cleanup_scenarios(&state);
     }
@@ -4110,6 +3977,8 @@ scenarios:
     fn snapshot_settings() -> insta::Settings {
         let mut s = insta::Settings::clone_current();
         s.set_sort_maps(true);
+        s.add_filter(r#"(?m)^\s+"[^"]+": null,\n"#, "");
+        s.add_filter(r#",\n(\s+"[^"]+": null\n)"#, "\n");
         s
     }
 
@@ -4132,6 +4001,51 @@ scenarios:
         };
         snapshot_settings().bind(|| {
             insta::assert_json_snapshot!("detailed_stats_response", resp);
+        });
+    }
+
+    #[rstest::rstest]
+    #[case::pending(ScenarioState::Pending, "pending")]
+    #[case::running(ScenarioState::Running, "running")]
+    #[case::paused(ScenarioState::Paused, "paused")]
+    #[case::finished(ScenarioState::Finished, "finished")]
+    fn detailed_stats_response_state_snapshot(
+        #[case] state: ScenarioState,
+        #[case] wire: &'static str,
+    ) {
+        let mut snap = ScenarioStats::default();
+        snap.total_events = 100;
+        snap.current_rate = if state == ScenarioState::Paused {
+            0.0
+        } else {
+            10.0
+        };
+        snap.bytes_emitted = 4096;
+        snap.state = state;
+        let resp = DetailedStatsResponse {
+            total_events: snap.total_events,
+            current_rate: snap.current_rate,
+            target_rate: 10.0,
+            bytes_emitted: snap.bytes_emitted,
+            errors: 0,
+            uptime_secs: 5.0,
+            state: state_string(&snap).to_string(),
+            in_gap: false,
+            in_burst: false,
+            consecutive_failures: 0,
+            total_sink_failures: 0,
+            last_sink_error: None,
+            last_successful_write_at: None,
+        };
+        assert_eq!(resp.state, wire);
+        snapshot_settings().bind(|| {
+            insta::assert_json_snapshot!(
+                format!("detailed_stats_response_state_{wire}"),
+                resp,
+                {
+                    ".uptime_secs" => "[uptime_secs]",
+                }
+            );
         });
     }
 

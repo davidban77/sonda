@@ -138,6 +138,18 @@ pub struct Defaults {
     /// Default sink-error policy inherited by every entry.
     #[cfg_attr(feature = "config", serde(default))]
     pub on_sink_error: Option<OnSinkError>,
+    /// Default `while:` clause inherited by every entry.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "while", skip_serializing_if = "Option::is_none")
+    )]
+    pub while_clause: Option<WhileClause>,
+    /// Default `delay:` clause inherited by every entry.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "delay", skip_serializing_if = "Option::is_none")
+    )]
+    pub delay_clause: Option<DelayClause>,
 }
 
 /// A single scenario entry in a v2 file.
@@ -215,6 +227,18 @@ pub struct Entry {
     /// Causal dependency on another signal's value.
     #[cfg_attr(feature = "config", serde(default))]
     pub after: Option<AfterClause>,
+    /// Continuous lifecycle gate on another signal's value.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "while", skip_serializing_if = "Option::is_none")
+    )]
+    pub while_clause: Option<WhileClause>,
+    /// Open / close debounce windows applied to `while_clause` transitions.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, rename = "delay", skip_serializing_if = "Option::is_none")
+    )]
+    pub delay_clause: Option<DelayClause>,
 
     // -- Pack-backed entry fields --
     /// Pack name or file path. Mutually exclusive with `generator`.
@@ -298,4 +322,167 @@ pub struct AfterClause {
     /// Optional additional delay after the condition is met.
     #[cfg_attr(feature = "config", serde(default))]
     pub delay: Option<String>,
+}
+
+/// Strict comparison operator for a [`WhileClause`].
+///
+/// Only `<` and `>` are accepted. Non-strict operators (`<=`, `>=`, `==`,
+/// `!=`) are rejected at deserialize time with a hint pointing to the
+/// strict alternatives — equality on `f64` over a continuous gate is
+/// numerically unsafe and forbidden by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+pub enum WhileOp {
+    #[cfg_attr(feature = "config", serde(rename = "<"))]
+    LessThan,
+    #[cfg_attr(feature = "config", serde(rename = ">"))]
+    GreaterThan,
+}
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for WhileOp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "<" => Ok(WhileOp::LessThan),
+            ">" => Ok(WhileOp::GreaterThan),
+            other => Err(serde::de::Error::custom(format!(
+                "unsupported operator '{other}' on while: — only strict \
+                 comparisons '<' and '>' are accepted"
+            ))),
+        }
+    }
+}
+
+/// Continuous lifecycle gate on another signal's value.
+///
+/// ```yaml
+/// while:
+///   ref: link_state
+///   op: ">"
+///   value: 0
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "config",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
+pub struct WhileClause {
+    #[cfg_attr(feature = "config", serde(rename = "ref"))]
+    pub ref_id: String,
+    pub op: WhileOp,
+    pub value: f64,
+}
+
+/// Open / close debounce windows applied to a [`WhileClause`] transition.
+///
+/// `open` debounces a `false → true` transition; `close` debounces
+/// `true → false`. Either may be omitted (treated as `0s`). Validation
+/// requires `delay:` to be paired with `while:`; standalone `delay:`
+/// rejects at normalize time.
+///
+/// Durations are parsed from human-readable strings (`"250ms"`, `"5s"`)
+/// at YAML deserialization time, so the runtime never re-parses.
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "config",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(deny_unknown_fields)
+)]
+pub struct DelayClause {
+    #[cfg_attr(
+        feature = "config",
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "delay_duration_opt"
+        )
+    )]
+    pub open: Option<std::time::Duration>,
+    #[cfg_attr(
+        feature = "config",
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "delay_duration_opt"
+        )
+    )]
+    pub close: Option<std::time::Duration>,
+}
+
+#[cfg(feature = "config")]
+mod delay_duration_opt {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::config::validate::parse_delay_duration;
+
+    pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(d) => serializer.serialize_str(&format_duration(*d)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw: Option<String> = Option::deserialize(deserializer)?;
+        match raw {
+            Some(s) => parse_delay_duration(&s)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+
+    fn format_duration(d: Duration) -> String {
+        let total_ms = d.as_millis();
+        if total_ms == 0 {
+            return "0ms".to_string();
+        }
+        if total_ms.is_multiple_of(3_600_000) {
+            return format!("{}h", total_ms / 3_600_000);
+        }
+        if total_ms.is_multiple_of(60_000) {
+            return format!("{}m", total_ms / 60_000);
+        }
+        if total_ms.is_multiple_of(1_000) {
+            return format!("{}s", total_ms / 1_000);
+        }
+        format!("{total_ms}ms")
+    }
+}
+
+/// Discriminator labeling an edge or diagnostic as `after:` vs `while:`.
+///
+/// Used as the edge label in the dependency graph and as a field on
+/// [`compile_after::CompileAfterError`] variants that span both clause
+/// families. `#[non_exhaustive]` so future clause types extend without a
+/// breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+#[non_exhaustive]
+pub enum ClauseKind {
+    After,
+    While,
+}
+
+impl std::fmt::Display for ClauseKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ClauseKind::After => "after",
+            ClauseKind::While => "while",
+        })
+    }
 }

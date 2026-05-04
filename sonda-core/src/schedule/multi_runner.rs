@@ -12,6 +12,23 @@ use crate::config::ScenarioEntry;
 use crate::schedule::launch::{launch_scenario, prepare_entries};
 use crate::{RuntimeError, SondaError};
 
+#[cfg(feature = "config")]
+use crate::compiler::compile_after::CompiledFile;
+#[cfg(feature = "config")]
+use crate::compiler::prepare::translate_entry;
+#[cfg(feature = "config")]
+use crate::config::aliases::desugar_entry;
+#[cfg(feature = "config")]
+use crate::config::expand_entry;
+#[cfg(feature = "config")]
+use crate::schedule::core_loop::GateContext;
+#[cfg(feature = "config")]
+use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+#[cfg(feature = "config")]
+use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
+#[cfg(feature = "config")]
+use std::collections::HashMap;
+
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 ///
 /// Each scenario thread runs until either:
@@ -81,6 +98,178 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
     shutdown.store(false, Ordering::SeqCst);
 }
 
+/// Launch a compiled scenario file with `while:` / `after:` gating wired in,
+/// returning the live handles without joining them.
+///
+/// Equivalent to the spawn portion of [`run_multi_compiled`]: pre-builds an
+/// `Arc<GateBus>` per metric scenario id, subscribes each downstream to its
+/// upstream's bus, and launches every scenario with the matching
+/// [`GateContext`]. Returns the launched [`ScenarioHandle`]s so callers can
+/// observe per-scenario stats (for progress displays) before joining.
+#[cfg(feature = "config")]
+pub fn launch_multi_compiled(
+    file: CompiledFile,
+    shutdown: Arc<AtomicBool>,
+) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
+    let CompiledFile { entries, .. } = file;
+
+    let bus_ids = while_upstream_ids(&entries);
+    let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
+    for id in bus_ids {
+        buses.insert(id, Arc::new(GateBus::new()));
+    }
+
+    // Build (entry, gate_ctx, upstream_bus, start_delay, id) per scenario.
+    let mut launches: Vec<LaunchPlan> = Vec::with_capacity(entries.len());
+    for compiled_entry in entries.into_iter() {
+        let id = compiled_entry.id.clone();
+        let while_clause = compiled_entry.while_clause.clone();
+        let delay_clause = compiled_entry.delay_clause.clone();
+        let phase_offset = compiled_entry.phase_offset.clone();
+
+        let translated = translate_entry(compiled_entry).map_err(|e| {
+            SondaError::Config(crate::ConfigError::invalid(format!("compile prepare: {e}")))
+        })?;
+
+        // Mirror the expand → desugar → validate pipeline that
+        // `prepare_entries` runs for non-gated launches. Skipping it
+        // here would let operational aliases (flap, saturation, etc.)
+        // reach `create_generator()` un-desugared and panic at runtime.
+        let mut expanded = expand_entry(translated)?;
+        let translated = match expanded.len() {
+            0 => continue,
+            1 => expanded.remove(0),
+            _ => {
+                return Err(SondaError::Config(crate::ConfigError::invalid(format!(
+                    "scenario id {:?}: csv_replay multi-column expansion is not supported \
+                     when `while:` is in use; specify a single column or remove the gate",
+                    id.as_deref().unwrap_or("(anonymous)"),
+                ))));
+            }
+        };
+        let translated = desugar_entry(translated)?;
+        validate_entry(&translated)?;
+
+        let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
+
+        let gate_ctx = if let Some(ref clause) = while_clause {
+            let upstream = buses.get(&clause.ref_id).ok_or_else(|| {
+                SondaError::Config(crate::ConfigError::invalid(format!(
+                    "while: ref '{}' not found among scenario ids",
+                    clause.ref_id
+                )))
+            })?;
+            let spec = SubscriptionSpec {
+                after: None,
+                while_: Some(WhileSpec {
+                    op: clause.op,
+                    threshold: clause.value,
+                }),
+            };
+            let (rx, init) = upstream.subscribe(spec);
+            Some(GateContext {
+                gate_rx: rx,
+                initial: init,
+                delay: delay_clause,
+                has_after: false,
+                has_while: true,
+            })
+        } else {
+            None
+        };
+
+        let start_delay = match phase_offset {
+            Some(s) => crate::config::validate::parse_phase_offset(&s).map_err(|e| {
+                SondaError::Config(crate::ConfigError::invalid(format!("phase_offset: {e}")))
+            })?,
+            None => None,
+        };
+
+        launches.push(LaunchPlan {
+            id: id.clone(),
+            entry: translated,
+            gate_ctx,
+            upstream_bus,
+            start_delay,
+        });
+    }
+
+    let mut handles = Vec::with_capacity(launches.len());
+    for (idx, plan) in launches.into_iter().enumerate() {
+        let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
+        match launch_scenario_with_gates(
+            id,
+            plan.entry,
+            Arc::clone(&shutdown),
+            plan.start_delay,
+            plan.upstream_bus,
+            plan.gate_ctx,
+        ) {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                for handle in &handles {
+                    handle.stop();
+                }
+                for mut handle in handles {
+                    let _ = handle.join_timeout(std::time::Duration::from_secs(1));
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(handles)
+}
+
+/// Run a compiled scenario file with `while:` / `after:` gating wired in.
+///
+/// Spawns every scenario via [`launch_multi_compiled`] and joins the threads.
+/// Non-gated entries launch on the existing non-gated path with no per-tick
+/// overhead.
+#[cfg(feature = "config")]
+pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
+    let handles = launch_multi_compiled(file, shutdown)?;
+
+    let mut errors: Vec<String> = Vec::new();
+    for mut handle in handles {
+        match handle.join(None) {
+            Ok(()) => {}
+            Err(e) => errors.push(e.to_string()),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(SondaError::Runtime(RuntimeError::ScenariosFailed(
+            errors.join("; "),
+        )))
+    }
+}
+
+/// Collect the set of compiled-entry ids referenced by some `while:` clause.
+/// Only these ids need a [`GateBus`]; non-referenced entries publish nothing
+/// and skip the per-tick `tick()` lock.
+#[cfg(feature = "config")]
+fn while_upstream_ids(entries: &[crate::compiler::compile_after::CompiledEntry]) -> Vec<String> {
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.while_clause.as_ref().map(|w| w.ref_id.clone()))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[cfg(feature = "config")]
+struct LaunchPlan {
+    id: Option<String>,
+    entry: ScenarioEntry,
+    gate_ctx: Option<GateContext>,
+    upstream_bus: Option<Arc<GateBus>>,
+    start_delay: Option<std::time::Duration>,
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,6 +282,8 @@ mod tests {
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
 
+    #[cfg(feature = "config")]
+    use super::launch_multi_compiled;
     use super::{run_multi, signal_shutdown};
 
     /// Build a minimal metrics `ScenarioEntry` that writes to stdout.
@@ -772,5 +963,126 @@ mod tests {
             result.is_ok(),
             "scenarios with clock_group and offsets should complete"
         );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn while_upstream_ids_returns_only_entries_referenced_by_a_while_clause() {
+        use super::while_upstream_ids;
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream_a
+    signal_type: metrics
+    name: upstream_a
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 100.0
+      period_secs: 60.0
+  - id: middle_b
+    signal_type: metrics
+    name: middle_b
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_a
+      op: '>'
+      value: 50.0
+  - id: lonely_c
+    signal_type: metrics
+    name: lonely_c
+    generator:
+      type: constant
+      value: 1.0
+  - id: lonely_d
+    signal_type: metrics
+    name: lonely_d
+    generator:
+      type: constant
+      value: 1.0
+";
+        let resolver = InMemoryPackResolver::new();
+        let compiled =
+            compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+        let ids = while_upstream_ids(&compiled.entries);
+        assert_eq!(
+            ids,
+            vec!["upstream_a".to_string()],
+            "only entries referenced by some while: clause must get a bus, got {ids:?}"
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn launch_multi_compiled_partial_cleanup_stops_already_launched_handles() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: cleanup_a
+    signal_type: metrics
+    name: cleanup_a
+    generator:
+      type: constant
+      value: 1.0
+  - id: cleanup_b
+    signal_type: metrics
+    name: cleanup_b
+    generator:
+      type: constant
+      value: 2.0
+";
+        let resolver = InMemoryPackResolver::new();
+        let compiled =
+            compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let mut handles =
+            launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+        assert_eq!(handles.len(), 2, "must launch both entries");
+        assert!(
+            handles.iter().all(|h| h.is_alive()),
+            "both threads must be alive immediately after launch"
+        );
+
+        for handle in &handles {
+            handle.stop();
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            handles.iter().all(|h| !h.is_alive()),
+            "every handle must exit after stop() — partial-launch cleanup must not leak threads"
+        );
+
+        for handle in &mut handles {
+            handle
+                .join(Some(Duration::from_secs(1)))
+                .expect("join must succeed after stop");
+        }
     }
 }

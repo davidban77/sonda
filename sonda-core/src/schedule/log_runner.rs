@@ -13,7 +13,7 @@ use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
 use crate::model::metric::Labels;
-use crate::schedule::core_loop::{self, TickContext, TickResult};
+use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -67,6 +67,20 @@ pub fn run_logs_with_sink(
     sink: &mut dyn Sink,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
+) -> Result<(), SondaError> {
+    run_logs_with_sink_gated(config, sink, shutdown, stats, None)
+}
+
+/// Run a log scenario with optional `while:` / `after:` gating.
+///
+/// Logs cannot be `while:` upstreams (compile-time `NonMetricsTarget`),
+/// but they can be `while:`-gated downstreams.
+pub fn run_logs_with_sink_gated(
+    config: &LogScenarioConfig,
+    sink: &mut dyn Sink,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
     // Parse the schedule (duration, gap/burst/spike windows) from the shared
     // BaseScheduleConfig. This is the single authoritative parsing location —
@@ -133,8 +147,12 @@ pub fn run_logs_with_sink(
     // per-tick writes; the loop itself handles rate control, gap/burst/spike
     // windows, stats tracking, and shutdown. We flush after the loop returns.
     let stats_for_flush = stats.clone();
-    let loop_result =
-        core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn);
+    let loop_result = match gate_ctx {
+        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
+        Some(ctx) => {
+            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
+        }
+    };
 
     let flush_result = sink.flush();
     match loop_result {

@@ -8,17 +8,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::compiler::{DelayClause, WhileClause};
 use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
 use crate::config::{expand_entry, ScenarioEntry};
+use crate::schedule::core_loop::GateContext;
+use crate::schedule::gate_bus::GateBus;
 use crate::schedule::handle::ScenarioHandle;
-use crate::schedule::histogram_runner::run_with_sink as run_histogram_with_sink;
-use crate::schedule::log_runner::run_logs_with_sink;
-use crate::schedule::runner::run_with_sink;
-use crate::schedule::stats::ScenarioStats;
-use crate::schedule::summary_runner::run_with_sink as run_summary_with_sink;
+use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
+use crate::schedule::log_runner::run_logs_with_sink_gated;
+use crate::schedule::runner::run_with_sink_gated;
+use crate::schedule::stats::{ScenarioState, ScenarioStats};
+use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
 use crate::sink::create_sink;
 use crate::{ConfigError, RuntimeError, SondaError};
 
@@ -67,6 +70,12 @@ pub struct PreparedEntry {
     ///
     /// `None` when no phase offset was configured or when the offset is zero.
     pub start_delay: Option<Duration>,
+    /// Compiler-assigned id used for `while:` / `after:` ref resolution.
+    pub id: Option<String>,
+    /// Continuous-coupling gate this entry waits on.
+    pub while_clause: Option<WhileClause>,
+    /// Open / close debounce windows applied to `while:` transitions.
+    pub delay_clause: Option<DelayClause>,
 }
 
 /// Expand, validate, and resolve phase offsets for a batch of scenario entries.
@@ -144,7 +153,13 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
             None => None,
         };
 
-        prepared.push(PreparedEntry { entry, start_delay });
+        prepared.push(PreparedEntry {
+            entry,
+            start_delay,
+            id: None,
+            while_clause: None,
+            delay_clause: None,
+        });
     }
 
     Ok(prepared)
@@ -184,6 +199,22 @@ pub fn launch_scenario(
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
+    launch_scenario_with_gates(id, entry, shutdown, start_delay, None, None)
+}
+
+/// Launch a scenario with optional `while:` / `after:` gating wired in.
+///
+/// `upstream_bus` is the bus this scenario PUBLISHES into (for downstream
+/// gates to read its values). `gate_ctx` is what THIS scenario consumes
+/// from an upstream bus.
+pub fn launch_scenario_with_gates(
+    id: String,
+    entry: ScenarioEntry,
+    shutdown: Arc<AtomicBool>,
+    start_delay: Option<Duration>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
+) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
     let shutdown_for_thread = Arc::clone(&shutdown);
@@ -207,6 +238,9 @@ pub fn launch_scenario(
     // Ensure `running` ordering is visible from the new thread.
     shutdown.store(true, Ordering::SeqCst);
 
+    let stats_for_state = Arc::clone(&stats);
+    let is_gated = gate_ctx.is_some();
+
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
@@ -217,17 +251,20 @@ pub fn launch_scenario(
                 flag: alive_for_thread,
             };
 
-            // If a start delay is configured, sleep before entering the event
-            // loop. This enables phase-offset correlation between scenarios
-            // launched from the same multi-scenario config. The sleep respects
-            // the shutdown flag so that Ctrl+C during the delay exits promptly.
+            // Drop guard writes ScenarioState::Finished on every exit path.
+            let _state_guard = StateGuard {
+                stats: Arc::clone(&stats_for_state),
+            };
+
+            // Sleep through the start_delay before entering the event loop.
+            // State stays `Pending` for the delay window so /stats reports
+            // `pending` until the first tick is actually due.
             if let Some(delay) = start_delay {
                 let deadline = std::time::Instant::now() + delay;
                 while std::time::Instant::now() < deadline {
                     if !shutdown_for_thread.load(Ordering::SeqCst) {
                         return Ok(());
                     }
-                    // Poll every 50ms to keep shutdown responsive.
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     let sleep_chunk = remaining.min(Duration::from_millis(50));
                     if sleep_chunk > Duration::ZERO {
@@ -236,41 +273,54 @@ pub fn launch_scenario(
                 }
             }
 
+            // gated_loop owns its own state transitions; non-gated runs
+            // need someone to mark Running once the start_delay has elapsed.
+            if !is_gated {
+                if let Ok(mut st) = stats_for_state.write() {
+                    st.state = ScenarioState::Running;
+                }
+            }
+
             match entry {
                 ScenarioEntry::Metrics(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_with_sink(
+                    run_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        upstream_bus,
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Logs(config) => {
                     let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
-                    run_logs_with_sink(
+                    run_logs_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Histogram(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_histogram_with_sink(
+                    run_histogram_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
                 ScenarioEntry::Summary(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_summary_with_sink(
+                    run_summary_with_sink_gated(
                         &config,
                         sink.as_mut(),
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
+                        gate_ctx,
                     )
                 }
             }
@@ -296,6 +346,18 @@ struct AliveGuard {
 impl Drop for AliveGuard {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
+struct StateGuard {
+    stats: Arc<RwLock<ScenarioStats>>,
+}
+
+impl Drop for StateGuard {
+    fn drop(&mut self) {
+        if let Ok(mut st) = self.stats.write() {
+            st.state = ScenarioState::Finished;
+        }
     }
 }
 
@@ -1407,6 +1469,104 @@ mod tests {
         assert!(
             !alive.load(Ordering::SeqCst),
             "AliveGuard Drop must clear the alive flag even when the thread panics"
+        );
+    }
+
+    #[test]
+    fn state_guard_writes_finished_on_drop() {
+        let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            st.state = ScenarioState::Running;
+        }
+        {
+            let _g = StateGuard {
+                stats: Arc::clone(&stats),
+            };
+        }
+        assert_eq!(stats.read().unwrap().state, ScenarioState::Finished);
+    }
+
+    #[test]
+    fn state_guard_writes_finished_on_thread_panic() {
+        let stats = Arc::new(std::sync::RwLock::new(ScenarioStats::default()));
+        let stats_for_thread = Arc::clone(&stats);
+
+        let thread = std::thread::Builder::new()
+            .name("state-guard-panic".to_string())
+            .spawn(move || {
+                let _g = StateGuard {
+                    stats: stats_for_thread,
+                };
+                let always_none: Option<u32> = None;
+                always_none.expect("intentional panic for StateGuard test");
+            })
+            .expect("spawn must succeed");
+
+        let result = thread.join();
+        assert!(result.is_err(), "thread must panic");
+        assert_eq!(
+            stats.read().unwrap().state,
+            ScenarioState::Finished,
+            "StateGuard Drop must write Finished even on panic"
+        );
+    }
+
+    #[test]
+    fn state_remains_pending_during_start_delay_then_transitions_to_running() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = metrics_entry_indefinite("delayed_state");
+        let mut handle = launch_scenario(
+            "delayed-state-id".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            Some(Duration::from_millis(200)),
+        )
+        .expect("launch must succeed");
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Pending,
+            "scenario must report Pending while inside start_delay"
+        );
+
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Running,
+            "scenario must report Running once start_delay has elapsed"
+        );
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_non_gated_scenario_state_transitions_through_running_to_finished() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = metrics_entry("state_lifecycle");
+        let mut handle = launch_scenario("state-id".to_string(), entry, shutdown, None)
+            .expect("launch must succeed");
+
+        let mut saw_running = false;
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            if handle.stats_snapshot().state == ScenarioState::Running {
+                saw_running = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_running, "non-gated scenario must reach Running");
+
+        handle
+            .join(Some(Duration::from_secs(2)))
+            .expect("join must succeed");
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Finished,
+            "non-gated scenario must end in Finished"
         );
     }
 

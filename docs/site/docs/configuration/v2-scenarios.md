@@ -416,6 +416,207 @@ sonda catalog run link-failover
     `flap`, `saturation`, `leak`, `degradation`, `spike_event`. Using `steady` as the target is
     rejected -- sine crossings are ambiguous.
 
+For continuous gating that pauses and resumes a downstream as the upstream's value oscillates above and below a threshold, see [Continuous coupling with `while:`](#continuous-coupling-with-while).
+
+## Continuous coupling with `while:`
+
+`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing.
+
+```yaml title="scenarios/link-traffic.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: backup_traffic
+    signal_type: metrics
+    name: backup_link_throughput
+    generator:
+      type: constant
+      value: 50.0
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+```
+
+`backup_traffic` emits only while `primary_link` reports a value below `1` -- in other words, while the primary link is down. When the primary flaps back up, the gate closes and `backup_traffic` pauses; when the primary drops again, the gate reopens and emission resumes. The schedule is debounced via the optional `delay:` clause shown below.
+
+### Lifecycle states
+
+A scenario carrying a `while:` clause walks through four lifecycle states. The runtime exposes the live state on `GET /scenarios/{id}/stats` so monitors can react to gate transitions without polling the upstream signal.
+
+```
+            +-----------+
+            |  pending  |
+            +-----+-----+
+                  | upstream's first eligible tick
+                  v
+       +------+--------+   close transition
+       |              |    +------------+
+       |   running    |--->|   paused   |
+       |              |<---|            |
+       +------+-------+    +------------+
+              |  open transition
+              | duration elapsed / shutdown
+              v
+        +-----+-----+
+        |  finished |
+        +-----------+
+```
+
+`pending` covers the wait for the upstream's first eligible tick. The downstream enters `running` when the gate first opens, oscillates between `running` and `paused` for the rest of the run, and ends in `finished` when its `duration:` elapses or shutdown is signaled. A scenario with both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly -- `pending` need not always precede `running`.
+
+### Debouncing transitions with `delay:`
+
+Pair `while:` with `delay:` to debounce noisy upstream signals.
+
+```yaml
+  - id: backup_traffic
+    signal_type: metrics
+    name: backup_link_throughput
+    generator:
+      type: constant
+      value: 50.0
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+    delay:
+      open: 250ms
+      close: 1s
+```
+
+`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time.
+
+### Combining with `after:`
+
+`after:` and `while:` compose on the same entry. `after:` defers the scenario's first emission until an upstream crosses a threshold; `while:` then continuously gates the entry on every later edge. Pair them when a downstream should wait for a triggering event AND track the upstream's state thereafter -- a BGP session that opens once a link drops, then pauses every time the link briefly recovers.
+
+```yaml title="scenarios/bgp-session-cascade.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: bgp_session
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 1
+    after:
+      ref: primary_link
+      op: "<"
+      value: 1
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+```
+
+`bgp_session` stays `pending` until `after:` fires the first time `primary_link` drops below `1`. From that moment on `while:` takes over: the gate opens whenever the link is down, pauses when the link flaps back up, and reopens on the next drop. A scenario that uses both clauses with the gate already closed when `after:` fires enters `paused` directly -- the lifecycle skips `running` until the next gate-open edge.
+
+The two clauses may also reference different upstreams (e.g. `after:` on a link event, `while:` on a separate health signal); the compiler tracks the dependency graph for both edges independently.
+
+### `--dry-run` preview
+
+`sonda run --scenario scenarios/link-traffic.yaml --dry-run` renders the gate plumbing alongside the existing layout:
+
+```
+[config] [2/2] backup_link_throughput
+
+    name:           backup_link_throughput
+    signal:         metrics
+    rate:           1/s
+    duration:       5m
+    generator:      constant (value: 50)
+    encoder:        prometheus_text
+    sink:           stdout
+    while:          upstream='primary_link' op='<' value=1
+    first_open:     ~60s
+```
+
+The `first_open:` line shows the analytical time at which the upstream's value first satisfies the predicate, computed from the upstream generator's shape. When the upstream's generator is non-analytical (`sine`, `uniform`, `csv_replay`, `steady`), `first_open` renders as `<indeterminate -- non-analytical generator>` -- the gate still works at runtime, but no compile-time crossing time is available.
+
+When an entry carries both `after:` and `while:` against different upstreams, both cues render side by side: `after_first_fire: <duration> (ref: <upstream_id>)` shows when the `after:` clause fires, while `first_open:` shows the time the `while:` gate first opens. Operators read `max(after_first_fire, first_open)` to know when the downstream first emits. When `after:` and `while:` share the same upstream they collapse into a single `phase_offset:` line.
+
+### Supported operators
+
+`while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time -- equality on a continuous-valued upstream is numerically unsafe and forbidden by design.
+
+### Migrating an `after:`-only cascade to `while:` with recovery
+
+The `link-failover` scenario described above uses `after:` to start a `backup_link_utilization` saturation curve once the primary link drops below `1`. With `after:` the dependent scenario runs to completion regardless of what the primary does next -- if the primary recovers mid-cascade, the backup keeps emitting.
+
+To make the backup track the primary's state continuously, swap `after:` for `while:` on the cascade members that should pause when the primary recovers:
+
+```yaml title="scenarios/link-failover-recovery.yaml"
+version: 2
+
+defaults:
+  rate: 1
+  duration: 5m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: primary_link
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 30s
+
+  - id: backup_util
+    signal_type: metrics
+    name: backup_link_utilization
+    generator:
+      type: saturation
+      baseline: 20
+      ceiling: 85
+      time_to_saturate: 2m
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+    delay:
+      close: 5s
+```
+
+The `delay.close: 5s` debounces flap transitions: a brief recovery on the primary does not immediately tear down `backup_util`, but a sustained recovery longer than 5s does.
+
 ## Pack-backed entries
 
 Reference a [metric pack](../guides/metric-packs.md) directly from a scenarios entry. Sonda

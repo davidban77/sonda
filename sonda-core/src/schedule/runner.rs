@@ -14,7 +14,8 @@ use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{self, TickContext, TickResult};
+use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
+use crate::schedule::gate_bus::GateBus;
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -70,6 +71,23 @@ pub fn run_with_sink(
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
+    run_with_sink_gated(config, sink, shutdown, stats, None, None)
+}
+
+/// Run a metric scenario with optional `while:` / `after:` gating.
+///
+/// `upstream_bus` is the bus this scenario PUBLISHES into (for downstream
+/// gates to subscribe to). `gate_ctx` is what THIS scenario consumes from
+/// an upstream bus. Both are independent — a scenario can be both an
+/// upstream (publishing) and a downstream (gated).
+pub fn run_with_sink_gated(
+    config: &ScenarioConfig,
+    sink: &mut dyn Sink,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
+) -> Result<(), SondaError> {
     // Parse the schedule (duration, gap/burst/spike windows) from the shared
     // BaseScheduleConfig. This is the single authoritative parsing location —
     // no duplication with the log runner.
@@ -106,12 +124,16 @@ pub fn run_with_sink(
 
     // Build the per-tick closure that performs metric-specific work:
     // generate value → evaluate spike labels → build MetricEvent → encode → write.
+    let upstream_bus_for_tick = upstream_bus.clone();
     let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
         // Timestamp the event at the start of this tick.
         let wall_now = std::time::SystemTime::now();
 
         // Generate the value for this tick.
         let value = generator.value(ctx.tick);
+        if let Some(ref bus) = upstream_bus_for_tick {
+            bus.tick(value);
+        }
 
         // Build the per-tick label set. In the common case (no spike windows
         // and no dynamic labels) this is just an Arc refcount bump — O(1),
@@ -164,8 +186,12 @@ pub fn run_with_sink(
     // per-tick writes; the loop itself handles rate control, gap/burst/spike
     // windows, stats tracking, and shutdown. We flush after the loop returns.
     let stats_for_flush = stats.clone();
-    let loop_result =
-        core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn);
+    let loop_result = match gate_ctx {
+        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
+        Some(ctx) => {
+            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
+        }
+    };
 
     let flush_result = sink.flush();
     match loop_result {
