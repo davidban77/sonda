@@ -104,6 +104,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
         delay: None,
         has_after: false,
         has_while: true,
+        close_emit: None,
     };
 
     let entry = metrics_entry("downstream", 200.0, 600);
@@ -166,6 +167,7 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -206,6 +208,7 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -241,6 +244,7 @@ fn while_runtime_no_catch_up_burst_on_resume() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -337,6 +341,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -413,6 +418,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -475,6 +481,7 @@ fn while_runtime_finished_state_after_duration_expires() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -510,6 +517,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch a must succeed");
@@ -526,6 +534,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch b must succeed");
@@ -569,6 +578,7 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -611,6 +621,8 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     let delay = DelayClause {
         open: Some(Duration::from_millis(250)),
         close: None,
+        close_stale_marker: None,
+        close_snap_to: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(true));
@@ -627,6 +639,7 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
             delay: Some(delay),
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -685,6 +698,7 @@ fn while_runtime_strict_lt_threshold_gating() {
             delay: None,
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -724,6 +738,7 @@ fn scenario_restart_does_not_leak_gate_bus() {
                 delay: None,
                 has_after: false,
                 has_while: true,
+                close_emit: None,
             }),
         )
         .expect("launch must succeed");
@@ -754,6 +769,8 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     let delay = DelayClause {
         open: None,
         close: Some(Duration::from_millis(200)),
+        close_stale_marker: None,
+        close_snap_to: None,
     };
 
     let shutdown = Arc::new(AtomicBool::new(true));
@@ -770,6 +787,7 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
             delay: Some(delay),
             has_after: false,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -846,6 +864,7 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
             delay: None,
             has_after: true,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -916,6 +935,7 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
             delay: None,
             has_after: true,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -997,6 +1017,7 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
             delay: None,
             has_after: true,
             has_while: true,
+            close_emit: None,
         }),
     )
     .expect("launch must succeed");
@@ -1070,6 +1091,7 @@ fn while_runtime_steady_within_5pct_of_baseline() {
                 delay: None,
                 has_after: false,
                 has_while: true,
+                close_emit: None,
             }),
         )
         .unwrap();
@@ -1094,4 +1116,139 @@ fn while_runtime_steady_within_5pct_of_baseline() {
         (0.90..=1.10).contains(&ratio),
         "gated/baseline event ratio {ratio:.3} outside [0.90, 1.10]; baseline={baseline}, gated={gated}"
     );
+}
+
+#[test]
+fn close_emit_conflict_compile_error_when_snap_to_and_stale_marker_false() {
+    use sonda_core::compile_scenario_file_compiled;
+    use sonda_core::compiler::expand::InMemoryPackResolver;
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 30s
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: '<'
+      value: 1
+    delay:
+      close:
+        snap_to: 0
+        stale_marker: false
+";
+    let resolver = InMemoryPackResolver::new();
+    let result = compile_scenario_file_compiled(yaml, &resolver);
+    let err = result.expect_err("conflicting delay.close fields must reject");
+
+    let mut chain = String::new();
+    let mut cur: Option<&dyn std::error::Error> = Some(&err);
+    while let Some(e) = cur {
+        chain.push_str(&format!("{e}; "));
+        cur = e.source();
+    }
+    assert!(
+        chain.contains("snap_to") && chain.contains("stale marker"),
+        "error chain must mention both 'snap_to' and 'stale marker', got: {chain}"
+    );
+}
+
+#[test]
+fn delay_close_legacy_shorthand_still_deserializes() {
+    use sonda_core::compile_scenario_file_compiled;
+    use sonda_core::compiler::expand::InMemoryPackResolver;
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 30s
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: '<'
+      value: 1
+    delay:
+      close: 5s
+";
+    let resolver = InMemoryPackResolver::new();
+    compile_scenario_file_compiled(yaml, &resolver)
+        .expect("legacy delay.close shorthand must still parse");
+}
+
+#[test]
+fn delay_close_extended_form_deserializes_all_fields() {
+    use sonda_core::compile_scenario_file_compiled;
+    use sonda_core::compiler::expand::InMemoryPackResolver;
+
+    let yaml = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 30s
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: '<'
+      value: 1
+    delay:
+      open: 250ms
+      close:
+        duration: 5s
+        snap_to: 0
+";
+    let resolver = InMemoryPackResolver::new();
+    compile_scenario_file_compiled(yaml, &resolver).expect("extended delay.close form must parse");
 }

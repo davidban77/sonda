@@ -1606,4 +1606,143 @@ scenarios:
             "consecutive_failures must not advance while paused (baseline={baseline}, after={after})"
         );
     }
+
+    /// Posting a v2 cascade with the new extended `delay.close` shape (struct
+    /// form with `snap_to`) accepts and runs end-to-end. The downstream
+    /// reaches `paused` after the upstream's gate closes.
+    const STALE_MARKER_CASCADE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 200ms
+  - id: bgp_oper_state
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 2.0
+    while:
+      ref: link
+      op: '<'
+      value: 1
+    delay:
+      close:
+        duration: 0s
+        snap_to: 1
+";
+
+    #[test]
+    fn post_cascade_with_extended_delay_close_form_runs_to_paused() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(STALE_MARKER_CASCADE_YAML)
+            .send()
+            .expect("POST cascade must succeed");
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "extended delay.close shape must be accepted"
+        );
+
+        let body: serde_json::Value = resp.json().expect("body is JSON");
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("response carries scenarios array");
+        let downstream_id = scenarios
+            .iter()
+            .find(|s| s["name"] == "bgp_oper_state")
+            .expect("downstream entry present")["id"]
+            .as_str()
+            .expect("downstream id is a string")
+            .to_string();
+
+        let mut observed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            if let Some(s) = poll_state(&client, port, &downstream_id) {
+                observed.insert(s);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(
+            observed.contains("paused"),
+            "downstream must reach 'paused' at least once, observed: {observed:?}"
+        );
+    }
+
+    /// Conflicting `delay.close.snap_to` + `delay.close.stale_marker: false`
+    /// is rejected at compile time and surfaces as 422 from the server.
+    const CONFLICTING_DELAY_CLOSE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 30s
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: link
+      op: '<'
+      value: 1
+    delay:
+      close:
+        snap_to: 0
+        stale_marker: false
+";
+
+    #[test]
+    fn post_cascade_with_conflicting_close_emit_returns_400() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(CONFLICTING_DELAY_CLOSE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert!(
+            (400..500).contains(&status),
+            "conflicting close-emit must return 4xx, got {status}"
+        );
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("snap_to"),
+            "error must mention 'snap_to', got: {body}"
+        );
+    }
 }
