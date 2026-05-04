@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0](https://github.com/davidban77/sonda/compare/v1.4.0...v1.5.0) (2026-05-04)
+
+
+### Features
+
+* continuous coupling — `while:` lifecycle gating ([#295](https://github.com/davidban77/sonda/issues/295)) ([#313](https://github.com/davidban77/sonda/issues/313)) ([ec70e53](https://github.com/davidban77/sonda/commit/ec70e538581d64c3bf5d0d663ccab372a7af3e1e))
+
 ## [1.4.0](https://github.com/davidban77/sonda/compare/v1.3.0...v1.4.0) (2026-05-02)
 
 
