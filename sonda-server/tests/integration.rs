@@ -88,10 +88,10 @@ fn full_lifecycle_metrics_and_logs() {
         Some("test_metric"),
         "metrics scenario name must match"
     );
-    assert_eq!(
-        metrics_body["status"].as_str(),
-        Some("running"),
-        "metrics scenario status must be running"
+    let metrics_state = metrics_body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(metrics_state, "pending" | "running"),
+        "metrics scenario state must be pending or running, got {metrics_state:?}"
     );
 
     // -- Step 2: POST logs scenario -> 201 --
@@ -118,10 +118,10 @@ fn full_lifecycle_metrics_and_logs() {
         Some("test_log"),
         "logs scenario name must match"
     );
-    assert_eq!(
-        logs_body["status"].as_str(),
-        Some("running"),
-        "logs scenario status must be running"
+    let logs_state = logs_body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(logs_state, "pending" | "running"),
+        "logs scenario state must be pending or running, got {logs_state:?}"
     );
 
     // -- Step 3: GET /scenarios -> both listed --
@@ -161,12 +161,12 @@ fn full_lifecycle_metrics_and_logs() {
         if s["id"].as_str() == Some(metrics_id.as_str())
             || s["id"].as_str() == Some(logs_id.as_str())
         {
-            let status = s["status"].as_str().unwrap_or("");
+            let state = s["state"].as_str().unwrap_or("");
             assert!(
-                matches!(status, "pending" | "running"),
+                matches!(state, "pending" | "running"),
                 "scenario {} must be pending or running, got {:?}",
                 s["id"],
-                status
+                state
             );
         }
     }

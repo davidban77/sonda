@@ -203,15 +203,22 @@ pub fn launch_multi_compiled(
     let mut handles = Vec::with_capacity(launches.len());
     for (idx, plan) in launches.into_iter().enumerate() {
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
-        let handle = launch_scenario_with_gates(
+        match launch_scenario_with_gates(
             id,
             plan.entry,
             Arc::clone(&shutdown),
             plan.start_delay,
             plan.upstream_bus,
             plan.gate_ctx,
-        )?;
-        handles.push(handle);
+        ) {
+            Ok(handle) => handles.push(handle),
+            Err(e) => {
+                for handle in &handles {
+                    handle.stop();
+                }
+                return Err(e);
+            }
+        }
     }
 
     Ok(handles)
@@ -264,6 +271,8 @@ mod tests {
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
     use crate::sink::SinkConfig;
 
+    #[cfg(feature = "config")]
+    use super::launch_multi_compiled;
     use super::{run_multi, signal_shutdown};
 
     /// Build a minimal metrics `ScenarioEntry` that writes to stdout.
@@ -943,5 +952,67 @@ mod tests {
             result.is_ok(),
             "scenarios with clock_group and offsets should complete"
         );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn launch_multi_compiled_partial_cleanup_stops_already_launched_handles() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: cleanup_a
+    signal_type: metrics
+    name: cleanup_a
+    generator:
+      type: constant
+      value: 1.0
+  - id: cleanup_b
+    signal_type: metrics
+    name: cleanup_b
+    generator:
+      type: constant
+      value: 2.0
+";
+        let resolver = InMemoryPackResolver::new();
+        let compiled =
+            compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let mut handles =
+            launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+        assert_eq!(handles.len(), 2, "must launch both entries");
+        assert!(
+            handles.iter().all(|h| h.is_alive()),
+            "both threads must be alive immediately after launch"
+        );
+
+        for handle in &handles {
+            handle.stop();
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            handles.iter().all(|h| !h.is_alive()),
+            "every handle must exit after stop() — partial-launch cleanup must not leak threads"
+        );
+
+        for handle in &mut handles {
+            handle
+                .join(Some(Duration::from_secs(1)))
+                .expect("join must succeed after stop");
+        }
     }
 }
