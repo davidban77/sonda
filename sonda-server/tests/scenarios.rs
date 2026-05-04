@@ -92,7 +92,11 @@ fn post_valid_metrics_yaml_returns_201() {
         "response must contain a non-empty scenario ID"
     );
     assert_eq!(body["name"], "integration_metric");
-    assert_eq!(body["status"], "running");
+    let s = body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(s, "pending" | "running"),
+        "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+    );
 }
 
 // ---- Test: POST valid logs YAML -> 201 ----------------------------------------
@@ -118,7 +122,11 @@ fn post_valid_logs_yaml_returns_201() {
 
     let body: serde_json::Value = resp.json().expect("response must be valid JSON");
     assert_eq!(body["name"], "integration_logs");
-    assert_eq!(body["status"], "running");
+    let s = body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(s, "pending" | "running"),
+        "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+    );
 }
 
 // ---- Test: POST with signal_type: metrics -> 201 (ScenarioEntry format) -------
@@ -263,7 +271,11 @@ fn post_valid_json_returns_201() {
 
     let body: serde_json::Value = resp.json().expect("response must be valid JSON");
     assert_eq!(body["name"], "json_integration");
-    assert_eq!(body["status"], "running");
+    let s = body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(s, "pending" | "running"),
+        "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+    );
 }
 
 // ---- Test: Response ID is a valid UUID ----------------------------------------
@@ -374,7 +386,11 @@ fn post_multi_scenario_yaml_returns_201_with_scenarios_array() {
     for entry in scenarios {
         assert!(entry["id"].is_string());
         assert!(entry["name"].is_string());
-        assert_eq!(entry["status"], "running");
+        let s = entry["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(s, "pending" | "running"),
+            "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+        );
     }
 
     // Verify names match input order.
@@ -629,7 +645,11 @@ fn post_single_scenario_backward_compat() {
     );
     assert!(body["id"].is_string());
     assert_eq!(body["name"], "integration_metric");
-    assert_eq!(body["status"], "running");
+    let s = body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(s, "pending" | "running"),
+        "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+    );
 }
 
 // ---- Test: v2 end-to-end acceptance ------------------------------------------
@@ -664,7 +684,11 @@ fn post_v2_yaml_end_to_end_runs_scenario() {
         .expect("response must carry a scenario id")
         .to_string();
     assert_eq!(body["name"], "integration_metric");
-    assert_eq!(body["status"], "running");
+    let s = body["state"].as_str().unwrap_or("");
+    assert!(
+        matches!(s, "pending" | "running"),
+        "state must be 'pending' or 'running' for a freshly launched scenario, got {s:?}"
+    );
 
     // The scenario appears in the GET /scenarios listing.
     let list = client
@@ -1113,4 +1137,473 @@ scenarios:
         detail.contains("v2"),
         "detail must mention v2 requirement, got: {detail}"
     );
+}
+
+// ---- Gated launch through POST /scenarios -----------------------------------
+
+mod gated_scenarios {
+    use super::common;
+    use std::time::{Duration, Instant};
+
+    /// 2-entry cascade: a flap upstream + downstream gated by `while:`.
+    /// `delay: { open: 0s, close: 0s }` strips the debounce so state edges
+    /// land on `/stats` deterministically. Duration 2s leaves a comfortable
+    /// margin for the polling loop.
+    const FLAP_CASCADE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: primary_flap
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 200ms
+  - id: gated_downstream
+    signal_type: metrics
+    name: gated_downstream
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: primary_flap
+      op: \"<\"
+      value: 1
+    delay:
+      open: 0s
+      close: 0s
+";
+
+    fn poll_state(client: &reqwest::blocking::Client, port: u16, id: &str) -> Option<String> {
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/scenarios/{id}/stats"))
+            .send()
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let body: serde_json::Value = resp.json().ok()?;
+        body["state"].as_str().map(|s| s.to_string())
+    }
+
+    #[test]
+    fn post_gated_cascade_observes_pending_running_paused_states() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(FLAP_CASCADE_YAML)
+            .send()
+            .expect("POST cascade must succeed");
+        assert_eq!(resp.status().as_u16(), 201, "POST must return 201");
+
+        let body: serde_json::Value = resp.json().expect("response must be JSON");
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("response must contain scenarios array");
+        assert_eq!(scenarios.len(), 2);
+        let downstream_id = scenarios
+            .iter()
+            .find(|s| s["name"] == "gated_downstream")
+            .expect("downstream entry present in response")["id"]
+            .as_str()
+            .expect("downstream id is a string")
+            .to_string();
+
+        let mut observed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        while Instant::now() < deadline {
+            if let Some(s) = poll_state(&client, port, &downstream_id) {
+                observed.insert(s);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(
+            observed.contains("running"),
+            "downstream must reach 'running' during the upstream's down-phase, observed: {observed:?}"
+        );
+        assert!(
+            observed.contains("paused"),
+            "downstream must reach 'paused' during the upstream's up-phase, observed: {observed:?}"
+        );
+    }
+
+    /// Upstream flap with a long up_duration keeps the gate closed for the
+    /// duration of the test, so the downstream's POST response carries
+    /// `state: "pending"` for its initial snapshot. The upstream's response
+    /// reports `pending` or `running` depending on whether the runner has
+    /// posted its first tick by the time the snapshot is taken.
+    const PENDING_DOWNSTREAM_YAML: &str = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream_high
+    signal_type: metrics
+    name: upstream_high
+    generator:
+      type: flap
+      up_duration: 60s
+      down_duration: 1s
+      up_value: 1.0
+      down_value: 0.0
+  - id: downstream_gated
+    signal_type: metrics
+    name: downstream_gated
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_high
+      op: \"<\"
+      value: 1
+";
+
+    #[test]
+    fn post_gated_downstream_response_reports_pending_state() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(PENDING_DOWNSTREAM_YAML)
+            .send()
+            .expect("POST must succeed");
+        assert_eq!(resp.status().as_u16(), 201);
+
+        let body: serde_json::Value = resp.json().expect("body is JSON");
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("multi response carries scenarios array");
+        let downstream = scenarios
+            .iter()
+            .find(|s| s["name"] == "downstream_gated")
+            .expect("downstream present");
+        let state = downstream["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(state, "pending" | "paused"),
+            "downstream must report 'pending' or 'paused' at POST-response time when its upstream \
+             gate has never opened (must NOT be 'running'), got {state:?}"
+        );
+
+        let upstream = scenarios
+            .iter()
+            .find(|s| s["name"] == "upstream_high")
+            .expect("upstream present");
+        let upstream_state = upstream["state"].as_str().unwrap_or("");
+        assert!(
+            matches!(upstream_state, "pending" | "running"),
+            "upstream must report 'pending' or 'running' at POST time, got {upstream_state:?}"
+        );
+    }
+
+    const TWO_ENTRY_YAML: &str = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: dup_a
+    signal_type: metrics
+    name: dup_a
+    generator:
+      type: constant
+      value: 1.0
+  - id: dup_b
+    signal_type: metrics
+    name: dup_b
+    generator:
+      type: constant
+      value: 2.0
+";
+
+    #[test]
+    fn post_same_yaml_twice_returns_distinct_uuids() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let post_once = || -> Vec<String> {
+            let resp = client
+                .post(format!("http://127.0.0.1:{port}/scenarios"))
+                .header("content-type", "application/x-yaml")
+                .body(TWO_ENTRY_YAML)
+                .send()
+                .expect("POST must succeed");
+            assert_eq!(resp.status().as_u16(), 201);
+            let body: serde_json::Value = resp.json().expect("body is JSON");
+            body["scenarios"]
+                .as_array()
+                .expect("scenarios array")
+                .iter()
+                .map(|s| s["id"].as_str().expect("id is string").to_string())
+                .collect()
+        };
+
+        let first = post_once();
+        let second = post_once();
+        let mut all = Vec::new();
+        all.extend(first);
+        all.extend(second);
+        assert_eq!(all.len(), 4);
+        let unique: std::collections::BTreeSet<&String> = all.iter().collect();
+        assert_eq!(unique.len(), 4, "all 4 ids must be distinct, got {all:?}");
+        for id in &all {
+            assert!(
+                uuid::Uuid::parse_str(id).is_ok(),
+                "id must be a valid UUID, got {id}"
+            );
+        }
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/scenarios"))
+            .send()
+            .expect("GET /scenarios must succeed");
+        let body: serde_json::Value = resp.json().expect("body is JSON");
+        let listed: std::collections::BTreeSet<&str> = body["scenarios"]
+            .as_array()
+            .expect("scenarios array")
+            .iter()
+            .filter_map(|s| s["id"].as_str())
+            .collect();
+        for id in &all {
+            assert!(
+                listed.contains(id.as_str()),
+                "posted id {id} must appear in GET /scenarios"
+            );
+        }
+    }
+
+    /// Cover all four signal types using alias generators where applicable —
+    /// proves `launch_multi_compiled`'s desugar+expand+validate pipeline is
+    /// semantically equivalent to the previous non-gated `prepare_entries`
+    /// path.
+    const ALL_SIGNAL_TYPES_YAML: &str = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 500ms
+scenarios:
+  - id: alias_metric
+    signal_type: metrics
+    name: alias_metric
+    generator:
+      type: flap
+      up_duration: 100ms
+      down_duration: 100ms
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - id: plain_logs
+    signal_type: logs
+    name: plain_logs
+    log_generator:
+      type: template
+      templates:
+        - message: \"alias log line\"
+          field_pools: {}
+      seed: 0
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+  - id: hist_metric
+    signal_type: histogram
+    name: hist_metric
+    distribution:
+      type: exponential
+      rate: 10.0
+    observations_per_tick: 16
+    seed: 1
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+  - id: summary_metric
+    signal_type: summary
+    name: summary_metric
+    distribution:
+      type: normal
+      mean: 0.1
+      stddev: 0.02
+    observations_per_tick: 16
+    seed: 2
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+";
+
+    #[test]
+    fn post_all_signal_types_with_alias_generators_returns_201() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(ALL_SIGNAL_TYPES_YAML)
+            .send()
+            .expect("POST mixed signal types must succeed");
+
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "all four signal types with alias generators must return 201"
+        );
+
+        let body: serde_json::Value = resp.json().expect("response is JSON");
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("multi response carries scenarios array");
+        assert_eq!(scenarios.len(), 4);
+        let names: std::collections::BTreeSet<&str> = scenarios
+            .iter()
+            .filter_map(|s| s["name"].as_str())
+            .collect();
+        assert!(names.contains("alias_metric"));
+        assert!(names.contains("plain_logs"));
+        assert!(names.contains("hist_metric"));
+        assert!(names.contains("summary_metric"));
+    }
+
+    /// 2-entry cyclic `while:` body — compile_after rejects with cycle error,
+    /// the handler maps that to 400 Bad Request.
+    const CYCLIC_WHILE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: a
+    signal_type: metrics
+    name: a
+    generator:
+      type: flap
+      up_duration: 100ms
+      down_duration: 100ms
+    while:
+      ref: b
+      op: \"<\"
+      value: 1
+  - id: b
+    signal_type: metrics
+    name: b
+    generator:
+      type: flap
+      up_duration: 100ms
+      down_duration: 100ms
+    while:
+      ref: a
+      op: \"<\"
+      value: 1
+";
+
+    #[test]
+    fn post_cyclic_while_returns_400() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(CYCLIC_WHILE_YAML)
+            .send()
+            .expect("POST cyclic while must reach the server");
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "cyclic while: must surface as 400 Bad Request"
+        );
+    }
+
+    #[test]
+    fn paused_scenario_does_not_mutate_consecutive_failures() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(FLAP_CASCADE_YAML)
+            .send()
+            .expect("POST cascade must succeed");
+        assert_eq!(resp.status().as_u16(), 201);
+
+        let body: serde_json::Value = resp.json().expect("body is JSON");
+        let downstream_id = body["scenarios"]
+            .as_array()
+            .expect("scenarios array")
+            .iter()
+            .find(|s| s["name"] == "gated_downstream")
+            .expect("downstream entry")["id"]
+            .as_str()
+            .expect("downstream id")
+            .to_string();
+
+        // Wait for the downstream to enter `paused` (during upstream's up-phase).
+        let mut found_paused_failures: Option<u64> = None;
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < deadline {
+            let stats = client
+                .get(format!(
+                    "http://127.0.0.1:{port}/scenarios/{downstream_id}/stats"
+                ))
+                .send()
+                .expect("GET stats must succeed");
+            let body: serde_json::Value = stats.json().expect("stats body is JSON");
+            if body["state"].as_str() == Some("paused") {
+                found_paused_failures = body["consecutive_failures"].as_u64();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let baseline = found_paused_failures
+            .expect("downstream must reach paused state within 800ms for the assertion to fire");
+
+        // Hold paused for 500ms (longer than the 200ms up-phase, so the
+        // sample window may straddle a transition). The stronger guarantee
+        // is: across consecutive paused samples, the failure counter does
+        // not advance — the runner is not running ticks.
+        std::thread::sleep(Duration::from_millis(500));
+
+        let stats = client
+            .get(format!(
+                "http://127.0.0.1:{port}/scenarios/{downstream_id}/stats"
+            ))
+            .send()
+            .expect("GET stats must succeed");
+        let body: serde_json::Value = stats.json().expect("stats body is JSON");
+        let after = body["consecutive_failures"].as_u64().expect("u64 field");
+        // For a stdout sink, baseline is 0 and after must also be 0.
+        assert_eq!(
+            after, baseline,
+            "consecutive_failures must not advance while paused (baseline={baseline}, after={after})"
+        );
+    }
 }
