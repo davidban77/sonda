@@ -1,6 +1,6 @@
 //! Shared schedule loop for metrics, logs, histograms, and summaries.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -145,11 +145,27 @@ pub(crate) fn run_schedule_loop(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
+    run_schedule_loop_with_initial_tick(schedule, rate, shutdown, stats, 0, None, tick_fn)
+}
+
+/// Run the schedule loop starting from `initial_tick`, optionally reporting the
+/// last tick reached on exit through `last_tick_out`. Used by `gated_loop` to
+/// continue the tick counter across pause/resume instead of restarting at 0.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_schedule_loop_with_initial_tick(
+    schedule: &ParsedSchedule,
+    rate: f64,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    initial_tick: u64,
+    last_tick_out: Option<&AtomicU64>,
+    tick_fn: &mut TickFn<'_>,
+) -> Result<(), SondaError> {
     let base_interval = Duration::from_secs_f64(1.0 / rate);
 
     let start = Instant::now();
     let mut next_deadline = start;
-    let mut tick: u64 = 0;
+    let mut tick: u64 = initial_tick;
 
     // Stats tracking: snapshot of tick count and wall clock taken once per
     // second to compute current_rate.
@@ -195,7 +211,8 @@ pub(crate) fn run_schedule_loop(
                 // tick from elapsed time at base rate.
                 let now = Instant::now();
                 next_deadline = now;
-                tick = (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
+                tick = initial_tick
+                    + (start.elapsed().as_secs_f64() / base_interval.as_secs_f64()) as u64;
                 continue;
             }
         }
@@ -306,6 +323,9 @@ pub(crate) fn run_schedule_loop(
         tick += 1;
     }
 
+    if let Some(out) = last_tick_out {
+        out.store(tick, Ordering::SeqCst);
+    }
     Ok(())
 }
 
@@ -368,8 +388,10 @@ pub struct GateContext {
 ///
 /// The wrapper owns the `pending → running ↔ paused → finished` state
 /// machine. Each `Running` segment delegates to a fresh
-/// [`run_schedule_loop`] call so the inner loop's deadline and tick
-/// counters reset naturally on resume — no catch-up burst.
+/// [`run_schedule_loop`] call. The deadline resets to `Instant::now()`
+/// on resume so no catch-up burst fires, but the tick counter is
+/// preserved across pauses: a generator that emitted N events before
+/// pause continues from tick N on resume.
 ///
 /// On `WhileClose` the wrapper breaks out of the inner loop via a
 /// segment-scoped flag, transitions to `Paused`, and blocks on
@@ -402,6 +424,9 @@ pub(crate) fn gated_loop(
     };
 
     let mut debounce = DebounceState::from_clause(gate_ctx.delay.as_ref());
+
+    // Carry the next tick across pause/resume so generators don't restart.
+    let mut next_tick: u64 = 0;
 
     write_state(&stats, ScenarioState::Pending, false);
 
@@ -459,6 +484,7 @@ pub(crate) fn gated_loop(
                 // Run a fresh schedule segment. Break out on WhileClose,
                 // user shutdown, or duration expiry.
                 let segment_running = Arc::new(AtomicBool::new(true));
+                let last_tick = Arc::new(AtomicU64::new(next_tick));
                 let exit = run_running_segment(
                     schedule,
                     rate,
@@ -466,8 +492,11 @@ pub(crate) fn gated_loop(
                     stats.clone(),
                     &gate_ctx,
                     &segment_running,
+                    next_tick,
+                    Arc::clone(&last_tick),
                     tick_fn,
                 )?;
+                next_tick = last_tick.load(Ordering::SeqCst);
 
                 // Distinguish reasons: user shutdown / duration → Finished;
                 // WhileClose → Paused (debounced by delay.close).
@@ -643,6 +672,11 @@ fn debounce_close_to_paused(
 /// `tick_fn` that polls the gate channel after every successful tick.
 /// On `WhileClose` the segment_running flag is cleared so the inner loop
 /// exits at its top-of-loop shutdown check.
+///
+/// `initial_tick` seeds the inner loop's tick counter on resume; `last_tick`
+/// captures the next tick the inner loop would have fired so the next segment
+/// continues from there.
+#[allow(clippy::too_many_arguments)]
 fn run_running_segment(
     schedule: &ParsedSchedule,
     rate: f64,
@@ -650,6 +684,8 @@ fn run_running_segment(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &GateContext,
     segment_running: &Arc<AtomicBool>,
+    initial_tick: u64,
+    last_tick: Arc<AtomicU64>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<SegmentExit, SondaError> {
     let saw_close = Arc::new(AtomicBool::new(false));
@@ -694,11 +730,13 @@ fn run_running_segment(
         },
     );
 
-    run_schedule_loop(
+    run_schedule_loop_with_initial_tick(
         schedule,
         rate,
         Some(segment_running.as_ref()),
         stats,
+        initial_tick,
+        Some(last_tick.as_ref()),
         wrapped.as_mut(),
     )?;
 
@@ -1397,6 +1435,62 @@ mod tests {
     }
 
     // ---- Contract: TickResult fields ----------------------------------------
+
+    #[test]
+    fn run_schedule_loop_with_initial_tick_seeds_first_tick_value() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        let observed_first = std::sync::Mutex::new(None::<u64>);
+
+        let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            let mut g = observed_first.lock().unwrap();
+            if g.is_none() {
+                *g = Some(ctx.tick);
+            }
+            Ok(TickResult {
+                bytes_written: 0,
+                metric_event: None,
+            })
+        };
+
+        run_schedule_loop_with_initial_tick(&schedule, 50.0, None, None, 30, None, &mut tick_fn)
+            .expect("loop must succeed");
+
+        assert_eq!(
+            *observed_first.lock().unwrap(),
+            Some(30),
+            "first tick must equal initial_tick when initial_tick > 0"
+        );
+    }
+
+    #[test]
+    fn run_schedule_loop_with_initial_tick_reports_last_tick() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(150)));
+        let last_tick = AtomicU64::new(0);
+
+        let mut tick_fn = |_ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
+            Ok(TickResult {
+                bytes_written: 0,
+                metric_event: None,
+            })
+        };
+
+        run_schedule_loop_with_initial_tick(
+            &schedule,
+            50.0,
+            None,
+            None,
+            10,
+            Some(&last_tick),
+            &mut tick_fn,
+        )
+        .expect("loop must succeed");
+
+        let final_tick = last_tick.load(Ordering::SeqCst);
+        assert!(
+            final_tick > 10,
+            "last_tick must advance past initial_tick, got {final_tick}"
+        );
+    }
 
     /// TickResult correctly carries bytes_written and metric_event.
     #[test]

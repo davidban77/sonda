@@ -37,7 +37,7 @@ expression: stderr
     generator:      constant (value: 50)
     encoder:        prometheus_text
     sink:           stdout
-    phase_offset:   1.2s
+    after_first_fire: 1.2s (ref: trigger)
     clock_group:    chain_traffic (auto)
     while:          upstream='link' op='>' value=50
     first_open:     ~30s

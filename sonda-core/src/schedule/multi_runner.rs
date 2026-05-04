@@ -113,16 +113,10 @@ pub fn launch_multi_compiled(
 ) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
     let CompiledFile { entries, .. } = file;
 
-    // Pre-build a bus for every entry that has an explicit id — downstream
-    // subscriptions reference upstreams by id. Logs / histogram / summary
-    // entries cannot be `while:` upstreams (compile-time NonMetricsTarget
-    // check), so we skip them, but a bus on a non-metrics entry is harmless
-    // — `tick()` is never called.
-    let mut buses: HashMap<String, Arc<GateBus>> = HashMap::new();
-    for entry in &entries {
-        if let Some(id) = entry.id.clone() {
-            buses.insert(id, Arc::new(GateBus::new()));
-        }
+    let bus_ids = while_upstream_ids(&entries);
+    let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
+    for id in bus_ids {
+        buses.insert(id, Arc::new(GateBus::new()));
     }
 
     // Build (entry, gate_ctx, upstream_bus, start_delay, id) per scenario.
@@ -216,6 +210,9 @@ pub fn launch_multi_compiled(
                 for handle in &handles {
                     handle.stop();
                 }
+                for mut handle in handles {
+                    let _ = handle.join_timeout(std::time::Duration::from_secs(1));
+                }
                 return Err(e);
             }
         }
@@ -248,6 +245,20 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
             errors.join("; "),
         )))
     }
+}
+
+/// Collect the set of compiled-entry ids referenced by some `while:` clause.
+/// Only these ids need a [`GateBus`]; non-referenced entries publish nothing
+/// and skip the per-tick `tick()` lock.
+#[cfg(feature = "config")]
+fn while_upstream_ids(entries: &[crate::compiler::compile_after::CompiledEntry]) -> Vec<String> {
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.while_clause.as_ref().map(|w| w.ref_id.clone()))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 #[cfg(feature = "config")]
@@ -951,6 +962,65 @@ mod tests {
         assert!(
             result.is_ok(),
             "scenarios with clock_group and offsets should complete"
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn while_upstream_ids_returns_only_entries_referenced_by_a_while_clause() {
+        use super::while_upstream_ids;
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream_a
+    signal_type: metrics
+    name: upstream_a
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 100.0
+      period_secs: 60.0
+  - id: middle_b
+    signal_type: metrics
+    name: middle_b
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_a
+      op: '>'
+      value: 50.0
+  - id: lonely_c
+    signal_type: metrics
+    name: lonely_c
+    generator:
+      type: constant
+      value: 1.0
+  - id: lonely_d
+    signal_type: metrics
+    name: lonely_d
+    generator:
+      type: constant
+      value: 1.0
+";
+        let resolver = InMemoryPackResolver::new();
+        let compiled =
+            compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+        let ids = while_upstream_ids(&compiled.entries);
+        assert_eq!(
+            ids,
+            vec!["upstream_a".to_string()],
+            "only entries referenced by some while: clause must get a bus, got {ids:?}"
         );
     }
 

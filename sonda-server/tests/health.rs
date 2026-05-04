@@ -85,22 +85,21 @@ fn unknown_route_returns_404() {
 // ---- Test: Ctrl+C leads to clean shutdown -----------------------------------
 
 /// Sending SIGTERM to the server process causes it to shut down cleanly
-/// (exit code 0 or signal-terminated without panic).
+/// (exit code 0 — the handler awaits SIGTERM and unwinds the axum
+/// graceful-shutdown path).
 #[test]
 fn server_shuts_down_cleanly_on_sigterm() {
     // Direct child handle: the RAII guard would kill on drop before SIGTERM.
     let (_port, mut child) = common::spawn_server();
 
-    // Send SIGTERM (the Unix equivalent of Ctrl+C for graceful shutdown).
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
 
-    // Wait for the process to exit within a reasonable time.
     let result = child.wait().expect("must be able to wait for child");
 
-    // The process should have exited. We accept any non-panic exit.
-    // On SIGTERM the server may exit with a signal code or 0.
-    // The key assertion is that it does not panic (which would show in stderr).
-    let _ = result; // Process exited -- no hang.
+    assert!(
+        result.success(),
+        "SIGTERM must produce a clean exit, got {result:?}"
+    );
 }

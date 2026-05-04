@@ -276,6 +276,185 @@ fn while_runtime_no_catch_up_burst_on_resume() {
     );
 }
 
+/// Build a metrics entry whose generator is supplied by the caller — used by
+/// the tick-preservation tests to drive sequence/saturation generators with
+/// known internal state.
+fn metrics_entry_with_generator(
+    name: &str,
+    rate: f64,
+    duration_ms: u64,
+    generator: GeneratorConfig,
+) -> ScenarioEntry {
+    ScenarioEntry::Metrics(ScenarioConfig {
+        base: BaseScheduleConfig {
+            name: name.to_string(),
+            rate,
+            duration: Some(format!("{duration_ms}ms")),
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            dynamic_labels: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: sonda_core::OnSinkError::Warn,
+        },
+        generator,
+        encoder: EncoderConfig::PrometheusText { precision: None },
+    })
+}
+
+#[test]
+fn while_runtime_sequence_generator_preserves_position_across_pause() {
+    let bus = Arc::new(GateBus::new());
+    bus.tick(1.0);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let values = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
+    let entry = metrics_entry_with_generator(
+        "seq_gated",
+        20.0, // 20/s = 50ms per tick
+        2000,
+        GeneratorConfig::Sequence {
+            values: values.clone(),
+            repeat: Some(false),
+        },
+    );
+    let mut handle = launch_scenario_with_gates(
+        "seq_gated".to_string(),
+        entry,
+        Arc::clone(&shutdown),
+        None,
+        None,
+        Some(GateContext {
+            gate_rx: rx,
+            initial: init,
+            delay: None,
+            has_after: false,
+            has_while: true,
+        }),
+    )
+    .expect("launch must succeed");
+
+    // Phase 1: emit ~3 events (150ms at 20/s).
+    thread::sleep(Duration::from_millis(150));
+    let phase1 = handle.recent_metrics();
+    let phase1_count = phase1.len();
+    assert!(
+        phase1_count >= 2 && phase1_count <= 4,
+        "phase 1 expected ~3 events, got {phase1_count}"
+    );
+    let last_phase1_value = phase1
+        .last()
+        .map(|e| e.value)
+        .expect("phase 1 must have at least one value");
+
+    // Phase 2: close gate.
+    bus.tick(0.0);
+    thread::sleep(Duration::from_millis(300));
+
+    // Phase 3: reopen and let several more ticks fire.
+    bus.tick(1.0);
+    thread::sleep(Duration::from_millis(200));
+    let phase3 = handle.recent_metrics();
+
+    handle.stop();
+    handle.join(Some(Duration::from_secs(2))).ok();
+
+    let next_value_after_pause = phase3
+        .first()
+        .map(|e| e.value)
+        .expect("phase 3 must emit at least one event");
+
+    assert!(
+        next_value_after_pause > last_phase1_value,
+        "sequence must continue past pause: last_before_pause={last_phase1_value}, \
+         first_after_resume={next_value_after_pause}"
+    );
+    // Phase 1 emitted ticks 0..2 (values 10/20/30); resume lands on tick 3+.
+    assert!(
+        next_value_after_pause >= 40.0 - f64::EPSILON,
+        "sequence must skip ahead by paused-time worth of ticks: got {next_value_after_pause}"
+    );
+}
+
+#[test]
+fn while_runtime_ramp_generator_slope_preserved_across_pause() {
+    let bus = Arc::new(GateBus::new());
+    bus.tick(1.0);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    // Sawtooth (saturation desugars to this): 0 → 100 over 4s at 50/s.
+    let entry = metrics_entry_with_generator(
+        "sat_gated",
+        50.0,
+        3000,
+        GeneratorConfig::Sawtooth {
+            min: 0.0,
+            max: 100.0,
+            period_secs: 4.0,
+        },
+    );
+    let mut handle = launch_scenario_with_gates(
+        "sat_gated".to_string(),
+        entry,
+        Arc::clone(&shutdown),
+        None,
+        None,
+        Some(GateContext {
+            gate_rx: rx,
+            initial: init,
+            delay: None,
+            has_after: false,
+            has_while: true,
+        }),
+    )
+    .expect("launch must succeed");
+
+    // Phase 1: ~10 ticks emitted (200ms at 50/s).
+    thread::sleep(Duration::from_millis(200));
+    let phase1 = handle.recent_metrics();
+    let last_pre_pause = phase1
+        .last()
+        .map(|e| e.value)
+        .expect("phase 1 must have a value");
+    assert!(
+        last_pre_pause > 0.0 && last_pre_pause < 50.0,
+        "pre-pause value must be partway up the ramp, got {last_pre_pause}"
+    );
+
+    // Phase 2: pause.
+    bus.tick(0.0);
+    thread::sleep(Duration::from_millis(400));
+
+    // Phase 3: resume.
+    bus.tick(1.0);
+    thread::sleep(Duration::from_millis(150));
+    let phase3 = handle.recent_metrics();
+
+    handle.stop();
+    handle.join(Some(Duration::from_secs(2))).ok();
+
+    let first_post_resume = phase3
+        .first()
+        .map(|e| e.value)
+        .expect("phase 3 must emit a value");
+
+    // The ramp must continue from past the last pre-pause value, not
+    // restart at baseline 0.
+    assert!(
+        first_post_resume > last_pre_pause,
+        "saturation ramp must preserve state across pause: pre={last_pre_pause}, \
+         post={first_post_resume}"
+    );
+}
+
 #[test]
 fn while_runtime_finished_state_after_duration_expires() {
     let bus = Arc::new(GateBus::new());

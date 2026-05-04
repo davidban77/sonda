@@ -350,8 +350,8 @@ impl<'de> serde::Deserialize<'de> for WhileOp {
             "<" => Ok(WhileOp::LessThan),
             ">" => Ok(WhileOp::GreaterThan),
             other => Err(serde::de::Error::custom(format!(
-                "unknown operator '{other}'; while: accepts '<' or '>' \
-                 (strict comparison) — use those instead"
+                "unsupported operator '{other}' on while: — only strict \
+                 comparisons '<' and '>' are accepted"
             ))),
         }
     }

@@ -313,6 +313,17 @@ pub enum CompileAfterError {
         ref_id: String,
         nan: NanSource,
     },
+
+    #[error(
+        "entry '{source_id}': `while:` cannot reference '{ref_id}' — generator \
+         '{generator_kind}' is data-dependent; only analytical generators are supported as \
+         `while:` upstreams"
+    )]
+    WhileUnsupportedUpstreamGenerator {
+        source_id: String,
+        ref_id: String,
+        generator_kind: &'static str,
+    },
 }
 
 /// Where in a generator config a literal NaN was found.
@@ -474,6 +485,12 @@ pub struct CompiledEntry {
     pub while_clause: Option<WhileClause>,
     #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
     pub delay_clause: Option<DelayClause>,
+    /// Upstream id this entry's `after:` resolved against, when one was
+    /// present. Folded into `phase_offset` for runtime; preserved here so
+    /// `--dry-run` can label it on entries that also carry a `while:` against
+    /// a different upstream.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub after_ref: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +588,13 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             });
         }
         if let Some(generator) = target.generator.as_ref() {
+            if !is_supported_while_upstream(generator) {
+                return Err(CompileAfterError::WhileUnsupportedUpstreamGenerator {
+                    source_id,
+                    ref_id: clause.ref_id.clone(),
+                    generator_kind: generator_kind(generator),
+                });
+            }
             if let Some(nan) = detect_nan_source(generator) {
                 return Err(CompileAfterError::WhileNanSource {
                     source_id,
@@ -646,6 +670,8 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             ClockGroupAssignment::Unassigned => (entry.clock_group.clone(), false),
         };
 
+        let after_ref = entry.after.as_ref().map(|c| c.ref_id.clone());
+
         out.push(CompiledEntry {
             id: entry.id,
             signal_type: entry.signal_type,
@@ -675,6 +701,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             seed: entry.seed,
             while_clause: entry.while_clause,
             delay_clause: entry.delay_clause,
+            after_ref,
         });
     }
 
@@ -932,6 +959,12 @@ fn crossing_secs(
             spike_crossing_secs(op, threshold, bl, height, dur)
         }
     }
+}
+
+/// `while:` upstreams must be analytical; data-driven generators like
+/// `csv_replay` are rejected the same way they are for `after:`.
+fn is_supported_while_upstream(generator: &GeneratorConfig) -> bool {
+    !matches!(generator, GeneratorConfig::CsvReplay { .. })
 }
 
 /// Return the generator's serde tag as a `&'static str` for error messages.
@@ -2554,11 +2587,11 @@ scenarios:
     }
 
     #[test]
-    fn while_against_csv_with_nan_cell_is_rejected() {
-        let dir = std::env::temp_dir().join("sonda-while-nan-csv");
+    fn while_against_csv_replay_upstream_is_rejected() {
+        let dir = std::env::temp_dir().join("sonda-while-csv-upstream");
         std::fs::create_dir_all(&dir).expect("tempdir");
-        let path = dir.join("nan.csv");
-        std::fs::write(&path, "1\n2\nNaN\n3\n").expect("write csv");
+        let path = dir.join("ok.csv");
+        std::fs::write(&path, "1\n2\n3\n").expect("write csv");
         let yaml = format!(
             r#"
 version: 2
@@ -2578,18 +2611,47 @@ scenarios:
 "#,
             path = path.display()
         );
-        let err = compile_after_from_yaml(&yaml).expect_err("csv NaN must reject");
-        assert!(
-            matches!(
-                err,
-                CompileAfterError::WhileNanSource {
-                    nan: NanSource::CsvCell { .. },
-                    ..
-                }
-            ),
-            "expected WhileNanSource(CsvCell), got {err:?}"
-        );
+        let err = compile_after_from_yaml(&yaml).expect_err("csv_replay upstream must reject");
+        match err {
+            CompileAfterError::WhileUnsupportedUpstreamGenerator {
+                ref_id,
+                generator_kind,
+                ..
+            } => {
+                assert_eq!(ref_id, "src");
+                assert_eq!(generator_kind, "csv_replay");
+            }
+            other => panic!("expected WhileUnsupportedUpstreamGenerator, got {other:?}"),
+        }
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn while_against_log_template_upstream_is_rejected_as_non_metrics() {
+        // A log signal cannot be a while: upstream — the existing
+        // NonMetricsTarget gate already covers this. Locking it in here so
+        // the rejection path stays observable alongside csv_replay's.
+        let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: logs
+    name: lg
+    log_generator: { type: template, templates: [{ message: "hi" }] }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("log upstream must reject");
+        assert!(
+            matches!(err, CompileAfterError::NonMetricsTarget { .. }),
+            "expected NonMetricsTarget, got {err:?}"
+        );
     }
 
     #[rustfmt::skip]
@@ -2618,8 +2680,8 @@ scenarios:
         let err = parse(&yaml).expect_err("non-strict op must fail at parse");
         let msg = err.to_string();
         assert!(
-            msg.contains("strict") || msg.contains("'<' or '>'"),
-            "error must point at strict alternatives. got: {msg}"
+            msg.contains("unsupported operator") && msg.contains("strict"),
+            "error must use the 'unsupported operator … strict' wording. got: {msg}"
         );
     }
 }

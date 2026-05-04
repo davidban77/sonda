@@ -567,7 +567,7 @@ The two clauses may also reference different upstreams (e.g. `after:` on a link 
 
 The `first_open:` line shows the analytical time at which the upstream's value first satisfies the predicate, computed from the upstream generator's shape. When the upstream's generator is non-analytical (`sine`, `uniform`, `csv_replay`, `steady`), `first_open` renders as `<indeterminate -- non-analytical generator>` -- the gate still works at runtime, but no compile-time crossing time is available.
 
-When an entry carries both `after:` and `while:`, both cues render: `phase_offset:` shows the resolved `after_first_fire` time, while `first_open:` shows the gate's first opening. Operators read `max(phase_offset, first_open)` to know when the downstream first emits.
+When an entry carries both `after:` and `while:` against different upstreams, both cues render side by side: `after_first_fire: <duration> (ref: <upstream_id>)` shows when the `after:` clause fires, while `first_open:` shows the time the `while:` gate first opens. Operators read `max(after_first_fire, first_open)` to know when the downstream first emits. When `after:` and `while:` share the same upstream they collapse into a single `phase_offset:` line.
 
 ### Supported operators
 

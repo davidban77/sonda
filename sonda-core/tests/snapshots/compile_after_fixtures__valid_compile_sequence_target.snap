@@ -50,7 +50,8 @@ expression: compiled
       "phase_offset": "1s",
       "clock_group": "chain_alert",
       "clock_group_is_auto": true,
-      "on_sink_error": "warn"
+      "on_sink_error": "warn",
+      "after_ref": "seq"
     }
   ]
 }

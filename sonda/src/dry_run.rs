@@ -64,13 +64,6 @@ fn write_field<W: Write>(out: &mut W, label: &str, value: &str) -> io::Result<()
     writeln!(out, "    {label:<15} {value}")
 }
 
-fn write_phase_offset<W: Write>(out: &mut W, phase_offset: &Option<String>) -> io::Result<()> {
-    if let Some(ref po) = phase_offset {
-        write_field(out, "phase_offset:", po)?;
-    }
-    Ok(())
-}
-
 fn write_clock_group<W: Write>(
     out: &mut W,
     clock_group: &Option<String>,
@@ -299,10 +292,37 @@ fn write_compiled_entry_text<W: Write>(
     write_field(out, "encoder:", &encoder_display(&entry.encoder))?;
     write_field(out, "sink:", &sink_display(&entry.sink))?;
     write_labels_btree(out, entry.labels.as_ref())?;
-    write_phase_offset(out, &entry.phase_offset)?;
+    write_phase_offset_or_after_first_fire(out, entry)?;
     write_clock_group(out, &entry.clock_group, Some(entry.clock_group_is_auto))?;
     write_while_block(out, entry, upstream)?;
     write_delay_block(out, entry.delay_clause.as_ref())?;
+    Ok(())
+}
+
+fn write_phase_offset_or_after_first_fire<W: Write>(
+    out: &mut W,
+    entry: &CompiledEntry,
+) -> io::Result<()> {
+    let Some(ref offset) = entry.phase_offset else {
+        return Ok(());
+    };
+    let mixed_upstream = match (&entry.while_clause, &entry.after_ref) {
+        (Some(w), Some(after_ref)) => after_ref != &w.ref_id,
+        _ => false,
+    };
+    if mixed_upstream {
+        let after_ref = entry
+            .after_ref
+            .as_deref()
+            .expect("mixed_upstream guarantees after_ref is set");
+        write_field(
+            out,
+            "after_first_fire:",
+            &format!("{offset} (ref: {after_ref})"),
+        )?;
+    } else {
+        write_field(out, "phase_offset:", offset)?;
+    }
     Ok(())
 }
 
@@ -981,8 +1001,12 @@ scenarios:
         write_text_compiled(&mut buf, "mixed-upstream.yaml", &compiled).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
-            out.contains("phase_offset:"),
-            "after-derived phase_offset must render, got:\n{out}"
+            out.contains("after_first_fire:") && out.contains("(ref: trigger)"),
+            "mixed-upstream after must render the after_first_fire label with ref, got:\n{out}"
+        );
+        assert!(
+            !out.contains("phase_offset:"),
+            "phase_offset must not render when after_first_fire is shown, got:\n{out}"
         );
         assert!(
             out.contains("while:") && out.contains("upstream='link'"),

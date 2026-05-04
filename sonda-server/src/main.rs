@@ -183,11 +183,30 @@ fn announce_bound_port(port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Wait for Ctrl+C, then stop all running scenarios and signal shutdown.
+/// Wait for Ctrl+C or SIGTERM, then stop all running scenarios and signal
+/// shutdown. SIGTERM coverage is what `docker stop` and Kubernetes pod eviction
+/// rely on; without it the process is SIGKILLed after the grace period.
 async fn shutdown_signal(state: AppState) {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to listen for ctrl_c signal");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl_c handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 
     info!("shutdown signal received — stopping all running scenarios");
 

@@ -160,7 +160,8 @@ expression: compiled
       "phase_offset": "1m",
       "clock_group": "chain_backup_signal",
       "clock_group_is_auto": true,
-      "on_sink_error": "warn"
+      "on_sink_error": "warn",
+      "after_ref": "primary_uplink.ifOperStatus"
     }
   ]
 }

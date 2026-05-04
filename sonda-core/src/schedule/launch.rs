@@ -256,30 +256,28 @@ pub fn launch_scenario_with_gates(
                 stats: Arc::clone(&stats_for_state),
             };
 
-            // gated_loop owns Pending/Running/Paused transitions itself.
-            // Non-gated scenarios have nothing else writing Running, so do it here.
-            if !is_gated {
-                if let Ok(mut st) = stats_for_state.write() {
-                    st.state = ScenarioState::Running;
-                }
-            }
-
-            // If a start delay is configured, sleep before entering the event
-            // loop. This enables phase-offset correlation between scenarios
-            // launched from the same multi-scenario config. The sleep respects
-            // the shutdown flag so that Ctrl+C during the delay exits promptly.
+            // Sleep through the start_delay before entering the event loop.
+            // State stays `Pending` for the delay window so /stats reports
+            // `pending` until the first tick is actually due.
             if let Some(delay) = start_delay {
                 let deadline = std::time::Instant::now() + delay;
                 while std::time::Instant::now() < deadline {
                     if !shutdown_for_thread.load(Ordering::SeqCst) {
                         return Ok(());
                     }
-                    // Poll every 50ms to keep shutdown responsive.
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     let sleep_chunk = remaining.min(Duration::from_millis(50));
                     if sleep_chunk > Duration::ZERO {
                         std::thread::sleep(sleep_chunk);
                     }
+                }
+            }
+
+            // gated_loop owns its own state transitions; non-gated runs
+            // need someone to mark Running once the start_delay has elapsed.
+            if !is_gated {
+                if let Ok(mut st) = stats_for_state.write() {
+                    st.state = ScenarioState::Running;
                 }
             }
 
@@ -1512,6 +1510,36 @@ mod tests {
             ScenarioState::Finished,
             "StateGuard Drop must write Finished even on panic"
         );
+    }
+
+    #[test]
+    fn state_remains_pending_during_start_delay_then_transitions_to_running() {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let entry = metrics_entry_indefinite("delayed_state");
+        let mut handle = launch_scenario(
+            "delayed-state-id".to_string(),
+            entry,
+            Arc::clone(&shutdown),
+            Some(Duration::from_millis(200)),
+        )
+        .expect("launch must succeed");
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Pending,
+            "scenario must report Pending while inside start_delay"
+        );
+
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            handle.stats_snapshot().state,
+            ScenarioState::Running,
+            "scenario must report Running once start_delay has elapsed"
+        );
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
     }
 
     #[test]

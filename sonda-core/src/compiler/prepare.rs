@@ -402,6 +402,7 @@ mod tests {
             on_sink_error: crate::OnSinkError::Warn,
             while_clause: None,
             delay_clause: None,
+            after_ref: None,
         }
     }
 
