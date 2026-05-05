@@ -199,16 +199,18 @@ pub fn launch_scenario(
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, entry, shutdown, start_delay, None, None)
+    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None)
 }
 
 /// Launch a scenario with optional `while:` / `after:` gating wired in.
 ///
-/// `upstream_bus` is the bus this scenario PUBLISHES into (for downstream
-/// gates to read its values). `gate_ctx` is what THIS scenario consumes
-/// from an upstream bus.
+/// `scenario_name` surfaces on [`ScenarioHandle::scenario_name`]; pass `None`
+/// for anonymous bodies. `upstream_bus` is the bus this scenario PUBLISHES
+/// into (for downstream gates to read). `gate_ctx` is what THIS scenario
+/// consumes from an upstream bus.
 pub fn launch_scenario_with_gates(
     id: String,
+    scenario_name: Option<String>,
     entry: ScenarioEntry,
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
@@ -330,6 +332,7 @@ pub fn launch_scenario_with_gates(
     Ok(ScenarioHandle {
         id,
         name,
+        scenario_name,
         shutdown,
         thread: Some(thread),
         started_at,

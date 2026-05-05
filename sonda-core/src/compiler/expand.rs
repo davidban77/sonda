@@ -365,6 +365,10 @@ impl PackResolver for InMemoryPackResolver {
 pub struct ExpandedFile {
     /// Schema version. Always `2` after expansion.
     pub version: u32,
+    /// File-level `scenario_name` carried verbatim. Pure metadata —
+    /// ignored by every compiler phase, surfaced for runtime conflict checks.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub scenario_name: Option<String>,
     /// All entries with pack expansion applied, in source order.
     ///
     /// Pack entries contribute one entry per metric, in the order metrics
@@ -538,6 +542,7 @@ pub fn expand<R: PackResolver>(
 
     Ok(ExpandedFile {
         version: file.version,
+        scenario_name: file.scenario_name,
         entries,
     })
 }

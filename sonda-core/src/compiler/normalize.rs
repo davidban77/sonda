@@ -168,6 +168,10 @@ pub enum NormalizeError {
 pub struct NormalizedFile {
     /// Schema version. Always `2` after normalization.
     pub version: u32,
+    /// File-level `scenario_name` carried verbatim. Pure metadata —
+    /// ignored by every compiler phase, surfaced for runtime conflict checks.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub scenario_name: Option<String>,
     /// The file-level `defaults.labels` map, carried forward verbatim for
     /// later compilation phases to apply at the correct precedence slot.
     ///
@@ -327,6 +331,7 @@ pub fn normalize(file: ScenarioFile) -> Result<NormalizedFile, NormalizeError> {
 
     Ok(NormalizedFile {
         version: file.version,
+        scenario_name: file.scenario_name,
         defaults_labels,
         entries,
     })

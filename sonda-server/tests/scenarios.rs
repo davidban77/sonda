@@ -1746,3 +1746,252 @@ scenarios:
         );
     }
 }
+
+// ---- 409 Conflict on duplicate scenario_name --------------------------------
+
+const NAMED_FLAP_INTERFACE_YAML: &str = "\
+version: 2
+scenario_name: flap-interface
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link_status
+    signal_type: metrics
+    name: link_status
+    generator:
+      type: constant
+      value: 1.0
+";
+
+const NAMED_FLAP_INTERFACE_SHORT_YAML: &str = "\
+version: 2
+scenario_name: flap-interface-short
+defaults:
+  rate: 10
+  duration: 100ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link_status_short
+    signal_type: metrics
+    name: link_status_short
+    generator:
+      type: constant
+      value: 1.0
+";
+
+const ANONYMOUS_METRICS_YAML: &str = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: anon_metric
+    signal_type: metrics
+    name: anon_metric
+    generator:
+      type: constant
+      value: 1.0
+";
+
+#[test]
+fn post_named_scenario_twice_returns_409() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(
+        first.status().as_u16(),
+        201,
+        "first named POST must return 201"
+    );
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"]
+        .as_str()
+        .expect("first response must include id")
+        .to_string();
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+
+    assert_eq!(
+        second.status().as_u16(),
+        409,
+        "second POST with the same scenario_name must return 409 Conflict"
+    );
+
+    let body: serde_json::Value = second.json().expect("409 body must be valid JSON");
+    let error = body["error"].as_str().expect("error must be a string");
+    assert!(
+        error.contains("flap-interface"),
+        "error must mention scenario_name, got: {error}"
+    );
+
+    let conflicts = body["conflicting_scenarios"]
+        .as_array()
+        .expect("conflicting_scenarios must be an array");
+    assert!(
+        !conflicts.is_empty(),
+        "conflicting_scenarios must list at least one entry"
+    );
+    let entry = &conflicts[0];
+    assert_eq!(
+        entry["id"].as_str(),
+        Some(first_id.as_str()),
+        "conflicting entry id must match the first launched scenario"
+    );
+    assert!(
+        entry["name"].is_string(),
+        "conflicting entry must include name"
+    );
+    let state = entry["state"].as_str().expect("state must be a string");
+    assert!(
+        matches!(state, "pending" | "running" | "paused"),
+        "conflicting state must be active (not finished), got {state:?}"
+    );
+
+    let hint = body["hint"].as_str().expect("hint must be a string");
+    assert!(
+        hint.contains("DELETE"),
+        "hint must mention DELETE, got: {hint}"
+    );
+}
+
+#[test]
+fn post_named_scenario_after_delete_returns_201() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"].as_str().expect("first id is string");
+
+    let delete = client
+        .delete(format!("http://127.0.0.1:{port}/scenarios/{first_id}"))
+        .send()
+        .expect("DELETE must succeed");
+    assert_eq!(
+        delete.status().as_u16(),
+        200,
+        "DELETE must return 200 OK on a known scenario"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "POST after DELETE must return 201; previous instance was cleared"
+    );
+}
+
+#[test]
+fn post_anonymous_scenario_twice_returns_201_both_times() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(ANONYMOUS_METRICS_YAML)
+        .send()
+        .expect("first anonymous POST must succeed");
+    assert_eq!(
+        first.status().as_u16(),
+        201,
+        "first anonymous POST must return 201"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(ANONYMOUS_METRICS_YAML)
+        .send()
+        .expect("second anonymous POST must succeed");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "anonymous bodies bypass the conflict check"
+    );
+}
+
+#[test]
+fn post_named_scenario_with_finished_existing_returns_201() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_SHORT_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"].as_str().expect("first id is string");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut observed_finished = false;
+    while std::time::Instant::now() < deadline {
+        let stats = client
+            .get(format!(
+                "http://127.0.0.1:{port}/scenarios/{first_id}/stats"
+            ))
+            .send()
+            .expect("GET /stats must succeed");
+        if stats.status().as_u16() == 200 {
+            let body: serde_json::Value = stats.json().expect("stats body is JSON");
+            if body["state"].as_str() == Some("finished") {
+                observed_finished = true;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        observed_finished,
+        "first scenario must reach 'finished' state within the deadline"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_SHORT_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "finished handles are stale; new POST with the same scenario_name must return 201"
+    );
+}
