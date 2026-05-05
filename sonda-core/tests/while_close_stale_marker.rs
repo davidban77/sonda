@@ -572,3 +572,170 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
     // Let the runner exit cleanly.
     runner.join().expect("runner joined");
 }
+
+#[test]
+fn duration_expiry_while_gate_open_emits_stale_marker() {
+    let bus = Arc::new(GateBus::new());
+    bus.tick(1.0);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+
+    let capture = CaptureSink::default();
+    let mut sink_handle = capture.clone();
+    let stats = Arc::new(std::sync::RwLock::new(
+        sonda_core::schedule::stats::ScenarioStats::default(),
+    ));
+
+    let config = ScenarioConfig {
+        base: BaseScheduleConfig {
+            name: "duration_expiry".to_string(),
+            rate: 100.0,
+            duration: Some("200ms".to_string()),
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            dynamic_labels: None,
+            labels: None,
+            sink: SinkConfig::RemoteWrite {
+                url: "http://example.invalid/api/v1/write".to_string(),
+                batch_size: None,
+                retry: None,
+            },
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: sonda_core::OnSinkError::Warn,
+        },
+        generator: GeneratorConfig::Constant { value: 1.0 },
+        encoder: EncoderConfig::RemoteWrite,
+    };
+
+    let stats_for_thread = Arc::clone(&stats);
+    let bus_for_thread = Arc::clone(&bus);
+    let runner = thread::spawn(move || {
+        let _ = bus_for_thread;
+        let shutdown = Arc::new(AtomicBool::new(true));
+        sonda_core::schedule::runner::run_with_sink_gated(
+            &config,
+            &mut sink_handle,
+            Some(shutdown.as_ref()),
+            Some(stats_for_thread),
+            None,
+            Some(GateContext {
+                gate_rx: rx,
+                initial: init,
+                delay: None,
+                has_after: false,
+                has_while: true,
+                close_emit: None,
+            }),
+        )
+        .expect("runner must succeed");
+    });
+
+    runner.join().expect("runner joined");
+
+    let buf = capture.buf.lock().unwrap().clone();
+    let series = parse_length_prefixed_timeseries(&buf).expect("parse ok");
+    let stale_count = series
+        .iter()
+        .filter(|ts| {
+            ts.samples
+                .iter()
+                .any(|s| s.value.to_bits() == PROMETHEUS_STALE_NAN.to_bits())
+        })
+        .count();
+    assert_eq!(
+        stale_count,
+        1,
+        "duration expiry while gate open must emit exactly one stale marker, got {stale_count} \
+         (total series: {})",
+        series.len()
+    );
+}
+
+#[test]
+fn shutdown_while_gate_open_emits_stale_marker() {
+    let bus = Arc::new(GateBus::new());
+    bus.tick(1.0);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+
+    let capture = CaptureSink::default();
+    let mut sink_handle = capture.clone();
+    let stats = Arc::new(std::sync::RwLock::new(
+        sonda_core::schedule::stats::ScenarioStats::default(),
+    ));
+    let shutdown = Arc::new(AtomicBool::new(true));
+
+    let config = ScenarioConfig {
+        base: BaseScheduleConfig {
+            name: "shutdown_during_run".to_string(),
+            rate: 100.0,
+            duration: Some("5000ms".to_string()),
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            dynamic_labels: None,
+            labels: None,
+            sink: SinkConfig::RemoteWrite {
+                url: "http://example.invalid/api/v1/write".to_string(),
+                batch_size: None,
+                retry: None,
+            },
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: sonda_core::OnSinkError::Warn,
+        },
+        generator: GeneratorConfig::Constant { value: 1.0 },
+        encoder: EncoderConfig::RemoteWrite,
+    };
+
+    let stats_for_thread = Arc::clone(&stats);
+    let bus_for_thread = Arc::clone(&bus);
+    let shutdown_for_thread = Arc::clone(&shutdown);
+    let runner = thread::spawn(move || {
+        let _ = bus_for_thread;
+        sonda_core::schedule::runner::run_with_sink_gated(
+            &config,
+            &mut sink_handle,
+            Some(shutdown_for_thread.as_ref()),
+            Some(stats_for_thread),
+            None,
+            Some(GateContext {
+                gate_rx: rx,
+                initial: init,
+                delay: None,
+                has_after: false,
+                has_while: true,
+                close_emit: None,
+            }),
+        )
+        .expect("runner must succeed");
+    });
+
+    thread::sleep(Duration::from_millis(150));
+    shutdown.store(false, std::sync::atomic::Ordering::SeqCst);
+    runner.join().expect("runner joined");
+
+    let buf = capture.buf.lock().unwrap().clone();
+    let series = parse_length_prefixed_timeseries(&buf).expect("parse ok");
+    let stale_count = series
+        .iter()
+        .filter(|ts| {
+            ts.samples
+                .iter()
+                .any(|s| s.value.to_bits() == PROMETHEUS_STALE_NAN.to_bits())
+        })
+        .count();
+    assert_eq!(
+        stale_count,
+        1,
+        "shutdown while gate open must emit exactly one stale marker, got {stale_count} \
+         (total series: {})",
+        series.len()
+    );
+}

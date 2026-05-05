@@ -501,11 +501,11 @@ Pair `while:` with `delay:` to debounce noisy upstream signals.
       close: 1s
 ```
 
-`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time. The `close:` field also accepts an extended struct form for stale-marker control on `running → paused` transitions; see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) below.
+`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time. The `close:` field also accepts an extended struct form for stale-marker control; see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) below.
 
 ### Recovering Prometheus alerts on gate close
 
-Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple on every committed `running → paused` transition when the sink is `remote_write`. Downstream alerts resolve immediately on the next scrape cycle.
+Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple whenever a `while:`-gated entry exits the `running` state with the gate open — on committed `running → paused` gate-close transitions, and on `running → finished` exits via `duration:` expiry or user-initiated shutdown — when the sink is `remote_write`. Downstream alerts resolve immediately on the next scrape cycle.
 
 The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` keeps working unchanged. The extended form lets you override the stale marker with a literal recovery sample, or opt out of the default emit entirely. The two knobs are mutually exclusive — pick one.
 
@@ -541,7 +541,7 @@ To suppress the default emit entirely, set `stale_marker: false` instead:
 
 Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
 
-The marker fires only on **committed** `running → paused` transitions. A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while paused goes `paused → finished` without an additional close-emit (see the lifecycle states above). The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
+A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an additional close-emit; the buffer was already flushed on the earlier `running → paused` transition. The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
 ### Combining with `after:`
 

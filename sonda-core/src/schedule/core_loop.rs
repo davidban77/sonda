@@ -414,6 +414,25 @@ fn apply_close_emit_policy_flush(
     }
 }
 
+fn invoke_close_emit_on_exit(
+    schedule: &ParsedSchedule,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    limiter: &mut SinkErrorRateLimiter,
+    close_emit: Option<&mut CloseEmitFn>,
+    sink: &mut dyn Sink,
+) -> Result<(), SondaError> {
+    let Some(emit) = close_emit else {
+        return Ok(());
+    };
+    if let Err(e) = emit(sink) {
+        apply_close_emit_policy(schedule, stats, limiter, e)?;
+    } else {
+        let flush = sink.flush();
+        apply_close_emit_policy_flush(schedule, stats, limiter, flush)?;
+    }
+    Ok(())
+}
+
 /// Maximum time spent blocked on a gate edge before re-checking shutdown.
 ///
 /// 100ms keeps shutdown responsive while paused without burning CPU on
@@ -559,6 +578,14 @@ pub(crate) fn gated_loop(
                 // Distinguish reasons: user shutdown / duration → Finished;
                 // WhileClose → Paused (debounced by delay.close).
                 if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
+                    // Close-emit before finish() so `state == Finished` observers see the marker.
+                    invoke_close_emit_on_exit(
+                        schedule,
+                        stats.as_ref(),
+                        &mut close_warn_limiter,
+                        gate_ctx.close_emit.as_mut(),
+                        sink,
+                    )?;
                     return finish(stats);
                 }
                 if exit == SegmentExit::WhileClose
@@ -572,24 +599,13 @@ pub(crate) fn gated_loop(
                     continue;
                 }
                 if exit == SegmentExit::WhileClose {
-                    if let Some(emit) = gate_ctx.close_emit.as_mut() {
-                        if let Err(e) = emit(sink) {
-                            apply_close_emit_policy(
-                                schedule,
-                                stats.as_ref(),
-                                &mut close_warn_limiter,
-                                e,
-                            )?;
-                        } else {
-                            let flush = sink.flush();
-                            apply_close_emit_policy_flush(
-                                schedule,
-                                stats.as_ref(),
-                                &mut close_warn_limiter,
-                                flush,
-                            )?;
-                        }
-                    }
+                    invoke_close_emit_on_exit(
+                        schedule,
+                        stats.as_ref(),
+                        &mut close_warn_limiter,
+                        gate_ctx.close_emit.as_mut(),
+                        sink,
+                    )?;
                 }
                 state = ScenarioState::Paused;
                 while_open = false;
