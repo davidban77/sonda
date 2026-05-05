@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.1](https://github.com/davidban77/sonda/compare/v1.6.0...v1.6.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **core:** flush stale markers on Running exit via duration or shutdown ([#323](https://github.com/davidban77/sonda/issues/323)) ([282cd48](https://github.com/davidban77/sonda/commit/282cd48605dc8110872824b033fb365a6c53d2f4))
+
 ## [1.6.0](https://github.com/davidban77/sonda/compare/v1.5.0...v1.6.0) (2026-05-05)
 
 
