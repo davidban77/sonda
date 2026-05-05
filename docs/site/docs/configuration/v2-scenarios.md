@@ -507,9 +507,9 @@ Pair `while:` with `delay:` to debounce noisy upstream signals.
 
 Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple on every committed `running → paused` transition when the sink is `remote_write`. Downstream alerts resolve immediately on the next scrape cycle.
 
-The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` keeps working unchanged. The extended form lets you opt out, override with a literal value, or both:
+The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` keeps working unchanged. The extended form lets you override the stale marker with a literal recovery sample, or opt out of the default emit entirely. The two knobs are mutually exclusive — pick one.
 
-```yaml
+```yaml title="Override the stale marker with a recovery value"
   - id: bgp_oper_state
     signal_type: metrics
     name: bgp_oper_state
@@ -524,15 +524,24 @@ The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` 
       open: 250ms
       close:
         duration: 5s
-        snap_to: 1            # OPTIONAL — emit one literal sample with this value before pausing
-        stale_marker: false   # OPTIONAL — disable the default stale marker
+        snap_to: 1            # emit one literal sample with this value before pausing
 ```
 
 `snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close.
 
-`stale_marker: false` suppresses the default emit entirely. Setting both `snap_to` and `stale_marker: false` is a config error -- `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
+To suppress the default emit entirely, set `stale_marker: false` instead:
 
-The marker fires only on **committed** `running → paused` transitions. A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while paused goes `paused → finished` without an additional close-emit (see the lifecycle states above). The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. v1.6 ships this as a known limitation; track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
+```yaml title="Disable the default stale-marker emit"
+    delay:
+      open: 250ms
+      close:
+        duration: 5s
+        stale_marker: false
+```
+
+Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
+
+The marker fires only on **committed** `running → paused` transitions. A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while paused goes `paused → finished` without an additional close-emit (see the lifecycle states above). The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
 ### Combining with `after:`
 

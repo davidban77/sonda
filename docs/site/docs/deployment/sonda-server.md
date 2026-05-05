@@ -335,7 +335,7 @@ shape conversions.
 
 When a posted v2 body sets a top-level `scenario_name`, the server scans the active scenario map for any handle that already carries the same `scenario_name` and is in `pending`, `running`, or `paused` state. If at least one match is found the POST is rejected with `409 Conflict`; nothing is launched. The contract is explicit: the operator must `DELETE` the conflicting scenarios first, then re-post. There is no `?force=true` override -- the explicit DELETE is the only way to free the name.
 
-Anonymous bodies (no top-level `scenario_name`) bypass this check entirely. Two consecutive POSTs of the same anonymous body both return 201, mirroring pre-v1.6 behavior. Finished handles are considered stale and never block a new POST -- once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
+Anonymous bodies (no top-level `scenario_name`) bypass this check entirely — two consecutive POSTs of the same anonymous body both return 201. Finished handles are considered stale and never block a new POST — once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
 
 The conflict check is best-effort: it acquires a read lock, scans the active scenarios, and releases the lock before launching. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window -- both will register and their Prometheus streams will collide on duplicate timestamps. Workshop-scale and sequential-operator usage are unaffected; high-concurrency callers should serialize POSTs that share a `scenario_name`.
 

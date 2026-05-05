@@ -473,7 +473,7 @@ For operator-facing metrics, prefer the `enum:` shorthand over hand-tuned values
 
 | `enum:` value | `up_value` | `down_value` | Use case |
 |---|---|---|---|
-| `boolean` | 1.0 | 0.0 | Generic boolean -- explicit synonym for the v1.5 default |
+| `boolean` | 1.0 | 0.0 | Generic boolean — explicit synonym for the default `(up_value, down_value)` pair |
 | `link_state` | 1.0 | 0.0 | Synonym of `boolean` |
 | `oper_state` | 1.0 | 2.0 | gNMI / openconfig oper-state (UP=1, DOWN=2) |
 | `admin_state` | 1.0 | 2.0 | gNMI / openconfig admin-state (UP=1, DOWN=2) |
