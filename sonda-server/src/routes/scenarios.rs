@@ -107,6 +107,15 @@ pub struct DeletedScenario {
     pub total_events: u64,
 }
 
+/// One entry in the `conflicting_scenarios` array of a 409 response body.
+#[derive(Debug, Serialize)]
+pub struct ConflictingScenario {
+    pub id: String,
+    pub name: String,
+    /// One of `"pending"`, `"running"`, `"paused"`. Never `"finished"`.
+    pub state: String,
+}
+
 /// Stats sub-object within the scenario detail response.
 ///
 /// This mirrors the fields from [`ScenarioStats`] that are relevant to the
@@ -208,6 +217,20 @@ fn internal_error(detail: impl std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
+const CONFLICT_HINT: &str =
+    "DELETE the conflicting scenarios before posting a new cascade with the same scenario_name";
+
+/// Build a 409 Conflict response listing the active scenarios that share
+/// the posted body's `scenario_name`.
+fn conflict(message: String, scenarios: Vec<ConflictingScenario>) -> Response {
+    let body = json!({
+        "error": message,
+        "conflicting_scenarios": scenarios,
+        "hint": CONFLICT_HINT,
+    });
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
 // ---- Helpers ----------------------------------------------------------------
 
 /// Map [`ScenarioStats::state`] to its lowercase wire string.
@@ -219,6 +242,36 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
         ScenarioState::Finished => "finished",
         _ => "unknown",
     }
+}
+
+/// Scan the active scenario map for entries with matching `scenario_name`
+/// in `pending` / `running` / `paused` state. Finished handles are stale
+/// and skipped. Future `ScenarioState` variants (`#[non_exhaustive]`) must
+/// opt in to blocking explicitly — a stalled or errored handle that the
+/// operator can't DELETE shouldn't lock its name forever. `Err(())`
+/// indicates a poisoned lock.
+fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<ConflictingScenario>, ()> {
+    let scenarios = state.scenarios.read().map_err(|_| ())?;
+    let mut conflicts = Vec::new();
+    for (id, handle) in scenarios.iter() {
+        if handle.scenario_name.as_deref() != Some(name) {
+            continue;
+        }
+        let snap = handle.stats_snapshot();
+        let blocks = match snap.state {
+            ScenarioState::Pending | ScenarioState::Running | ScenarioState::Paused => true,
+            ScenarioState::Finished => false,
+            _ => false,
+        };
+        if blocks {
+            conflicts.push(ConflictingScenario {
+                id: id.clone(),
+                name: handle.name.clone(),
+                state: state_string(&snap).to_string(),
+            });
+        }
+    }
+    Ok(conflicts)
 }
 
 // ---- Body parsing -----------------------------------------------------------
@@ -253,6 +306,27 @@ enum ParsedBody {
     Compiled(Box<CompiledFile>),
 }
 
+/// Categorized failure from [`parse_body`].
+///
+/// `Syntactic` covers genuine YAML/JSON syntax errors and content-type
+/// mismatches — surfaced as 400 Bad Request. `Semantic` covers schema
+/// validation failures on otherwise well-formed input (e.g. unsupported
+/// `while.op`, NaN values, conflicting fields) — surfaced as 422
+/// Unprocessable Entity.
+#[derive(Debug)]
+enum ParseFailure {
+    Syntactic(String),
+    Semantic(String),
+}
+
+impl ParseFailure {
+    fn message(&self) -> &str {
+        match self {
+            ParseFailure::Syntactic(m) | ParseFailure::Semantic(m) => m,
+        }
+    }
+}
+
 fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut out = err.to_string();
     let mut cause: Option<&(dyn std::error::Error + 'static)> = err.source();
@@ -268,26 +342,62 @@ fn parse_body(
     body: &[u8],
     headers: &HeaderMap,
     pack_resolver: &InMemoryPackResolver,
-) -> Result<ParsedBody, String> {
-    let text = yaml_body_text(body, headers)?;
+) -> Result<ParsedBody, ParseFailure> {
+    let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
 
     let version = detect_version(&text);
     if version != Some(2) {
-        return Err(format!("body is not a v2 scenario. {V1_REJECTION_HINT}"));
+        return Err(ParseFailure::Syntactic(format!(
+            "body is not a v2 scenario. {V1_REJECTION_HINT}"
+        )));
     }
 
     let compiled = compile_scenario_file_compiled(&text, pack_resolver).map_err(|e| {
-        format!(
+        let detail = format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
-        )
+        );
+        if is_semantic_schema_error(&e, &text) {
+            ParseFailure::Semantic(detail)
+        } else {
+            ParseFailure::Syntactic(detail)
+        }
     })?;
 
     if compiled.entries.is_empty() {
-        return Err("v2 scenario body produced zero entries".to_string());
+        return Err(ParseFailure::Syntactic(
+            "v2 scenario body produced zero entries".to_string(),
+        ));
     }
 
     Ok(ParsedBody::Compiled(Box::new(compiled)))
+}
+
+/// Detect schema-level deserialize failures on otherwise well-formed YAML.
+///
+/// Returns true only when the raw text parses as a generic YAML `Value` but
+/// the AST deserialize step rejects it (e.g. unsupported `while.op`,
+/// `deny_unknown_fields` violations). All other compile failures — YAML
+/// syntax errors, normalize/expand/compile_after/prepare errors — map to
+/// `400 Bad Request` to preserve existing behavior.
+fn is_semantic_schema_error(err: &sonda_core::CompileError, text: &str) -> bool {
+    use sonda_core::compiler::normalize::NormalizeError;
+    use sonda_core::compiler::parse::ParseError;
+    use sonda_core::CompileError;
+
+    match err {
+        CompileError::Parse(ParseError::Yaml(_)) => {
+            serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).is_ok()
+        }
+        CompileError::Normalize(
+            NormalizeError::WhileValueIsNan { .. }
+            | NormalizeError::CloseSnapToIsNan { .. }
+            | NormalizeError::CloseEmitConflict { .. }
+            | NormalizeError::WhileWithoutDuration { .. }
+            | NormalizeError::DelayWithoutWhile { .. },
+        ) => true,
+        _ => false,
+    }
 }
 
 /// Convert the raw request body into YAML text for the v2 compiler.
@@ -334,12 +444,33 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|msg| {
-        warn!(error = %msg, "POST /scenarios: invalid request body");
-        bad_request(msg)
+    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|fail| {
+        warn!(error = %fail.message(), "POST /scenarios: invalid request body");
+        match fail {
+            ParseFailure::Syntactic(m) => bad_request(m),
+            ParseFailure::Semantic(m) => unprocessable(m),
+        }
     })?;
 
     let ParsedBody::Compiled(compiled) = parsed;
+
+    if let Some(name) = compiled.scenario_name.as_deref() {
+        let conflicts = collect_active_conflicts(&state, name).map_err(|()| {
+            warn!("POST /scenarios: scenarios lock is poisoned");
+            internal_error("internal state lock is poisoned")
+        })?;
+        if !conflicts.is_empty() {
+            warn!(
+                scenario_name = %name,
+                count = conflicts.len(),
+                "POST /scenarios: rejected duplicate scenario_name"
+            );
+            return Err(conflict(
+                format!("scenario_name '{name}' is already running"),
+                conflicts,
+            ));
+        }
+    }
 
     // Derive ScenarioEntry values for the loopback warning helper, which
     // operates on the runtime input shape. prepare_entries doubles as
@@ -720,6 +851,7 @@ mod tests {
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -750,6 +882,7 @@ mod tests {
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -1781,13 +1914,14 @@ generator:
 ";
         let err = parse_body(v1_yaml.as_bytes(), &headers, &InMemoryPackResolver::new())
             .expect_err("v1 flat YAML must be rejected");
+        let msg = err.message();
         assert!(
-            err.contains("v2"),
-            "rejection must mention v2 requirement, got: {err}"
+            msg.contains("v2"),
+            "rejection must mention v2 requirement, got: {msg}"
         );
         assert!(
-            err.contains("v2-scenarios.md") || err.contains("Migrate"),
-            "rejection must include migration hint, got: {err}"
+            msg.contains("v2-scenarios.md") || msg.contains("Migrate"),
+            "rejection must include migration hint, got: {msg}"
         );
     }
 
@@ -1807,9 +1941,10 @@ scenarios:
 ";
         let err = parse_body(v1_multi.as_bytes(), &headers, &InMemoryPackResolver::new())
             .expect_err("v1 multi-scenario YAML must be rejected");
+        let msg = err.message();
         assert!(
-            err.contains("v2"),
-            "rejection must mention v2 requirement, got: {err}"
+            msg.contains("v2"),
+            "rejection must mention v2 requirement, got: {msg}"
         );
     }
 
@@ -1820,7 +1955,7 @@ scenarios:
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
         let err = parse_body(b"not valid: [}{", &headers, &InMemoryPackResolver::new())
             .expect_err("garbage must fail");
-        assert!(!err.is_empty(), "error message must not be empty");
+        assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
     /// `parse_body` accepts a v2 JSON body and transcodes it to YAML internally.
@@ -1862,7 +1997,7 @@ scenarios:
         headers.insert("content-type", "application/json".parse().unwrap());
         let err = parse_body(b"not json", &headers, &InMemoryPackResolver::new())
             .expect_err("invalid JSON must fail");
-        assert!(!err.is_empty(), "error message must not be empty");
+        assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
@@ -2377,6 +2512,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -2790,6 +2926,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -3149,6 +3286,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -3176,6 +3314,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),

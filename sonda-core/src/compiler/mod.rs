@@ -71,8 +71,7 @@ use crate::sink::SinkConfig;
 /// (`sonda::scenarios::read_scenario_metadata`) reads v1 and v2 files
 /// through the same `Deserialize` struct. The compiler pipeline itself
 /// (normalize → expand → compile_after → prepare) does **not** consume
-/// these fields — they are pure metadata, not compile input. See
-/// `docs/refactor/adr-v2-catalog-metadata.md` for rationale.
+/// these fields — they are pure metadata, not compile input.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "config",
@@ -387,12 +386,14 @@ pub struct WhileClause {
 ///
 /// Durations are parsed from human-readable strings (`"250ms"`, `"5s"`)
 /// at YAML deserialization time, so the runtime never re-parses.
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "config",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(deny_unknown_fields)
-)]
+///
+/// `close` accepts two shapes for backward compatibility:
+/// - `close: 5s` — legacy duration shorthand (carries no extra fields).
+/// - `close: { duration: 5s, snap_to: 1, stale_marker: false }` — extended
+///   form for [`PROMETHEUS_STALE_NAN`](crate::encoder::remote_write::PROMETHEUS_STALE_NAN)
+///   recovery control on `running → paused`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
 pub struct DelayClause {
     #[cfg_attr(
         feature = "config",
@@ -412,15 +413,94 @@ pub struct DelayClause {
         )
     )]
     pub close: Option<std::time::Duration>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub close_stale_marker: Option<bool>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub close_snap_to: Option<f64>,
+}
+
+#[cfg(feature = "config")]
+impl<'de> serde::Deserialize<'de> for DelayClause {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct CloseStruct {
+            #[serde(default)]
+            duration: Option<String>,
+            #[serde(default)]
+            snap_to: Option<f64>,
+            #[serde(default)]
+            stale_marker: Option<bool>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum CloseShape {
+            Duration(String),
+            Extended(CloseStruct),
+        }
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            #[serde(default)]
+            open: Option<String>,
+            #[serde(default)]
+            close: Option<CloseShape>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        let open = match raw.open {
+            Some(s) => Some(
+                crate::config::validate::parse_delay_duration(&s)
+                    .map_err(serde::de::Error::custom)?,
+            ),
+            None => None,
+        };
+
+        let (close, close_snap_to, close_stale_marker) = match raw.close {
+            None => (None, None, None),
+            Some(CloseShape::Duration(s)) => {
+                let dur = crate::config::validate::parse_delay_duration(&s)
+                    .map_err(serde::de::Error::custom)?;
+                (Some(dur), None, None)
+            }
+            Some(CloseShape::Extended(ext)) => {
+                let dur = match ext.duration {
+                    Some(s) => Some(
+                        crate::config::validate::parse_delay_duration(&s)
+                            .map_err(serde::de::Error::custom)?,
+                    ),
+                    None => None,
+                };
+                (dur, ext.snap_to, ext.stale_marker)
+            }
+        };
+
+        Ok(DelayClause {
+            open,
+            close,
+            close_stale_marker,
+            close_snap_to,
+        })
+    }
 }
 
 #[cfg(feature = "config")]
 mod delay_duration_opt {
     use std::time::Duration;
 
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use crate::config::validate::parse_delay_duration;
+    use serde::Serializer;
 
     pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -429,19 +509,6 @@ mod delay_duration_opt {
         match value {
             Some(d) => serializer.serialize_str(&format_duration(*d)),
             None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw: Option<String> = Option::deserialize(deserializer)?;
-        match raw {
-            Some(s) => parse_delay_duration(&s)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
         }
     }
 

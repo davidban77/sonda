@@ -48,9 +48,16 @@ fn bench_baseline_ungated(c: &mut Criterion) {
         b.iter(|| {
             let entry = metrics_entry("bench", 1000.0, 300);
             let shutdown = Arc::new(AtomicBool::new(true));
-            let mut handle =
-                launch_scenario_with_gates("bench".to_string(), entry, shutdown, None, None, None)
-                    .unwrap();
+            let mut handle = launch_scenario_with_gates(
+                "bench".to_string(),
+                None,
+                entry,
+                shutdown,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();
         });
     });
@@ -72,6 +79,7 @@ fn bench_gated_open(c: &mut Criterion) {
             let shutdown = Arc::new(AtomicBool::new(true));
             let mut handle = launch_scenario_with_gates(
                 "gated".to_string(),
+                None,
                 entry,
                 shutdown,
                 None,
@@ -82,6 +90,7 @@ fn bench_gated_open(c: &mut Criterion) {
                     delay: None,
                     has_after: false,
                     has_while: true,
+                    close_emit: None,
                 }),
             )
             .unwrap();

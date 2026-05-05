@@ -47,6 +47,7 @@ pub fn print_dry_run_compiled(
     compiled: &CompiledFile,
     format: DryRunFormat,
 ) -> anyhow::Result<()> {
+    validate_alias_invariants(compiled)?;
     match format {
         DryRunFormat::Text => {
             let mut out = io::stderr().lock();
@@ -55,6 +56,30 @@ pub fn print_dry_run_compiled(
         DryRunFormat::Json => {
             let mut out = io::stdout().lock();
             write_json_compiled(&mut out, source_label, compiled)?;
+        }
+    }
+    Ok(())
+}
+
+/// Surface alias-validation errors that would otherwise only fire inside
+/// `prepare_entries` (which dry-run never calls). Today this catches the
+/// `flap` `enum:` mutual-exclusion check; extend here for any future alias
+/// mutex / shape constraint that should reach operators at dry-run time.
+fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
+    for entry in &compiled.entries {
+        if let Some(GeneratorConfig::Flap {
+            enum_kind: Some(_),
+            up_value,
+            down_value,
+            ..
+        }) = entry.generator.as_ref()
+        {
+            if up_value.is_some() || down_value.is_some() {
+                let id = entry.id.as_deref().unwrap_or("<anonymous>");
+                return Err(anyhow::anyhow!(
+                    "scenario '{id}': flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one"
+                ));
+            }
         }
     }
     Ok(())
@@ -125,11 +150,13 @@ fn generator_display(gen: &sonda_core::generator::GeneratorConfig) -> String {
             down_duration,
             up_value,
             down_value,
+            enum_kind,
         } => {
             let up_d = up_duration.as_deref().unwrap_or("10s");
             let dn_d = down_duration.as_deref().unwrap_or("5s");
-            let up_v = up_value.unwrap_or(1.0);
-            let dn_v = down_value.unwrap_or(0.0);
+            let (up_default, dn_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
+            let up_v = up_value.unwrap_or(up_default);
+            let dn_v = down_value.unwrap_or(dn_default);
             format!(
                 "flap (up_duration: {up_d}, down_duration: {dn_d}, up_value: {up_v}, down_value: {dn_v})"
             )
@@ -470,16 +497,18 @@ fn crossing_secs(
             down_duration,
             up_value,
             down_value,
+            enum_kind,
         } => {
             let up_secs = duration_or_default(up_duration.as_deref(), 10.0)?;
             let down_secs = duration_or_default(down_duration.as_deref(), 5.0)?;
+            let (up_default, dn_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
             timing::flap_crossing_secs(
                 op,
                 threshold,
                 up_secs,
                 down_secs,
-                up_value.unwrap_or(1.0),
-                down_value.unwrap_or(0.0),
+                up_value.unwrap_or(up_default),
+                down_value.unwrap_or(dn_default),
             )
         }
         GeneratorConfig::Saturation {

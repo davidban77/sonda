@@ -93,7 +93,7 @@ scenarios:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. |
+| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. When posted to a running `sonda-server`, this field also acts as a uniqueness key — POSTing two cascades that share an active `scenario_name` returns [`409 Conflict`](../deployment/sonda-server.md#duplicate-scenario_name-returns-409). |
 | `category` | no | Catalog grouping. One of `infrastructure`, `network`, `application`, `observability`. Scenarios without a category render as `uncategorized` and drop out of `--category` filters. |
 | `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
 
@@ -420,7 +420,7 @@ For continuous gating that pauses and resumes a downstream as the upstream's val
 
 ## Continuous coupling with `while:`
 
-`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing.
+`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately.
 
 ```yaml title="scenarios/link-traffic.yaml"
 version: 2
@@ -501,7 +501,47 @@ Pair `while:` with `delay:` to debounce noisy upstream signals.
       close: 1s
 ```
 
-`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time.
+`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time. The `close:` field also accepts an extended struct form for stale-marker control on `running → paused` transitions; see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) below.
+
+### Recovering Prometheus alerts on gate close
+
+Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple on every committed `running → paused` transition when the sink is `remote_write`. Downstream alerts resolve immediately on the next scrape cycle.
+
+The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` keeps working unchanged. The extended form lets you override the stale marker with a literal recovery sample, or opt out of the default emit entirely. The two knobs are mutually exclusive — pick one.
+
+```yaml title="Override the stale marker with a recovery value"
+  - id: bgp_oper_state
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 2.0
+    while:
+      ref: primary_link
+      op: "<"
+      value: 1
+    delay:
+      open: 250ms
+      close:
+        duration: 5s
+        snap_to: 1            # emit one literal sample with this value before pausing
+```
+
+`snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close.
+
+To suppress the default emit entirely, set `stale_marker: false` instead:
+
+```yaml title="Disable the default stale-marker emit"
+    delay:
+      open: 250ms
+      close:
+        duration: 5s
+        stale_marker: false
+```
+
+Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
+
+The marker fires only on **committed** `running → paused` transitions. A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while paused goes `paused → finished` without an additional close-emit (see the lifecycle states above). The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
 ### Combining with `after:`
 
@@ -572,6 +612,10 @@ When an entry carries both `after:` and `while:` against different upstreams, bo
 ### Supported operators
 
 `while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time -- equality on a continuous-valued upstream is numerically unsafe and forbidden by design.
+
+### Value typing
+
+`while.value` accepts either an integer or a float YAML scalar; both are stored as `f64`. `value: 1` and `value: 1.0` are equivalent. Prefer `1.0` (or any explicit decimal form) in scenario files so the YAML reader carries the operator's intent without relying on integer coercion. NaN and infinity (`.nan`, `.inf`, `-.inf`) are rejected at compile time because the strict comparison gate would never resolve deterministically; the same rejection applies to `delay.close.snap_to`.
 
 ### Migrating an `after:`-only cascade to `while:` with recovery
 

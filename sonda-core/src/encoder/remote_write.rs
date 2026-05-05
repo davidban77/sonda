@@ -31,6 +31,13 @@ use crate::{EncoderError, SondaError};
 
 use super::Encoder;
 
+/// The Prometheus stale-marker NaN bit pattern.
+///
+/// When a remote write sample carries this exact f64 bit pattern Prometheus
+/// marks the corresponding series as stale, suppressing the latest-sample-wins
+/// recovery window so downstream alerts can resolve immediately.
+pub const PROMETHEUS_STALE_NAN: f64 = f64::from_bits(0x7ff0000000000002);
+
 // ---------------------------------------------------------------------------
 // Protobuf message types (hand-written prost structs)
 // ---------------------------------------------------------------------------
@@ -599,6 +606,28 @@ mod tests {
     // -------------------------------------------------------------------------
     // encode_log returns not supported error
     // -------------------------------------------------------------------------
+
+    #[test]
+    fn prometheus_stale_nan_round_trips_through_prost_encoding() {
+        let encoder = RemoteWriteEncoder::new();
+        let event = make_event("stale_metric", PROMETHEUS_STALE_NAN, &[], 1_700_000_000_000);
+        let mut buf = Vec::new();
+        encoder.encode_metric(&event, &mut buf).expect("encode ok");
+
+        let ts = decode_timeseries(&buf);
+        assert_eq!(ts.samples.len(), 1);
+        assert_eq!(
+            ts.samples[0].value.to_bits(),
+            0x7ff0000000000002,
+            "stale-NaN bit pattern must survive prost f64 fixed64 encoding unchanged"
+        );
+    }
+
+    #[test]
+    fn prometheus_stale_nan_constant_is_a_signaling_nan() {
+        assert!(PROMETHEUS_STALE_NAN.is_nan(), "must be NaN");
+        assert_eq!(PROMETHEUS_STALE_NAN.to_bits(), 0x7ff0000000000002);
+    }
 
     #[test]
     fn encode_log_returns_not_supported_error() {

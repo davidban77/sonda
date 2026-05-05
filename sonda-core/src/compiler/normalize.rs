@@ -129,6 +129,25 @@ pub enum NormalizeError {
          `delay:` debounces `while:` transitions and has no meaning without it."
     )]
     DelayWithoutWhile { source_id: String },
+
+    #[error(
+        "entry '{source_id}': delay.close.snap_to already replaces the stale marker; \
+         do not also set delay.close.stale_marker: false"
+    )]
+    CloseEmitConflict { source_id: String },
+
+    #[error(
+        "entry '{source_id}': while.value must be a finite number; \
+         NaN and infinity are rejected because the strict comparison gate \
+         would never resolve deterministically"
+    )]
+    WhileValueIsNan { source_id: String },
+
+    #[error(
+        "entry '{source_id}': delay.close.snap_to must be a finite number; \
+         NaN and infinity cannot be emitted as a recovery sample"
+    )]
+    CloseSnapToIsNan { source_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +181,10 @@ pub enum NormalizeError {
 pub struct NormalizedFile {
     /// Schema version. Always `2` after normalization.
     pub version: u32,
+    /// File-level `scenario_name` carried verbatim. Pure metadata —
+    /// ignored by every compiler phase, surfaced for runtime conflict checks.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub scenario_name: Option<String>,
     /// The file-level `defaults.labels` map, carried forward verbatim for
     /// later compilation phases to apply at the correct precedence slot.
     ///
@@ -321,6 +344,7 @@ pub fn normalize(file: ScenarioFile) -> Result<NormalizedFile, NormalizeError> {
 
     Ok(NormalizedFile {
         version: file.version,
+        scenario_name: file.scenario_name,
         defaults_labels,
         entries,
     })
@@ -383,6 +407,27 @@ fn normalize_entry(
         return Err(NormalizeError::WhileWithoutDuration {
             source_id: diagnostic_label,
         });
+    }
+    if let Some(w) = while_clause.as_ref() {
+        if !w.value.is_finite() {
+            return Err(NormalizeError::WhileValueIsNan {
+                source_id: diagnostic_label,
+            });
+        }
+    }
+    if let Some(d) = delay_clause.as_ref() {
+        if d.close_snap_to.is_some() && d.close_stale_marker == Some(false) {
+            return Err(NormalizeError::CloseEmitConflict {
+                source_id: diagnostic_label,
+            });
+        }
+        if let Some(v) = d.close_snap_to {
+            if !v.is_finite() {
+                return Err(NormalizeError::CloseSnapToIsNan {
+                    source_id: diagnostic_label,
+                });
+            }
+        }
     }
 
     Ok(NormalizedEntry {
@@ -1448,6 +1493,72 @@ scenarios:
         let delay = gated.delay_clause.as_ref().expect("delay clause present");
         assert_eq!(delay.open, Some(std::time::Duration::from_millis(250)));
         assert_eq!(delay.close, Some(std::time::Duration::ZERO));
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::nan(".nan")]
+    #[case::pos_inf(".inf")]
+    #[case::neg_inf("-.inf")]
+    fn while_value_non_finite_is_rejected_at_compile(#[case] yaml_value: &str) {
+        let yaml = format!(r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: {{ type: constant, value: 1 }}
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: {{ type: constant, value: 1 }}
+    while: {{ ref: src, op: ">", value: {yaml_value} }}
+"#);
+        let err = normalize_yaml(&yaml).expect_err("non-finite while.value must fail");
+        match err {
+            NormalizeError::WhileValueIsNan { source_id } => {
+                assert_eq!(source_id, "gated");
+            }
+            other => panic!("expected WhileValueIsNan, got {other:?}"),
+        }
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::nan(".nan")]
+    #[case::pos_inf(".inf")]
+    #[case::neg_inf("-.inf")]
+    fn close_snap_to_non_finite_is_rejected_at_compile(#[case] yaml_value: &str) {
+        let yaml = format!(r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: {{ type: constant, value: 1 }}
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: {{ type: constant, value: 1 }}
+    while: {{ ref: src, op: ">", value: 0 }}
+    delay:
+      close:
+        duration: 5s
+        snap_to: {yaml_value}
+"#);
+        let err = normalize_yaml(&yaml).expect_err("non-finite close.snap_to must fail");
+        match err {
+            NormalizeError::CloseSnapToIsNan { source_id } => {
+                assert_eq!(source_id, "gated");
+            }
+            other => panic!("expected CloseSnapToIsNan, got {other:?}"),
+        }
     }
 
     #[test]

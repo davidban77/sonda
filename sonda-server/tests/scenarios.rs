@@ -1606,4 +1606,502 @@ scenarios:
             "consecutive_failures must not advance while paused (baseline={baseline}, after={after})"
         );
     }
+
+    /// Posting a v2 cascade with the new extended `delay.close` shape (struct
+    /// form with `snap_to`) accepts and runs end-to-end. The downstream
+    /// reaches `paused` after the upstream's gate closes.
+    const STALE_MARKER_CASCADE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 50
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 200ms
+  - id: bgp_oper_state
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 2.0
+    while:
+      ref: link
+      op: '<'
+      value: 1
+    delay:
+      close:
+        duration: 0s
+        snap_to: 1
+";
+
+    #[test]
+    fn post_cascade_with_extended_delay_close_form_runs_to_paused() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(STALE_MARKER_CASCADE_YAML)
+            .send()
+            .expect("POST cascade must succeed");
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "extended delay.close shape must be accepted"
+        );
+
+        let body: serde_json::Value = resp.json().expect("body is JSON");
+        let scenarios = body["scenarios"]
+            .as_array()
+            .expect("response carries scenarios array");
+        let downstream_id = scenarios
+            .iter()
+            .find(|s| s["name"] == "bgp_oper_state")
+            .expect("downstream entry present")["id"]
+            .as_str()
+            .expect("downstream id is a string")
+            .to_string();
+
+        let mut observed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < deadline {
+            if let Some(s) = poll_state(&client, port, &downstream_id) {
+                observed.insert(s);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        assert!(
+            observed.contains("paused"),
+            "downstream must reach 'paused' at least once, observed: {observed:?}"
+        );
+    }
+
+    /// Conflicting `delay.close.snap_to` + `delay.close.stale_marker: false`
+    /// is rejected at compile time and surfaces as 422 from the server.
+    const CONFLICTING_DELAY_CLOSE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 30s
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: link
+      op: '<'
+      value: 1
+    delay:
+      close:
+        snap_to: 0
+        stale_marker: false
+";
+
+    #[test]
+    fn post_cascade_with_conflicting_close_emit_returns_400() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(CONFLICTING_DELAY_CLOSE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert!(
+            (400..500).contains(&status),
+            "conflicting close-emit must return 4xx, got {status}"
+        );
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("snap_to"),
+            "error must mention 'snap_to', got: {body}"
+        );
+    }
+
+    const OP_LE_WHILE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator:
+      type: constant
+      value: 1
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1
+    while:
+      ref: src
+      op: '<='
+      value: 1
+";
+
+    #[test]
+    fn op_le_returns_422_on_post() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(OP_LE_WHILE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert_eq!(
+            status, 422,
+            "op: '<=' is a schema-level rejection, must surface as 422 (not 400, not 500)"
+        );
+
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("unsupported operator")
+                && body.contains("strict")
+                && body.contains("'<'")
+                && body.contains("'>'"),
+            "response body must contain the locked operator-rejection wording, got: {body}"
+        );
+    }
+
+    const NAN_VALUE_WHILE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator:
+      type: constant
+      value: 0.5
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: src
+      op: '<'
+      value: .nan
+";
+
+    #[test]
+    fn while_value_nan_returns_422_on_post() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(NAN_VALUE_WHILE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert_eq!(
+            status, 422,
+            "while.value: NaN is a normalize-stage schema rejection on otherwise well-formed \
+             YAML — must surface as 422 (parity with op:'<=' rejection), got {status}"
+        );
+
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("finite") || body.contains("NaN"),
+            "response body must explain why NaN is rejected, got: {body}"
+        );
+    }
+}
+
+// ---- 409 Conflict on duplicate scenario_name --------------------------------
+
+const NAMED_FLAP_INTERFACE_YAML: &str = "\
+version: 2
+scenario_name: flap-interface
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link_status
+    signal_type: metrics
+    name: link_status
+    generator:
+      type: constant
+      value: 1.0
+";
+
+const NAMED_FLAP_INTERFACE_SHORT_YAML: &str = "\
+version: 2
+scenario_name: flap-interface-short
+defaults:
+  rate: 10
+  duration: 100ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link_status_short
+    signal_type: metrics
+    name: link_status_short
+    generator:
+      type: constant
+      value: 1.0
+";
+
+const ANONYMOUS_METRICS_YAML: &str = "\
+version: 2
+defaults:
+  rate: 10
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: anon_metric
+    signal_type: metrics
+    name: anon_metric
+    generator:
+      type: constant
+      value: 1.0
+";
+
+#[test]
+fn post_named_scenario_twice_returns_409() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(
+        first.status().as_u16(),
+        201,
+        "first named POST must return 201"
+    );
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"]
+        .as_str()
+        .expect("first response must include id")
+        .to_string();
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+
+    assert_eq!(
+        second.status().as_u16(),
+        409,
+        "second POST with the same scenario_name must return 409 Conflict"
+    );
+
+    let body: serde_json::Value = second.json().expect("409 body must be valid JSON");
+    let error = body["error"].as_str().expect("error must be a string");
+    assert!(
+        error.contains("flap-interface"),
+        "error must mention scenario_name, got: {error}"
+    );
+
+    let conflicts = body["conflicting_scenarios"]
+        .as_array()
+        .expect("conflicting_scenarios must be an array");
+    assert!(
+        !conflicts.is_empty(),
+        "conflicting_scenarios must list at least one entry"
+    );
+    let entry = &conflicts[0];
+    assert_eq!(
+        entry["id"].as_str(),
+        Some(first_id.as_str()),
+        "conflicting entry id must match the first launched scenario"
+    );
+    assert!(
+        entry["name"].is_string(),
+        "conflicting entry must include name"
+    );
+    let state = entry["state"].as_str().expect("state must be a string");
+    assert!(
+        matches!(state, "pending" | "running" | "paused"),
+        "conflicting state must be active (not finished), got {state:?}"
+    );
+
+    let hint = body["hint"].as_str().expect("hint must be a string");
+    assert!(
+        hint.contains("DELETE"),
+        "hint must mention DELETE, got: {hint}"
+    );
+}
+
+#[test]
+fn post_named_scenario_after_delete_returns_201() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"].as_str().expect("first id is string");
+
+    let delete = client
+        .delete(format!("http://127.0.0.1:{port}/scenarios/{first_id}"))
+        .send()
+        .expect("DELETE must succeed");
+    assert_eq!(
+        delete.status().as_u16(),
+        200,
+        "DELETE must return 200 OK on a known scenario"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "POST after DELETE must return 201; previous instance was cleared"
+    );
+}
+
+#[test]
+fn post_anonymous_scenario_twice_returns_201_both_times() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(ANONYMOUS_METRICS_YAML)
+        .send()
+        .expect("first anonymous POST must succeed");
+    assert_eq!(
+        first.status().as_u16(),
+        201,
+        "first anonymous POST must return 201"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(ANONYMOUS_METRICS_YAML)
+        .send()
+        .expect("second anonymous POST must succeed");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "anonymous bodies bypass the conflict check"
+    );
+}
+
+#[test]
+fn post_named_scenario_with_finished_existing_returns_201() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let first = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_SHORT_YAML)
+        .send()
+        .expect("first POST must succeed");
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body: serde_json::Value = first.json().expect("first body is JSON");
+    let first_id = first_body["id"].as_str().expect("first id is string");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut observed_finished = false;
+    while std::time::Instant::now() < deadline {
+        let stats = client
+            .get(format!(
+                "http://127.0.0.1:{port}/scenarios/{first_id}/stats"
+            ))
+            .send()
+            .expect("GET /stats must succeed");
+        if stats.status().as_u16() == 200 {
+            let body: serde_json::Value = stats.json().expect("stats body is JSON");
+            if body["state"].as_str() == Some("finished") {
+                observed_finished = true;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        observed_finished,
+        "first scenario must reach 'finished' state within the deadline"
+    );
+
+    let second = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(NAMED_FLAP_INTERFACE_SHORT_YAML)
+        .send()
+        .expect("second POST must succeed at HTTP level");
+    assert_eq!(
+        second.status().as_u16(),
+        201,
+        "finished handles are stale; new POST with the same scenario_name must return 201"
+    );
 }

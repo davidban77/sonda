@@ -111,7 +111,11 @@ pub fn launch_multi_compiled(
     file: CompiledFile,
     shutdown: Arc<AtomicBool>,
 ) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
-    let CompiledFile { entries, .. } = file;
+    let CompiledFile {
+        scenario_name,
+        entries,
+        ..
+    } = file;
 
     let bus_ids = while_upstream_ids(&entries);
     let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
@@ -173,6 +177,7 @@ pub fn launch_multi_compiled(
                 delay: delay_clause,
                 has_after: false,
                 has_while: true,
+                close_emit: None,
             })
         } else {
             None
@@ -199,6 +204,7 @@ pub fn launch_multi_compiled(
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
         match launch_scenario_with_gates(
             id,
+            scenario_name.clone(),
             plan.entry,
             Arc::clone(&shutdown),
             plan.start_delay,

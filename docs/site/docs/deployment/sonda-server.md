@@ -327,8 +327,31 @@ shape conversions.
 | Status | Condition | Detail field |
 |--------|-----------|--------------|
 | **400 Bad Request** | Body is not UTF-8, not valid JSON/YAML, missing `version: 2`, or fails compilation. | Parser or compiler error; v1 bodies include the migration hint. |
+| **409 Conflict** | The posted body sets a top-level `scenario_name` that matches an active scenario already in the map. | Identifies the duplicate name and lists the conflicting scenarios. See [Duplicate scenario_name returns 409](#duplicate-scenario_name-returns-409). |
 | **422 Unprocessable Entity** | Body compiles but fails runtime validation (`rate: 0`, zero `duration`, etc.). | Validation error identifying the failing entry. |
 | **500 Internal Server Error** | Scenario thread could not be spawned, or internal state error. | Short internal error; check server logs. |
+
+### Duplicate scenario_name returns 409
+
+When a posted v2 body sets a top-level `scenario_name`, the server scans the active scenario map for any handle that already carries the same `scenario_name` and is in `pending`, `running`, or `paused` state. If at least one match is found the POST is rejected with `409 Conflict`; nothing is launched. The contract is explicit: the operator must `DELETE` the conflicting scenarios first, then re-post. There is no `?force=true` override -- the explicit DELETE is the only way to free the name.
+
+Anonymous bodies (no top-level `scenario_name`) bypass this check entirely — two consecutive POSTs of the same anonymous body both return 201. Finished handles are considered stale and never block a new POST — once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
+
+The conflict check is best-effort: it acquires a read lock, scans the active scenarios, and releases the lock before launching. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window -- both will register and their Prometheus streams will collide on duplicate timestamps. Workshop-scale and sequential-operator usage are unaffected; high-concurrency callers should serialize POSTs that share a `scenario_name`.
+
+The 409 body lists every active scenario contributing to the conflict so the operator knows which IDs to DELETE:
+
+```json title="Response (409 Conflict)"
+{
+  "error": "scenario_name 'flap-interface' is already running",
+  "conflicting_scenarios": [
+    {"id": "a1b2c3d4-...", "name": "link_status", "state": "running"}
+  ],
+  "hint": "DELETE the conflicting scenarios before posting a new cascade with the same scenario_name"
+}
+```
+
+Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELETE /scenarios/{id}`), the per-entry `name` (the runtime-launched scenario name, not the file-level `scenario_name`), and the live `state` (one of `pending`, `running`, `paused`). When the body produced multiple entries (multi-entry POST or pack expansion), each launched handle inherits the same file-level `scenario_name` and contributes one item to the array.
 
 ## API Endpoints
 

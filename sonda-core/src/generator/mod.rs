@@ -81,6 +81,43 @@ pub struct CsvColumnSpec {
     pub labels: Option<HashMap<String, String>>,
 }
 
+/// Domain-specific value mapping for the [`GeneratorConfig::Flap`] alias.
+///
+/// The variant selects an `(up_value, down_value)` pair aligned with
+/// gNMI / openconfig conventions:
+///
+/// | Variant | `up_value` | `down_value` | Convention |
+/// |---|---|---|---|
+/// | `Boolean` | 1.0 | 0.0 | Generic boolean |
+/// | `LinkState` | 1.0 | 0.0 | Synonym of `Boolean` |
+/// | `OperState` | 1.0 | 2.0 | gNMI oper-state (UP=1, DOWN=2) |
+/// | `AdminState` | 1.0 | 2.0 | gNMI admin-state (UP=1, DOWN=2) |
+/// | `NeighborState` | 6.0 | 1.0 | BGP neighbor-state (ESTABLISHED=6, IDLE=1) |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "config",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
+pub enum FlapEnum {
+    Boolean,
+    LinkState,
+    OperState,
+    AdminState,
+    NeighborState,
+}
+
+impl FlapEnum {
+    /// Return the `(up_value, down_value)` pair this variant selects.
+    pub fn defaults(self) -> (f64, f64) {
+        match self {
+            FlapEnum::Boolean | FlapEnum::LinkState => (1.0, 0.0),
+            FlapEnum::OperState | FlapEnum::AdminState => (1.0, 2.0),
+            FlapEnum::NeighborState => (6.0, 1.0),
+        }
+    }
+}
+
 /// Configuration for a value generator, used for YAML deserialization.
 ///
 /// The `type` field selects which generator to instantiate. Additional fields
@@ -235,6 +272,11 @@ pub enum GeneratorConfig {
     /// The number of consecutive up/down ticks is derived from `up_duration` and
     /// `down_duration` relative to the scenario `rate`.
     ///
+    /// The optional `enum:` shorthand selects up/down values aligned with
+    /// common gNMI / openconfig conventions (oper-state, admin-state,
+    /// BGP neighbor-state). Mutually exclusive with explicit `up_value` /
+    /// `down_value`.
+    ///
     /// # Example YAML
     ///
     /// ```yaml
@@ -242,6 +284,7 @@ pub enum GeneratorConfig {
     ///   type: flap
     ///   up_duration: "10s"
     ///   down_duration: "5s"
+    ///   enum: oper_state    # up_value=1.0, down_value=2.0
     /// ```
     #[cfg_attr(feature = "config", serde(rename = "flap"))]
     Flap {
@@ -259,6 +302,14 @@ pub enum GeneratorConfig {
         /// Value emitted during the "down" state. Defaults to `0.0`.
         #[cfg_attr(feature = "config", serde(default))]
         down_value: Option<f64>,
+        /// Domain-specific shorthand selecting `(up_value, down_value)` per
+        /// the [`FlapEnum`] mapping. Mutually exclusive with `up_value` /
+        /// `down_value`.
+        #[cfg_attr(
+            feature = "config",
+            serde(default, rename = "enum", skip_serializing_if = "Option::is_none")
+        )]
+        enum_kind: Option<FlapEnum>,
     },
 
     /// Resource filling up and resetting on a repeating cycle (e.g. disk usage

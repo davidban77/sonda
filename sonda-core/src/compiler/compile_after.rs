@@ -391,6 +391,10 @@ fn format_cycle(cycle: &[(String, ClauseKind)]) -> String {
 pub struct CompiledFile {
     /// Schema version. Always `2` after compilation.
     pub version: u32,
+    /// File-level `scenario_name` carried verbatim. Pure metadata —
+    /// ignored by every compiler phase, surfaced for runtime conflict checks.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub scenario_name: Option<String>,
     /// Concrete scenario entries, in source order. Pack-expanded sub-signals
     /// appear consecutively as their parent entry was processed.
     pub entries: Vec<CompiledEntry>,
@@ -527,7 +531,11 @@ pub struct CompiledEntry {
 /// documentation for the one-to-one mapping onto spec §3.4 validation
 /// conditions.
 pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterError> {
-    let ExpandedFile { version, entries } = file;
+    let ExpandedFile {
+        version,
+        scenario_name,
+        entries,
+    } = file;
 
     let id_to_idx = build_id_index(&entries);
 
@@ -707,6 +715,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
 
     Ok(CompiledFile {
         version,
+        scenario_name,
         entries: out,
     })
 }
@@ -891,12 +900,14 @@ fn crossing_secs(
             down_duration,
             up_value,
             down_value,
+            enum_kind,
         } => {
             let up_secs = duration_or_default(up_duration.as_deref(), 10.0, "flap.up_duration")?;
             let down_secs =
                 duration_or_default(down_duration.as_deref(), 5.0, "flap.down_duration")?;
-            let up_val = up_value.unwrap_or(1.0);
-            let down_val = down_value.unwrap_or(0.0);
+            let (up_default, down_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
+            let up_val = up_value.unwrap_or(up_default);
+            let down_val = down_value.unwrap_or(down_default);
             timing::flap_crossing_secs(op, threshold, up_secs, down_secs, up_val, down_val)
         }
         GeneratorConfig::Saturation {

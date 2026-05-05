@@ -9,17 +9,20 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
+use crate::schedule::core_loop::{
+    self, CloseEmitFn, CloseSignal, GateContext, TickContext, TickResult,
+};
 use crate::schedule::gate_bus::GateBus;
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
-use crate::sink::{create_sink, Sink};
+use crate::sink::{create_sink, Sink, SinkConfig};
 use crate::SondaError;
 
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
@@ -88,19 +91,13 @@ pub fn run_with_sink_gated(
     upstream_bus: Option<Arc<GateBus>>,
     gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
-    // Parse the schedule (duration, gap/burst/spike windows) from the shared
-    // BaseScheduleConfig. This is the single authoritative parsing location —
-    // no duplication with the log runner.
     let schedule = ParsedSchedule::from_base_config(&config.base)?;
 
-    // Build generator and encoder from config.
     let generator = create_generator(&config.generator, config.rate)?;
     let generator =
         crate::generator::wrap_with_jitter(generator, config.base.jitter, config.base.jitter_seed);
     let encoder = create_encoder(&config.encoder)?;
 
-    // Build the label set from the config's optional HashMap, wrapped in Arc
-    // so the hot loop can share it across ticks without deep-cloning the BTreeMap.
     let labels: Arc<Labels> = {
         let inner = if let Some(ref label_map) = config.labels {
             let pairs: Vec<(&str, &str)> = label_map
@@ -114,82 +111,77 @@ pub fn run_with_sink_gated(
         Arc::new(inner)
     };
 
-    // Validate and intern the metric name once before the hot loop.
-    // ValidatedMetricName wraps Arc<str> — cloning is O(1), just a refcount bump.
-    // The type system guarantees the name is valid for all subsequent uses.
     let name = ValidatedMetricName::new(&config.name)?;
 
-    // Pre-allocate encode buffer — reused every tick to avoid per-event allocation.
     let mut buf: Vec<u8> = Vec::with_capacity(256);
 
-    // Build the per-tick closure that performs metric-specific work:
-    // generate value → evaluate spike labels → build MetricEvent → encode → write.
     let upstream_bus_for_tick = upstream_bus.clone();
-    let mut tick_fn = |ctx: &TickContext<'_>| -> Result<TickResult, SondaError> {
-        // Timestamp the event at the start of this tick.
-        let wall_now = std::time::SystemTime::now();
+    let mut tick_fn =
+        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+            let wall_now = SystemTime::now();
 
-        // Generate the value for this tick.
-        let value = generator.value(ctx.tick);
-        if let Some(ref bus) = upstream_bus_for_tick {
-            bus.tick(value);
-        }
-
-        // Build the per-tick label set. In the common case (no spike windows
-        // and no dynamic labels) this is just an Arc refcount bump — O(1),
-        // zero heap allocation. Only when a cardinality spike is active or
-        // dynamic labels are configured do we deep-clone the inner Labels to
-        // insert the per-tick values.
-        let needs_dynamic = !ctx.dynamic_labels.is_empty();
-        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
-            Arc::clone(&labels)
-        } else {
-            let mut mutated: Option<Labels> = None;
-            // Inject dynamic labels (always-on, every tick).
-            if needs_dynamic {
-                let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                for dl in ctx.dynamic_labels {
-                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                }
+            let value = generator.value(ctx.tick);
+            if let Some(ref bus) = upstream_bus_for_tick {
+                bus.tick(value);
             }
-            // Inject cardinality spike labels (time-windowed).
-            for sw in ctx.spike_windows {
-                if is_in_spike(ctx.elapsed, sw) {
+
+            let needs_dynamic = !ctx.dynamic_labels.is_empty();
+            let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
+                Arc::clone(&labels)
+            } else {
+                let mut mutated: Option<Labels> = None;
+                if needs_dynamic {
                     let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    for dl in ctx.dynamic_labels {
+                        tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                    }
                 }
-            }
-            match mutated {
-                Some(tl) => Arc::new(tl),
-                None => Arc::clone(&labels),
-            }
+                for sw in ctx.spike_windows {
+                    if is_in_spike(ctx.elapsed, sw) {
+                        let tl = mutated.get_or_insert_with(|| (*labels).clone());
+                        tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    }
+                }
+                match mutated {
+                    Some(tl) => Arc::new(tl),
+                    None => Arc::clone(&labels),
+                }
+            };
+
+            let event = MetricEvent::from_parts(name.clone(), value, tick_labels, wall_now);
+
+            buf.clear();
+            encoder.encode_metric(&event, &mut buf)?;
+            let bytes_written = buf.len() as u64;
+            sink.write(&buf)?;
+
+            Ok(TickResult {
+                bytes_written,
+                metric_event: Some(event),
+            })
         };
 
-        // Build the MetricEvent from pre-validated, pre-shared parts.
-        // name: Arc::clone is O(1) — just a refcount bump, no heap copy.
-        // tick_labels: already an Arc<Labels> from above.
-        let event = MetricEvent::from_parts(name.clone(), value, tick_labels, wall_now);
-
-        // Encode and write.
-        buf.clear();
-        encoder.encode_metric(&event, &mut buf)?;
-        let bytes_written = buf.len() as u64;
-        sink.write(&buf)?;
-
-        Ok(TickResult {
-            bytes_written,
-            metric_event: Some(event),
-        })
-    };
-
-    // Run the shared schedule loop. The tick closure owns the sink borrow for
-    // per-tick writes; the loop itself handles rate control, gap/burst/spike
-    // windows, stats tracking, and shutdown. We flush after the loop returns.
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {
-        None => core_loop::run_schedule_loop(&schedule, config.rate, shutdown, stats, &mut tick_fn),
-        Some(ctx) => {
-            core_loop::gated_loop(&schedule, config.rate, shutdown, stats, ctx, &mut tick_fn)
+        None => core_loop::run_schedule_loop(
+            &schedule,
+            config.rate,
+            shutdown,
+            stats,
+            sink,
+            &mut tick_fn,
+        ),
+        Some(mut ctx) => {
+            ctx.close_emit = build_close_emit(config, stats.as_ref(), ctx.delay.as_ref());
+            core_loop::gated_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                ctx,
+                sink,
+                &mut tick_fn,
+            )
         }
     };
 
@@ -198,6 +190,111 @@ pub fn run_with_sink_gated(
         Ok(()) => core_loop::apply_flush_policy(&schedule, stats_for_flush.as_ref(), flush_result),
         Err(e) => Err(e),
     }
+}
+
+/// `RemoteWrite` sinks default to a stale-NaN marker; other sinks emit only
+/// when the user sets `delay.close.snap_to`.
+///
+/// Resolves the close-emit policy (StaleMarker vs SnapTo) and builds the
+/// encoder up front — failures are surfaced at scenario start, not on the
+/// first gate-close transition. Returns `None` when no emission is wanted.
+fn build_close_emit(
+    config: &ScenarioConfig,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    delay: Option<&crate::compiler::DelayClause>,
+) -> Option<CloseEmitFn> {
+    let stats = stats?.clone();
+
+    let user_explicitly_disabled = matches!(delay.and_then(|d| d.close_stale_marker), Some(false));
+    let user_snap = delay.and_then(|d| d.close_snap_to);
+
+    let is_remote_write = is_remote_write_sink(&config.sink);
+    let should_build = if is_remote_write {
+        user_snap.is_some() || !user_explicitly_disabled
+    } else {
+        user_snap.is_some()
+    };
+    if !should_build {
+        return None;
+    }
+
+    let signal = match user_snap {
+        Some(v) => CloseSignal::SnapTo(v),
+        None => CloseSignal::StaleMarker,
+    };
+
+    let encoder = create_encoder(&config.encoder).ok()?;
+    Some(make_close_emitter(stats, encoder, signal))
+}
+
+fn make_close_emitter(
+    stats: Arc<RwLock<ScenarioStats>>,
+    encoder: Box<dyn crate::encoder::Encoder>,
+    signal: CloseSignal,
+) -> CloseEmitFn {
+    let value = match signal {
+        #[cfg(feature = "remote-write")]
+        CloseSignal::StaleMarker => crate::encoder::remote_write::PROMETHEUS_STALE_NAN,
+        #[cfg(not(feature = "remote-write"))]
+        CloseSignal::StaleMarker => f64::from_bits(0x7ff0000000000002),
+        CloseSignal::SnapTo(v) => v,
+    };
+
+    Box::new(move |sink: &mut dyn Sink| -> Result<(), SondaError> {
+        let now = SystemTime::now();
+
+        let recent: Vec<MetricEvent> = match stats.read() {
+            Ok(st) => st.recent_metrics.iter().cloned().collect(),
+            Err(p) => p.into_inner().recent_metrics.iter().cloned().collect(),
+        };
+
+        let mut seen: Vec<MetricEvent> = Vec::new();
+        'outer: for event in &recent {
+            for kept in &seen {
+                if *kept.name == *event.name
+                    && (Arc::ptr_eq(&kept.labels, &event.labels)
+                        || labels_eq(&kept.labels, &event.labels))
+                {
+                    continue 'outer;
+                }
+            }
+            seen.push(event.clone());
+        }
+
+        let mut buf: Vec<u8> = Vec::with_capacity(256);
+        for event in seen {
+            buf.clear();
+            let marker =
+                MetricEvent::from_parts(event.name.clone(), value, Arc::clone(&event.labels), now);
+            encoder.encode_metric(&marker, &mut buf)?;
+            sink.write(&buf)?;
+        }
+        Ok(())
+    })
+}
+
+#[cfg(feature = "remote-write")]
+fn is_remote_write_sink(sink: &SinkConfig) -> bool {
+    matches!(sink, SinkConfig::RemoteWrite { .. })
+}
+
+#[cfg(not(feature = "remote-write"))]
+fn is_remote_write_sink(_sink: &SinkConfig) -> bool {
+    false
+}
+
+/// Equality on two `Labels` BTreeMaps via zipped iteration.
+///
+/// Correct because `Labels` wraps a `BTreeMap`, so equal label sets always
+/// iterate in the same sorted key order. If `Labels`'s backing store ever
+/// changes to an unordered map, switch to `a == b` or sort first.
+fn labels_eq(a: &crate::model::metric::Labels, b: &crate::model::metric::Labels) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|((ak, av), (bk, bv))| ak == bk && av == bv)
 }
 
 #[cfg(test)]

@@ -455,6 +455,7 @@ bouncing between healthy and unhealthy.
 | `down_duration` | duration | `"5s"` | How long the signal stays "down" per cycle. |
 | `up_value` | float | `1.0` | Value emitted during the "up" state. |
 | `down_value` | float | `0.0` | Value emitted during the "down" state. |
+| `enum` | string | unset | Domain shorthand for `(up_value, down_value)`. See the table below. Mutually exclusive with explicit `up_value`/`down_value`. |
 
 ```yaml title="Interface flap"
 generator:
@@ -466,9 +467,30 @@ generator:
 At `rate: 1`, this produces 10 ticks of `1.0` followed by 5 ticks of `0.0`, then repeats.
 The number of ticks per state is derived from the duration and the scenario `rate`.
 
+#### `enum:` shorthand
+
+For operator-facing metrics, prefer the `enum:` shorthand over hand-tuned values. It selects a `(up_value, down_value)` pair aligned with gNMI / openconfig conventions so dashboards and alert rules built around standard state codes (UP=1, DOWN=2, ESTABLISHED=6, IDLE=1) keep working unchanged. `enum: oper_state` is the recommended starting point for any interface-state or operational-status metric.
+
+| `enum:` value | `up_value` | `down_value` | Use case |
+|---|---|---|---|
+| `boolean` | 1.0 | 0.0 | Generic boolean — explicit synonym for the default `(up_value, down_value)` pair |
+| `link_state` | 1.0 | 0.0 | Synonym of `boolean` |
+| `oper_state` | 1.0 | 2.0 | gNMI / openconfig oper-state (UP=1, DOWN=2) |
+| `admin_state` | 1.0 | 2.0 | gNMI / openconfig admin-state (UP=1, DOWN=2) |
+| `neighbor_state` | 6.0 | 1.0 | BGP neighbor-state (ESTABLISHED=6, IDLE=1) |
+
+```yaml title="Interface oper-state flap"
+generator:
+  type: flap
+  up_duration: "60s"
+  down_duration: "30s"
+  enum: oper_state    # up_value=1.0, down_value=2.0 -- no need to spell them out
+```
+
+`enum:` is mutually exclusive with explicit `up_value` / `down_value`. Combining them is rejected at compile time with the message `flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one`.
+
 ??? tip "Custom values"
-    Use `up_value` and `down_value` to model non-binary signals. For example, a link that
-    alternates between full speed and degraded:
+    When the metric does not match a documented enum, use explicit `up_value` and `down_value` instead. For example, a link that alternates between full speed and degraded throughput:
 
     ```yaml
     generator:
