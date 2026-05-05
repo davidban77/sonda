@@ -337,6 +337,8 @@ When a posted v2 body sets a top-level `scenario_name`, the server scans the act
 
 Anonymous bodies (no top-level `scenario_name`) bypass this check entirely. Two consecutive POSTs of the same anonymous body both return 201, mirroring pre-v1.6 behavior. Finished handles are considered stale and never block a new POST -- once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
 
+The conflict check is best-effort: it acquires a read lock, scans the active scenarios, and releases the lock before launching. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window -- both will register and their Prometheus streams will collide on duplicate timestamps. Workshop-scale and sequential-operator usage are unaffected; high-concurrency callers should serialize POSTs that share a `scenario_name`.
+
 The 409 body lists every active scenario contributing to the conflict so the operator knows which IDs to DELETE:
 
 ```json title="Response (409 Conflict)"
