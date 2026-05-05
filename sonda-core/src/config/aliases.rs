@@ -66,9 +66,16 @@ pub fn desugar_scenario_config(config: &mut ScenarioConfig) -> Result<(), SondaE
             down_duration,
             up_value,
             down_value,
+            enum_kind,
         } => {
-            let up_val = up_value.unwrap_or(1.0);
-            let down_val = down_value.unwrap_or(0.0);
+            if enum_kind.is_some() && (up_value.is_some() || down_value.is_some()) {
+                return Err(SondaError::Config(ConfigError::invalid(
+                    "flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one",
+                )));
+            }
+            let (up_default, down_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
+            let up_val = up_value.unwrap_or(up_default);
+            let down_val = down_value.unwrap_or(down_default);
 
             let up_dur = up_duration.as_deref().unwrap_or("10s");
             let down_dur = down_duration.as_deref().unwrap_or("5s");
@@ -308,6 +315,149 @@ generator:
                 assert_eq!(*repeat, Some(true));
             }
             other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::boolean(       "boolean",        1.0, 0.0)]
+    #[case::link_state(    "link_state",     1.0, 0.0)]
+    #[case::oper_state(    "oper_state",     1.0, 2.0)]
+    #[case::admin_state(   "admin_state",    1.0, 2.0)]
+    #[case::neighbor_state("neighbor_state", 6.0, 1.0)]
+    fn flap_enum_variant_produces_expected_sequence(
+        #[case] enum_name: &str,
+        #[case] expected_up: f64,
+        #[case] expected_down: f64,
+    ) {
+        let yaml = format!(r#"
+name: test_flap_enum
+rate: 1
+generator:
+  type: flap
+  up_duration: "2s"
+  down_duration: "2s"
+  enum: {enum_name}
+"#);
+        let mut config = parse_scenario(&yaml);
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sequence { values, repeat } => {
+                assert_eq!(values.len(), 4);
+                assert!(
+                    values[..2].iter().all(|v| *v == expected_up),
+                    "up phase must use {expected_up}, got {values:?}"
+                );
+                assert!(
+                    values[2..].iter().all(|v| *v == expected_down),
+                    "down phase must use {expected_down}, got {values:?}"
+                );
+                assert_eq!(*repeat, Some(true));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flap_enum_with_explicit_up_value_is_rejected() {
+        let yaml = r#"
+name: test_flap_enum_conflict
+rate: 1
+generator:
+  type: flap
+  up_duration: "2s"
+  down_duration: "2s"
+  enum: oper_state
+  up_value: 7
+"#;
+        let mut config = parse_scenario(yaml);
+        let err = desugar_scenario_config(&mut config).expect_err("conflict must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "error must use the locked 'mutually exclusive' wording, got: {msg}"
+        );
+        assert!(msg.contains("flap"), "error must mention flap: {msg}");
+    }
+
+    #[test]
+    fn flap_enum_with_explicit_down_value_is_rejected() {
+        let yaml = r#"
+name: test_flap_enum_conflict_down
+rate: 1
+generator:
+  type: flap
+  up_duration: "2s"
+  down_duration: "2s"
+  enum: neighbor_state
+  down_value: 99
+"#;
+        let mut config = parse_scenario(yaml);
+        let err = desugar_scenario_config(&mut config).expect_err("conflict must fail");
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn flap_without_enum_or_explicit_values_uses_v15_defaults() {
+        let yaml = r#"
+name: test_flap_v15_defaults
+rate: 1
+generator:
+  type: flap
+  up_duration: "2s"
+  down_duration: "2s"
+"#;
+        let mut config = parse_scenario(yaml);
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sequence { values, .. } => {
+                assert!(values[..2].iter().all(|v| *v == 1.0));
+                assert!(values[2..].iter().all(|v| *v == 0.0));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flap_explicit_values_without_enum_are_preserved() {
+        let yaml = r#"
+name: test_flap_explicit
+rate: 1
+generator:
+  type: flap
+  up_duration: "2s"
+  down_duration: "2s"
+  up_value: 5
+  down_value: 10
+"#;
+        let mut config = parse_scenario(yaml);
+        desugar_scenario_config(&mut config).expect("desugar must succeed");
+
+        match &config.generator {
+            GeneratorConfig::Sequence { values, .. } => {
+                assert!(values[..2].iter().all(|v| *v == 5.0));
+                assert!(values[2..].iter().all(|v| *v == 10.0));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flap_enum_yaml_roundtrip_deserializes_each_variant() {
+        use crate::generator::FlapEnum;
+
+        for (name, expected) in [
+            ("boolean", FlapEnum::Boolean),
+            ("link_state", FlapEnum::LinkState),
+            ("oper_state", FlapEnum::OperState),
+            ("admin_state", FlapEnum::AdminState),
+            ("neighbor_state", FlapEnum::NeighborState),
+        ] {
+            let parsed: FlapEnum =
+                serde_yaml_ng::from_str(name).expect("FlapEnum scalar must deserialize");
+            assert_eq!(parsed, expected, "variant {name} must round-trip");
         }
     }
 
@@ -734,6 +884,7 @@ generator:
             down_duration: None,
             up_value: None,
             down_value: None,
+            enum_kind: None,
         }
         .is_alias());
         assert!(GeneratorConfig::Steady {

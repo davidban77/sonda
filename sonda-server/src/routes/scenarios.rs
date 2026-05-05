@@ -253,6 +253,27 @@ enum ParsedBody {
     Compiled(Box<CompiledFile>),
 }
 
+/// Categorized failure from [`parse_body`].
+///
+/// `Syntactic` covers genuine YAML/JSON syntax errors and content-type
+/// mismatches — surfaced as 400 Bad Request. `Semantic` covers schema
+/// validation failures on otherwise well-formed input (e.g. unsupported
+/// `while.op`, NaN values, conflicting fields) — surfaced as 422
+/// Unprocessable Entity.
+#[derive(Debug)]
+enum ParseFailure {
+    Syntactic(String),
+    Semantic(String),
+}
+
+impl ParseFailure {
+    fn message(&self) -> &str {
+        match self {
+            ParseFailure::Syntactic(m) | ParseFailure::Semantic(m) => m,
+        }
+    }
+}
+
 fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut out = err.to_string();
     let mut cause: Option<&(dyn std::error::Error + 'static)> = err.source();
@@ -268,26 +289,62 @@ fn parse_body(
     body: &[u8],
     headers: &HeaderMap,
     pack_resolver: &InMemoryPackResolver,
-) -> Result<ParsedBody, String> {
-    let text = yaml_body_text(body, headers)?;
+) -> Result<ParsedBody, ParseFailure> {
+    let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
 
     let version = detect_version(&text);
     if version != Some(2) {
-        return Err(format!("body is not a v2 scenario. {V1_REJECTION_HINT}"));
+        return Err(ParseFailure::Syntactic(format!(
+            "body is not a v2 scenario. {V1_REJECTION_HINT}"
+        )));
     }
 
     let compiled = compile_scenario_file_compiled(&text, pack_resolver).map_err(|e| {
-        format!(
+        let detail = format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
-        )
+        );
+        if is_semantic_schema_error(&e, &text) {
+            ParseFailure::Semantic(detail)
+        } else {
+            ParseFailure::Syntactic(detail)
+        }
     })?;
 
     if compiled.entries.is_empty() {
-        return Err("v2 scenario body produced zero entries".to_string());
+        return Err(ParseFailure::Syntactic(
+            "v2 scenario body produced zero entries".to_string(),
+        ));
     }
 
     Ok(ParsedBody::Compiled(Box::new(compiled)))
+}
+
+/// Detect schema-level deserialize failures on otherwise well-formed YAML.
+///
+/// Returns true only when the raw text parses as a generic YAML `Value` but
+/// the AST deserialize step rejects it (e.g. unsupported `while.op`,
+/// `deny_unknown_fields` violations). All other compile failures — YAML
+/// syntax errors, normalize/expand/compile_after/prepare errors — map to
+/// `400 Bad Request` to preserve existing behavior.
+fn is_semantic_schema_error(err: &sonda_core::CompileError, text: &str) -> bool {
+    use sonda_core::compiler::normalize::NormalizeError;
+    use sonda_core::compiler::parse::ParseError;
+    use sonda_core::CompileError;
+
+    match err {
+        CompileError::Parse(ParseError::Yaml(_)) => {
+            serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).is_ok()
+        }
+        CompileError::Normalize(
+            NormalizeError::WhileValueIsNan { .. }
+            | NormalizeError::CloseSnapToIsNan { .. }
+            | NormalizeError::CloseEmitConflict { .. }
+            | NormalizeError::WhileWithoutDuration { .. }
+            | NormalizeError::DelayWithoutWhile { .. },
+        ) => true,
+        _ => false,
+    }
 }
 
 /// Convert the raw request body into YAML text for the v2 compiler.
@@ -334,9 +391,12 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|msg| {
-        warn!(error = %msg, "POST /scenarios: invalid request body");
-        bad_request(msg)
+    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|fail| {
+        warn!(error = %fail.message(), "POST /scenarios: invalid request body");
+        match fail {
+            ParseFailure::Syntactic(m) => bad_request(m),
+            ParseFailure::Semantic(m) => unprocessable(m),
+        }
     })?;
 
     let ParsedBody::Compiled(compiled) = parsed;
@@ -1781,13 +1841,14 @@ generator:
 ";
         let err = parse_body(v1_yaml.as_bytes(), &headers, &InMemoryPackResolver::new())
             .expect_err("v1 flat YAML must be rejected");
+        let msg = err.message();
         assert!(
-            err.contains("v2"),
-            "rejection must mention v2 requirement, got: {err}"
+            msg.contains("v2"),
+            "rejection must mention v2 requirement, got: {msg}"
         );
         assert!(
-            err.contains("v2-scenarios.md") || err.contains("Migrate"),
-            "rejection must include migration hint, got: {err}"
+            msg.contains("v2-scenarios.md") || msg.contains("Migrate"),
+            "rejection must include migration hint, got: {msg}"
         );
     }
 
@@ -1807,9 +1868,10 @@ scenarios:
 ";
         let err = parse_body(v1_multi.as_bytes(), &headers, &InMemoryPackResolver::new())
             .expect_err("v1 multi-scenario YAML must be rejected");
+        let msg = err.message();
         assert!(
-            err.contains("v2"),
-            "rejection must mention v2 requirement, got: {err}"
+            msg.contains("v2"),
+            "rejection must mention v2 requirement, got: {msg}"
         );
     }
 
@@ -1820,7 +1882,7 @@ scenarios:
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
         let err = parse_body(b"not valid: [}{", &headers, &InMemoryPackResolver::new())
             .expect_err("garbage must fail");
-        assert!(!err.is_empty(), "error message must not be empty");
+        assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
     /// `parse_body` accepts a v2 JSON body and transcodes it to YAML internally.
@@ -1862,7 +1924,7 @@ scenarios:
         headers.insert("content-type", "application/json".parse().unwrap());
         let err = parse_body(b"not json", &headers, &InMemoryPackResolver::new())
             .expect_err("invalid JSON must fail");
-        assert!(!err.is_empty(), "error message must not be empty");
+        assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
