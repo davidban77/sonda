@@ -1212,6 +1212,58 @@ scenarios:
 }
 
 #[test]
+fn nan_upstream_value_keeps_downstream_paused() {
+    let bus = Arc::new(GateBus::new());
+    bus.tick(f64::NAN);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+    assert_eq!(
+        init.while_gate_open,
+        Some(false),
+        "NaN upstream must close the gate at subscription"
+    );
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let entry = metrics_entry("nan_paused", 200.0, 600);
+    let mut handle = launch_scenario_with_gates(
+        "nan_paused".to_string(),
+        entry,
+        Arc::clone(&shutdown),
+        None,
+        None,
+        Some(GateContext {
+            gate_rx: rx,
+            initial: init,
+            delay: None,
+            has_after: false,
+            has_while: true,
+            close_emit: None,
+        }),
+    )
+    .expect("launch must succeed");
+
+    // Re-publish NaN periodically to confirm the runtime defense holds
+    // across multiple bus updates, not just at subscription.
+    for _ in 0..6 {
+        thread::sleep(Duration::from_millis(50));
+        bus.tick(f64::NAN);
+    }
+
+    let snap = handle.stats_snapshot();
+    assert_eq!(
+        snap.total_events, 0,
+        "NaN upstream must keep downstream paused"
+    );
+    assert!(
+        matches!(snap.state, ScenarioState::Paused),
+        "expected Paused with NaN upstream, got {:?}",
+        snap.state
+    );
+
+    handle.stop();
+    handle.join(Some(Duration::from_secs(2))).ok();
+}
+
+#[test]
 fn delay_close_extended_form_deserializes_all_fields() {
     use sonda_core::compile_scenario_file_compiled;
     use sonda_core::compiler::expand::InMemoryPackResolver;

@@ -891,12 +891,14 @@ fn crossing_secs(
             down_duration,
             up_value,
             down_value,
+            enum_kind,
         } => {
             let up_secs = duration_or_default(up_duration.as_deref(), 10.0, "flap.up_duration")?;
             let down_secs =
                 duration_or_default(down_duration.as_deref(), 5.0, "flap.down_duration")?;
-            let up_val = up_value.unwrap_or(1.0);
-            let down_val = down_value.unwrap_or(0.0);
+            let (up_default, down_default) = enum_kind.map(|e| e.defaults()).unwrap_or((1.0, 0.0));
+            let up_val = up_value.unwrap_or(up_default);
+            let down_val = down_value.unwrap_or(down_default);
             timing::flap_crossing_secs(op, threshold, up_secs, down_secs, up_val, down_val)
         }
         GeneratorConfig::Saturation {

@@ -604,6 +604,10 @@ When an entry carries both `after:` and `while:` against different upstreams, bo
 
 `while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time -- equality on a continuous-valued upstream is numerically unsafe and forbidden by design.
 
+### Value typing
+
+`while.value` accepts either an integer or a float YAML scalar; both are stored as `f64`. `value: 1` and `value: 1.0` are equivalent. Prefer `1.0` (or any explicit decimal form) in scenario files so the YAML reader carries the operator's intent without relying on integer coercion. NaN and infinity (`.nan`, `.inf`, `-.inf`) are rejected at compile time because the strict comparison gate would never resolve deterministically; the same rejection applies to `delay.close.snap_to`.
+
 ### Migrating an `after:`-only cascade to `while:` with recovery
 
 The `link-failover` scenario described above uses `after:` to start a `backup_link_utilization` saturation curve once the primary link drops below `1`. With `after:` the dependent scenario runs to completion regardless of what the primary does next -- if the primary recovers mid-cascade, the backup keeps emitting.

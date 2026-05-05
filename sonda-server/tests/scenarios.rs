@@ -1745,4 +1745,114 @@ scenarios:
             "error must mention 'snap_to', got: {body}"
         );
     }
+
+    const OP_LE_WHILE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 5
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator:
+      type: constant
+      value: 1
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1
+    while:
+      ref: src
+      op: '<='
+      value: 1
+";
+
+    #[test]
+    fn op_le_returns_422_on_post() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(OP_LE_WHILE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert_eq!(
+            status, 422,
+            "op: '<=' is a schema-level rejection, must surface as 422 (not 400, not 500)"
+        );
+
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("unsupported operator")
+                && body.contains("strict")
+                && body.contains("'<'")
+                && body.contains("'>'"),
+            "response body must contain the locked operator-rejection wording, got: {body}"
+        );
+    }
+
+    const NAN_VALUE_WHILE_YAML: &str = "\
+version: 2
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator:
+      type: constant
+      value: 0.5
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: src
+      op: '<'
+      value: .nan
+";
+
+    #[test]
+    fn while_value_nan_returns_422_on_post() {
+        let (port, _guard) = common::start_server();
+        let client = common::http_client();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/scenarios"))
+            .header("content-type", "application/x-yaml")
+            .body(NAN_VALUE_WHILE_YAML)
+            .send()
+            .expect("POST must succeed at HTTP level");
+
+        let status = resp.status().as_u16();
+        assert_eq!(
+            status, 422,
+            "while.value: NaN is a normalize-stage schema rejection on otherwise well-formed \
+             YAML — must surface as 422 (parity with op:'<=' rejection), got {status}"
+        );
+
+        let body = resp.text().expect("response body is UTF-8");
+        assert!(
+            body.contains("finite") || body.contains("NaN"),
+            "response body must explain why NaN is rejected, got: {body}"
+        );
+    }
 }
