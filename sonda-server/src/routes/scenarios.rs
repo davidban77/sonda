@@ -246,7 +246,10 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
 
 /// Scan the active scenario map for entries with matching `scenario_name`
 /// in `pending` / `running` / `paused` state. Finished handles are stale
-/// and skipped. `Err(())` indicates a poisoned lock.
+/// and skipped. Future `ScenarioState` variants (`#[non_exhaustive]`) must
+/// opt in to blocking explicitly — a stalled or errored handle that the
+/// operator can't DELETE shouldn't lock its name forever. `Err(())`
+/// indicates a poisoned lock.
 fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<ConflictingScenario>, ()> {
     let scenarios = state.scenarios.read().map_err(|_| ())?;
     let mut conflicts = Vec::new();
@@ -255,12 +258,16 @@ fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<Conflict
             continue;
         }
         let snap = handle.stats_snapshot();
-        let state_str = state_string(&snap);
-        if matches!(state_str, "pending" | "running" | "paused") {
+        let blocks = match snap.state {
+            ScenarioState::Pending | ScenarioState::Running | ScenarioState::Paused => true,
+            ScenarioState::Finished => false,
+            _ => false,
+        };
+        if blocks {
             conflicts.push(ConflictingScenario {
                 id: id.clone(),
                 name: handle.name.clone(),
-                state: state_str.to_string(),
+                state: state_string(&snap).to_string(),
             });
         }
     }
