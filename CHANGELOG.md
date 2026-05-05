@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0](https://github.com/davidban77/sonda/compare/v1.5.0...v1.6.0) (2026-05-05)
+
+
+### Features
+
+* continuous coupling hardening — `while:` v1.6 ([#319](https://github.com/davidban77/sonda/issues/319)) ([191cf49](https://github.com/davidban77/sonda/commit/191cf4921b14eb56ef54b51286b7e2ab5312f88e))
+
 ## [1.5.0](https://github.com/davidban77/sonda/compare/v1.4.0...v1.5.0) (2026-05-04)
 
 
