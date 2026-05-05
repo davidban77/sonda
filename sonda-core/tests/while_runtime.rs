@@ -1251,6 +1251,7 @@ fn nan_upstream_value_keeps_downstream_paused() {
     let entry = metrics_entry("nan_paused", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "nan_paused".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
