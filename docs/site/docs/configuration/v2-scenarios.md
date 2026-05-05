@@ -93,7 +93,7 @@ scenarios:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. |
+| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. When posted to a running `sonda-server`, this field also acts as a uniqueness key — POSTing two cascades that share an active `scenario_name` returns [`409 Conflict`](../deployment/sonda-server.md#duplicate-scenario_name-returns-409). |
 | `category` | no | Catalog grouping. One of `infrastructure`, `network`, `application`, `observability`. Scenarios without a category render as `uncategorized` and drop out of `--category` filters. |
 | `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
 

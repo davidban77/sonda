@@ -162,7 +162,9 @@ pub enum PrepareError {
 /// The short-circuiting semantics match the v2 compiler's other passes —
 /// no partial output is returned on failure.
 pub fn prepare(file: CompiledFile) -> Result<Vec<ScenarioEntry>, PrepareError> {
-    let CompiledFile { version, entries } = file;
+    let CompiledFile {
+        version, entries, ..
+    } = file;
     if version != 2 {
         return Err(PrepareError::UnsupportedVersion { version });
     }
@@ -446,6 +448,7 @@ mod tests {
     fn file_with(entry: CompiledEntry) -> CompiledFile {
         CompiledFile {
             version: 2,
+            scenario_name: None,
             entries: vec![entry],
         }
     }
@@ -524,6 +527,7 @@ mod tests {
     fn prepare_preserves_entry_order() {
         let file = CompiledFile {
             version: 2,
+            scenario_name: None,
             entries: vec![
                 metrics_compiled("first"),
                 logs_compiled("second"),
@@ -544,6 +548,7 @@ mod tests {
     fn prepare_empty_file_returns_empty_vec() {
         let file = CompiledFile {
             version: 2,
+            scenario_name: None,
             entries: vec![],
         };
         let out = prepare(file).expect("empty file must translate cleanly");
@@ -825,6 +830,7 @@ mod tests {
     fn prepare_fails_fast_on_first_bad_entry() {
         let file = CompiledFile {
             version: 2,
+            scenario_name: None,
             entries: vec![
                 metrics_compiled("ok_1"),
                 bare("traces", "bad"),
@@ -854,6 +860,7 @@ mod tests {
     fn prepare_rejects_non_v2_version() {
         let file = CompiledFile {
             version: 3,
+            scenario_name: None,
             entries: vec![metrics_compiled("never_translated")],
         };
         let err = prepare(file).expect_err("version != 2 must fail");
@@ -870,6 +877,7 @@ mod tests {
     fn prepare_version_check_precedes_entry_translation() {
         let file = CompiledFile {
             version: 0,
+            scenario_name: None,
             entries: vec![bare("traces", "would_fail_if_translated")],
         };
         let err = prepare(file).expect_err("version 0 must fail");

@@ -35,6 +35,9 @@ pub struct ScenarioHandle {
     pub id: String,
     /// Human-readable scenario name (from config).
     pub name: String,
+    /// File-level `scenario_name` from the source YAML, when set. Read-only
+    /// after launch; every handle from the same POST shares this value.
+    pub scenario_name: Option<String>,
     /// Shared shutdown flag. Setting this to `false` signals the runner to exit.
     pub shutdown: Arc<AtomicBool>,
     /// The OS thread running the scenario. `None` after [`ScenarioHandle::join`] consumes it.
@@ -260,6 +263,7 @@ mod tests {
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -536,6 +540,7 @@ mod tests {
         let handle = ScenarioHandle {
             id: "test-poisoned".to_string(),
             name: "poisoned".to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -583,6 +588,7 @@ mod tests {
         let handle = ScenarioHandle {
             id: "test-poisoned-m".to_string(),
             name: "poisoned_metrics".to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),

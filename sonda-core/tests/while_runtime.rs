@@ -110,6 +110,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     let entry = metrics_entry("downstream", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "downstream".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -157,6 +158,7 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
     let entry = metrics_entry("d1", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d1".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -198,6 +200,7 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     let entry = metrics_entry("d2", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d2".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -234,6 +237,7 @@ fn while_runtime_no_catch_up_burst_on_resume() {
     let entry = metrics_entry("d3", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "d3".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -331,6 +335,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     );
     let mut handle = launch_scenario_with_gates(
         "seq_gated".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -408,6 +413,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     );
     let mut handle = launch_scenario_with_gates(
         "sat_gated".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -471,6 +477,7 @@ fn while_runtime_finished_state_after_duration_expires() {
     let entry = metrics_entry("d4", 50.0, 200);
     let mut handle = launch_scenario_with_gates(
         "d4".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -507,6 +514,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
 
     let mut handle_a = launch_scenario_with_gates(
         "a".to_string(),
+        None,
         metrics_entry("a", 100.0, 500),
         Arc::clone(&shutdown),
         None,
@@ -524,6 +532,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
 
     let mut handle_b = launch_scenario_with_gates(
         "b".to_string(),
+        None,
         metrics_entry("b", 100.0, 500),
         Arc::clone(&shutdown),
         None,
@@ -568,6 +577,7 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
     let entry = logs_entry("bgp_log", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "bgp_log".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -629,6 +639,7 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     let entry = metrics_entry("debounced", 200.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "debounced".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -688,6 +699,7 @@ fn while_runtime_strict_lt_threshold_gating() {
     let entry = metrics_entry("inv", 100.0, 500);
     let mut handle = launch_scenario_with_gates(
         "inv".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -728,6 +740,7 @@ fn scenario_restart_does_not_leak_gate_bus() {
         let entry = metrics_entry(&format!("ephemeral_{i}"), 50.0, 80);
         let mut handle = launch_scenario_with_gates(
             format!("ephemeral_{i}"),
+            None,
             entry,
             shutdown,
             None,
@@ -777,6 +790,7 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     let entry = metrics_entry("debounced_close", 200.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "debounced_close".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -854,6 +868,7 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     let entry = metrics_entry("after_open", 100.0, 1000);
     let mut handle = launch_scenario_with_gates(
         "after_open".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -925,6 +940,7 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     let entry = metrics_entry("after_paused", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "after_paused".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -1007,6 +1023,7 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     let entry = metrics_entry("absorb", 100.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "absorb".to_string(),
+        None,
         entry,
         Arc::clone(&shutdown),
         None,
@@ -1066,9 +1083,16 @@ fn while_runtime_steady_within_5pct_of_baseline() {
     fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 1000.0, 300);
         let shutdown = Arc::new(AtomicBool::new(true));
-        let mut handle =
-            launch_scenario_with_gates("baseline".to_string(), entry, shutdown, None, None, None)
-                .unwrap();
+        let mut handle = launch_scenario_with_gates(
+            "baseline".to_string(),
+            None,
+            entry,
+            shutdown,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         handle.join(Some(Duration::from_secs(2))).unwrap();
         handle.stats_snapshot().total_events
     }
@@ -1081,6 +1105,7 @@ fn while_runtime_steady_within_5pct_of_baseline() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
+            None,
             entry,
             shutdown,
             None,

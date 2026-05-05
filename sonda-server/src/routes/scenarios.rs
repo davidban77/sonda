@@ -107,6 +107,15 @@ pub struct DeletedScenario {
     pub total_events: u64,
 }
 
+/// One entry in the `conflicting_scenarios` array of a 409 response body.
+#[derive(Debug, Serialize)]
+pub struct ConflictingScenario {
+    pub id: String,
+    pub name: String,
+    /// One of `"pending"`, `"running"`, `"paused"`. Never `"finished"`.
+    pub state: String,
+}
+
 /// Stats sub-object within the scenario detail response.
 ///
 /// This mirrors the fields from [`ScenarioStats`] that are relevant to the
@@ -208,6 +217,20 @@ fn internal_error(detail: impl std::fmt::Display) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
 
+const CONFLICT_HINT: &str =
+    "DELETE the conflicting scenarios before posting a new cascade with the same scenario_name";
+
+/// Build a 409 Conflict response listing the active scenarios that share
+/// the posted body's `scenario_name`.
+fn conflict(message: String, scenarios: Vec<ConflictingScenario>) -> Response {
+    let body = json!({
+        "error": message,
+        "conflicting_scenarios": scenarios,
+        "hint": CONFLICT_HINT,
+    });
+    (StatusCode::CONFLICT, Json(body)).into_response()
+}
+
 // ---- Helpers ----------------------------------------------------------------
 
 /// Map [`ScenarioStats::state`] to its lowercase wire string.
@@ -219,6 +242,29 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
         ScenarioState::Finished => "finished",
         _ => "unknown",
     }
+}
+
+/// Scan the active scenario map for entries with matching `scenario_name`
+/// in `pending` / `running` / `paused` state. Finished handles are stale
+/// and skipped. `Err(())` indicates a poisoned lock.
+fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<ConflictingScenario>, ()> {
+    let scenarios = state.scenarios.read().map_err(|_| ())?;
+    let mut conflicts = Vec::new();
+    for (id, handle) in scenarios.iter() {
+        if handle.scenario_name.as_deref() != Some(name) {
+            continue;
+        }
+        let snap = handle.stats_snapshot();
+        let state_str = state_string(&snap);
+        if matches!(state_str, "pending" | "running" | "paused") {
+            conflicts.push(ConflictingScenario {
+                id: id.clone(),
+                name: handle.name.clone(),
+                state: state_str.to_string(),
+            });
+        }
+    }
+    Ok(conflicts)
 }
 
 // ---- Body parsing -----------------------------------------------------------
@@ -400,6 +446,24 @@ pub async fn post_scenario(
     })?;
 
     let ParsedBody::Compiled(compiled) = parsed;
+
+    if let Some(name) = compiled.scenario_name.as_deref() {
+        let conflicts = collect_active_conflicts(&state, name).map_err(|()| {
+            warn!("POST /scenarios: scenarios lock is poisoned");
+            internal_error("internal state lock is poisoned")
+        })?;
+        if !conflicts.is_empty() {
+            warn!(
+                scenario_name = %name,
+                count = conflicts.len(),
+                "POST /scenarios: rejected duplicate scenario_name"
+            );
+            return Err(conflict(
+                format!("scenario_name '{name}' is already running"),
+                conflicts,
+            ));
+        }
+    }
 
     // Derive ScenarioEntry values for the loopback warning helper, which
     // operates on the runtime input shape. prepare_entries doubles as
@@ -780,6 +844,7 @@ mod tests {
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -810,6 +875,7 @@ mod tests {
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -2439,6 +2505,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -2852,6 +2919,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -3211,6 +3279,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
@@ -3238,6 +3307,7 @@ scenarios:
         ScenarioHandle {
             id: id.to_string(),
             name: name.to_string(),
+            scenario_name: None,
             shutdown,
             thread: Some(thread),
             started_at: Instant::now(),
