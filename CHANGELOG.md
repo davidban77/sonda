@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.2](https://github.com/davidban77/sonda/compare/v1.6.1...v1.6.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* **core:** structural refactor of gated_loop to make close-emit unmissable ([#327](https://github.com/davidban77/sonda/issues/327)) ([4a7910b](https://github.com/davidban77/sonda/commit/4a7910b4db2c6f176d58a785ba670901db1dccec))
+
 ## [1.6.1](https://github.com/davidban77/sonda/compare/v1.6.0...v1.6.1) (2026-05-05)
 
 
