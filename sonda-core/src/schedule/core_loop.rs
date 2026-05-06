@@ -433,6 +433,23 @@ fn invoke_close_emit_on_exit(
     Ok(())
 }
 
+fn finish_with_close_emit(
+    schedule: &ParsedSchedule,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: &mut GateContext,
+    limiter: &mut SinkErrorRateLimiter,
+    sink: &mut dyn Sink,
+) -> Result<(), SondaError> {
+    invoke_close_emit_on_exit(
+        schedule,
+        stats.as_ref(),
+        limiter,
+        gate_ctx.close_emit.as_mut(),
+        sink,
+    )?;
+    finish(stats)
+}
+
 /// Maximum time spent blocked on a gate edge before re-checking shutdown.
 ///
 /// 100ms keeps shutdown responsive while paused without burning CPU on
@@ -509,10 +526,22 @@ pub(crate) fn gated_loop(
     loop {
         // Top-level shutdown / duration check applies in every state.
         if shutdown_requested(shutdown) {
-            return finish(stats);
+            return finish_with_close_emit(
+                schedule,
+                stats,
+                &mut gate_ctx,
+                &mut close_warn_limiter,
+                sink,
+            );
         }
         if duration_expired(schedule, started_at) {
-            return finish(stats);
+            return finish_with_close_emit(
+                schedule,
+                stats,
+                &mut gate_ctx,
+                &mut close_warn_limiter,
+                sink,
+            );
         }
 
         match state {
@@ -578,15 +607,13 @@ pub(crate) fn gated_loop(
                 // Distinguish reasons: user shutdown / duration → Finished;
                 // WhileClose → Paused (debounced by delay.close).
                 if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
-                    // Close-emit before finish() so `state == Finished` observers see the marker.
-                    invoke_close_emit_on_exit(
+                    return finish_with_close_emit(
                         schedule,
-                        stats.as_ref(),
+                        stats,
+                        &mut gate_ctx,
                         &mut close_warn_limiter,
-                        gate_ctx.close_emit.as_mut(),
                         sink,
-                    )?;
-                    return finish(stats);
+                    );
                 }
                 if exit == SegmentExit::WhileClose
                     && !debounce_close_to_paused(
