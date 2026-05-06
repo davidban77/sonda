@@ -8,8 +8,7 @@
 //! Non-`remote_write` sinks default to no close-emit; `snap_to` opts in.
 //!
 //! The recent-metrics buffer is capped at `MAX_RECENT_METRICS = 100`, so
-//! high-cardinality scenarios under-emit on close. v1.6 ships this as a
-//! known limitation; v1.7 follow-up extends the buffer.
+//! high-cardinality scenarios under-emit on close.
 
 #![cfg(feature = "config")]
 #![cfg(feature = "remote-write")]

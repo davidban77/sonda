@@ -735,12 +735,10 @@ fn write_state(
     }
 }
 
-// INVARIANT: this function is called from exactly one place — the tail of
-// `gated_loop`. The body (`gated_loop_body`) cannot call it because it has no
-// way to construct a `Result<(), SondaError>` for the outer caller without
-// a LoopExit value. If you find yourself wanting to call `finish` from
-// anywhere else, you are likely re-introducing the v1.6.0/v1.6.1/v1.6.2
-// close-emit-bypass bug. See refactor plan §2 and §7.
+// INVARIANT: only callable from the tail of `gated_loop`. The body cannot
+// reach it — `gated_loop_body` returns `Result<LoopExit, _>` by construction
+// and has no way to produce `Result<(), _>` directly. Adding a caller
+// elsewhere bypasses the close-emit flush.
 fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
