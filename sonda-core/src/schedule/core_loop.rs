@@ -414,7 +414,9 @@ fn apply_close_emit_policy_flush(
     }
 }
 
-fn invoke_close_emit_on_exit(
+/// Called on every committed `running → paused` transition AND on the
+/// single tail exit of `gated_loop`.
+fn invoke_close_emit(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     limiter: &mut SinkErrorRateLimiter,
@@ -483,6 +485,55 @@ pub(crate) fn gated_loop(
     sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
+    let mut close_warn_limiter = SinkErrorRateLimiter::new();
+
+    let body_result = gated_loop_body(
+        schedule,
+        rate,
+        shutdown,
+        stats.as_ref(),
+        &mut gate_ctx,
+        &mut close_warn_limiter,
+        sink,
+        tick_fn,
+    );
+
+    match body_result {
+        Ok(LoopExit::Shutdown) => {
+            invoke_close_emit(
+                schedule,
+                stats.as_ref(),
+                &mut close_warn_limiter,
+                gate_ctx.close_emit.as_mut(),
+                sink,
+            )?;
+            finish(stats)
+        }
+        Ok(LoopExit::DurationExpired) => {
+            invoke_close_emit(
+                schedule,
+                stats.as_ref(),
+                &mut close_warn_limiter,
+                gate_ctx.close_emit.as_mut(),
+                sink,
+            )?;
+            finish(stats)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gated_loop_body(
+    schedule: &ParsedSchedule,
+    rate: f64,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: &mut GateContext,
+    close_warn_limiter: &mut SinkErrorRateLimiter,
+    sink: &mut dyn Sink,
+    tick_fn: &mut TickFn<'_>,
+) -> Result<LoopExit, SondaError> {
     let started_at = Instant::now();
 
     let mut state = ScenarioState::Pending;
@@ -499,28 +550,20 @@ pub(crate) fn gated_loop(
 
     let mut debounce = DebounceState::from_clause(gate_ctx.delay.as_ref());
 
-    let mut close_warn_limiter = SinkErrorRateLimiter::new();
-
-    // Carry the next tick across pause/resume so generators don't restart.
     let mut next_tick: u64 = 0;
 
-    write_state(&stats, ScenarioState::Pending, false);
+    write_state(stats, ScenarioState::Pending, false);
 
     loop {
-        // Top-level shutdown / duration check applies in every state.
         if shutdown_requested(shutdown) {
-            return finish(stats);
+            return Ok(LoopExit::Shutdown);
         }
         if duration_expired(schedule, started_at) {
-            return finish(stats);
+            return Ok(LoopExit::DurationExpired);
         }
 
         match state {
             ScenarioState::Pending => {
-                // Pending exits when after fires (or no after clause). The
-                // resulting state depends on the gate: open → Running,
-                // closed → Paused (and the delay.open debounce still
-                // applies to the implicit pending→paused entry path).
                 if !after_satisfied {
                     match gate_ctx.gate_rx.recv_timeout(remaining_until(
                         schedule,
@@ -537,7 +580,6 @@ pub(crate) fn gated_loop(
                             while_open = false;
                         }
                         None => {
-                            // Loop top will re-check shutdown / duration.
                             continue;
                         }
                     }
@@ -545,28 +587,26 @@ pub(crate) fn gated_loop(
                 }
                 if !gate_ctx.has_while {
                     state = ScenarioState::Running;
-                    write_state(&stats, ScenarioState::Running, false);
+                    write_state(stats, ScenarioState::Running, false);
                     continue;
                 }
                 if while_open {
                     state = ScenarioState::Running;
-                    write_state(&stats, ScenarioState::Running, false);
+                    write_state(stats, ScenarioState::Running, false);
                 } else {
                     state = ScenarioState::Paused;
-                    write_state(&stats, ScenarioState::Paused, true);
+                    write_state(stats, ScenarioState::Paused, true);
                 }
             }
             ScenarioState::Running => {
-                // Run a fresh schedule segment. Break out on WhileClose,
-                // user shutdown, or duration expiry.
                 let segment_running = Arc::new(AtomicBool::new(true));
                 let last_tick = Arc::new(AtomicU64::new(next_tick));
                 let exit = run_running_segment(
                     schedule,
                     rate,
                     shutdown,
-                    stats.clone(),
-                    &gate_ctx,
+                    stats.cloned(),
+                    gate_ctx,
                     &segment_running,
                     next_tick,
                     Arc::clone(&last_tick),
@@ -575,46 +615,35 @@ pub(crate) fn gated_loop(
                 )?;
                 next_tick = last_tick.load(Ordering::SeqCst);
 
-                // Distinguish reasons: user shutdown / duration → Finished;
-                // WhileClose → Paused (debounced by delay.close).
-                if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
-                    // Close-emit before finish() so `state == Finished` observers see the marker.
-                    invoke_close_emit_on_exit(
-                        schedule,
-                        stats.as_ref(),
-                        &mut close_warn_limiter,
-                        gate_ctx.close_emit.as_mut(),
-                        sink,
-                    )?;
-                    return finish(stats);
+                if shutdown_requested(shutdown) {
+                    return Ok(LoopExit::Shutdown);
+                }
+                if duration_expired(schedule, started_at) {
+                    return Ok(LoopExit::DurationExpired);
                 }
                 if exit == SegmentExit::WhileClose
                     && !debounce_close_to_paused(
-                        schedule, started_at, shutdown, &gate_ctx, &debounce,
+                        schedule, started_at, shutdown, gate_ctx, &debounce,
                     )
                 {
-                    // A fresh WhileOpen arrived during the close debounce
-                    // — stay Running.
                     while_open = true;
                     continue;
                 }
                 if exit == SegmentExit::WhileClose {
-                    invoke_close_emit_on_exit(
+                    invoke_close_emit(
                         schedule,
-                        stats.as_ref(),
-                        &mut close_warn_limiter,
+                        stats,
+                        close_warn_limiter,
                         gate_ctx.close_emit.as_mut(),
                         sink,
                     )?;
                 }
                 state = ScenarioState::Paused;
                 while_open = false;
-                write_state(&stats, ScenarioState::Paused, true);
+                write_state(stats, ScenarioState::Paused, true);
                 debounce.reset();
             }
             ScenarioState::Paused => {
-                // Block on the gate channel up to PAUSED_POLL_INTERVAL (or
-                // until the next debounce wakeup, whichever is sooner).
                 let now = Instant::now();
                 let mut wakeup = PAUSED_POLL_INTERVAL;
                 if let Some(d) = debounce.next_wakeup(now) {
@@ -646,18 +675,17 @@ pub(crate) fn gated_loop(
                         GateEdge::WhileOpen => {
                             if while_open {
                                 state = ScenarioState::Running;
-                                write_state(&stats, ScenarioState::Running, false);
+                                write_state(stats, ScenarioState::Running, false);
                             }
                         }
-                        GateEdge::WhileClose => {
-                            // Closing while paused is a no-op state-wise.
-                        }
+                        GateEdge::WhileClose => {}
                         GateEdge::AfterFired => {}
                     }
                 }
             }
             ScenarioState::Finished => {
-                return finish(stats);
+                // Structurally dead; kept so `match state` stays exhaustive.
+                return Ok(LoopExit::Shutdown);
             }
         }
     }
@@ -693,11 +721,11 @@ fn remaining_until(schedule: &ParsedSchedule, started_at: Instant, default: Dura
 }
 
 fn write_state(
-    stats: &Option<Arc<RwLock<ScenarioStats>>>,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
     state: ScenarioState,
     paused_zero_rate: bool,
 ) {
-    if let Some(ref s) = stats {
+    if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
             st.state = state;
             if paused_zero_rate {
@@ -707,6 +735,10 @@ fn write_state(
     }
 }
 
+// INVARIANT: only callable from the tail of `gated_loop`. The body cannot
+// reach it — `gated_loop_body` returns `Result<LoopExit, _>` by construction
+// and has no way to produce `Result<(), _>` directly. Adding a caller
+// elsewhere bypasses the close-emit flush.
 fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
@@ -723,6 +755,23 @@ enum SegmentExit {
     WhileClose,
     /// User-shutdown flag cleared, or scenario duration expired.
     ShutdownOrDuration,
+}
+
+/// Reason the `gated_loop` body terminated cleanly.
+///
+/// The body cannot call `finish(stats)` directly — it can only return a
+/// `LoopExit`, and the outer `gated_loop` is the sole site that pairs
+/// `invoke_close_emit` with `finish(stats)`. Adding a new clean-exit
+/// reason means adding a variant here; the compiler will then point at
+/// the tail's match and force the contributor to think about close-emit.
+///
+/// Errors are NOT modeled as a variant: they propagate through the body's
+/// `Result<LoopExit, SondaError>` return type so the type system carries
+/// the "did this exit cleanly?" signal end-to-end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopExit {
+    Shutdown,
+    DurationExpired,
 }
 
 /// Wait `delay.close` for either a fresh `WhileOpen` (cancel) or the
@@ -941,6 +990,18 @@ mod tests {
         fn flush(&mut self) -> Result<(), SondaError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn loop_exit_variants_are_exhaustive_for_clean_exits() {
+        fn assert_clean_exit_match(le: LoopExit) {
+            match le {
+                LoopExit::Shutdown => {}
+                LoopExit::DurationExpired => {}
+            }
+        }
+        assert_clean_exit_match(LoopExit::Shutdown);
+        assert_clean_exit_match(LoopExit::DurationExpired);
     }
 
     /// Build a minimal ParsedSchedule for testing.
