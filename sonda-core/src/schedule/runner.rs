@@ -243,9 +243,12 @@ fn make_close_emitter(
     Box::new(move |sink: &mut dyn Sink| -> Result<(), SondaError> {
         let now = SystemTime::now();
 
-        let recent: Vec<MetricEvent> = match stats.read() {
-            Ok(st) => st.recent_metrics.iter().cloned().collect(),
-            Err(p) => p.into_inner().recent_metrics.iter().cloned().collect(),
+        // gated_loop flushes on the WhileClose commit and on the single tail exit;
+        // drain ensures the tail sees an empty buffer when nothing accrued since
+        // the prior commit.
+        let recent: Vec<MetricEvent> = match stats.write() {
+            Ok(mut st) => st.recent_metrics.drain(..).collect(),
+            Err(p) => p.into_inner().recent_metrics.drain(..).collect(),
         };
 
         let mut seen: Vec<MetricEvent> = Vec::new();
@@ -1262,5 +1265,50 @@ mod tests {
                 "static value must not appear when dynamic label overrides it; line: {line}"
             );
         }
+    }
+
+    #[test]
+    fn close_emitter_is_idempotent_on_recent_metrics_buffer() {
+        use crate::encoder::create_encoder;
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::CloseSignal;
+        use crate::schedule::stats::ScenarioStats;
+        use crate::sink::memory::MemorySink;
+        use std::sync::{Arc, RwLock};
+        use std::time::SystemTime;
+
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            let name = ValidatedMetricName::new("up").unwrap();
+            let labels = Arc::new(Labels::from_pairs(&[("host", "a")]).unwrap());
+            st.push_metric(MetricEvent::from_parts(
+                name,
+                1.0,
+                labels,
+                SystemTime::now(),
+            ));
+        }
+
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
+
+        let mut first = MemorySink::new();
+        emit(&mut first).expect("first call ok");
+        assert!(
+            !first.buffer.is_empty(),
+            "first invocation must emit the recent tuple"
+        );
+        assert!(
+            stats.read().unwrap().recent_metrics.is_empty(),
+            "buffer must be drained after the first invocation"
+        );
+
+        let mut second = MemorySink::new();
+        emit(&mut second).expect("second call ok");
+        assert!(
+            second.buffer.is_empty(),
+            "second invocation with no new tuples must emit nothing"
+        );
     }
 }
