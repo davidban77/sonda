@@ -1391,3 +1391,375 @@ scenarios:
             .collect::<Vec<_>>()
     );
 }
+
+// ===========================================================================
+// Round 3 — `delay.close.snap_to` regression diagnosis
+// ===========================================================================
+
+/// Step 1 — Deterministic parse check. Compiles the workshop's exact YAML
+/// and asserts the gated entry's DelayClause carries close=ZERO,
+/// close_snap_to=Some(0.0), close_stale_marker=None.
+#[test]
+fn workshop_snap_to_yaml_parses_into_delay_clause() {
+    let yaml = r#"
+version: 2
+defaults:
+  rate: 1
+  duration: 30s
+  encoder: { type: remote_write }
+  sink:
+    type: remote_write
+    url: "http://prometheus:9090/api/v1/write"
+
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 5s
+      down_duration: 5s
+      enum: oper_state
+
+  - id: gated_metric
+    signal_type: metrics
+    name: bgp_oper_state
+    generator: { type: constant, value: 99.0 }
+    while: { ref: primary_flap, op: ">", value: 1 }
+    delay:
+      open: 1s
+      close: { duration: 0s, snap_to: 0.0 }
+    labels: { peer_address: "10.0.0.1" }
+"#;
+
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+
+    let gated = compiled
+        .entries
+        .iter()
+        .find(|e| e.id.as_deref() == Some("gated_metric"))
+        .expect("gated_metric entry must exist");
+
+    let delay = gated
+        .delay_clause
+        .as_ref()
+        .expect("gated_metric must have delay_clause set");
+
+    eprintln!(
+        "STEP 1 PARSE: delay = open={:?} close={:?} close_snap_to={:?} close_stale_marker={:?}",
+        delay.open, delay.close, delay.close_snap_to, delay.close_stale_marker
+    );
+
+    assert_eq!(
+        delay.close,
+        Some(Duration::ZERO),
+        "expected close = ZERO; got {:?}",
+        delay.close
+    );
+    assert_eq!(
+        delay.close_snap_to,
+        Some(0.0),
+        "expected close_snap_to = Some(0.0); got {:?} — H1 (parser drops snap_to)",
+        delay.close_snap_to
+    );
+    assert_eq!(
+        delay.close_stale_marker, None,
+        "expected close_stale_marker = None; got {:?}",
+        delay.close_stale_marker
+    );
+}
+
+/// Step 2 — Wire-level repro through `multi_runner`. Run the workshop's exact
+/// shape (compressed) through `launch_multi_compiled` against the in-process
+/// TCP capture listener. Asserts at least one `bgp_oper_state` sample with
+/// value=0.0 reaches the wire AND that no stale-NaN sample is emitted (snap_to
+/// REPLACES the stale marker).
+#[test]
+fn workshop_snap_to_zero_reaches_wire_via_multi_runner() {
+    let (url, captured, stop_listener) = spawn_capture_listener();
+
+    let yaml = format!(
+        r#"
+version: 2
+scenario_name: workshop-snap-to-multi-runner
+defaults:
+  rate: 50
+  duration: 1500ms
+  encoder: {{ type: remote_write }}
+  sink:
+    type: remote_write
+    url: "{url}"
+    batch_size: 1
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 400ms
+      enum: oper_state
+  - id: gated_metric
+    signal_type: metrics
+    name: bgp_oper_state
+    generator: {{ type: constant, value: 99.0 }}
+    while: {{ ref: primary_flap, op: ">", value: 1 }}
+    delay:
+      open: 50ms
+      close: {{ duration: 0s, snap_to: 0.0 }}
+    labels: {{ peer_address: "10.0.0.1" }}
+"#
+    );
+
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let handles =
+        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    assert_eq!(handles.len(), 2, "must launch primary + gated_metric");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut handles = handles;
+    while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    for handle in &mut handles {
+        handle
+            .join(Some(Duration::from_secs(2)))
+            .expect("thread join");
+    }
+
+    thread::sleep(Duration::from_millis(200));
+    stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let captured = captured.lock().unwrap().clone();
+    eprintln!("STEP 2 WIRE: captured {} timeseries total", captured.len());
+
+    let mut bgp_samples: Vec<f64> = Vec::new();
+    let mut bgp_zero_count = 0usize;
+    let mut bgp_stale_count = 0usize;
+    let mut bgp_value_99_count = 0usize;
+    for (_arrival, ts) in &captured {
+        if label_value(ts, "__name__") == Some("bgp_oper_state") {
+            for s in &ts.samples {
+                bgp_samples.push(s.value);
+                if s.value == 0.0 {
+                    bgp_zero_count += 1;
+                }
+                if s.value == 99.0 {
+                    bgp_value_99_count += 1;
+                }
+                if s.value.to_bits() == PROMETHEUS_STALE_NAN.to_bits() {
+                    bgp_stale_count += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "STEP 2 WIRE: bgp value=99 count={}, value=0.0 count={}, stale-NaN count={}, all_values={:?}",
+        bgp_value_99_count, bgp_zero_count, bgp_stale_count, bgp_samples
+    );
+
+    assert!(
+        bgp_value_99_count > 0,
+        "expected >=1 bgp_oper_state value=99 sample (Running emissions). \
+         got 0 — gate never opened? all values: {:?}",
+        bgp_samples
+    );
+    assert_eq!(
+        bgp_stale_count, 0,
+        "snap_to=0.0 should REPLACE the stale-NaN marker; got {} stale samples among {:?}",
+        bgp_stale_count, bgp_samples
+    );
+    assert!(
+        bgp_zero_count > 0,
+        "BUG REPRO (multi_runner): expected >=1 bgp_oper_state sample with value=0.0 \
+         on close-edge; got 0 zero samples among {:?}. \
+         99-count={}, stale-count={}",
+        bgp_samples,
+        bgp_value_99_count,
+        bgp_stale_count
+    );
+}
+
+/// Step 3 — Through actual `sonda-server` HTTP binary. POSTs the workshop YAML
+/// to /scenarios. Verifies value=0.0 samples for bgp_oper_state appear on the
+/// wire when running through the released server flow.
+#[test]
+fn workshop_snap_to_zero_reaches_wire_via_server_binary() {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = PathBuf::from(manifest_dir)
+        .parent()
+        .expect("manifest dir parent")
+        .to_path_buf();
+    let candidates = [
+        workspace_root.join("target/debug/sonda-server"),
+        workspace_root.join("target/release/sonda-server"),
+    ];
+    let binary = match candidates.iter().find(|p| p.exists()) {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!(
+                "SKIP: sonda-server binary not found in target/{{debug,release}}; \
+                 build it first with `cargo build -p sonda-server --features remote-write`"
+            );
+            return;
+        }
+    };
+
+    let (sink_url, captured, stop_listener) = spawn_capture_listener();
+
+    let mut child = Command::new(&binary)
+        .args(["--port", "0", "--bind", "127.0.0.1"])
+        .env_remove("SONDA_API_KEY")
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sonda-server");
+
+    let stdout = child.stdout.take().expect("piped stdout");
+    let port = {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read announce");
+        let v: serde_json::Value = serde_json::from_str(line.trim()).expect("announce json");
+        v["sonda_server"]["port"].as_u64().expect("port") as u16
+    };
+
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+    let mut guard = ChildGuard(child);
+
+    let yaml = format!(
+        r#"
+version: 2
+scenario_name: workshop-snap-to-via-server
+defaults:
+  rate: 50
+  duration: 1500ms
+  encoder: {{ type: remote_write }}
+  sink:
+    type: remote_write
+    url: "{sink_url}"
+    batch_size: 1
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 400ms
+      enum: oper_state
+  - id: gated_metric
+    signal_type: metrics
+    name: bgp_oper_state
+    generator: {{ type: constant, value: 99.0 }}
+    while: {{ ref: primary_flap, op: ">", value: 1 }}
+    delay:
+      open: 50ms
+      close: {{ duration: 0s, snap_to: 0.0 }}
+    labels: {{ peer_address: "10.0.0.1" }}
+"#
+    );
+
+    let post_body = yaml.as_bytes();
+    let request = format!(
+        "POST /scenarios HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+         Content-Type: application/x-yaml\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        post_body.len()
+    );
+    let mut server_stream =
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect to sonda-server");
+    server_stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .ok();
+    server_stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok();
+    server_stream
+        .write_all(request.as_bytes())
+        .expect("write request headers");
+    server_stream
+        .write_all(post_body)
+        .expect("write request body");
+    server_stream.flush().ok();
+
+    let mut response = Vec::new();
+    server_stream.read_to_end(&mut response).ok();
+    let response_str = String::from_utf8_lossy(&response);
+    eprintln!(
+        "STEP 3 SERVER: POST response head: {}",
+        &response_str[..response_str.len().min(400)]
+    );
+    assert!(
+        response_str.starts_with("HTTP/1.1 201") || response_str.starts_with("HTTP/1.1 200"),
+        "POST /scenarios should return 201/200: {}",
+        &response_str[..response_str.len().min(400)]
+    );
+
+    thread::sleep(Duration::from_millis(2500));
+    stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    drop(&mut guard);
+    guard.0.kill().ok();
+    guard.0.wait().ok();
+
+    let captured = captured.lock().unwrap().clone();
+    eprintln!(
+        "STEP 3 SERVER: captured {} timeseries total",
+        captured.len()
+    );
+
+    let mut bgp_samples: Vec<f64> = Vec::new();
+    let mut bgp_zero_count = 0usize;
+    let mut bgp_stale_count = 0usize;
+    let mut bgp_value_99_count = 0usize;
+    for (_arrival, ts) in &captured {
+        if label_value(ts, "__name__") == Some("bgp_oper_state") {
+            for s in &ts.samples {
+                bgp_samples.push(s.value);
+                if s.value == 0.0 {
+                    bgp_zero_count += 1;
+                }
+                if s.value == 99.0 {
+                    bgp_value_99_count += 1;
+                }
+                if s.value.to_bits() == PROMETHEUS_STALE_NAN.to_bits() {
+                    bgp_stale_count += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "STEP 3 SERVER: bgp value=99 count={}, value=0.0 count={}, stale-NaN count={}, all_values={:?}",
+        bgp_value_99_count, bgp_zero_count, bgp_stale_count, bgp_samples
+    );
+
+    assert!(
+        bgp_value_99_count > 0,
+        "expected >=1 bgp_oper_state value=99 sample. got 0 — gate never opened?"
+    );
+    assert!(
+        bgp_zero_count > 0,
+        "SERVER-LAYER BUG REPRO: expected >=1 bgp_oper_state sample with value=0.0 \
+         when running via sonda-server binary. got 0 zero samples among {:?}. \
+         99-count={}, stale-count={}",
+        bgp_samples,
+        bgp_value_99_count,
+        bgp_stale_count
+    );
+}
