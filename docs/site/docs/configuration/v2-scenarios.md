@@ -543,6 +543,8 @@ Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to`
 
 A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an additional close-emit; the buffer was already flushed on the earlier `running → paused` transition. The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
+Close-emit timestamps are strictly greater than the most recent active-emission timestamp for the same series. This avoids duplicate-timestamp rejection at the receiver — Prometheus and other TSDBs that dedup on `(series, timestamp)` would otherwise drop the recovery sample silently.
+
 #### Prefer `snap_to:` for `remote_write` integrations
 
 The default stale-marker behavior depends on how the receiving Prometheus handles stale-NaN samples ingested via remote-write. Some Prometheus configurations accept the marker into TSDB but do not propagate stale-marker semantics through the query engine for remote-write-ingested samples the way they do for scraped samples. The series stays "live" with the pre-pause value until natural `query.lookback-delta` expiry (around 5 minutes by default), and the alert clearance you expect on the next scrape cycle does not happen.
