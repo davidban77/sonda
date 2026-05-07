@@ -543,6 +543,22 @@ Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to`
 
 A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an additional close-emit; the buffer was already flushed on the earlier `running → paused` transition. The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
+#### Prefer `snap_to:` for `remote_write` integrations
+
+The default stale-marker behavior depends on how the receiving Prometheus handles stale-NaN samples ingested via remote-write. Some Prometheus configurations accept the marker into TSDB but do not propagate stale-marker semantics through the query engine for remote-write-ingested samples the way they do for scraped samples. The series stays "live" with the pre-pause value until natural `query.lookback-delta` expiry (around 5 minutes by default), and the alert clearance you expect on the next scrape cycle does not happen.
+
+If your alerts are not clearing as expected on gate close, prefer `snap_to:` with an explicit recovery value over the default stale marker. The recovery sample is a normal Prometheus sample — stored and queried with consistent semantics across receiver versions and configurations — so the next evaluation sees the recovered value directly and clears the alert immediately.
+
+```yaml title="Recommended for remote_write: explicit recovery value"
+    delay:
+      open: 250ms
+      close:
+        duration: 5s
+        snap_to: 1            # bgp_oper_state=1 means "up"
+```
+
+The tradeoff is per-metric specificity: `snap_to:` requires you to choose a recovery value for each gated metric, which is reasonable for operator-facing signals where "healthy" has an obvious value (`bgp_oper_state=1`, `interface_oper_state=1`, error counters back to `0`). The default `stale_marker` is generic and needs no per-metric tuning, but its end-to-end effect is receiver-dependent. For pipelines that ingest into Prometheus via `remote_write` and drive alerting off the result, `snap_to:` is the more reliable default.
+
 ### Combining with `after:`
 
 `after:` and `while:` compose on the same entry. `after:` defers the scenario's first emission until an upstream crosses a threshold; `while:` then continuously gates the entry on every later edge. Pair them when a downstream should wait for a triggering event AND track the upstream's state thereafter -- a BGP session that opens once a link drops, then pauses every time the link briefly recovers.
