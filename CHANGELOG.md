@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.3](https://github.com/davidban77/sonda/compare/v1.6.2...v1.6.3) (2026-05-07)
+
+
+### Documentation
+
+* **scenarios:** recommend snap_to for remote_write integrations ([#331](https://github.com/davidban77/sonda/issues/331)) ([3b50b30](https://github.com/davidban77/sonda/commit/3b50b30ac7cc381340dde83ba2e7058a2776d603))
+
 ## [1.6.2](https://github.com/davidban77/sonda/compare/v1.6.1...v1.6.2) (2026-05-06)
 
 
