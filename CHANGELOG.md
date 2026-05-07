@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.4](https://github.com/davidban77/sonda/compare/v1.6.3...v1.6.4) (2026-05-07)
+
+
+### Bug Fixes
+
+* **core:** bump close-emit timestamp past most recent active emission ([#334](https://github.com/davidban77/sonda/issues/334)) ([591ceaa](https://github.com/davidban77/sonda/commit/591ceaa0e0fcc945c1d61b85cc509b6898f64288))
+
 ## [1.6.3](https://github.com/davidban77/sonda/compare/v1.6.2...v1.6.3) (2026-05-07)
 
 
