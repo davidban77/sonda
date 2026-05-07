@@ -1391,3 +1391,227 @@ scenarios:
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn workshop_close_emit_timestamp_strictly_greater_than_active_emissions() {
+    let (url, captured, stop_listener) = spawn_capture_listener();
+
+    let yaml = format!(
+        r#"
+version: 2
+scenario_name: workshop-close-emit-snap-to-ts-ordering
+defaults:
+  rate: 50
+  duration: 1500ms
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "{url}"
+    batch_size: 1
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 400ms
+      enum: oper_state
+  - id: bgp_oper_state_down
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 99.0
+    while:
+      ref: primary_flap
+      op: ">"
+      value: 1
+    delay:
+      open: 50ms
+      close:
+        duration: 0s
+        snap_to: 0.0
+    labels:
+      peer_address: "10.1.2.2"
+"#
+    );
+
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let handles =
+        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    assert_eq!(handles.len(), 2, "must launch primary + downstream");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut handles = handles;
+    while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    for handle in &mut handles {
+        handle
+            .join(Some(Duration::from_secs(2)))
+            .expect("thread join");
+    }
+
+    thread::sleep(Duration::from_millis(200));
+    stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let captured = captured.lock().unwrap().clone();
+
+    // Partition relies on `constant: 99.0` from the scenario; any future change to the scenario's active value must update this test.
+    let mut active_ts: Vec<i64> = Vec::new();
+    let mut close_ts: Vec<i64> = Vec::new();
+    for (_arrival, ts) in &captured {
+        if label_value(ts, "__name__") != Some("bgp_oper_state") {
+            continue;
+        }
+        for s in &ts.samples {
+            if s.value == 99.0 {
+                active_ts.push(s.timestamp);
+            } else if s.value == 0.0 {
+                close_ts.push(s.timestamp);
+            }
+        }
+    }
+
+    assert!(
+        !active_ts.is_empty(),
+        "expected at least one active-emission sample (value=99.0) for bgp_oper_state"
+    );
+    assert!(
+        !close_ts.is_empty(),
+        "expected at least one close-edge sample (value=0.0 from snap_to) for bgp_oper_state"
+    );
+
+    assert_close_ts_strictly_after_preceding_actives(&active_ts, &close_ts);
+}
+
+#[test]
+fn workshop_close_emit_stale_marker_timestamp_strictly_greater_than_active_emissions() {
+    let (url, captured, stop_listener) = spawn_capture_listener();
+
+    let yaml = format!(
+        r#"
+version: 2
+scenario_name: workshop-close-emit-stale-marker-ts-ordering
+defaults:
+  rate: 50
+  duration: 1500ms
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "{url}"
+    batch_size: 1
+scenarios:
+  - id: primary_flap
+    signal_type: metrics
+    name: interface_oper_state
+    generator:
+      type: flap
+      up_duration: 200ms
+      down_duration: 400ms
+      enum: oper_state
+  - id: bgp_oper_state_down
+    signal_type: metrics
+    name: bgp_oper_state
+    generator:
+      type: constant
+      value: 99.0
+    while:
+      ref: primary_flap
+      op: ">"
+      value: 1
+    delay:
+      open: 50ms
+      close: 0s
+    labels:
+      peer_address: "10.1.2.2"
+"#
+    );
+
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let handles =
+        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    assert_eq!(handles.len(), 2, "must launch primary + downstream");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut handles = handles;
+    while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    for handle in &mut handles {
+        handle
+            .join(Some(Duration::from_secs(2)))
+            .expect("thread join");
+    }
+
+    thread::sleep(Duration::from_millis(200));
+    stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let captured = captured.lock().unwrap().clone();
+
+    // Partition relies on `constant: 99.0` from the scenario; any future change to the scenario's active value must update this test.
+    let mut active_ts: Vec<i64> = Vec::new();
+    let mut stale_ts: Vec<i64> = Vec::new();
+    for (_arrival, ts) in &captured {
+        if label_value(ts, "__name__") != Some("bgp_oper_state") {
+            continue;
+        }
+        for s in &ts.samples {
+            if s.value.to_bits() == PROMETHEUS_STALE_NAN.to_bits() {
+                stale_ts.push(s.timestamp);
+            } else if s.value == 99.0 {
+                active_ts.push(s.timestamp);
+            }
+        }
+    }
+
+    assert!(
+        !active_ts.is_empty(),
+        "expected at least one active-emission sample (value=99.0) for bgp_oper_state"
+    );
+    assert!(
+        !stale_ts.is_empty(),
+        "expected at least one stale-marker close-edge sample for bgp_oper_state"
+    );
+
+    assert_close_ts_strictly_after_preceding_actives(&active_ts, &stale_ts);
+}
+
+fn assert_close_ts_strictly_after_preceding_actives(active_ts: &[i64], close_ts: &[i64]) {
+    let mut events: Vec<(i64, bool)> = Vec::with_capacity(active_ts.len() + close_ts.len());
+    for &t in active_ts {
+        events.push((t, false));
+    }
+    for &t in close_ts {
+        events.push((t, true));
+    }
+    // On equal ts, sort actives before closes so a same-ms collision surfaces as a violation.
+    events.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let mut max_active_in_batch: Option<i64> = None;
+    for (ts, is_close) in events {
+        if is_close {
+            if let Some(prev_active) = max_active_in_batch {
+                assert!(
+                    ts > prev_active,
+                    "close-edge ts {ts} must be strictly greater than the most recent active-emission ts {prev_active} in the same batch; active_ts={active_ts:?} close_ts={close_ts:?}"
+                );
+            }
+            max_active_in_batch = None;
+        } else {
+            max_active_in_batch = Some(match max_active_in_batch {
+                Some(prev) => prev.max(ts),
+                None => ts,
+            });
+        }
+    }
+}

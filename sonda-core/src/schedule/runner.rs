@@ -9,7 +9,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
@@ -251,6 +251,16 @@ fn make_close_emitter(
             Err(p) => p.into_inner().recent_metrics.drain(..).collect(),
         };
 
+        // Strictly greater than the most recent active-emission ts so receivers
+        // that dedup on (series, ts) at ms precision do not drop the marker.
+        let close_ts = match recent.iter().map(|e| e.timestamp).max() {
+            Some(max_recent) => match max_recent.checked_add(Duration::from_millis(1)) {
+                Some(bumped) => now.max(bumped),
+                None => now,
+            },
+            None => now,
+        };
+
         let mut seen: Vec<MetricEvent> = Vec::new();
         'outer: for event in &recent {
             for kept in &seen {
@@ -267,8 +277,12 @@ fn make_close_emitter(
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         for event in seen {
             buf.clear();
-            let marker =
-                MetricEvent::from_parts(event.name.clone(), value, Arc::clone(&event.labels), now);
+            let marker = MetricEvent::from_parts(
+                event.name.clone(),
+                value,
+                Arc::clone(&event.labels),
+                close_ts,
+            );
             encoder.encode_metric(&marker, &mut buf)?;
             sink.write(&buf)?;
         }
@@ -1310,5 +1324,70 @@ mod tests {
             second.buffer.is_empty(),
             "second invocation with no new tuples must emit nothing"
         );
+    }
+
+    #[test]
+    fn close_emit_timestamp_strictly_after_recent_active_emissions() {
+        use crate::encoder::create_encoder;
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::CloseSignal;
+        use crate::schedule::stats::ScenarioStats;
+        use crate::sink::memory::MemorySink;
+        use std::sync::{Arc, RwLock};
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let past_ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let future_ts = SystemTime::now() + Duration::from_secs(60);
+
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            let name = ValidatedMetricName::new("up").unwrap();
+            let labels_a = Arc::new(Labels::from_pairs(&[("host", "a")]).unwrap());
+            let labels_b = Arc::new(Labels::from_pairs(&[("host", "b")]).unwrap());
+            st.push_metric(MetricEvent::from_parts(
+                name.clone(),
+                1.0,
+                labels_a,
+                past_ts,
+            ));
+            st.push_metric(MetricEvent::from_parts(name, 1.0, labels_b, future_ts));
+        }
+
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
+
+        let mut sink = MemorySink::new();
+        emit(&mut sink).expect("close-emit must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected one marker line per distinct (name, labels) tuple, got: {output}"
+        );
+
+        let past_ms = past_ts.duration_since(UNIX_EPOCH).unwrap().as_millis() as i128;
+        let future_ms = future_ts.duration_since(UNIX_EPOCH).unwrap().as_millis() as i128;
+
+        for line in &lines {
+            let ts_str = line
+                .rsplit(' ')
+                .next()
+                .expect("Prometheus text line must end with a timestamp token");
+            let close_ms: i128 = ts_str
+                .parse()
+                .unwrap_or_else(|_| panic!("close ts must parse as i128, line: {line}"));
+
+            assert!(
+                close_ms > past_ms,
+                "close ts {close_ms} must be strictly greater than past active ts {past_ms}; line: {line}"
+            );
+            assert!(
+                close_ms > future_ms,
+                "close ts {close_ms} must be strictly greater than future active ts {future_ms}; line: {line}"
+            );
+        }
     }
 }
