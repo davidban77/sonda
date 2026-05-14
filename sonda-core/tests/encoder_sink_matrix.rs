@@ -320,6 +320,7 @@ mod kafka_matrix {
         let cfg = sonda_core::sink::SinkConfig::Kafka {
             brokers: String::new(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,

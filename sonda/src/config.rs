@@ -341,6 +341,7 @@ fn build_sink_config(
                     topic: topic
                         .expect("validated: --topic required for kafka")
                         .to_string(),
+                    max_buffer_age: None,
                     retry: None,
                     tls: None,
                     sasl: None,

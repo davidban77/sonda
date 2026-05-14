@@ -242,6 +242,11 @@ pub enum SinkConfig {
         /// The Kafka topic name to produce records to.
         topic: String,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
@@ -426,6 +431,7 @@ pub fn create_sink(
         SinkConfig::Kafka {
             brokers,
             topic,
+            max_buffer_age,
             retry: retry_cfg,
             tls,
             sasl,
@@ -434,12 +440,18 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
             Ok(Box::new(kafka::KafkaSink::new(
                 brokers,
                 topic,
                 rp,
                 tls.as_ref(),
                 sasl.as_ref(),
+                buffer_age,
             )?))
         }
         #[cfg(feature = "http")]
@@ -862,6 +874,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -915,6 +928,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -933,6 +947,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: String::new(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -941,6 +956,24 @@ sink:
         assert!(
             result.is_err(),
             "create_sink should reject an empty broker string"
+        );
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn create_sink_kafka_with_invalid_max_buffer_age_returns_err() {
+        let config = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+            tls: None,
+            sasl: None,
+        };
+        let result = create_sink(&config, None);
+        assert!(
+            result.is_err(),
+            "create_sink should reject an unparseable max_buffer_age before connecting"
         );
     }
 
