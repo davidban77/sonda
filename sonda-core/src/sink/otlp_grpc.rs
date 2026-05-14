@@ -18,6 +18,7 @@
 //! Requires the `otlp` feature flag.
 
 use std::marker::PhantomData;
+use std::time::{Duration, Instant};
 
 use bytes::Buf;
 use prost::Message;
@@ -175,6 +176,11 @@ pub struct OtlpGrpcSink {
     endpoint: String,
     /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
+    /// Maximum age a non-empty batch may reach before a time-based flush.
+    /// `Duration::ZERO` disables time-based flushing.
+    max_buffer_age: Duration,
+    /// When a batch was last sent — drives the time-based flush check.
+    last_flush_at: Instant,
 }
 
 impl OtlpGrpcSink {
@@ -188,6 +194,8 @@ impl OtlpGrpcSink {
     ///   Use [`DEFAULT_BATCH_SIZE`] if no override is needed.
     /// - `resource_attrs` — key-value pairs for the OTLP `Resource` (typically
     ///   from scenario labels).
+    /// - `max_buffer_age` — maximum age a non-empty batch may reach before a
+    ///   time-based flush. `Duration::ZERO` disables time-based flushing.
     ///
     /// # Errors
     ///
@@ -201,6 +209,7 @@ impl OtlpGrpcSink {
         batch_size: usize,
         resource_attrs: Vec<KeyValue>,
         retry_policy: Option<RetryPolicy>,
+        max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
         // Build a minimal single-threaded tokio runtime.
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -250,6 +259,8 @@ impl OtlpGrpcSink {
             resource_attrs,
             endpoint: endpoint.to_owned(),
             retry_policy,
+            max_buffer_age,
+            last_flush_at: Instant::now(),
         })
     }
 
@@ -275,6 +286,9 @@ impl OtlpGrpcSink {
         if self.metric_batch.is_empty() {
             return Ok(());
         }
+
+        // Reset on attempt, not success — the batch is cleared either way below.
+        self.last_flush_at = Instant::now();
 
         let metrics =
             std::mem::replace(&mut self.metric_batch, Vec::with_capacity(self.batch_size));
@@ -328,6 +342,9 @@ impl OtlpGrpcSink {
         if self.log_batch.is_empty() {
             return Ok(());
         }
+
+        // Reset on attempt, not success — the batch is cleared either way below.
+        self.last_flush_at = Instant::now();
 
         let log_records =
             std::mem::replace(&mut self.log_batch, Vec::with_capacity(self.batch_size));
@@ -447,14 +464,20 @@ impl Sink for OtlpGrpcSink {
             OtlpSignalType::Metrics => {
                 let metrics = otlp::parse_length_prefixed_metrics(data)?;
                 self.metric_batch.extend(metrics);
-                if self.metric_batch.len() >= self.batch_size {
+                let size_reached = self.metric_batch.len() >= self.batch_size;
+                let age_reached = !self.max_buffer_age.is_zero()
+                    && self.last_flush_at.elapsed() >= self.max_buffer_age;
+                if size_reached || age_reached {
                     self.flush_metrics()?;
                 }
             }
             OtlpSignalType::Logs => {
                 let records = otlp::parse_length_prefixed_log_records(data)?;
                 self.log_batch.extend(records);
-                if self.log_batch.len() >= self.batch_size {
+                let size_reached = self.log_batch.len() >= self.batch_size;
+                let age_reached = !self.max_buffer_age.is_zero()
+                    && self.last_flush_at.elapsed() >= self.max_buffer_age;
+                if size_reached || age_reached {
                     self.flush_logs()?;
                 }
             }
@@ -480,7 +503,79 @@ mod tests {
     use crate::encoder::otlp::{
         self, any_value, metric, number_data_point, AnyValue, Gauge, Metric, NumberDataPoint,
     };
-    use crate::sink::SinkConfig;
+    use crate::sink::{create_sink, SinkConfig};
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Build a sink with a lazy (non-connecting) channel pointed at a dead
+    /// address. `write()` buffers without network I/O; only a triggered flush
+    /// reaches the channel, where it fails — letting tests assert on buffer
+    /// state and on whether a flush was attempted, without a live collector.
+    fn lazy_sink(
+        signal_type: OtlpSignalType,
+        batch_size: usize,
+        max_buffer_age: Duration,
+    ) -> OtlpGrpcSink {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        let channel = runtime.block_on(async {
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy()
+        });
+        OtlpGrpcSink {
+            runtime,
+            channel,
+            metric_batch: Vec::with_capacity(batch_size),
+            log_batch: Vec::with_capacity(batch_size),
+            batch_size,
+            signal_type,
+            resource_attrs: vec![],
+            endpoint: "http://127.0.0.1:1".to_string(),
+            retry_policy: None,
+            max_buffer_age,
+            last_flush_at: Instant::now(),
+        }
+    }
+
+    /// Length-prefixed bytes for a single OTLP metric, as the encoder produces.
+    fn one_metric_bytes(name: &str) -> Vec<u8> {
+        let metric = Metric {
+            name: name.to_string(),
+            description: String::new(),
+            unit: String::new(),
+            data: Some(metric::Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    attributes: vec![],
+                    time_unix_nano: 1_700_000_000_000_000_000,
+                    value: Some(number_data_point::Value::AsDouble(1.0)),
+                }],
+            })),
+        };
+        let proto = metric.encode_to_vec();
+        let mut buf = (proto.len() as u32).to_le_bytes().to_vec();
+        buf.extend_from_slice(&proto);
+        buf
+    }
+
+    /// Length-prefixed bytes for a single OTLP log record.
+    fn one_log_bytes() -> Vec<u8> {
+        let record = otlp::LogRecord {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            severity_number: 9,
+            severity_text: "INFO".to_string(),
+            body: Some(AnyValue {
+                value: Some(any_value::Value::StringValue("hello".to_string())),
+            }),
+            attributes: vec![],
+        };
+        let proto = record.encode_to_vec();
+        let mut buf = (proto.len() as u32).to_le_bytes().to_vec();
+        buf.extend_from_slice(&proto);
+        buf
+    }
 
     // -----------------------------------------------------------------------
     // Constants
@@ -609,6 +704,7 @@ signal_type: logs
             endpoint: "http://localhost:4317".to_string(),
             signal_type: OtlpSignalType::Metrics,
             batch_size: Some(100),
+            max_buffer_age: None,
             retry: None,
         };
         let cloned = config.clone();
@@ -724,6 +820,7 @@ signal_type: logs
             DEFAULT_BATCH_SIZE,
             vec![],
             None,
+            Duration::ZERO,
         );
         match result {
             Err(err) => {
@@ -746,6 +843,7 @@ signal_type: logs
             DEFAULT_BATCH_SIZE,
             vec![],
             None,
+            Duration::ZERO,
         );
         assert!(result.is_err(), "invalid endpoint URL must be rejected");
     }
@@ -820,6 +918,150 @@ sink:
                 assert_eq!(endpoint, "http://localhost:4317");
                 assert_eq!(*signal_type, OtlpSignalType::Logs);
                 assert_eq!(*batch_size, Some(50));
+            }
+            other => panic!("expected OtlpGrpc, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Time-based flush
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn time_based_flush_fires_when_buffer_age_exceeded() {
+        // Large batch_size so size never triggers; short max_buffer_age.
+        let mut sink = lazy_sink(
+            OtlpSignalType::Metrics,
+            1_000_000,
+            Duration::from_millis(50),
+        );
+
+        sink.write(&one_metric_bytes("first")).expect("write 1");
+        assert_eq!(sink.metric_batch.len(), 1, "first write only buffers");
+
+        std::thread::sleep(Duration::from_millis(200));
+        // Second write is past max_buffer_age → triggers a time-based flush.
+        // The lazy channel has no peer, so the flush attempt fails.
+        let result = sink.write(&one_metric_bytes("second"));
+        assert!(
+            result.is_err(),
+            "second write past max_buffer_age must attempt a flush"
+        );
+        assert!(
+            sink.metric_batch.is_empty(),
+            "the time-based flush must have drained the batch"
+        );
+    }
+
+    #[test]
+    fn time_based_flush_fires_for_log_signal() {
+        let mut sink = lazy_sink(OtlpSignalType::Logs, 1_000_000, Duration::from_millis(50));
+
+        sink.write(&one_log_bytes()).expect("write 1");
+        assert_eq!(sink.log_batch.len(), 1, "first write only buffers");
+
+        std::thread::sleep(Duration::from_millis(200));
+        let result = sink.write(&one_log_bytes());
+        assert!(
+            result.is_err(),
+            "second log write past max_buffer_age must attempt a flush"
+        );
+        assert!(
+            sink.log_batch.is_empty(),
+            "the time-based flush must have drained the log batch"
+        );
+    }
+
+    #[test]
+    fn zero_max_buffer_age_disables_time_based_flush() {
+        // Large batch_size, zero max_buffer_age — neither trigger should fire.
+        let mut sink = lazy_sink(OtlpSignalType::Metrics, 1_000_000, Duration::ZERO);
+
+        sink.write(&one_metric_bytes("first")).expect("write 1");
+        std::thread::sleep(Duration::from_millis(150));
+        sink.write(&one_metric_bytes("second")).expect("write 2");
+        std::thread::sleep(Duration::from_millis(150));
+        sink.write(&one_metric_bytes("third")).expect("write 3");
+
+        assert_eq!(
+            sink.metric_batch.len(),
+            3,
+            "zero max_buffer_age must disable time-based flush"
+        );
+    }
+
+    #[test]
+    fn size_triggered_flush_still_works_and_resets_the_timer() {
+        // Small batch_size, max_buffer_age longer than the test runs.
+        let mut sink = lazy_sink(OtlpSignalType::Metrics, 2, Duration::from_secs(60));
+
+        sink.write(&one_metric_bytes("a")).expect("write 1 buffers");
+        assert_eq!(sink.metric_batch.len(), 1, "below batch_size: no flush");
+
+        // Second write fills the batch → size-triggered flush attempt.
+        let result = sink.write(&one_metric_bytes("b"));
+        assert!(result.is_err(), "filling the batch must attempt a flush");
+        assert!(
+            sink.metric_batch.is_empty(),
+            "size-triggered flush must drain the batch"
+        );
+
+        // The size flush reset last_flush_at; a subsequent partial write must
+        // not immediately time-flush.
+        sink.write(&one_metric_bytes("c"))
+            .expect("partial write after a size flush must not time-flush immediately");
+        assert_eq!(sink.metric_batch.len(), 1, "partial write only buffers");
+    }
+
+    // -----------------------------------------------------------------------
+    // Factory wiring: create_sink max_buffer_age parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn create_sink_otlp_grpc_with_invalid_max_buffer_age_returns_err() {
+        let config = SinkConfig::OtlpGrpc {
+            endpoint: "http://127.0.0.1:1".to_string(),
+            signal_type: OtlpSignalType::Metrics,
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+        };
+        assert!(
+            create_sink(&config, None).is_err(),
+            "invalid max_buffer_age must cause the factory to fail"
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_otlp_grpc_deserializes_with_max_buffer_age() {
+        let yaml = r#"
+type: otlp_grpc
+endpoint: "http://localhost:4317"
+signal_type: metrics
+max_buffer_age: 10s
+"#;
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("deser ok");
+        match config {
+            SinkConfig::OtlpGrpc { max_buffer_age, .. } => {
+                assert_eq!(max_buffer_age.as_deref(), Some("10s"));
+            }
+            other => panic!("expected OtlpGrpc, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_otlp_grpc_max_buffer_age_defaults_to_none() {
+        let yaml = r#"
+type: otlp_grpc
+endpoint: "http://localhost:4317"
+signal_type: metrics
+"#;
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("deser ok");
+        match config {
+            SinkConfig::OtlpGrpc { max_buffer_age, .. } => {
+                assert!(max_buffer_age.is_none(), "max_buffer_age defaults to None");
             }
             other => panic!("expected OtlpGrpc, got {other:?}"),
         }

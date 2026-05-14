@@ -321,6 +321,7 @@ fn build_sink_config(
                         .to_string(),
                     signal_type: parsed_signal,
                     batch_size,
+                    max_buffer_age: None,
                     retry: None,
                 })
             }
@@ -1871,6 +1872,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                     endpoint: ep.to_string(),
                     signal_type: sonda_core::sink::otlp_grpc::OtlpSignalType::Metrics,
                     batch_size: None,
+                    max_buffer_age: None,
                     retry: None,
                 })
             }
