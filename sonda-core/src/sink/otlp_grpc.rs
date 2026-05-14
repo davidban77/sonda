@@ -181,6 +181,8 @@ pub struct OtlpGrpcSink {
     max_buffer_age: Duration,
     /// When a batch was last sent — drives the time-based flush check.
     last_flush_at: Instant,
+    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
+    last_write_delivered: bool,
 }
 
 impl OtlpGrpcSink {
@@ -261,6 +263,7 @@ impl OtlpGrpcSink {
             retry_policy,
             max_buffer_age,
             last_flush_at: Instant::now(),
+            last_write_delivered: false,
         })
     }
 
@@ -467,9 +470,11 @@ impl Sink for OtlpGrpcSink {
                 let size_reached = self.metric_batch.len() >= self.batch_size;
                 let age_reached = !self.max_buffer_age.is_zero()
                     && self.last_flush_at.elapsed() >= self.max_buffer_age;
-                if size_reached || age_reached {
+                let should_flush = size_reached || age_reached;
+                if should_flush {
                     self.flush_metrics()?;
                 }
+                self.last_write_delivered = should_flush;
             }
             OtlpSignalType::Logs => {
                 let records = otlp::parse_length_prefixed_log_records(data)?;
@@ -477,9 +482,11 @@ impl Sink for OtlpGrpcSink {
                 let size_reached = self.log_batch.len() >= self.batch_size;
                 let age_reached = !self.max_buffer_age.is_zero()
                     && self.last_flush_at.elapsed() >= self.max_buffer_age;
-                if size_reached || age_reached {
+                let should_flush = size_reached || age_reached;
+                if should_flush {
                     self.flush_logs()?;
                 }
+                self.last_write_delivered = should_flush;
             }
         }
         Ok(())
@@ -494,6 +501,10 @@ impl Sink for OtlpGrpcSink {
             OtlpSignalType::Metrics => self.flush_metrics(),
             OtlpSignalType::Logs => self.flush_logs(),
         }
+    }
+
+    fn last_write_delivered(&self) -> bool {
+        self.last_write_delivered
     }
 }
 
@@ -537,6 +548,7 @@ mod tests {
             retry_policy: None,
             max_buffer_age,
             last_flush_at: Instant::now(),
+            last_write_delivered: false,
         }
     }
 
@@ -1011,6 +1023,37 @@ sink:
         sink.write(&one_metric_bytes("c"))
             .expect("partial write after a size flush must not time-flush immediately");
         assert_eq!(sink.metric_batch.len(), 1, "partial write only buffers");
+    }
+
+    // -----------------------------------------------------------------------
+    // last_write_delivered — buffered case
+    //
+    // Only the buffered case is unit-testable: the lazy channel has no peer,
+    // so a triggered flush always fails. Flushed-success is verified live.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn last_write_delivered_is_false_when_metric_write_only_buffers() {
+        let mut sink = lazy_sink(OtlpSignalType::Metrics, 1_000_000, Duration::ZERO);
+
+        sink.write(&one_metric_bytes("buffered")).expect("write 1");
+
+        assert!(
+            !sink.last_write_delivered(),
+            "a metric write that only buffers must report last_write_delivered() == false"
+        );
+    }
+
+    #[test]
+    fn last_write_delivered_is_false_when_log_write_only_buffers() {
+        let mut sink = lazy_sink(OtlpSignalType::Logs, 1_000_000, Duration::ZERO);
+
+        sink.write(&one_log_bytes()).expect("write 1");
+
+        assert!(
+            !sink.last_write_delivered(),
+            "a log write that only buffers must report last_write_delivered() == false"
+        );
     }
 
     // -----------------------------------------------------------------------

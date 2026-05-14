@@ -51,6 +51,8 @@ pub struct LokiSink {
     max_buffer_age: Duration,
     /// When the batch was last sent — drives the time-based flush check.
     last_flush_at: Instant,
+    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
+    last_write_delivered: bool,
 }
 
 impl LokiSink {
@@ -97,6 +99,7 @@ impl LokiSink {
             retry_policy,
             max_buffer_age,
             last_flush_at: Instant::now(),
+            last_write_delivered: false,
         })
     }
 
@@ -261,9 +264,11 @@ impl Sink for LokiSink {
         let size_reached = self.batch.len() >= self.batch_size;
         let age_reached =
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
-        if size_reached || age_reached {
+        let should_flush = size_reached || age_reached;
+        if should_flush {
             self.flush_batch()?;
         }
+        self.last_write_delivered = should_flush;
 
         Ok(())
     }
@@ -277,6 +282,10 @@ impl Sink for LokiSink {
     /// Returns [`SondaError::Sink`] if the HTTP request fails.
     fn flush(&mut self) -> Result<(), SondaError> {
         self.flush_batch()
+    }
+
+    fn last_write_delivered(&self) -> bool {
+        self.last_write_delivered
     }
 }
 
@@ -647,6 +656,42 @@ mod tests {
         assert!(
             sink.flush().is_ok(),
             "flush on empty batch must return Ok without making a network call"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // last_write_delivered — buffered vs flushed
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn last_write_delivered_is_false_when_write_only_buffers() {
+        let (listener, url) = mock_loki_listener();
+
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
+        sink.write(b"buffered\n").expect("write buffers");
+
+        assert!(
+            !sink.last_write_delivered(),
+            "a write that only buffers must report last_write_delivered() == false"
+        );
+        listener.set_nonblocking(true).expect("set non-blocking");
+        assert!(listener.accept().is_err(), "no flush should have fired");
+    }
+
+    #[test]
+    fn last_write_delivered_is_true_when_write_triggers_flush() {
+        let (listener, url) = mock_loki_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
+
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 1, None, Duration::ZERO).expect("construct sink");
+        sink.write(b"flushed\n").expect("write triggers flush");
+
+        handle.join().expect("mock server thread panicked");
+        assert!(
+            sink.last_write_delivered(),
+            "a write that triggers a successful flush must report last_write_delivered() == true"
         );
     }
 
