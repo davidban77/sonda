@@ -32,6 +32,14 @@ pub trait Sink: Send + Sync {
 
     /// Flush any buffered data to the destination.
     fn flush(&mut self) -> Result<(), SondaError>;
+
+    /// Whether the most recent `write()` delivered data to the destination,
+    /// or only buffered it. Non-batching sinks deliver on every write, so the
+    /// default is `true`; batching sinks override this to return `true` only
+    /// when the most recent `write()` triggered a successful flush.
+    fn last_write_delivered(&self) -> bool {
+        true
+    }
 }
 
 /// TLS configuration for Kafka broker connections.

@@ -72,6 +72,9 @@ pub(crate) struct TickResult {
     ///
     /// Only the metrics runner provides this; the log runner returns `None`.
     pub metric_event: Option<MetricEvent>,
+    /// Whether this tick's write() delivered to the destination, or only
+    /// buffered it (batching sinks). Drives delivery-health stat updates.
+    pub delivered: bool,
 }
 
 /// Context passed to the per-tick callback.
@@ -287,11 +290,13 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
                         st.in_gap = currently_in_gap;
                         st.in_burst = currently_in_burst;
                         st.in_cardinality_spike = currently_in_spike;
-                        st.consecutive_failures = 0;
-                        st.last_successful_write_at = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_nanos() as u64)
-                            .ok();
+                        if result.delivered {
+                            st.consecutive_failures = 0;
+                            st.last_successful_write_at = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_nanos() as u64)
+                                .ok();
+                        }
                         if let Some(event) = result.metric_event {
                             st.push_metric(event);
                         }
@@ -1031,6 +1036,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 6,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1078,6 +1084,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1124,6 +1131,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1163,6 +1171,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1189,6 +1198,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 42,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1232,6 +1242,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 10,
                     metric_event: Some(event),
+                    delivered: true,
                 })
             };
 
@@ -1287,6 +1298,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1467,6 +1479,7 @@ mod tests {
                     Ok(TickResult {
                         bytes_written: 8,
                         metric_event: None,
+                        delivered: true,
                     })
                 } else {
                     Err(SondaError::Sink(std::io::Error::new(
@@ -1495,6 +1508,85 @@ mod tests {
         assert!(st.total_sink_failures > 0);
         assert!(st.total_events > 0);
         assert!(st.last_successful_write_at.is_some());
+    }
+
+    #[test]
+    fn buffered_write_does_not_update_delivery_health_stats() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(200)));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Ok(TickResult {
+                    bytes_written: 12,
+                    metric_event: None,
+                    delivered: false,
+                })
+            };
+
+        run_schedule_loop(
+            &schedule,
+            50.0,
+            None,
+            Some(Arc::clone(&stats)),
+            &mut NullSink,
+            &mut tick_fn,
+        )
+        .expect("loop must succeed");
+
+        let st = stats.read().expect("stats lock");
+        assert!(
+            st.total_events > 0,
+            "buffered writes still count as generated events"
+        );
+        assert!(
+            st.bytes_emitted > 0,
+            "buffered writes still count toward bytes_emitted"
+        );
+        assert_eq!(
+            st.last_successful_write_at, None,
+            "a buffered write must not advance last_successful_write_at"
+        );
+        assert_eq!(
+            st.consecutive_failures, 0,
+            "a buffered write must not touch consecutive_failures"
+        );
+    }
+
+    #[test]
+    fn delivered_write_updates_delivery_health_stats() {
+        let schedule = minimal_schedule(Some(Duration::from_millis(200)));
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let mut tick_fn =
+            |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
+                Ok(TickResult {
+                    bytes_written: 12,
+                    metric_event: None,
+                    delivered: true,
+                })
+            };
+
+        run_schedule_loop(
+            &schedule,
+            50.0,
+            None,
+            Some(Arc::clone(&stats)),
+            &mut NullSink,
+            &mut tick_fn,
+        )
+        .expect("loop must succeed");
+
+        let st = stats.read().expect("stats lock");
+        assert!(st.total_events > 0, "delivered writes count as events");
+        assert!(
+            st.last_successful_write_at.is_some(),
+            "a delivered write must advance last_successful_write_at"
+        );
+        assert_eq!(
+            st.consecutive_failures, 0,
+            "a delivered write keeps consecutive_failures at zero"
+        );
     }
 
     // ---- Rate limiter unit tests --------------------------------------------
@@ -1641,6 +1733,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1673,6 +1766,7 @@ mod tests {
                 Ok(TickResult {
                     bytes_written: 0,
                     metric_event: None,
+                    delivered: true,
                 })
             };
 
@@ -1705,6 +1799,7 @@ mod tests {
         let result = TickResult {
             bytes_written: 100,
             metric_event: Some(event),
+            delivered: true,
         };
 
         assert_eq!(result.bytes_written, 100);
