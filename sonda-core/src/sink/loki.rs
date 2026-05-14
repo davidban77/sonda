@@ -16,7 +16,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
@@ -46,6 +46,11 @@ pub struct LokiSink {
     batch: Vec<(String, String)>,
     /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
+    /// Maximum age a non-empty batch may reach before a time-based flush.
+    /// `Duration::ZERO` disables time-based flushing.
+    max_buffer_age: Duration,
+    /// When the batch was last sent — drives the time-based flush check.
+    last_flush_at: Instant,
 }
 
 impl LokiSink {
@@ -58,6 +63,8 @@ impl LokiSink {
     /// - `labels` — stream labels attached to every log batch.
     /// - `batch_size` — number of log entries to accumulate before auto-flushing.
     ///   Use `100` if no override is needed.
+    /// - `max_buffer_age` — maximum age a non-empty batch may reach before a
+    ///   time-based flush. `Duration::ZERO` disables time-based flushing.
     ///
     /// # Errors
     ///
@@ -67,6 +74,7 @@ impl LokiSink {
         labels: HashMap<String, String>,
         batch_size: usize,
         retry_policy: Option<RetryPolicy>,
+        max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(SondaError::Sink(std::io::Error::new(
@@ -87,6 +95,8 @@ impl LokiSink {
             batch_size,
             batch: Vec::with_capacity(batch_size),
             retry_policy,
+            max_buffer_age,
+            last_flush_at: Instant::now(),
         })
     }
 
@@ -129,6 +139,9 @@ impl LokiSink {
 
         let push_url = format!("{}/loki/api/v1/push", self.url);
         let body = self.build_envelope();
+
+        // Reset on attempt, not success — the batch is cleared either way below.
+        self.last_flush_at = Instant::now();
 
         let result = match &self.retry_policy {
             Some(policy) => {
@@ -245,7 +258,10 @@ impl Sink for LokiSink {
 
         self.batch.push((ts_ns, line));
 
-        if self.batch.len() >= self.batch_size {
+        let size_reached = self.batch.len() >= self.batch_size;
+        let age_reached =
+            !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
+        if size_reached || age_reached {
             self.flush_batch()?;
         }
 
@@ -332,6 +348,7 @@ mod tests {
             HashMap::new(),
             100,
             None,
+            Duration::ZERO,
         );
         assert!(result.is_ok(), "http:// URL must be accepted");
     }
@@ -343,6 +360,7 @@ mod tests {
             HashMap::new(),
             100,
             None,
+            Duration::ZERO,
         );
         assert!(result.is_ok(), "https:// URL must be accepted");
     }
@@ -354,6 +372,7 @@ mod tests {
             HashMap::new(),
             100,
             None,
+            Duration::ZERO,
         );
         assert!(result.is_err(), "non-http:// URL must be rejected");
         assert!(
@@ -364,20 +383,32 @@ mod tests {
 
     #[test]
     fn new_with_bare_hostname_returns_sink_error() {
-        let result = LokiSink::new("loki.example.com".to_string(), HashMap::new(), 100, None);
+        let result = LokiSink::new(
+            "loki.example.com".to_string(),
+            HashMap::new(),
+            100,
+            None,
+            Duration::ZERO,
+        );
         assert!(result.is_err(), "URL without scheme must be rejected");
     }
 
     #[test]
     fn new_with_empty_url_returns_sink_error() {
-        let result = LokiSink::new(String::new(), HashMap::new(), 100, None);
+        let result = LokiSink::new(String::new(), HashMap::new(), 100, None, Duration::ZERO);
         assert!(result.is_err(), "empty URL must be rejected");
     }
 
     #[test]
     fn new_error_message_contains_the_bad_url() {
         let bad_url = "not-a-url";
-        let result = LokiSink::new(bad_url.to_string(), HashMap::new(), 100, None);
+        let result = LokiSink::new(
+            bad_url.to_string(),
+            HashMap::new(),
+            100,
+            None,
+            Duration::ZERO,
+        );
         let err = result.err().expect("should be Err");
         let msg = err.to_string();
         assert!(
@@ -400,7 +431,8 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("job".to_string(), "sonda".to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, labels, 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"hello loki\n").expect("write");
         sink.flush().expect("flush");
 
@@ -459,7 +491,8 @@ mod tests {
         labels.insert("job".to_string(), "sonda".to_string());
         labels.insert("env".to_string(), "dev".to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, labels, 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"test\n").expect("write");
         sink.flush().expect("flush");
 
@@ -485,7 +518,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"line\n").expect("write");
         sink.flush().expect("flush");
 
@@ -508,7 +542,8 @@ mod tests {
     fn write_below_batch_size_does_not_trigger_http_call() {
         let (listener, url) = mock_loki_listener();
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 50, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 50, None, Duration::ZERO).expect("construct sink");
 
         // Write 49 lines — one short of the 50-entry threshold.
         for i in 0..49 {
@@ -530,7 +565,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 50, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 50, None, Duration::ZERO).expect("construct sink");
 
         // Write exactly 50 lines → must trigger an auto-flush.
         for i in 0..50 {
@@ -558,7 +594,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
 
         // Write only 3 lines (far below batch_size of 100).
         sink.write(b"alpha\n").expect("write 1");
@@ -581,7 +618,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"once\n").expect("write");
         sink.flush().expect("first flush sends data");
         let _body = handle.join().expect("mock server thread panicked");
@@ -602,7 +640,8 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}");
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
 
         // Empty batch — must return Ok without any network I/O.
         assert!(
@@ -620,7 +659,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"my log line\n").expect("write with newline");
         sink.flush().expect("flush");
 
@@ -646,7 +686,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 500));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
         handle.join().expect("mock server thread panicked");
@@ -663,7 +704,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
         handle.join().expect("mock server thread panicked");
@@ -682,7 +724,8 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}");
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"line\n").expect("write buffered");
         let result = sink.flush();
 
@@ -702,7 +745,8 @@ mod tests {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 100, None, Duration::ZERO).expect("construct sink");
         // A log line containing a JSON double-quote character.
         sink.write(b"msg=\"hello world\"").expect("write");
         sink.flush().expect("flush");
@@ -726,7 +770,8 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("app".to_string(), r#"my "special" app"#.to_string());
 
-        let mut sink = LokiSink::new(url, labels, 100, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, labels, 100, None, Duration::ZERO).expect("construct sink");
         sink.write(b"line\n").expect("write");
         sink.flush().expect("flush");
 
@@ -755,7 +800,8 @@ mod tests {
             (first, second)
         });
 
-        let mut sink = LokiSink::new(url, HashMap::new(), 2, None).expect("construct sink");
+        let mut sink =
+            LokiSink::new(url, HashMap::new(), 2, None, Duration::ZERO).expect("construct sink");
 
         // First batch: lines 0-1 → triggers auto-flush at batch_size=2.
         sink.write(b"line 0\n").expect("write 0");
@@ -784,6 +830,84 @@ mod tests {
             Some(2),
             "second batch must contain exactly 2 entries"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Time-based flush
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn time_based_flush_fires_when_buffer_age_exceeded() {
+        let (listener, url) = mock_loki_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
+
+        // batch_size large enough that size never triggers; short max_buffer_age.
+        let mut sink = LokiSink::new(url, HashMap::new(), 10_000, None, Duration::from_millis(50))
+            .expect("construct sink");
+
+        sink.write(b"first\n").expect("write 1");
+        thread::sleep(Duration::from_millis(200));
+        // Second write is past max_buffer_age → triggers a time-based flush.
+        sink.write(b"second\n").expect("write 2");
+
+        let body_bytes = handle.join().expect("mock server thread panicked");
+        let body = String::from_utf8(body_bytes).expect("UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let values = parsed["streams"][0]["values"]
+            .as_array()
+            .expect("values array");
+        assert_eq!(
+            values.len(),
+            2,
+            "time-based flush must deliver both buffered entries"
+        );
+    }
+
+    #[test]
+    fn zero_max_buffer_age_disables_time_based_flush() {
+        let (listener, url) = mock_loki_listener();
+
+        let mut sink = LokiSink::new(url, HashMap::new(), 10_000, None, Duration::ZERO)
+            .expect("construct sink");
+
+        sink.write(b"first\n").expect("write 1");
+        thread::sleep(Duration::from_millis(150));
+        sink.write(b"second\n").expect("write 2");
+
+        // With time-based flush disabled, no request should have arrived.
+        listener.set_nonblocking(true).expect("set non-blocking");
+        assert!(
+            listener.accept().is_err(),
+            "zero max_buffer_age must disable time-based flush"
+        );
+    }
+
+    #[test]
+    fn size_triggered_flush_resets_the_buffer_age_timer() {
+        let (listener, url) = mock_loki_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
+
+        // Small batch_size, max_buffer_age comfortably longer than the test runs.
+        let mut sink = LokiSink::new(url, HashMap::new(), 2, None, Duration::from_secs(60))
+            .expect("construct sink");
+
+        // Fill the batch immediately — the size trigger fires.
+        sink.write(b"a\n").expect("write 1");
+        sink.write(b"b\n").expect("write 2"); // batch_size reached → size flush
+
+        let body_bytes = handle.join().expect("mock server thread panicked");
+        let body = String::from_utf8(body_bytes).expect("UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            parsed["streams"][0]["values"].as_array().map(|v| v.len()),
+            Some(2),
+            "size-triggered flush must deliver the full batch"
+        );
+
+        // The size flush reset last_flush_at; a subsequent partial-batch write
+        // must NOT immediately time-flush against the (now closed) listener.
+        sink.write(b"c\n")
+            .expect("partial write after a size flush must not time-flush immediately");
     }
 
     // -------------------------------------------------------------------------
@@ -841,6 +965,39 @@ batch_size: 50
         );
     }
 
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_loki_deserializes_with_max_buffer_age() {
+        let yaml = r#"
+type: loki
+url: "http://localhost:3100"
+max_buffer_age: 10s
+"#;
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::Loki { max_buffer_age, .. } => {
+                assert_eq!(max_buffer_age.as_deref(), Some("10s"));
+            }
+            other => panic!("expected Loki variant, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_loki_max_buffer_age_defaults_to_none() {
+        let yaml = "type: loki\nurl: \"http://localhost:3100\"";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).expect("should deserialize");
+        match config {
+            SinkConfig::Loki { max_buffer_age, .. } => {
+                assert!(
+                    max_buffer_age.is_none(),
+                    "max_buffer_age should default to None"
+                );
+            }
+            other => panic!("expected Loki variant, got {other:?}"),
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Factory: create_sink for Loki config
     // -------------------------------------------------------------------------
@@ -850,11 +1007,27 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url: "http://localhost:3100".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         assert!(
             create_sink(&config, None).is_ok(),
             "factory must return Ok for valid loki config"
+        );
+    }
+
+    #[test]
+    fn create_sink_loki_with_invalid_max_buffer_age_returns_err() {
+        let config = SinkConfig::Loki {
+            url: "http://localhost:3100".to_string(),
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+        };
+        let result = create_sink(&config, None);
+        assert!(
+            result.is_err(),
+            "invalid max_buffer_age must cause the factory to fail"
         );
     }
 
@@ -866,6 +1039,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let mut labels = HashMap::new();
@@ -893,6 +1067,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
@@ -928,6 +1103,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url,
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let mut sink = create_sink(&config, None).expect("factory ok");
@@ -943,6 +1119,7 @@ batch_size: 50
         let config = SinkConfig::Loki {
             url: "not-http://bad".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let result = create_sink(&config, None);

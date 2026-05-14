@@ -276,6 +276,11 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
@@ -410,6 +415,7 @@ pub fn create_sink(
         SinkConfig::Loki {
             url,
             batch_size,
+            max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(loki::DEFAULT_BATCH_SIZE);
@@ -418,11 +424,17 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
             Ok(Box::new(loki::LokiSink::new(
                 url.clone(),
                 loki_labels,
                 bs,
                 rp,
+                buffer_age,
             )?))
         }
         #[cfg(feature = "otlp")]
@@ -1029,6 +1041,7 @@ headers: {}
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let result = create_sink(&config, None);
