@@ -15,17 +15,17 @@ throughput.
 
 Sonda has two kinds of batching depending on the sink type:
 
-| Sink | Batching | Default Threshold | Configurable? | Unit |
-|------|----------|-------------------|---------------|------|
-| `stdout` | OS-level (`BufWriter`) | ~8 KB | No | bytes |
-| `file` | OS-level (`BufWriter`) | ~8 KB | No | bytes |
-| `tcp` | OS-level (`BufWriter`) | ~8 KB | No | bytes |
+| Sink | Batching | Size Threshold | Time Threshold | Unit |
+|------|----------|----------------|----------------|------|
+| `stdout` | OS-level (`BufWriter`) | ~8 KB (fixed) | -- | bytes |
+| `file` | OS-level (`BufWriter`) | ~8 KB (fixed) | -- | bytes |
+| `tcp` | OS-level (`BufWriter`) | ~8 KB (fixed) | -- | bytes |
 | `udp` | None (immediate) | -- | -- | -- |
-| `http_push` | Application-level | 4 KiB | Yes | bytes |
-| `kafka` | Application-level | 64 KiB | No | bytes |
-| `loki` | Application-level | 5 entries | Yes | entries |
-| `remote_write` | Application-level | 5 entries | Yes | entries |
-| `otlp_grpc` | Application-level | 5 entries | Yes | entries |
+| `http_push` | Application-level | 4 KiB (configurable) | `5s` (configurable) | bytes |
+| `kafka` | Application-level | 64 KiB (fixed) | -- | bytes |
+| `loki` | Application-level | 5 entries (configurable) | `5s` (configurable) | entries |
+| `remote_write` | Application-level | 5 entries (configurable) | `5s` (configurable) | entries |
+| `otlp_grpc` | Application-level | 5 entries (configurable) | -- | entries |
 
 ### OS-level buffering (stdout, file, tcp)
 
@@ -42,10 +42,11 @@ These sinks manage their own internal buffer. Each call to `write()` appends dat
 When the buffer reaches the configured threshold, the entire batch is sent as a single HTTP POST,
 Kafka record, or gRPC call.
 
-This means data does not appear at the destination until either:
+This means data does not appear at the destination until one of these happens:
 
-1. The batch fills up and triggers an automatic flush, or
-2. The scenario completes and Sonda flushes the remaining partial batch.
+1. The batch fills up and triggers a size-based flush,
+2. A non-empty batch ages past its time threshold and triggers a [time-based flush](#time-based-flushing) (`http_push`, `loki`, `remote_write` only), or
+3. The scenario completes and Sonda flushes the remaining partial batch.
 
 ### No batching (udp)
 
@@ -67,11 +68,6 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
       content_type: "text/plain"
       batch_size: 65536  # 64 KiB -- fewer requests at thousands of events/s
     ```
-
-    !!! info "Roadmap"
-        A `flush_interval` field
-        ([#266](https://github.com/davidban77/sonda/issues/266)) will let a partial batch
-        flush on a wall-clock deadline regardless of buffer fill.
 
 === "remote_write"
 
@@ -116,6 +112,58 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
     network overhead. For debugging and development, use small batches (e.g., `batch_size: 1`
     for http_push) to see data arrive immediately. For load testing, keep the defaults or
     increase them to reduce request volume.
+
+## Time-based flushing
+
+`batch_size` alone has a blind spot: a low-rate scenario. If you generate one log line every 20 seconds and `batch_size` is 5 entries, the buffer takes over a minute and a half to fill -- and nothing reaches the backend until it does. To anyone watching Loki or VictoriaMetrics, that looks like a broken pipeline.
+
+`max_buffer_age` closes that gap. It is a *time* threshold that complements the *size* threshold: a non-empty batch is flushed once it has been buffered longer than `max_buffer_age`, in addition to the existing size-triggered and shutdown flushes. Whichever threshold trips first wins -- the batch can never get larger than `batch_size` or staler than `max_buffer_age`.
+
+`max_buffer_age` is supported by the `http_push`, `loki`, and `remote_write` sinks. It accepts a duration string -- `"5s"`, `"500ms"`, `"2m"` -- and **defaults to `5s`** when omitted, so low-rate scenarios get prompt first delivery with zero configuration.
+
+```yaml title="Low-rate scenario with explicit time threshold"
+version: 2
+
+defaults:
+  rate: 0.05  # one event every 20 seconds
+  encoder:
+    type: json_lines
+
+scenarios:
+  - signal_type: logs
+    name: slow_audit_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "user {user} performed {action}"
+          field_pools:
+            user: ["alice", "bob"]
+            action: ["login", "logout"]
+    sink:
+      type: loki
+      url: "http://localhost:3100"
+      batch_size: 100        # size threshold -- rarely reached at this rate
+      max_buffer_age: "30s"  # time threshold -- flush a partial batch every 30s
+    labels:
+      job: sonda
+      env: dev
+```
+
+### Disabling time-based flushing
+
+Set `max_buffer_age: "0s"` to turn time-based flushing off. The sink reverts to size-and-shutdown-only flushing -- the behavior you get from `batch_size` by itself. This is the opt-out for high-rate streams that fill a batch in well under five seconds anyway and do not need the extra flush path.
+
+```yaml title="Disable time-based flushing for a high-rate stream"
+sink:
+  type: http_push
+  url: "http://localhost:8428/api/v1/import/prometheus"
+  content_type: "text/plain"
+  batch_size: 65536
+  max_buffer_age: "0s"  # size-and-shutdown flushing only
+```
+
+!!! info "The age is checked on write"
+    `max_buffer_age` is evaluated each time an event is written to the sink. If a sink stops receiving writes entirely -- for example during a long scenario `gap` -- a partially-full batch will not flush until the next write arrives or the scenario stops. This is expected: the timer is driven by writes, not by a background clock.
 
 ## Flush on exit
 

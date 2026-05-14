@@ -87,7 +87,8 @@ batch size is reached, then the buffer is flushed as a single POST request.
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Target URL for HTTP POST requests. |
 | `content_type` | string | no | `application/octet-stream` | Value for the `Content-Type` header. |
-| `batch_size` | integer | no | `4096` (4 KiB) | Flush threshold in bytes. Raise for high-rate scenarios. |
+| `batch_size` | integer | no | `4096` (4 KiB) | Size flush threshold in bytes. Raise for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 | `headers` | map | no | none | Extra HTTP headers sent with every request. |
 
 ```yaml title="HTTP push sink"
@@ -146,7 +147,8 @@ HTTP POSTs with the correct protocol headers.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Remote write endpoint URL. |
-| `batch_size` | integer | no | `5` | Flush threshold in number of TimeSeries entries. Raise for high-rate scenarios. |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of TimeSeries entries. Raise for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="Remote write sink"
 encoder:
@@ -368,7 +370,8 @@ labels are used as Loki stream labels in the push API envelope.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Base URL of the Loki instance. |
-| `batch_size` | integer | no | `5` | Flush threshold in number of log entries. Raise for high-rate scenarios. |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of log entries. Raise for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="Loki sink with top-level labels"
 version: 2
