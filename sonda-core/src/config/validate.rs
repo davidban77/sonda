@@ -114,16 +114,15 @@ pub fn parse_delay_duration(s: &str) -> Result<Duration, SondaError> {
     }
 }
 
-/// Parse an optional phase offset string into a [`Duration`].
+/// Parse an optional duration string into a [`Duration`].
 ///
 /// Unlike [`parse_duration`], this function accepts zero values (e.g. `"0s"`)
-/// and returns `None` for them, since a zero offset is semantically equivalent
-/// to no offset.
-pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
-    // Try parse_duration first — it handles non-zero values.
+/// and returns `None` for them, since a zero duration is semantically
+/// equivalent to "disabled" / "no delay".
+pub fn parse_optional_duration(s: &str) -> Result<Option<Duration>, SondaError> {
     match parse_duration(s) {
         Ok(d) => Ok(Some(d)),
-        Err(_) => {
+        Err(e) => {
             // Check if it was rejected because the value is zero.
             // Strip any recognized suffix, then parse the numeric part as f64.
             let trimmed = s.trim();
@@ -135,16 +134,27 @@ pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
                 .unwrap_or("");
             if let Ok(v) = numeric_str.parse::<f64>() {
                 if v == 0.0 {
-                    return Ok(None); // "0s", "0ms", "0m", "0h", "0.0s" all mean no delay
+                    return Ok(None); // "0s", "0ms", "0m", "0h", "0.0s" all mean disabled
                 }
             }
-            Err(SondaError::Config(ConfigError::invalid(format!(
-                "invalid phase_offset {:?}: {}",
-                s,
-                parse_duration(s).unwrap_err()
-            ))))
+            Err(e)
         }
     }
+}
+
+/// Parse an optional phase offset string into a [`Duration`].
+///
+/// Unlike [`parse_duration`], this function accepts zero values (e.g. `"0s"`)
+/// and returns `None` for them, since a zero offset is semantically equivalent
+/// to no offset.
+pub fn parse_phase_offset(s: &str) -> Result<Option<Duration>, SondaError> {
+    parse_optional_duration(s).map_err(|_| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "invalid phase_offset {:?}: {}",
+            s,
+            parse_duration(s).unwrap_err()
+        )))
+    })
 }
 
 /// Validate a single [`CardinalitySpikeConfig`] for semantic correctness.
@@ -946,6 +956,28 @@ mod tests {
     fn parse_delay_duration_rejects_garbage() {
         let result = parse_delay_duration("not_a_duration");
         assert!(result.is_err(), "non-duration string must be rejected");
+    }
+
+    // ---- parse_optional_duration ---------------------------------------------
+
+    #[test]
+    fn parse_optional_duration_positive_value_is_some() {
+        let d = parse_optional_duration("5s").expect("5s must parse");
+        assert_eq!(d, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn parse_optional_duration_zero_is_none() {
+        assert_eq!(parse_optional_duration("0s").expect("0s must parse"), None);
+        assert_eq!(
+            parse_optional_duration("0ms").expect("0ms must parse"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_optional_duration_garbage_returns_err() {
+        assert!(parse_optional_duration("garbage").is_err());
     }
 
     // ---- validate_config: rate validation ------------------------------------

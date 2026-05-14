@@ -25,6 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use rskafka::{
@@ -70,6 +71,11 @@ pub struct KafkaSink {
     runtime: Runtime,
     /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
+    /// Maximum age a non-empty buffer may reach before a time-based flush.
+    /// `Duration::ZERO` disables time-based flushing.
+    max_buffer_age: Duration,
+    /// When the buffer was last published — drives the time-based flush check.
+    last_flush_at: Instant,
 }
 
 /// Build a `rustls::ClientConfig` for TLS connections to Kafka brokers.
@@ -177,6 +183,8 @@ impl KafkaSink {
     /// - `retry_policy` — optional retry policy for transient produce failures.
     /// - `tls_config` — optional TLS configuration for encrypted connections.
     /// - `sasl_config` — optional SASL authentication configuration.
+    /// - `max_buffer_age` — maximum age a non-empty buffer may reach before a
+    ///   time-based flush. `Duration::ZERO` disables time-based flushing.
     ///
     /// # Errors
     ///
@@ -200,6 +208,7 @@ impl KafkaSink {
         retry_policy: Option<RetryPolicy>,
         tls_config: Option<&KafkaTlsConfig>,
         sasl_config: Option<&KafkaSaslConfig>,
+        max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
         // Build a minimal single-threaded tokio runtime. This drives all
         // async rskafka calls without making the Sink trait async.
@@ -300,6 +309,8 @@ impl KafkaSink {
             buffer: Vec::with_capacity(KAFKA_BUFFER_SIZE),
             runtime,
             retry_policy,
+            max_buffer_age,
+            last_flush_at: Instant::now(),
         })
     }
 
@@ -314,6 +325,9 @@ impl KafkaSink {
         if self.buffer.is_empty() {
             return Ok(());
         }
+
+        // Reset on attempt, not success — the buffer is cleared either way below.
+        self.last_flush_at = Instant::now();
 
         // Swap out the buffer for a fresh pre-allocated vec. Using replace
         // avoids an intermediate zero-capacity state that take() would produce.
@@ -371,7 +385,10 @@ impl Sink for KafkaSink {
     /// only if the automatic flush fails.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.buffer.extend_from_slice(data);
-        if self.buffer.len() >= KAFKA_BUFFER_SIZE {
+        let size_reached = self.buffer.len() >= KAFKA_BUFFER_SIZE;
+        let age_reached =
+            !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
+        if size_reached || age_reached {
             self.publish_buffer()?;
         }
         Ok(())
@@ -463,11 +480,39 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_kafka_deserializes_with_max_buffer_age() {
+        let yaml =
+            "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test\nmax_buffer_age: 10s";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match config {
+            SinkConfig::Kafka { max_buffer_age, .. } => {
+                assert_eq!(max_buffer_age.as_deref(), Some("10s"));
+            }
+            other => panic!("expected SinkConfig::Kafka, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_kafka_max_buffer_age_defaults_to_none() {
+        let yaml = "type: kafka\nbrokers: \"127.0.0.1:9092\"\ntopic: sonda-test";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match config {
+            SinkConfig::Kafka { max_buffer_age, .. } => {
+                assert!(max_buffer_age.is_none());
+            }
+            other => panic!("expected SinkConfig::Kafka, got {other:?}"),
+        }
+    }
+
     #[test]
     fn sink_config_kafka_is_cloneable() {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -484,6 +529,7 @@ mod tests {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -509,7 +555,14 @@ mod tests {
     #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
     fn new_with_unreachable_broker_returns_sink_error() {
         // Port 1 is privileged and will always refuse connections.
-        let result = KafkaSink::new("127.0.0.1:1", "sonda-test", None, None, None);
+        let result = KafkaSink::new(
+            "127.0.0.1:1",
+            "sonda-test",
+            None,
+            None,
+            None,
+            Duration::ZERO,
+        );
         match result {
             Err(err) => {
                 let msg = err.to_string();
@@ -526,7 +579,7 @@ mod tests {
     /// attempting any network connection.
     #[test]
     fn new_with_empty_broker_string_returns_error() {
-        let result = KafkaSink::new("", "sonda-test", None, None, None);
+        let result = KafkaSink::new("", "sonda-test", None, None, None, Duration::ZERO);
         match result {
             Err(err) => {
                 let msg = err.to_string();
@@ -543,7 +596,7 @@ mod tests {
     /// entries; this must be caught before any network call.
     #[test]
     fn new_with_whitespace_only_broker_string_returns_error() {
-        let result = KafkaSink::new("  ,  ,  ", "sonda-test", None, None, None);
+        let result = KafkaSink::new("  ,  ,  ", "sonda-test", None, None, None, Duration::ZERO);
         assert!(
             result.is_err(),
             "broker string with only separators must be rejected"

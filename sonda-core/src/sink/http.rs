@@ -5,6 +5,7 @@
 //! the accumulated bytes are sent as a single HTTP POST request.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
@@ -38,6 +39,11 @@ pub struct HttpPushSink {
     batch_size: usize,
     /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
+    /// Maximum age a non-empty batch may reach before a time-based flush.
+    /// `Duration::ZERO` disables time-based flushing.
+    max_buffer_age: Duration,
+    /// When the batch was last sent — drives the time-based flush check.
+    last_flush_at: Instant,
 }
 
 impl HttpPushSink {
@@ -55,6 +61,8 @@ impl HttpPushSink {
     ///   Prometheus remote write.
     /// - `retry_policy` — optional retry policy for transient failures.
     ///   When `None`, errors are returned immediately (no retry).
+    /// - `max_buffer_age` — maximum age a non-empty batch may reach before a
+    ///   time-based flush. `Duration::ZERO` disables time-based flushing.
     ///
     /// # Errors
     ///
@@ -66,6 +74,7 @@ impl HttpPushSink {
         batch_size: usize,
         headers: HashMap<String, String>,
         retry_policy: Option<RetryPolicy>,
+        max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
         // Validate the URL scheme before accepting the config.
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -88,6 +97,8 @@ impl HttpPushSink {
             batch: Vec::with_capacity(batch_size),
             batch_size,
             retry_policy,
+            max_buffer_age,
+            last_flush_at: Instant::now(),
         })
     }
 
@@ -105,6 +116,9 @@ impl HttpPushSink {
         if self.batch.is_empty() {
             return Ok(());
         }
+
+        // Reset on attempt, not success — the batch is cleared either way below.
+        self.last_flush_at = Instant::now();
 
         let result = match &self.retry_policy {
             Some(policy) => {
@@ -233,7 +247,10 @@ impl Sink for HttpPushSink {
     /// fails.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.batch.extend_from_slice(data);
-        if self.batch.len() >= self.batch_size {
+        let size_reached = self.batch.len() >= self.batch_size;
+        let age_reached =
+            !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
+        if size_reached || age_reached {
             self.send_batch()?;
         }
         Ok(())
@@ -325,6 +342,7 @@ mod tests {
             1024,
             HashMap::new(),
             None,
+            Duration::ZERO,
         );
         assert!(result.is_ok(), "http:// URL should be accepted");
     }
@@ -337,6 +355,7 @@ mod tests {
             1024,
             HashMap::new(),
             None,
+            Duration::ZERO,
         );
         assert!(result.is_ok(), "https:// URL should be accepted");
     }
@@ -349,6 +368,7 @@ mod tests {
             1024,
             HashMap::new(),
             None,
+            Duration::ZERO,
         );
         assert!(result.is_err(), "non-http URL must be rejected");
         assert!(
@@ -359,8 +379,14 @@ mod tests {
 
     #[test]
     fn new_with_bare_hostname_returns_sink_error() {
-        let result =
-            HttpPushSink::new("example.com/push", "text/plain", 1024, HashMap::new(), None);
+        let result = HttpPushSink::new(
+            "example.com/push",
+            "text/plain",
+            1024,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        );
         assert!(result.is_err(), "URL without scheme must be rejected");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -370,14 +396,22 @@ mod tests {
 
     #[test]
     fn new_with_empty_url_returns_sink_error() {
-        let result = HttpPushSink::new("", "text/plain", 1024, HashMap::new(), None);
+        let result =
+            HttpPushSink::new("", "text/plain", 1024, HashMap::new(), None, Duration::ZERO);
         assert!(result.is_err(), "empty URL must be rejected");
     }
 
     #[test]
     fn new_error_message_contains_invalid_url() {
         let bad_url = "not-a-url://bad";
-        let result = HttpPushSink::new(bad_url, "text/plain", 1024, HashMap::new(), None);
+        let result = HttpPushSink::new(
+            bad_url,
+            "text/plain",
+            1024,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        );
         let err = result.err().expect("should be Err");
         let msg = err.to_string();
         assert!(
@@ -396,8 +430,15 @@ mod tests {
         // We start a server that would panic if it received a connection.
         let (listener, url) = mock_server_listener();
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 1000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            1000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
 
         // Write 300 bytes total — below the 1000-byte threshold.
         for _ in 0..3 {
@@ -421,8 +462,15 @@ mod tests {
         // Accept exactly one request in a background thread.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 100, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            100,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         // Write exactly batch_size bytes → should auto-flush.
         sink.write(&[b'a'; 100]).expect("write should succeed");
 
@@ -437,8 +485,9 @@ mod tests {
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 50, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink =
+            HttpPushSink::new(&url, "text/plain", 50, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
         // Write 80 bytes → exceeds 50-byte threshold → auto-flush.
         sink.write(&[b'z'; 80]).expect("write should succeed");
 
@@ -456,8 +505,15 @@ mod tests {
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         // Write 42 bytes — well below 10 000-byte threshold.
         sink.write(b"hello flush").expect("write");
         sink.flush().expect("flush should send remaining data");
@@ -475,6 +531,7 @@ mod tests {
             1024,
             HashMap::new(),
             None,
+            Duration::ZERO,
         )
         .expect("construct sink");
         // Empty batch: flush should return Ok without making any network call.
@@ -488,8 +545,15 @@ mod tests {
         // First flush sends data; second flush is a no-op.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(b"data").expect("write");
         sink.flush().expect("first flush");
 
@@ -509,7 +573,8 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
         // batch_size=1 → immediate flush on write.
         let result = sink.write(b"x");
         let _body = handle.join().expect("mock server thread panicked");
@@ -522,7 +587,8 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
         let result = sink.write(b"x");
         let _body = handle.join().expect("mock server thread panicked");
         // 4xx → warn + discard, but NOT an error from the sink's perspective.
@@ -542,7 +608,8 @@ mod tests {
         });
 
         let mut sink =
-            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None).expect("construct sink");
+            HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
+                .expect("construct sink");
         let result = sink.write(b"x");
         handle.join().expect("mock server thread panicked");
         assert!(result.is_err(), "5xx without retry must return Err");
@@ -570,8 +637,15 @@ mod tests {
         })
         .expect("valid retry config");
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), Some(policy))
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            1,
+            HashMap::new(),
+            Some(policy),
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         let result = sink.write(b"x");
         handle.join().expect("mock server thread panicked");
         assert!(result.is_ok(), "5xx + successful retry must return Ok");
@@ -595,8 +669,15 @@ mod tests {
         })
         .expect("valid retry config");
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), Some(policy))
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            1,
+            HashMap::new(),
+            Some(policy),
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         let result = sink.write(b"x");
         handle.join().expect("mock server thread panicked");
         assert!(result.is_err(), "persistent 5xx must return Err");
@@ -614,8 +695,15 @@ mod tests {
         drop(listener);
 
         let url = format!("http://127.0.0.1:{port}/push");
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(b"hello").expect("write buffered ok");
         let result = sink.flush();
         assert!(result.is_err(), "flush to refused port must fail");
@@ -635,8 +723,15 @@ mod tests {
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let payload = b"metric_name{label=\"val\"} 42 1700000000000\n";
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(payload).expect("write");
         sink.flush().expect("flush");
 
@@ -649,8 +744,15 @@ mod tests {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(b"part1").expect("write 1");
         sink.write(b"part2").expect("write 2");
         sink.write(b"part3").expect("write 3");
@@ -658,6 +760,92 @@ mod tests {
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"part1part2part3");
+    }
+
+    // -------------------------------------------------------------------------
+    // Time-based flush
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn time_based_flush_fires_when_buffer_age_exceeded() {
+        let (listener, url) = mock_server_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
+
+        // batch_size large enough that size never triggers; short max_buffer_age.
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            1_000_000,
+            HashMap::new(),
+            None,
+            Duration::from_millis(50),
+        )
+        .expect("construct sink");
+
+        sink.write(b"first").expect("write 1");
+        thread::sleep(Duration::from_millis(200));
+        // Second write is past max_buffer_age → triggers a time-based flush.
+        sink.write(b"second").expect("write 2");
+
+        let body = handle.join().expect("mock server thread panicked");
+        assert_eq!(
+            body, b"firstsecond",
+            "time-based flush must deliver both buffered writes"
+        );
+    }
+
+    #[test]
+    fn zero_max_buffer_age_disables_time_based_flush() {
+        let (listener, url) = mock_server_listener();
+
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            1_000_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
+
+        sink.write(b"first").expect("write 1");
+        thread::sleep(Duration::from_millis(150));
+        sink.write(b"second").expect("write 2");
+
+        // With time-based flush disabled, no request should have arrived.
+        listener.set_nonblocking(true).expect("set non-blocking");
+        assert!(
+            listener.accept().is_err(),
+            "zero max_buffer_age must disable time-based flush"
+        );
+    }
+
+    #[test]
+    fn size_triggered_flush_resets_the_buffer_age_timer() {
+        let (listener, url) = mock_server_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
+
+        // Small batch_size, max_buffer_age comfortably longer than the test runs.
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            4,
+            HashMap::new(),
+            None,
+            Duration::from_secs(60),
+        )
+        .expect("construct sink");
+
+        // Write exactly batch_size bytes → the size trigger fires.
+        sink.write(b"abcd").expect("write fills batch");
+
+        let body = handle.join().expect("mock server thread panicked");
+        assert_eq!(body, b"abcd", "size-triggered flush must deliver the batch");
+
+        // The size flush reset last_flush_at; a subsequent partial-batch write
+        // must NOT immediately time-flush against the (now closed) listener.
+        sink.write(b"e")
+            .expect("partial write after a size flush must not time-flush immediately");
     }
 
     // -------------------------------------------------------------------------
@@ -751,6 +939,7 @@ batch_size: 8192
             url: "http://localhost:9090/push".to_string(),
             content_type: Some("text/plain".to_string()),
             batch_size: Some(1024),
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -770,6 +959,7 @@ batch_size: 8192
             url: "http://127.0.0.1:19998/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -788,6 +978,7 @@ batch_size: 8192
             url: "http://127.0.0.1:19997/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -800,6 +991,7 @@ batch_size: 8192
             url: "not-http://bad".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -816,6 +1008,7 @@ batch_size: 8192
             url,
             content_type: Some("application/octet-stream".to_string()),
             batch_size: Some(10_000),
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -889,8 +1082,15 @@ batch_size: 8192
             "0.1.0".to_string(),
         );
 
-        let mut sink = HttpPushSink::new(&url, "application/x-protobuf", 10_000, custom, None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "application/x-protobuf",
+            10_000,
+            custom,
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(b"test-payload").expect("write");
         sink.flush().expect("flush");
 
@@ -921,8 +1121,15 @@ batch_size: 8192
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
 
-        let mut sink = HttpPushSink::new(&url, "text/plain", 10_000, HashMap::new(), None)
-            .expect("construct sink");
+        let mut sink = HttpPushSink::new(
+            &url,
+            "text/plain",
+            10_000,
+            HashMap::new(),
+            None,
+            Duration::ZERO,
+        )
+        .expect("construct sink");
         sink.write(b"data").expect("write");
         sink.flush().expect("flush");
 
@@ -947,6 +1154,7 @@ batch_size: 8192
             url,
             content_type: Some("application/x-protobuf".to_string()),
             batch_size: Some(10_000),
+            max_buffer_age: None,
             headers: Some(hdr),
             retry: None,
         };

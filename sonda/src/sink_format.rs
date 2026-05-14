@@ -110,6 +110,7 @@ mod tests {
             url: "http://localhost:9090/write".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };

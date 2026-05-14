@@ -152,6 +152,11 @@ pub enum SinkConfig {
         /// Optional flush threshold in bytes. Defaults to 4 KiB if not specified.
         batch_size: Option<usize>,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional extra HTTP headers to send with every POST request.
         ///
         /// When provided, these headers are sent in addition to the `Content-Type`
@@ -198,6 +203,11 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
@@ -231,6 +241,11 @@ pub enum SinkConfig {
 
         /// The Kafka topic name to produce records to.
         topic: String,
+
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
@@ -276,6 +291,11 @@ pub enum SinkConfig {
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
         retry: Option<retry::RetryConfig>,
@@ -311,6 +331,11 @@ pub enum SinkConfig {
         /// Defaults to 100 if not specified.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
@@ -359,6 +384,7 @@ pub fn create_sink(
             url,
             content_type,
             batch_size,
+            max_buffer_age,
             headers,
             retry: retry_cfg,
         } => {
@@ -371,12 +397,20 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h, rp)?))
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
+            Ok(Box::new(http::HttpPushSink::new(
+                url, ct, bs, h, rp, buffer_age,
+            )?))
         }
         #[cfg(feature = "remote-write")]
         SinkConfig::RemoteWrite {
             url,
             batch_size,
+            max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(remote_write::DEFAULT_BATCH_SIZE);
@@ -384,12 +418,20 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs, rp)?))
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
+            Ok(Box::new(remote_write::RemoteWriteSink::new(
+                url, bs, rp, buffer_age,
+            )?))
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka {
             brokers,
             topic,
+            max_buffer_age,
             retry: retry_cfg,
             tls,
             sasl,
@@ -398,18 +440,25 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
             Ok(Box::new(kafka::KafkaSink::new(
                 brokers,
                 topic,
                 rp,
                 tls.as_ref(),
                 sasl.as_ref(),
+                buffer_age,
             )?))
         }
         #[cfg(feature = "http")]
         SinkConfig::Loki {
             url,
             batch_size,
+            max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(loki::DEFAULT_BATCH_SIZE);
@@ -418,11 +467,17 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
             Ok(Box::new(loki::LokiSink::new(
                 url.clone(),
                 loki_labels,
                 bs,
                 rp,
+                buffer_age,
             )?))
         }
         #[cfg(feature = "otlp")]
@@ -430,6 +485,7 @@ pub fn create_sink(
             endpoint,
             signal_type,
             batch_size,
+            max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(otlp_grpc::DEFAULT_BATCH_SIZE);
@@ -452,12 +508,18 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
             Ok(Box::new(otlp_grpc::OtlpGrpcSink::new(
                 endpoint,
                 *signal_type,
                 bs,
                 resource_attrs,
                 rp,
+                buffer_age,
             )?))
         }
         #[cfg(not(feature = "http"))]
@@ -812,6 +874,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -865,6 +928,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -883,6 +947,7 @@ sink:
         let config = SinkConfig::Kafka {
             brokers: String::new(),
             topic: "sonda-test".to_string(),
+            max_buffer_age: None,
             retry: None,
             tls: None,
             sasl: None,
@@ -891,6 +956,24 @@ sink:
         assert!(
             result.is_err(),
             "create_sink should reject an empty broker string"
+        );
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn create_sink_kafka_with_invalid_max_buffer_age_returns_err() {
+        let config = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+            tls: None,
+            sasl: None,
+        };
+        let result = create_sink(&config, None);
+        assert!(
+            result.is_err(),
+            "create_sink should reject an unparseable max_buffer_age before connecting"
         );
     }
 
@@ -989,6 +1072,7 @@ headers: {}
             url: "http://localhost:9090/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: Some(hdr),
             retry: None,
         };
@@ -1011,6 +1095,7 @@ headers: {}
             url: "http://127.0.0.1:19999/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
@@ -1029,6 +1114,7 @@ headers: {}
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         };
         let result = create_sink(&config, None);
