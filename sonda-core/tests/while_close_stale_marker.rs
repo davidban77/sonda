@@ -167,6 +167,7 @@ fn remote_write_emits_stale_marker_on_running_to_paused() {
         SinkConfig::RemoteWrite {
             url: "http://example.invalid/api/v1/write".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         },
         EncoderConfig::RemoteWrite,
@@ -213,6 +214,7 @@ fn snap_to_replaces_stale_marker_with_literal_value() {
         SinkConfig::RemoteWrite {
             url: "http://example.invalid/api/v1/write".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         },
         EncoderConfig::RemoteWrite,
@@ -265,6 +267,7 @@ fn stale_marker_disabled_emits_no_close_sample() {
         SinkConfig::RemoteWrite {
             url: "http://example.invalid/api/v1/write".to_string(),
             batch_size: None,
+            max_buffer_age: None,
             retry: None,
         },
         EncoderConfig::RemoteWrite,
@@ -499,6 +502,7 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,
@@ -597,6 +601,7 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,
@@ -679,6 +684,7 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,
@@ -770,6 +776,7 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,
@@ -855,6 +862,7 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,
@@ -951,6 +959,7 @@ fn shutdown_while_gate_open_emits_stale_marker() {
             sink: SinkConfig::RemoteWrite {
                 url: "http://example.invalid/api/v1/write".to_string(),
                 batch_size: None,
+                max_buffer_age: None,
                 retry: None,
             },
             phase_offset: None,

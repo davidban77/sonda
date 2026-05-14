@@ -289,7 +289,9 @@ fn encoder_http_push_body_matches(#[case] config: EncoderConfig, #[case] ct: &st
     let bytes = encode_event(&config, &test_event());
     let expected = bytes.clone();
     let server = thread::spawn(move || accept_http_ok(&listener));
-    let mut sink = sonda_core::sink::http::HttpPushSink::new(&url, ct, 10_000, HashMap::new(), None).unwrap();
+    let mut sink =
+        sonda_core::sink::http::HttpPushSink::new(&url, ct, 10_000, HashMap::new(), None, Duration::ZERO)
+            .unwrap();
     sink.write(&bytes).unwrap();
     sink.flush().unwrap();
     assert_eq!(server.join().unwrap(), expected);

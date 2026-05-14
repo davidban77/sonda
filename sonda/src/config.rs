@@ -249,6 +249,7 @@ fn build_sink_config(
                         .to_string(),
                     content_type: content_type.map(|s| s.to_string()),
                     batch_size,
+                    max_buffer_age: None,
                     // No --header CLI flag exists; users needing custom headers
                     // must use a YAML scenario file.
                     headers: None,
@@ -271,6 +272,7 @@ fn build_sink_config(
                         .expect("validated: --endpoint required for remote_write")
                         .to_string(),
                     batch_size,
+                    max_buffer_age: None,
                     retry: None,
                 })
             }
@@ -1809,6 +1811,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                     url: url.to_string(),
                     content_type: None,
                     batch_size: None,
+                    max_buffer_age: None,
                     headers: None,
                     retry: None,
                 })
@@ -1846,6 +1849,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 Ok(SinkConfig::RemoteWrite {
                     url: url.to_string(),
                     batch_size: None,
+                    max_buffer_age: None,
                     retry: None,
                 })
             }

@@ -152,6 +152,11 @@ pub enum SinkConfig {
         /// Optional flush threshold in bytes. Defaults to 4 KiB if not specified.
         batch_size: Option<usize>,
 
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
+
         /// Optional extra HTTP headers to send with every POST request.
         ///
         /// When provided, these headers are sent in addition to the `Content-Type`
@@ -197,6 +202,11 @@ pub enum SinkConfig {
         /// not specified.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
+        /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_buffer_age: Option<String>,
 
         /// Optional retry policy for transient failures.
         #[cfg_attr(feature = "config", serde(default))]
@@ -364,6 +374,7 @@ pub fn create_sink(
             url,
             content_type,
             batch_size,
+            max_buffer_age,
             headers,
             retry: retry_cfg,
         } => {
@@ -376,12 +387,20 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(http::HttpPushSink::new(url, ct, bs, h, rp)?))
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
+            Ok(Box::new(http::HttpPushSink::new(
+                url, ct, bs, h, rp, buffer_age,
+            )?))
         }
         #[cfg(feature = "remote-write")]
         SinkConfig::RemoteWrite {
             url,
             batch_size,
+            max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(remote_write::DEFAULT_BATCH_SIZE);
@@ -389,7 +408,14 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(remote_write::RemoteWriteSink::new(url, bs, rp)?))
+            let buffer_age = match max_buffer_age.as_deref() {
+                Some(s) => crate::config::validate::parse_optional_duration(s)?,
+                None => Some(std::time::Duration::from_secs(5)),
+            }
+            .unwrap_or(std::time::Duration::ZERO);
+            Ok(Box::new(remote_write::RemoteWriteSink::new(
+                url, bs, rp, buffer_age,
+            )?))
         }
         #[cfg(feature = "kafka")]
         SinkConfig::Kafka {
@@ -1001,6 +1027,7 @@ headers: {}
             url: "http://localhost:9090/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: Some(hdr),
             retry: None,
         };
@@ -1023,6 +1050,7 @@ headers: {}
             url: "http://127.0.0.1:19999/push".to_string(),
             content_type: None,
             batch_size: None,
+            max_buffer_age: None,
             headers: None,
             retry: None,
         };
