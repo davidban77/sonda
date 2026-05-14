@@ -22,10 +22,10 @@ Sonda has two kinds of batching depending on the sink type:
 | `tcp` | OS-level (`BufWriter`) | ~8 KB (fixed) | -- | bytes |
 | `udp` | None (immediate) | -- | -- | -- |
 | `http_push` | Application-level | 4 KiB (configurable) | `5s` (configurable) | bytes |
-| `kafka` | Application-level | 64 KiB (fixed) | -- | bytes |
+| `kafka` | Application-level | 64 KiB (fixed) | `5s` (configurable) | bytes |
 | `loki` | Application-level | 5 entries (configurable) | `5s` (configurable) | entries |
 | `remote_write` | Application-level | 5 entries (configurable) | `5s` (configurable) | entries |
-| `otlp_grpc` | Application-level | 5 entries (configurable) | -- | entries |
+| `otlp_grpc` | Application-level | 5 entries (configurable) | `5s` (configurable) | entries |
 
 ### OS-level buffering (stdout, file, tcp)
 
@@ -45,7 +45,7 @@ Kafka record, or gRPC call.
 This means data does not appear at the destination until one of these happens:
 
 1. The batch fills up and triggers a size-based flush,
-2. A non-empty batch ages past its time threshold and triggers a [time-based flush](#time-based-flushing) (`http_push`, `loki`, `remote_write` only), or
+2. A non-empty batch ages past its time threshold and triggers a [time-based flush](#time-based-flushing) (all five application-level sinks), or
 3. The scenario completes and Sonda flushes the remaining partial batch.
 
 ### No batching (udp)
@@ -119,7 +119,7 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
 
 `max_buffer_age` closes that gap. It is a *time* threshold that complements the *size* threshold: a non-empty batch is flushed once it has been buffered longer than `max_buffer_age`, in addition to the existing size-triggered and shutdown flushes. Whichever threshold trips first wins -- the batch can never get larger than `batch_size` or staler than `max_buffer_age`.
 
-`max_buffer_age` is supported by the `http_push`, `loki`, and `remote_write` sinks. It accepts a duration string -- `"5s"`, `"500ms"`, `"2m"` -- and **defaults to `5s`** when omitted, so low-rate scenarios get prompt first delivery with zero configuration.
+`max_buffer_age` is supported by all five application-level sinks -- `http_push`, `loki`, `remote_write`, `otlp_grpc`, and `kafka`. It accepts a duration string -- `"5s"`, `"500ms"`, `"2m"` -- and **defaults to `5s`** when omitted, so low-rate scenarios get prompt first delivery with zero configuration.
 
 ```yaml title="Low-rate scenario with explicit time threshold"
 version: 2

@@ -190,6 +190,7 @@ static binary compatibility -- no C dependencies or OpenSSL required.
 |-----------|------|----------|---------|-------------|
 | `brokers` | string | yes | -- | Comma-separated broker addresses (e.g. `"broker1:9092,broker2:9092"`). |
 | `topic` | string | yes | -- | Kafka topic name. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 | `tls` | object | no | none | TLS encryption settings. See [TLS](#kafka-tls). |
 | `sasl` | object | no | none | SASL authentication settings. See [SASL](#kafka-sasl). |
 
@@ -207,10 +208,7 @@ sonda metrics --name cpu --rate 10 --duration 30s \
   --sink kafka --brokers 127.0.0.1:9092 --topic sonda-metrics
 ```
 
-Events are buffered until 64 KiB is accumulated, then published as a single Kafka record to
-partition 0 of the configured topic. Broker-side auto-topic-creation is supported: the sink
-retries metadata lookups, giving the broker time to create the topic if
-`auto.create.topics.enable=true`.
+Events are buffered and published as a single Kafka record to partition 0 of the configured topic. The size threshold is a fixed 64 KiB internal buffer -- it is not user-tunable -- while `max_buffer_age` (default `5s`) is the configurable knob: a non-empty batch is flushed once it has been buffered longer than that. Broker-side auto-topic-creation is supported: the sink retries metadata lookups, giving the broker time to create the topic if `auto.create.topics.enable=true`.
 
 ### TLS { #kafka-tls }
 
@@ -417,7 +415,8 @@ an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends via gRP
 |-----------|------|----------|---------|-------------|
 | `endpoint` | string | yes | -- | gRPC endpoint URL of the OTEL Collector (e.g. `"http://localhost:4317"`). |
 | `signal_type` | string | yes | -- | `"metrics"` or `"logs"` -- must match the scenario signal type. |
-| `batch_size` | integer | no | `5` | Flush threshold in number of data points or log records. Raise for high-rate scenarios. |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of data points or log records. Raise for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="OTLP gRPC sink (metrics)"
 encoder:
