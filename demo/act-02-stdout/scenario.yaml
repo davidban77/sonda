@@ -1,0 +1,48 @@
+# Act 2 — sonda emitting metrics + logs straight to stdout.
+#
+# A single v2 scenario file with two scenarios — one metric, one log — so
+# `sonda run` streams both side-by-side. No backend dependency.
+
+version: 2
+
+defaults:
+  rate: 2
+  duration: 30s
+
+scenarios:
+  - signal_type: metrics
+    name: interface_in_errors
+    encoder:
+      type: prometheus_text
+    sink:
+      type: stdout
+    generator:
+      type: sine
+      amplitude: 5
+      period_secs: 20
+      offset: 10
+    labels:
+      hostname: r1
+      interface: GigabitEthernet0/0
+      job: sonda
+
+  - signal_type: logs
+    name: syslog_link
+    encoder:
+      type: json_lines
+    sink:
+      type: stdout
+    log_generator:
+      type: template
+      templates:
+        - message: "%LINK-3-UPDOWN: Interface GigabitEthernet0/0, changed state to down"
+          severity: warning
+        - message: "%LINK-3-UPDOWN: Interface GigabitEthernet0/0, changed state to up"
+          severity: info
+      severity_weights:
+        warning: 0.4
+        info: 0.6
+      seed: 7
+    labels:
+      hostname: r1
+      app: syslog

@@ -1,0 +1,33 @@
+# Act 3 — Same scenario, sink swapped to Prometheus remote_write.
+#
+# Pushes metrics directly into the local Prometheus instance from the demo
+# stack. The remote_write encoder produces snappy-compressed protobuf
+# TimeSeries; the remote_write sink batches and POSTs to /api/v1/write.
+#
+# Requires the demo stack to be running:
+#   docker compose -f demo/stack/docker-compose.yml up -d
+
+version: 2
+
+defaults:
+  rate: 5
+  duration: 5m
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "${PROMETHEUS_URL:-http://localhost:9090/api/v1/write}"
+    batch_size: 5
+
+scenarios:
+  - signal_type: metrics
+    name: interface_in_errors
+    generator:
+      type: sine
+      amplitude: 5
+      period_secs: 20
+      offset: 10
+    labels:
+      hostname: r1
+      interface: GigabitEthernet0/0
+      job: sonda

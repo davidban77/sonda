@@ -1,0 +1,37 @@
+# Act 5 — Replay a real Grafana export through sonda into local Prometheus.
+#
+# This uses the csv_replay generator with grafana-auto column discovery:
+# sonda parses the "Series joined by time" CSV header, extracts metric
+# names + labels per column, and replays each as its own scenario.
+#
+# Drop the real exported CSV at:
+#   demo/act-05-csv-replay/interface-flaps.csv
+#
+# See CSV-EXPORT-GUIDE.md (demo/) for how to produce that file.
+#
+# Run with:
+#   sonda metrics --scenario demo/act-05-csv-replay/scenario.yaml
+#
+# Or dry-run to inspect what sonda discovered from the CSV header:
+#   sonda metrics --scenario demo/act-05-csv-replay/scenario.yaml --dry-run
+
+version: 2
+
+defaults:
+  rate: 1
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "${PROMETHEUS_URL:-http://localhost:9090/api/v1/write}"
+    batch_size: 5
+
+scenarios:
+  - signal_type: metrics
+    name: interface_flaps_replay
+    generator:
+      type: csv_replay
+      file: demo/act-05-csv-replay/interface-flaps.csv
+    labels:
+      replayed_from: grafana
+      env: demo

@@ -1,0 +1,79 @@
+# Sonda demo stack — Prometheus + Grafana + sonda-server
+#
+# Bring up:
+#   docker compose -f demo/stack/docker-compose.yml up -d
+#
+# Tear down:
+#   docker compose -f demo/stack/docker-compose.yml down -v
+#
+# Endpoints:
+#   Grafana          http://localhost:3000   (anonymous admin, no login)
+#   Prometheus       http://localhost:9090
+#   sonda-server     http://localhost:8080   (POST /scenarios)
+#
+# The Prometheus instance has --web.enable-remote-write-receiver, so sonda's
+# remote_write sink can push to http://localhost:9090/api/v1/write directly.
+# It also scrapes sonda-server's /metrics endpoint for Act 4.
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.11.2
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+      - "--web.listen-address=:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:13.0.1
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  sonda-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../:/demo:ro
+    environment:
+      PROMETHEUS_URL: "http://prometheus:9090/api/v1/write"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/sonda", "metrics", "--name", "healthcheck", "--rate", "1", "--duration", "1ms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  prom-data:

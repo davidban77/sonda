@@ -1,0 +1,32 @@
+# Act 6 — sonda as an observability-pipeline smoke test.
+#
+# Inject a known synthetic heartbeat metric, then verify it lands in
+# Prometheus within a few scrape intervals. If the metric doesn't show up,
+# the pipeline is broken — that's the assertion.
+#
+# Run:
+#   sonda metrics --scenario demo/act-06-smoke-test/scenario.yaml &
+#   ./demo/act-06-smoke-test/verify.sh
+
+version: 2
+
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: "${PROMETHEUS_URL:-http://localhost:9090/api/v1/write}"
+    batch_size: 5
+
+scenarios:
+  - signal_type: metrics
+    name: pipeline_heartbeat
+    generator:
+      type: constant
+      value: 1
+    labels:
+      probe: sonda_smoke
+      check: heartbeat
+      env: demo
