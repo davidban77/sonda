@@ -1,8 +1,26 @@
 # Sink Batching
 
-When you run a Sonda scenario, you might notice that metrics appear in chunks on stdout, or that
-data shows up in VictoriaMetrics in bursts rather than one point at a time. This is batching at
-work -- and it is intentional.
+When you run a Sonda scenario, you might notice that metrics appear in chunks on stdout, or that data shows up in VictoriaMetrics in bursts rather than one point at a time. This is batching at work -- and it is intentional.
+
+## What batching is
+
+A **sink** is where your generated telemetry goes -- your terminal, a file, or a backend like Loki or VictoriaMetrics. Some network sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) are *batching* sinks: instead of making one network call per event, they pile events into a buffer and send them together. One big request beats a thousand tiny ones -- that is the efficiency win.
+
+The moment a batching sink empties its buffer and actually sends the events is called a **flush**. So the question every batching sink has to answer is: *when do I flush?*
+
+## When a sink flushes
+
+A batching sink flushes when any one of these triggers trips -- whichever comes first:
+
+```
+A batch flushes when ANY of these trips (whichever first)
+
+  1. SIZE      -- buffer fills to batch_size
+  2. TIME      -- buffer is older than max_buffer_age
+  3. SHUTDOWN  -- the scenario ends
+```
+
+`batch_size` is the size threshold. `max_buffer_age` is the time threshold. The rest of this page walks through both -- but the short version is: a batch can never get larger than `batch_size`, nor staler than `max_buffer_age`.
 
 ## Why batching exists
 
@@ -117,7 +135,34 @@ Four sinks let you tune the batch threshold via the `batch_size` field in the si
 
 `batch_size` alone has a blind spot: a low-rate scenario. If you generate one log line every 20 seconds and `batch_size` is 5 entries, the buffer takes over a minute and a half to fill -- and nothing reaches the backend until it does. To anyone watching Loki or VictoriaMetrics, that looks like a broken pipeline.
 
+Here is that blind spot as a timeline. The scenario produces one event every ~4 seconds with `batch_size: 5`:
+
+```
+SIZE-ONLY FLUSHING -- buffer flushes only when FULL or at shutdown
+
+ events arrive:   e.....e.....e.....e.....e.....e.....e.....
+ buffer count:    1     2     3     4     5 -FLUSH          ...
+ backend sees:    ........................[5 events arrive]
+                  '------ ~20s of total silence ------'
+                       "is my pipeline broken?"
+```
+
 `max_buffer_age` closes that gap. It is a *time* threshold that complements the *size* threshold: a non-empty batch is flushed once it has been buffered longer than `max_buffer_age`, in addition to the existing size-triggered and shutdown flushes. Whichever threshold trips first wins -- the batch can never get larger than `batch_size` or staler than `max_buffer_age`.
+
+Same scenario, same low event rate, now with `max_buffer_age: 5s`:
+
+```
+WITH max_buffer_age -- buffer also flushes when its contents get older than max_buffer_age
+
+ events arrive:   e.....e.....e.....e.....e.....e.....e.....
+ buffer:          1  2 |     1  2 |     1  2 |     1 ...
+                       'FLUSH     'FLUSH     'FLUSH
+                     (age>5s)   (age>5s)   (age>5s)
+ backend sees:    .....#......#......#......#......#
+                  '-- data every ~5s, not every ~20s --'
+```
+
+The batch never fills to `batch_size` at this rate, so the size trigger never fires -- but the time trigger does. Low-rate scenarios deliver promptly instead of buffering invisibly.
 
 `max_buffer_age` is supported by all five application-level sinks -- `http_push`, `loki`, `remote_write`, `otlp_grpc`, and `kafka`. It accepts a duration string -- `"5s"`, `"500ms"`, `"2m"` -- and **defaults to `5s`** when omitted, so low-rate scenarios get prompt first delivery with zero configuration.
 
