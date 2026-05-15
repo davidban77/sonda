@@ -7,12 +7,6 @@
 [![CI](https://github.com/davidban77/sonda/actions/workflows/ci.yml/badge.svg)](https://github.com/davidban77/sonda/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/sonda.svg)](https://github.com/davidban77/sonda/blob/main/LICENSE-MIT)
 
-!!! tip "New in 1.2.0 -- env-var interpolation in v2 scenarios"
-    Reference `${VAR}` and `${VAR:-default}` directly in scenario YAML. One file
-    runs from your laptop on the defaults and from a containerized `sonda-server`
-    on the overrides -- no `sed`, no per-environment fork. See
-    [Environment variable interpolation](configuration/v2-scenarios.md#environment-variable-interpolation).
-
 ## Install
 
 ```bash
