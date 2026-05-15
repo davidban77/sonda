@@ -502,6 +502,8 @@ Response codes:
 
 ## Self-observability via /stats
 
+External monitors — Kubernetes readiness probes, Prometheus alerts, ops dashboards — read these endpoints to answer one question: is the scenario actually delivering data, or is it silently wedged? `GET /scenarios` ships a precomputed `degraded` flag per scenario for at-a-glance checks, and `GET /scenarios/{id}/stats` returns the raw counters underneath so you can set your own thresholds.
+
 `GET /scenarios/{id}/stats` returns live runner telemetry. The four sink-failure fields let external monitors spot a wedged runner without parsing logs, and you choose the threshold that counts as "degraded" for your environment.
 
 ### `/scenarios` list
@@ -526,7 +528,40 @@ curl -s http://localhost:8080/scenarios | jq .
 
 Each entry carries `id`, `name`, `state`, `elapsed_secs`, and `degraded`. The `state` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`).
 
-`degraded` is the at-a-glance pipeline-health signal: it is `true` when a scenario has had sink failures (`total_sink_failures > 0`) **and** has not had a successful delivery within the last 30 seconds — or has never delivered. Scan the list for `degraded: true` to spot a scenario whose sink is wedged without thresholding the raw stats fields yourself. For a healthy scenario, or one with failures but recent successful deliveries, `degraded` is `false`. To see the underlying counters for any scenario, follow up with `GET /scenarios/{id}/stats`.
+#### The `degraded` field
+
+`degraded` is the at-a-glance pipeline-health signal — one boolean per scenario that tells you whether its sink is delivering. It is `true` when the scenario has had sink failures (`total_sink_failures > 0`) **and** has not had a successful delivery within the last 30 seconds, or has never delivered at all. A healthy scenario, or one that failed earlier but is delivering again, reads `false`.
+
+```text
+curl /scenarios →
+{
+  "scenarios": [
+    { "id": "abc", "name": "loki-prod",   "state": "running", "degraded": false },
+    { "id": "xyz", "name": "loki-broken", "state": "running", "degraded": true  }
+                                                                            ↑ wedged
+  ]
+}
+```
+
+`degraded = (total_sink_failures > 0) AND (no successful delivery in last 30s, or ever)`.
+
+The win is operator ergonomics: one field replaces a multi-step threshold check. Before, you had to pull the raw counters from `/stats` and threshold them yourself:
+
+```bash title="Threshold the raw stats yourself"
+curl -sS http://localhost:8080/scenarios/$ID/stats |
+  jq 'select(.total_sink_failures > 0)
+      | select(.last_successful_write_at == null
+               or (now * 1e9 - .last_successful_write_at) > 30e9)'
+```
+
+Now the server does that work for you, per scenario, on every list request:
+
+```bash title="Scan the list for degraded scenarios"
+curl -sS http://localhost:8080/scenarios |
+  jq '.scenarios[] | select(.degraded)'
+```
+
+That same one-liner works as a Kubernetes readiness probe, a Prometheus alert input, or a Grafana panel query. If you need a different staleness window than the built-in 30 seconds, threshold the raw fields from `GET /scenarios/{id}/stats` yourself — `degraded` is a convenience over the same underlying counters.
 
 ### `/scenarios/{id}/stats`
 
@@ -551,6 +586,38 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
   "last_successful_write_at": 1714694400000000000
 }
 ```
+
+#### What a wedged batching sink looks like
+
+Five sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — pile events into an in-memory buffer and only deliver them in bursts ("flushes"). The other sinks (`stdout`, `file`, `tcp`, `udp`) deliver every event immediately. For the batching group, `total_events` climbs on every *buffered* write, but the delivery-health fields (`last_successful_write_at`, `consecutive_failures`, `total_sink_failures`) only move when a real flush succeeds or fails. That mismatch is the whole reason `/stats` exists: it tells you what's actually landing, not what's queued.
+
+Picture a scenario writing to a Loki backend that has gone unreachable, running under the default [`on_sink_error: warn`](../configuration/v2-scenarios.md#sink-error-policy) policy. Six writes in:
+
+```text
+ write #1   buffer       Ok  →  /stats untouched (only buffered)
+ write #2   buffer       Ok  →  /stats untouched
+ write #3   buffer       Ok  →  /stats untouched
+ write #4   buffer       Ok  →  /stats untouched
+ write #5   buffer+FLUSH Err →  total_sink_failures += 1, consecutive_failures += 1
+ write #6   buffer       Ok  →  /stats untouched
+ ...
+```
+
+`total_events` keeps climbing the whole time — six successful tick results, six increments. But `/stats` tells the honest story:
+
+```json title="curl http://localhost:8080/scenarios/$ID/stats"
+{
+  "total_events": 6,
+  "last_successful_write_at": null,
+  "consecutive_failures": 1,
+  "total_sink_failures": 1,
+  "last_sink_error": "connection refused: http://loki:3100/loki/api/v1/push"
+}
+```
+
+`last_successful_write_at: null` says nothing has *ever* delivered. `consecutive_failures: 1` reflects the one failed flush in this window — buffered writes leave this counter alone; only a failed flush increments it, and only a *successful delivery* resets it to zero. `total_sink_failures: 1` is the same single failure counted as a lifetime total; until the first successful delivery, the two counters stay locked together. Run the scenario longer and both rise in step — once every `max_buffer_age` window (or whenever the batch fills), not on every tick.
+
+This is the shape to look for: rising `total_events`, `last_successful_write_at` stuck at `null` (or stale), `consecutive_failures` non-zero. An operator who sees that pattern knows the backend is unreachable, no matter how high `total_events` climbs. Non-batching sinks deliver synchronously on every write, so for them the delivery-health fields and the event counter always advance together — the wedged-buffer trap doesn't apply.
 
 | Field | Type | Meaning |
 |---|---|---|

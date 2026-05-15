@@ -367,10 +367,17 @@ Key fields to watch:
 
 | Field | What it tells you |
 |-------|-------------------|
-| `total_events` | Running count of emitted events. Should increase steadily. |
+| `total_events` | Running count of emitted events. Should increase steadily. For batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) this counts *buffered* writes, not deliveries — pair it with the fields below to confirm data is actually landing. |
 | `current_rate` | Actual emission rate. Compare against your scenario's `rate`. |
 | `errors` | Error count. Should be 0 for healthy scenarios. |
 | `uptime` | Time since scenario started. Confirms it hasn't restarted. |
+| `last_successful_write_at` | Wall-clock time (Unix nanos) of the most recent successful delivery. `null` means nothing has ever landed; a stale value means the sink is wedged. |
+| `consecutive_failures` | Failure streak since the last successful delivery. Resets to `0` on the next successful flush. Non-zero with a stale `last_successful_write_at` is the wedged-sink signature. |
+| `total_sink_failures` | Lifetime sink-error count. Monotonic. Useful as a Prometheus alert input (`increase(...)[5m]`). |
+
+The full reference for these fields, including the `last_sink_error` text and the `state`/gap/burst flags, lives in [Self-observability via /stats](../deployment/sonda-server.md#self-observability-via-stats).
+
+If you only check one signal across the whole server, check `degraded` on `GET /scenarios` — it combines the three sink-failure fields above into a single boolean per scenario, true when delivery has stalled for more than 30 seconds. The scripted health check below uses it directly.
 
 ### List all scenarios
 
@@ -383,18 +390,27 @@ curl -s http://localhost:8080/scenarios | jq '.[] | {name, status}'
 If a scenario shows `status: "stopped"` unexpectedly, re-submit it.
 
 ??? tip "Scripting a health check"
-    Wrap the stats check in a simple script that alerts you if events stop flowing:
+    Wrap the check in a script that fails loudly when any scenario stops delivering. Read `degraded` from `GET /scenarios` — totalling `total_events` would silently miss a wedged batching sink, because buffered writes still increment the counter while nothing reaches the backend.
 
     ```bash title="check-sonda.sh"
     #!/bin/bash
-    SONDA_URL="http://localhost:8080"
+    set -euo pipefail
+    SONDA_URL="${SONDA_URL:-http://localhost:8080}"
 
-    for id in $(curl -s "$SONDA_URL/scenarios" | jq -r '.[].id'); do
-      events=$(curl -s "$SONDA_URL/scenarios/$id/stats" | jq '.total_events')
-      name=$(curl -s "$SONDA_URL/scenarios/$id" | jq -r '.name')
-      echo "$name ($id): $events events"
-    done
+    # Pull the list once and read the precomputed degraded flag per scenario.
+    bad=$(curl -sS "$SONDA_URL/scenarios" |
+          jq -r '.scenarios[] | select(.degraded) | "\(.name) (\(.id))"')
+
+    if [[ -n "$bad" ]]; then
+      echo "Degraded scenarios:"
+      echo "$bad"
+      exit 1
+    fi
+
+    echo "All scenarios delivering."
     ```
+
+    Exit code `1` makes this drop-in for a Kubernetes readiness probe, a cron alert, or a CI smoke step. If you need the raw counters (per-scenario rate, failure streak, last delivery timestamp) for a richer report, follow up with `GET /scenarios/$id/stats` on each degraded ID.
 
 ---
 
