@@ -19,7 +19,7 @@ values.
 | [`sequence`](#sequence) | Exact `for:` durations, scripted timelines | Whatever you list, tick by tick | `values`, `repeat` |
 | [`step`](#step) | `rate()` and `increase()` testing | Monotonic counter incrementing each tick | `start`, `step_size`, optional `max` |
 | [`spike`](#spike) | Anomaly detection, threshold alerts | Baseline with periodic outlier bursts | `baseline`, `magnitude`, `interval_secs` |
-| [`csv_replay`](#csv_replay) | Bit-for-bit incident reproduction | The recorded values, in order | `file`, `columns` |
+| [`csv_replay`](#csv_replay) | Bit-for-bit incident reproduction | The recorded values, at the recorded cadence | `file`, `timescale`, `default_metric_name` |
 
 For [logs](#log-generators), pick `template` for synthesized messages with field pools
 or `replay` for line-by-line CSV/log-file replay. For latency distributions, see the
@@ -283,22 +283,22 @@ cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
 
 ### csv_replay
 
-Replays numeric values from a CSV file. Use it to reproduce real production metric patterns
-captured from monitoring systems -- including Grafana CSV exports with embedded labels. For a
-step-by-step walkthrough of the Grafana export workflow, see the
-[Grafana CSV Replay](../guides/grafana-csv-replay.md) guide.
+Replays numeric values from a CSV file. Use it to reproduce real production metric patterns captured from monitoring systems -- including Grafana CSV exports with embedded labels. The replay rate is derived from the CSV's column-0 timestamps and the optional `timescale` multiplier, so a 5-minute incident plays back over 5 minutes without manual tuning. For a step-by-step walkthrough of the Grafana export workflow, see the [Grafana CSV Replay](../guides/grafana-csv-replay.md) guide.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file` | string | yes | -- | Path to the CSV file. |
 | `columns` | list | no | -- | Explicit column specs. Each entry: `{index, name}` with optional `labels`. When absent, columns are auto-discovered from the header. |
 | `repeat` | boolean | no | `true` | When true, cycles back to the start. When false, holds the last value. |
+| `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` plays 2x faster, `0.5` plays 2x slower. Must be strictly positive. |
+| `default_metric_name` | string | no | -- | Fallback metric name for auto-discovered columns whose header has labels but no `__name__`. Suffixed with `_<column_index>` when multiple columns share the fallback. |
 
-Header rows are auto-detected: if any non-time field on the first data line is non-numeric,
-the line is treated as a header and skipped.
+Header rows are auto-detected: if any non-time field on the first data line is non-numeric, the line is treated as a header and skipped.
 
-When `columns` is omitted, Sonda reads the CSV header and auto-discovers column names and
-labels. If the CSV has no header (all-numeric first row), you must provide explicit `columns`.
+When `columns` is omitted, Sonda reads the CSV header and auto-discovers column names and labels. If the CSV has no header (all-numeric first row), you must provide explicit `columns`.
+
+!!! warning "Scenario `rate:` is overridden for csv_replay"
+    For `csv_replay`, the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in column 0 of the CSV. Setting `rate:` in YAML has no effect on emission cadence -- run `sonda --verbose --dry-run` to confirm the derived rate or inspect the startup banner. Use `timescale:` to speed up or slow down replay.
 
 === "Auto-discovery (default)"
 
@@ -389,12 +389,11 @@ one per tick.
     |--------|---------|-------------|--------|
     | `__name__` inside braces | `{__name__="up", job="prom"}` | `up` | `job` |
     | Name before braces | `up{job="prom"}` | `up` | `job` |
-    | Labels only | `{job="prom"}` | none | `job` |
+    | Labels only | `{job="prom"}` | from `default_metric_name` | `job` |
     | Plain name | `cpu_percent` | `cpu_percent` | none |
     | Simple word | `prometheus` | `prometheus` | none |
 
-    Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is not
-    compatible with auto-discovery and requires explicit `columns:` instead.
+    Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is supported via the `default_metric_name` field on the generator -- see the [Grafana CSV Replay](../guides/grafana-csv-replay.md#labels-only-headers-default_metric_name) guide.
 
 ## Operational aliases
 

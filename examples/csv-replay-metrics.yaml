@@ -4,6 +4,11 @@
 # models a production incident: normal baseline (~14%), spike to ~95%,
 # sustained high load, then recovery back to baseline.
 #
+# The CSV has 10-second sample intervals across 50 rows (≈500s total).
+# csv_replay derives its emission rate from the CSV timestamps, so the
+# scenario-level `rate:` becomes informational; `duration: 500s` covers
+# the full source span at the derived 0.1/s rate.
+#
 # Run with:
 #   sonda metrics --scenario examples/csv-replay-metrics.yaml
 
@@ -11,7 +16,7 @@ version: 2
 
 defaults:
   rate: 1
-  duration: 60s
+  duration: 500s
   encoder:
     type: prometheus_text
   sink:

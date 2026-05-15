@@ -712,99 +712,193 @@ fn is_csv_header_line(line: &str) -> bool {
     crate::generator::csv_header::is_header_line(line)
 }
 
-/// Expand a [`ScenarioConfig`] that uses multi-column `csv_replay` into N
-/// independent single-column scenarios.
-///
-/// When the `generator` is `CsvReplay` with `columns: Some(specs)`, this
-/// function returns one `ScenarioConfig` per column spec.
-///
-/// When `columns` is `None`, the function auto-discovers columns from the
-/// CSV file header. **Note:** this performs file I/O — it reads the first
-/// line of the CSV file at `generator.file` to detect the header row.
-/// If the first data line is detected as a header (any non-time field is
-/// non-numeric), column specs are built from the parsed header using
-/// [`crate::generator::csv_header`]. If the first line is all numeric
-/// (no header), an error is returned asking the user to provide explicit
-/// `columns`.
-///
-/// Each expanded config has:
-/// - `name` set to the column spec's `name`.
-/// - `generator.column` set to `Some(spec.index)`.
-/// - `generator.columns` set to `None`.
-/// - Per-column labels merged into `base.labels` (column labels override
-///   scenario-level labels on key conflict).
-/// - All other fields (rate, duration, sink, encoder, gaps, bursts,
-///   jitter, etc.) cloned from the parent.
-///
-/// # Errors
-///
-/// Returns [`SondaError::Config`] if:
-/// - `columns` is an empty list.
-/// - `columns` has duplicate indices or names.
-/// - Auto-discovery finds a column with no metric name and no fallback.
-/// - Auto-discovery finds no header row (all-numeric first line).
-pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
-    // Only the CsvReplay variant can have `columns`.
-    let specs = match &config.generator {
-        GeneratorConfig::CsvReplay { columns, file, .. } => {
-            validate_csv_columns(columns)?;
+fn read_csv_first_lines(path: &str, max_lines: usize) -> Result<Vec<String>, SondaError> {
+    use std::io::BufRead;
 
-            if let Some(ref cols) = columns {
-                cols.clone()
-            } else {
-                // Auto-discover columns from the CSV header.
-                let header_line = read_csv_header(file)?;
+    let file = std::fs::File::open(path).map_err(|e| {
+        SondaError::Generator(crate::GeneratorError::FileRead {
+            path: path.to_string(),
+            source: e,
+        })
+    })?;
+    let reader = std::io::BufReader::new(file);
+    let mut out = Vec::with_capacity(max_lines);
 
-                if !is_csv_header_line(&header_line) {
-                    return Err(SondaError::Config(ConfigError::invalid(
-                        "csv_replay: CSV file has no header row (first data line is all numeric); \
-                         provide explicit 'columns' in the config",
-                    )));
-                }
-
-                let parsed = crate::generator::csv_header::parse_header_row(&header_line)?;
-
-                // Skip column 0 (timestamp).
-                let mut auto_specs = Vec::with_capacity(parsed.len().saturating_sub(1));
-                for (i, ph) in parsed.into_iter().enumerate().skip(1) {
-                    let name = ph.metric_name.ok_or_else(|| {
-                        SondaError::Config(ConfigError::invalid(format!(
-                            "csv_replay: column {} has no metric name \
-                             (header has labels only with no __name__)",
-                            i
-                        )))
-                    })?;
-                    let labels = if ph.labels.is_empty() {
-                        None
-                    } else {
-                        Some(ph.labels)
-                    };
-                    auto_specs.push(CsvColumnSpec {
-                        index: i,
-                        name,
-                        labels,
-                    });
-                }
-
-                if auto_specs.is_empty() {
-                    return Err(SondaError::Config(ConfigError::invalid(
-                        "csv_replay: no data columns found after skipping column 0",
-                    )));
-                }
-
-                auto_specs
-            }
+    for line_result in reader.lines() {
+        let line = line_result.map_err(|e| {
+            SondaError::Generator(crate::GeneratorError::FileRead {
+                path: path.to_string(),
+                source: e,
+            })
+        })?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
         }
+        out.push(line);
+        if out.len() >= max_lines {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn parse_csv_timestamp(cell: &str) -> Option<f64> {
+    let v: f64 = cell.trim().parse().ok()?;
+    if !v.is_finite() {
+        return None;
+    }
+    if v > 1e12 {
+        Some(v / 1000.0)
+    } else {
+        Some(v)
+    }
+}
+
+fn compute_csv_delta_seconds(path: &str) -> Result<f64, SondaError> {
+    const MAX_SAMPLE_ROWS: usize = 100;
+
+    let lines = read_csv_first_lines(path, MAX_SAMPLE_ROWS + 1)?;
+    if lines.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: file {:?} has no non-comment, non-empty lines",
+            path
+        ))));
+    }
+
+    let data_lines: &[String] = if is_csv_header_line(&lines[0]) {
+        &lines[1..]
+    } else {
+        &lines[..]
+    };
+
+    let mut timestamps = Vec::with_capacity(data_lines.len());
+    for (row_idx, line) in data_lines.iter().enumerate() {
+        let cell = line.split(',').next().unwrap_or("");
+        let ts = parse_csv_timestamp(cell).ok_or_else(|| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: failed to parse timestamp at data row {}: {:?}",
+                row_idx, cell
+            )))
+        })?;
+        timestamps.push(ts);
+    }
+
+    if timestamps.len() < 2 {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: file {:?} has fewer than 2 data rows; cannot derive replay rate",
+            path
+        ))));
+    }
+
+    let mut deltas = Vec::with_capacity(timestamps.len() - 1);
+    for pair in timestamps.windows(2) {
+        let d = pair[1] - pair[0];
+        if d <= 0.0 {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: non-monotonic timestamps in {:?} \
+                 (row {} value {} <= previous {})",
+                path,
+                deltas.len() + 1,
+                pair[1],
+                pair[0]
+            ))));
+        }
+        deltas.push(d);
+    }
+
+    deltas.sort_by(|a, b| {
+        a.partial_cmp(b)
+            .expect("CSV deltas are finite and positive")
+    });
+    let mid = deltas.len() / 2;
+    let median = if deltas.len() % 2 == 0 {
+        (deltas[mid - 1] + deltas[mid]) / 2.0
+    } else {
+        deltas[mid]
+    };
+
+    if median <= 0.0 || !median.is_finite() {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: derived median Δt is not positive in {:?}",
+            path
+        ))));
+    }
+
+    Ok(median)
+}
+
+/// Expand a `csv_replay` scenario into one config per data column, deriving
+/// `rate` from the CSV's column-0 timestamps (`rate = timescale / median Δt`).
+/// Non-`csv_replay` configs pass through unchanged.
+pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, SondaError> {
+    let (file, columns_field, timescale_opt, default_name_opt) = match &config.generator {
+        GeneratorConfig::CsvReplay {
+            file,
+            columns,
+            timescale,
+            default_metric_name,
+            ..
+        } => (
+            file.clone(),
+            columns.clone(),
+            *timescale,
+            default_metric_name.clone(),
+        ),
         _ => return Ok(vec![config]),
     };
+
+    validate_csv_columns(&columns_field)?;
+    let timescale = validate_csv_timescale(timescale_opt)?;
+
+    let header_line = read_csv_header(&file)?;
+    let has_header = is_csv_header_line(&header_line);
+    let parsed_header = if has_header {
+        Some(crate::generator::csv_header::parse_header_row(
+            &header_line,
+        )?)
+    } else {
+        None
+    };
+
+    let specs = if let Some(cols) = columns_field {
+        merge_header_labels_into_specs(cols, parsed_header.as_deref())
+    } else {
+        let parsed = parsed_header.ok_or_else(|| {
+            SondaError::Config(ConfigError::invalid(
+                "csv_replay: CSV file has no header row (first data line is all numeric); \
+                 provide explicit 'columns' in the config",
+            ))
+        })?;
+        auto_discover_specs(parsed, default_name_opt.as_deref())?
+    };
+
+    let delta = compute_csv_delta_seconds(&file)?;
+    let derived_rate = timescale / delta;
+    let user_rate = config.base.rate;
+    if (user_rate - derived_rate).abs() > 1e-9 {
+        tracing::warn!(
+            scenario = %config.base.name,
+            user_rate,
+            derived_rate,
+            csv_delta_secs = delta,
+            timescale,
+            "csv_replay '{}': overriding rate={} with derived rate={} samples/s (CSV Δt={}s, timescale={})",
+            config.base.name,
+            user_rate,
+            derived_rate,
+            delta,
+            timescale,
+        );
+    }
 
     let expanded = specs
         .into_iter()
         .map(|spec| {
             let mut child = config.clone();
             child.base.name = spec.name;
+            child.base.rate = derived_rate;
 
-            // Merge per-column labels into the child's base labels.
             if let Some(ref col_labels) = spec.labels {
                 let merged = child.base.labels.get_or_insert_with(HashMap::new);
                 for (k, v) in col_labels {
@@ -812,7 +906,6 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
                 }
             }
 
-            // Replace the generator's column/columns fields.
             if let GeneratorConfig::CsvReplay {
                 ref mut column,
                 ref mut columns,
@@ -827,6 +920,124 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
         .collect();
 
     Ok(expanded)
+}
+
+fn validate_csv_timescale(timescale: Option<f64>) -> Result<f64, SondaError> {
+    let ts = timescale.unwrap_or(1.0);
+    if !(ts.is_finite() && ts > 0.0) {
+        return Err(SondaError::Config(ConfigError::invalid(format!(
+            "csv_replay: 'timescale' must be a positive finite number, got {}",
+            ts
+        ))));
+    }
+    Ok(ts)
+}
+
+fn merge_header_labels_into_specs(
+    user_specs: Vec<CsvColumnSpec>,
+    parsed_header: Option<&[crate::generator::csv_header::ParsedColumnHeader]>,
+) -> Vec<CsvColumnSpec> {
+    user_specs
+        .into_iter()
+        .map(|spec| {
+            let header_labels = parsed_header
+                .and_then(|hdr| hdr.get(spec.index))
+                .map(|h| &h.labels);
+            let merged_labels = match (header_labels, spec.labels.as_ref()) {
+                (None, None) => None,
+                (None, Some(user)) => Some(user.clone()),
+                (Some(hdr), None) if hdr.is_empty() => None,
+                (Some(hdr), None) => Some(hdr.clone()),
+                (Some(hdr), Some(user)) => {
+                    let mut out = hdr.clone();
+                    for (k, v) in user {
+                        out.insert(k.clone(), v.clone());
+                    }
+                    Some(out)
+                }
+            };
+            CsvColumnSpec {
+                labels: merged_labels,
+                ..spec
+            }
+        })
+        .collect()
+}
+
+fn auto_discover_specs(
+    parsed: Vec<crate::generator::csv_header::ParsedColumnHeader>,
+    default_metric_name: Option<&str>,
+) -> Result<Vec<CsvColumnSpec>, SondaError> {
+    let nameless: Vec<usize> = parsed
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(_, ph)| ph.metric_name.is_none())
+        .map(|(i, _)| i)
+        .collect();
+    let needs_suffix = nameless.len() > 1;
+
+    let mut specs = Vec::with_capacity(parsed.len().saturating_sub(1));
+    let mut default_derived_indices = Vec::new();
+    let mut explicit_names = std::collections::HashSet::new();
+    for (i, ph) in parsed.into_iter().enumerate().skip(1) {
+        let (name, derived_from_default) = match ph.metric_name {
+            Some(n) => {
+                explicit_names.insert(n.clone());
+                (n, false)
+            }
+            None => {
+                let base = default_metric_name.ok_or_else(|| {
+                    SondaError::Config(ConfigError::invalid(format!(
+                        "csv_replay: column {} has no metric name \
+                         (header has labels only with no __name__); \
+                         set 'default_metric_name' on the generator config",
+                        i
+                    )))
+                })?;
+                let n = if needs_suffix {
+                    format!("{}_{}", base, i)
+                } else {
+                    base.to_string()
+                };
+                (n, true)
+            }
+        };
+        if derived_from_default {
+            default_derived_indices.push(specs.len());
+        }
+        let labels = if ph.labels.is_empty() {
+            None
+        } else {
+            Some(ph.labels)
+        };
+        specs.push(CsvColumnSpec {
+            index: i,
+            name,
+            labels,
+        });
+    }
+
+    if specs.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "csv_replay: no data columns found after skipping column 0",
+        )));
+    }
+
+    for idx in default_derived_indices {
+        let name = &specs[idx].name;
+        if explicit_names.contains(name) {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "csv_replay: default_metric_name produced '{name}' for column {col} \
+                 which collides with an explicitly named column. Rename the \
+                 conflicting __name__ in the CSV header or set a different \
+                 'default_metric_name'.",
+                col = specs[idx].index
+            ))));
+        }
+    }
+
+    Ok(specs)
 }
 
 /// Expand a [`ScenarioEntry`] that uses multi-column `csv_replay`.
@@ -2236,9 +2447,41 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         }
+    }
+
+    fn write_temp_timing_csv(header: &str, data_rows: usize) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        if !header.is_empty() {
+            writeln!(tmp, "{}", header).expect("write header");
+        }
+        for i in 0..data_rows {
+            let ts = 1_700_000_000 + (i as u64) * 10;
+            writeln!(tmp, "{ts},42.5,60.0,80.0,99.0").expect("write row");
+        }
+        tmp.flush().expect("flush");
+        tmp
+    }
+
+    fn set_csv_file(config: &mut ScenarioConfig, path: String) {
+        if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
+            *file = path;
+        }
+    }
+
+    fn config_with_csv(
+        name: &str,
+        columns: Option<Vec<CsvColumnSpec>>,
+    ) -> (ScenarioConfig, tempfile::NamedTempFile) {
+        let tmp = write_temp_timing_csv("Time,cpu,mem,disk,net", 3);
+        let mut config = csv_replay_config(name, columns);
+        set_csv_file(&mut config, tmp.path().to_string_lossy().into_owned());
+        (config, tmp)
     }
 
     // -----------------------------------------------------------------------
@@ -2251,14 +2494,12 @@ mod expand_tests {
     fn auto_discover_from_header_when_no_columns() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time,cpu_usage\n1000,42.5\n").expect("write csv");
+        write!(tmp, "Time,cpu_usage\n1700000000,42.5\n1700000010,43.0\n").expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
         let mut config = csv_replay_config("single_metric", None);
-        if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
-            *file = path;
-        }
+        set_csv_file(&mut config, path);
         let result = expand_scenario(config).expect("must succeed");
         assert_eq!(result.len(), 1, "should auto-discover 1 data column");
         assert_eq!(result[0].name, "cpu_usage");
@@ -2272,14 +2513,12 @@ mod expand_tests {
     fn no_columns_no_header_returns_error() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "1000,42.5\n2000,55.3\n").expect("write csv");
+        write!(tmp, "1700000000,42.5\n1700000010,55.3\n").expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
         let mut config = csv_replay_config("all_numeric", None);
-        if let GeneratorConfig::CsvReplay { ref mut file, .. } = config.generator {
-            *file = path;
-        }
+        set_csv_file(&mut config, path);
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
         assert!(
@@ -2338,7 +2577,11 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
+        let expected_file = match &config.generator {
+            GeneratorConfig::CsvReplay { file, .. } => file.clone(),
+            _ => unreachable!(),
+        };
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 2, "should produce two expanded configs");
@@ -2351,10 +2594,11 @@ mod expand_tests {
                 columns,
                 file,
                 repeat,
+                ..
             } => {
                 assert_eq!(*column, Some(1));
                 assert!(columns.is_none(), "columns must be None after expansion");
-                assert_eq!(file, "data.csv", "file must be inherited");
+                assert_eq!(file, &expected_file, "file must be inherited");
                 assert_eq!(*repeat, Some(true), "repeat must be inherited");
             }
             other => panic!("expected CsvReplay, got {other:?}"),
@@ -2397,7 +2641,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 3);
@@ -2428,14 +2672,18 @@ mod expand_tests {
             name: "metric_a".to_string(),
             labels: None,
         }];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
         let child = &result[0];
 
-        // Schedule fields
-        assert_eq!(child.rate, 10.0, "rate must be inherited");
+        // Schedule fields — rate is overridden by CSV-derived rate.
+        assert!(
+            (child.rate - 0.1).abs() < 1e-9,
+            "rate must be derived from CSV Δt=10s (got {})",
+            child.rate
+        );
         assert_eq!(
             child.duration.as_deref(),
             Some("30s"),
@@ -2466,7 +2714,7 @@ mod expand_tests {
             name: "metric_a".to_string(),
             labels: None,
         }];
-        let mut config = csv_replay_config("parent", Some(cols));
+        let (mut config, _tmp) = config_with_csv("parent", Some(cols));
         config.base.gaps = Some(GapConfig {
             every: "2m".to_string(),
             r#for: "20s".to_string(),
@@ -2639,7 +2887,7 @@ mod expand_tests {
                 labels: None,
             },
         ];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let entry = ScenarioEntry::Metrics(config);
         let result = expand_entry(entry).expect("must succeed");
 
@@ -2714,7 +2962,7 @@ mod expand_tests {
                 ),
             },
         ];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 2);
@@ -2742,7 +2990,7 @@ mod expand_tests {
                     .collect(),
             ),
         }];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
@@ -2762,7 +3010,7 @@ mod expand_tests {
             name: "cpu".to_string(),
             labels: None,
         }];
-        let config = csv_replay_config("parent", Some(cols));
+        let (config, _tmp) = config_with_csv("parent", Some(cols));
         let result = expand_scenario(config).expect("must succeed");
 
         assert_eq!(result.len(), 1);
@@ -2785,7 +3033,11 @@ mod expand_tests {
 
         // Use a simpler header format — format 4 plain names.
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time,cpu_usage,mem_usage\n1000,42.5,60.0\n").expect("write csv");
+        write!(
+            tmp,
+            "Time,cpu_usage,mem_usage\n1700000000,42.5,60.0\n1700000010,43.0,61.0\n"
+        )
+        .expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
@@ -2816,6 +3068,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -2860,7 +3114,7 @@ mod expand_tests {
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
         // Use RFC 4180 quoting: "" inside quoted fields becomes "
         let header = r#""Time","{__name__=""up"", instance=""host1"", job=""prom""}","{__name__=""up"", instance=""host2"", job=""node""}""#;
-        write!(tmp, "{header}\n1704067200000,1,1\n").expect("write csv");
+        write!(tmp, "{header}\n1704067200000,1,1\n1704067210000,1,1\n").expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
@@ -2891,6 +3145,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -2927,7 +3183,7 @@ mod expand_tests {
         use std::io::Write;
 
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "Time\n1000\n").expect("write csv");
+        write!(tmp, "Time\n1700000000\n1700000010\n").expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
@@ -2954,6 +3210,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -2975,7 +3233,7 @@ mod expand_tests {
         use std::io::Write;
 
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        write!(tmp, "metric_name\n42.5\n").expect("write csv");
+        write!(tmp, "metric_name\n42.5\n55.0\n").expect("write csv");
         tmp.flush().expect("flush");
         let path = tmp.path().to_string_lossy().into_owned();
 
@@ -3002,6 +3260,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -3041,6 +3301,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -3084,6 +3346,8 @@ mod expand_tests {
                 column: None,
                 repeat: Some(true),
                 columns: None,
+                timescale: None,
+                default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
         };
@@ -3381,5 +3645,362 @@ distribution:
         let result = expand_entry(entry).expect("must succeed");
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], ScenarioEntry::Summary(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // rate-derivation tests
+    // -----------------------------------------------------------------------
+
+    fn write_two_col_csv(rows: &[(u64, f64)]) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,cpu_usage").expect("write header");
+        for (ts, v) in rows {
+            writeln!(tmp, "{ts},{v}").expect("write row");
+        }
+        tmp.flush().expect("flush");
+        tmp
+    }
+
+    fn build_csv_replay_scenario(
+        file: String,
+        rate: f64,
+        timescale: Option<f64>,
+        default_metric_name: Option<String>,
+    ) -> ScenarioConfig {
+        ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "ts_test".to_string(),
+                rate,
+                duration: Some("60s".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                jitter: None,
+                jitter_seed: None,
+                dynamic_labels: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::CsvReplay {
+                file,
+                column: None,
+                repeat: Some(true),
+                columns: None,
+                timescale,
+                default_metric_name,
+            },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+        }
+    }
+
+    #[test]
+    fn rate_derived_from_csv_ten_second_steps_yields_point_one() {
+        let tmp = write_two_col_csv(&[
+            (1_700_000_000, 1.0),
+            (1_700_000_010, 2.0),
+            (1_700_000_020, 3.0),
+        ]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, None, None);
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert!(
+            (result[0].rate - 0.1).abs() < 1e-9,
+            "expected rate 0.1, got {}",
+            result[0].rate
+        );
+    }
+
+    #[test]
+    fn rate_derived_with_timescale_two_yields_point_two() {
+        let tmp = write_two_col_csv(&[
+            (1_700_000_000, 1.0),
+            (1_700_000_010, 2.0),
+            (1_700_000_020, 3.0),
+        ]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, Some(2.0), None);
+        let result = expand_scenario(config).expect("must succeed");
+        assert!(
+            (result[0].rate - 0.2).abs() < 1e-9,
+            "expected rate 0.2 (2x speed), got {}",
+            result[0].rate
+        );
+    }
+
+    #[test]
+    fn rate_derived_with_timescale_half_yields_point_zero_five() {
+        let tmp = write_two_col_csv(&[
+            (1_700_000_000, 1.0),
+            (1_700_000_010, 2.0),
+            (1_700_000_020, 3.0),
+        ]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, Some(0.5), None);
+        let result = expand_scenario(config).expect("must succeed");
+        assert!(
+            (result[0].rate - 0.05).abs() < 1e-9,
+            "expected rate 0.05 (half speed), got {}",
+            result[0].rate
+        );
+    }
+
+    #[test]
+    fn epoch_milliseconds_heuristic_treats_values_above_threshold_as_ms() {
+        let tmp = write_two_col_csv(&[
+            (1_700_000_000_000, 1.0),
+            (1_700_000_010_000, 2.0),
+            (1_700_000_020_000, 3.0),
+        ]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, None, None);
+        let result = expand_scenario(config).expect("must succeed");
+        assert!(
+            (result[0].rate - 0.1).abs() < 1e-9,
+            "ms epoch should yield 0.1 (10s Δt), got {}",
+            result[0].rate
+        );
+    }
+
+    #[test]
+    fn non_monotonic_timestamps_return_clear_error() {
+        let tmp = write_two_col_csv(&[(1_700_000_010, 1.0), (1_700_000_000, 2.0)]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, None, None);
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-monotonic"),
+            "error should mention non-monotonic, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn single_data_row_returns_clear_error() {
+        let tmp = write_two_col_csv(&[(1_700_000_000, 1.0)]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, None, None);
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fewer than 2 data rows"),
+            "error should mention min rows, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn timescale_zero_returns_validation_error() {
+        let tmp = write_two_col_csv(&[(1_700_000_000, 1.0), (1_700_000_010, 2.0)]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, Some(0.0), None);
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("timescale"),
+            "error should mention timescale, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn timescale_negative_returns_validation_error() {
+        let tmp = write_two_col_csv(&[(1_700_000_000, 1.0), (1_700_000_010, 2.0)]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 1.0, Some(-1.0), None);
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("timescale"),
+            "error should mention timescale, got: {msg}"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn user_rate_override_emits_warning() {
+        let tmp = write_two_col_csv(&[(1_700_000_000, 1.0), (1_700_000_010, 2.0)]);
+        let path = tmp.path().to_string_lossy().into_owned();
+        let config = build_csv_replay_scenario(path, 5.0, None, None);
+        let result = expand_scenario(config).expect("must succeed");
+        assert!(
+            (result[0].rate - 0.1).abs() < 1e-9,
+            "rate should be derived (0.1), got {}",
+            result[0].rate
+        );
+        assert!(
+            logs_contain("overriding rate"),
+            "tracing warn should contain 'overriding rate'"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // default-metric-name fallback tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn default_metric_name_used_when_header_lacks_name_single_column() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,{{instance=\"prod-01\"}}").expect("write header");
+        writeln!(tmp, "1700000000,42.5").expect("write row");
+        writeln!(tmp, "1700000010,43.0").expect("write row");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let config = build_csv_replay_scenario(path, 1.0, None, Some("node_cpu".to_string()));
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "node_cpu");
+        let labels = result[0].labels.as_ref().expect("labels must exist");
+        assert_eq!(labels.get("instance").map(String::as_str), Some("prod-01"));
+    }
+
+    #[test]
+    fn default_metric_name_suffixes_index_when_multiple_columns_lack_name() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(
+            tmp,
+            "Time,{{instance=\"prod-01\"}},{{instance=\"prod-02\"}}"
+        )
+        .expect("write header");
+        writeln!(tmp, "1700000000,42.5,55.0").expect("write row");
+        writeln!(tmp, "1700000010,43.0,56.0").expect("write row");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let config = build_csv_replay_scenario(path, 1.0, None, Some("node_cpu".to_string()));
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "node_cpu_1");
+        assert_eq!(result[1].name, "node_cpu_2");
+
+        let labels0 = result[0].labels.as_ref().expect("labels must exist");
+        assert_eq!(labels0.get("instance").map(String::as_str), Some("prod-01"));
+        let labels1 = result[1].labels.as_ref().expect("labels must exist");
+        assert_eq!(labels1.get("instance").map(String::as_str), Some("prod-02"));
+    }
+
+    #[test]
+    fn missing_default_metric_name_still_errors_when_header_lacks_name() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,{{instance=\"prod-01\"}}").expect("write header");
+        writeln!(tmp, "1700000000,42.5").expect("write row");
+        writeln!(tmp, "1700000010,43.0").expect("write row");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let config = build_csv_replay_scenario(path, 1.0, None, None);
+        let err = expand_scenario(config).expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("default_metric_name"),
+            "error should hint at default_metric_name, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // header-label merge tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn explicit_columns_merge_header_labels_with_user_spec_labels() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, r#""Time","{{instance=""prod-01"", job=""node""}}""#).expect("write header");
+        writeln!(tmp, "1700000000,42.5").expect("write row");
+        writeln!(tmp, "1700000010,43.0").expect("write row");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let cols = vec![CsvColumnSpec {
+            index: 1,
+            name: "cpu".to_string(),
+            labels: Some(
+                [("site".to_string(), "us".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        }];
+        let mut config = build_csv_replay_scenario(path, 1.0, None, None);
+        if let GeneratorConfig::CsvReplay {
+            ref mut columns, ..
+        } = config.generator
+        {
+            *columns = Some(cols);
+        }
+
+        let result = expand_scenario(config).expect("must succeed");
+        assert_eq!(result.len(), 1);
+        let labels = result[0].labels.as_ref().expect("labels must exist");
+        assert_eq!(labels.get("instance").map(String::as_str), Some("prod-01"));
+        assert_eq!(labels.get("job").map(String::as_str), Some("node"));
+        assert_eq!(labels.get("site").map(String::as_str), Some("us"));
+    }
+
+    #[test]
+    fn explicit_user_spec_labels_override_header_labels_on_key_conflict() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        writeln!(tmp, "Time,{{instance=\"prod-01\"}}").expect("write header");
+        writeln!(tmp, "1700000000,42.5").expect("write row");
+        writeln!(tmp, "1700000010,43.0").expect("write row");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let cols = vec![CsvColumnSpec {
+            index: 1,
+            name: "cpu".to_string(),
+            labels: Some(
+                [("instance".to_string(), "user-override".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+        }];
+        let mut config = build_csv_replay_scenario(path, 1.0, None, None);
+        if let GeneratorConfig::CsvReplay {
+            ref mut columns, ..
+        } = config.generator
+        {
+            *columns = Some(cols);
+        }
+
+        let result = expand_scenario(config).expect("must succeed");
+        let labels = result[0].labels.as_ref().expect("labels must exist");
+        assert_eq!(
+            labels.get("instance").map(String::as_str),
+            Some("user-override")
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn timescale_field_deserializes_from_yaml() {
+        let yaml = r#"
+name: ts
+rate: 1
+generator:
+  type: csv_replay
+  file: data.csv
+  timescale: 2.5
+  default_metric_name: my_metric
+"#;
+        let config: ScenarioConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match &config.generator {
+            GeneratorConfig::CsvReplay {
+                timescale,
+                default_metric_name,
+                ..
+            } => {
+                assert_eq!(*timescale, Some(2.5));
+                assert_eq!(default_metric_name.as_deref(), Some("my_metric"));
+            }
+            other => panic!("expected CsvReplay variant, got {other:?}"),
+        }
     }
 }

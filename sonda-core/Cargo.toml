@@ -24,6 +24,7 @@ serde = { workspace = true }
 serde_yaml_ng = { workspace = true, optional = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tracing = "0.1"
 ureq = { workspace = true, optional = true }
 rskafka = { version = "0.6.0", default-features = false, features = ["transport-tls"], optional = true }
 tokio = { version = "1", features = ["rt", "net", "time", "macros"], optional = true }
@@ -42,6 +43,7 @@ tempfile = "3"
 insta = { workspace = true, features = ["filters"] }
 rstest = { workspace = true }
 criterion = { version = "0.5", default-features = false }
+tracing-test = "0.2"
 
 [[bench]]
 name = "while_steady_state"
