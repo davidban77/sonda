@@ -66,14 +66,13 @@ A scenario looks alive (the process is running, no error in the foreground) but 
 
     See [Self-observability via /stats](../deployment/sonda-server.md#self-observability-via-stats).
 
-- **Threshold the raw fields for monitoring** -- to flag a scenario as degraded for an alert or readiness probe, query its `/stats` and combine `total_sink_failures > 0` with a staleness check on `last_successful_write_at`. You pick the window that fits your rate and tolerance for transient blips:
+- **Use the `degraded` field for monitoring** -- `GET /scenarios` ships a precomputed `degraded: bool` per scenario, true when the scenario has had sink failures and has not delivered in the last 30 seconds. Use it directly for a readiness probe or alert:
 
     ```bash
-    curl -sS http://localhost:8080/scenarios/$ID/stats |
-      jq 'select(.total_sink_failures > 0 and (.last_successful_write_at == null or (now*1e9 - .last_successful_write_at) > 30e9))'
+    curl -sS http://localhost:8080/scenarios | jq '.scenarios[] | select(.degraded)'
     ```
 
-    A non-empty result means the scenario has stopped delivering by your definition. The same expression works as a Kubernetes readiness probe or a Prometheus alert input.
+    A non-empty result means at least one scenario has stopped delivering. The same expression works as a Kubernetes readiness probe or a Prometheus alert input. If you need a different staleness window than 30 seconds, you can still threshold the raw fields from the per-scenario `/stats` endpoint -- combine `total_sink_failures > 0` with your own staleness check on `last_successful_write_at`.
 
 The recovery is the default behavior: under `on_sink_error: warn`, the runner keeps ticking while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances, so any threshold you set clears automatically. If you want a sink failure to hard-fail the run instead, set `on_sink_error: fail` -- see [Sink-error policy](../configuration/v2-scenarios.md#sink-error-policy).
 

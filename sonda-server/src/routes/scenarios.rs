@@ -19,7 +19,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -76,6 +76,8 @@ pub struct ScenarioSummary {
     /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
     pub state: String,
     pub elapsed_secs: f64,
+    /// Whether the scenario has sink failures and no recent successful delivery.
+    pub degraded: bool,
 }
 
 /// Response body for `GET /scenarios`.
@@ -571,6 +573,11 @@ pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoRe
         .read()
         .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
 
+    let now_unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
     let summaries: Vec<ScenarioSummary> = scenarios
         .iter()
         .map(|(id, handle)| {
@@ -580,6 +587,7 @@ pub async fn list_scenarios(State(state): State<AppState>) -> Result<impl IntoRe
                 name: handle.name.clone(),
                 state: state_string(&snap).to_string(),
                 elapsed_secs: handle.elapsed().as_secs_f64(),
+                degraded: snap.is_degraded(now_unix_nanos),
             }
         })
         .collect();
@@ -1128,6 +1136,33 @@ scenarios:
             entry["elapsed_secs"].is_f64(),
             "elapsed_secs must be a number"
         );
+        assert!(entry["degraded"].is_boolean(), "degraded must be a boolean");
+    }
+
+    /// A scenario with no sink failures reports degraded=false in the list.
+    #[tokio::test]
+    async fn list_scenarios_degraded_false_for_healthy_scenario() {
+        let h = make_handle(
+            "id-healthy",
+            "healthy_test",
+            1000,
+            Duration::from_millis(50),
+        );
+        let app = router_with_handles(vec![h]);
+
+        let req = Request::builder()
+            .uri("/scenarios")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = body_json(resp).await;
+        let entry = &body["scenarios"][0];
+
+        assert_eq!(
+            entry["degraded"], false,
+            "a scenario with no sink failures must report degraded=false"
+        );
     }
 
     // ---- GET /scenarios/{id}: correct name, status, elapsed -------------------
@@ -1437,12 +1472,14 @@ scenarios:
             name: "test".to_string(),
             state: "running".to_string(),
             elapsed_secs: 1.5,
+            degraded: false,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["id"], "abc");
         assert_eq!(json["name"], "test");
         assert_eq!(json["state"], "running");
         assert_eq!(json["elapsed_secs"], 1.5);
+        assert_eq!(json["degraded"], false);
     }
 
     /// ScenarioDetail serializes with nested stats object.

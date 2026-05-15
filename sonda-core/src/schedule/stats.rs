@@ -12,6 +12,10 @@ use crate::model::metric::MetricEvent;
 /// The buffer is a circular deque: when full, the oldest event is evicted.
 pub const MAX_RECENT_METRICS: usize = 100;
 
+/// How long since the last successful delivery before a failing scenario is
+/// considered degraded, in nanoseconds (30 seconds).
+pub const DEGRADED_STALENESS_NANOS: u64 = 30 * 1_000_000_000;
+
 /// Lifecycle position of a scenario, surfaced for `while:`-gated runs.
 ///
 /// `Pending` covers the pre-`after:` window for chained scenarios; `Running`
@@ -93,6 +97,21 @@ impl ScenarioStats {
     /// oldest-first.
     pub fn drain_recent_metrics(&mut self) -> Vec<MetricEvent> {
         self.recent_metrics.drain(..).collect()
+    }
+
+    /// Whether the scenario looks unhealthy. Returns `true` only when the
+    /// scenario has at least one lifetime sink failure AND there is no
+    /// recent successful delivery (within [`DEGRADED_STALENESS_NANOS`]). A
+    /// scenario that failed once but is now delivering reads `false`.
+    /// `now_unix_nanos` is the current time as Unix nanoseconds.
+    pub fn is_degraded(&self, now_unix_nanos: u64) -> bool {
+        if self.total_sink_failures == 0 {
+            return false;
+        }
+        match self.last_successful_write_at {
+            None => true,
+            Some(last) => now_unix_nanos.saturating_sub(last) > DEGRADED_STALENESS_NANOS,
+        }
     }
 }
 
@@ -473,5 +492,61 @@ mod tests {
             !json.contains("recent_metrics"),
             "recent_metrics must not appear in JSON output (serde skip): {json}"
         );
+    }
+
+    // ---- is_degraded --------------------------------------------------------
+
+    #[test]
+    fn is_degraded_false_when_no_sink_failures() {
+        let s = ScenarioStats {
+            total_sink_failures: 0,
+            last_successful_write_at: None,
+            ..Default::default()
+        };
+        assert!(!s.is_degraded(0));
+        assert!(!s.is_degraded(u64::MAX));
+    }
+
+    #[test]
+    fn is_degraded_false_with_failures_but_recent_delivery() {
+        let now = 1_000_000_000_000_000;
+        let s = ScenarioStats {
+            total_sink_failures: 5,
+            last_successful_write_at: Some(now - 1_000_000_000),
+            ..Default::default()
+        };
+        assert!(!s.is_degraded(now));
+    }
+
+    #[test]
+    fn is_degraded_true_with_failures_and_stale_delivery() {
+        let now = 1_000_000_000_000_000;
+        let s = ScenarioStats {
+            total_sink_failures: 5,
+            last_successful_write_at: Some(now - DEGRADED_STALENESS_NANOS - 1),
+            ..Default::default()
+        };
+        assert!(s.is_degraded(now));
+    }
+
+    #[test]
+    fn is_degraded_true_with_failures_and_no_delivery_ever() {
+        let s = ScenarioStats {
+            total_sink_failures: 1,
+            last_successful_write_at: None,
+            ..Default::default()
+        };
+        assert!(s.is_degraded(1_000_000_000_000_000));
+    }
+
+    #[test]
+    fn is_degraded_false_under_clock_skew() {
+        let last = 1_000_000_000_000_000;
+        let s = ScenarioStats {
+            total_sink_failures: 5,
+            last_successful_write_at: Some(last),
+            ..Default::default()
+        };
+        assert!(!s.is_degraded(last - 1_000_000_000));
     }
 }

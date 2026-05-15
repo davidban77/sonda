@@ -517,13 +517,16 @@ curl -s http://localhost:8080/scenarios | jq .
       "id": "a1b2c3d4-...",
       "name": "noisy_logs",
       "state": "running",
-      "elapsed_secs": 184.2
+      "elapsed_secs": 184.2,
+      "degraded": false
     }
   ]
 }
 ```
 
-Each entry carries `id`, `name`, `state`, and `elapsed_secs`. The `state` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`). To see sink health, follow up with `GET /scenarios/{id}/stats` for the scenario you care about.
+Each entry carries `id`, `name`, `state`, `elapsed_secs`, and `degraded`. The `state` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`).
+
+`degraded` is the at-a-glance pipeline-health signal: it is `true` when a scenario has had sink failures (`total_sink_failures > 0`) **and** has not had a successful delivery within the last 30 seconds — or has never delivered. Scan the list for `degraded: true` to spot a scenario whose sink is wedged without thresholding the raw stats fields yourself. For a healthy scenario, or one with failures but recent successful deliveries, `degraded` is `false`. To see the underlying counters for any scenario, follow up with `GET /scenarios/{id}/stats`.
 
 ### `/scenarios/{id}/stats`
 
@@ -560,10 +563,13 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 | `state` | string | One of `pending`, `running`, `paused`, `finished`. See the [`while:` lifecycle diagram](../configuration/v2-scenarios.md#lifecycle-states). |
 | `in_gap` | bool | `true` while a [gap window](../configuration/scenario-fields.md#gap-window) is suppressing output. |
 | `in_burst` | bool | `true` while a [burst window](../configuration/scenario-fields.md#burst-window) is elevating the rate. |
-| `consecutive_failures` | integer | Sink errors observed since the most recent successful write. Resets to `0` on the next successful write. |
+| `consecutive_failures` | integer | Sink errors observed since the most recent successful *delivery*. Resets to `0` on the next delivery. |
 | `total_sink_failures` | integer | Lifetime sink-error count. Monotonic. |
 | `last_sink_error` | string \| null | Text of the most recent sink error, or `null` if none has been observed. |
-| `last_successful_write_at` | integer \| null | Wall-clock time of the most recent successful write, expressed as Unix nanoseconds. `null` until the first write succeeds. |
+| `last_successful_write_at` | integer \| null | Wall-clock time of the most recent successful *delivery*, expressed as Unix nanoseconds. `null` until the first delivery succeeds. |
+
+!!! info "Delivery-accurate, not buffer-accurate, for batching sinks"
+    The batching sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — buffer events and flush them to the backend in batches. `last_successful_write_at` and `consecutive_failures` track actual *delivery* to the destination, not buffering: `last_successful_write_at` advances only when a write triggers a successful flush, and a write that merely buffers neither advances it nor resets `consecutive_failures`. So a batching sink that is buffering but failing to reach its backend shows a *stale* `last_successful_write_at` and a *non-zero* `consecutive_failures` — the honest signal that nothing is landing. Non-batching sinks (`stdout`, `file`, `tcp`, `udp`) deliver synchronously on every write, so the two readings always reflect the latest write.
 
 The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/v2-scenarios.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
 
@@ -574,16 +580,15 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
     Earlier Sonda releases reported only `running`, `paused`, and `finished` on `/scenarios/{id}/stats`. The `pending` value is new and arrives when a scenario is waiting on `after:` or on the first eligible upstream tick of a `while:` gate. Before rolling out, grep your Prometheus recording rules and Grafana dashboards for label matchers like `state=~"running|paused|finished"` -- exhaustive enumerations silently drop scenarios in `pending`. Either add `pending` to the alternation (`state=~"pending|running|paused|finished"`) or rewrite the matcher as a negation (`state!="finished"`) so new lifecycle values surface without another patch.
 
 !!! tip "Detecting a wedged sink"
-    Compute "degraded" yourself by thresholding `total_sink_failures` and the staleness of `last_successful_write_at`. Pick a staleness window that fits your scenario's rate and your tolerance for transient blips:
+    To spot a scenario whose sink is wedged, read the `degraded` field on the [`GET /scenarios`](#scenarios-list) list response — it is `true` when a scenario has had sink failures and no successful delivery in the last 30 seconds:
 
     ```bash
-    # Flag a scenario as degraded when sink failures have happened and
-    # no write has succeeded in the last 30 seconds:
-    curl -sS http://localhost:8080/scenarios/$ID/stats |
-      jq 'select(.total_sink_failures > 0 and (.last_successful_write_at == null or (now*1e9 - .last_successful_write_at) > 30e9))'
+    # List the IDs of every degraded scenario:
+    curl -sS http://localhost:8080/scenarios |
+      jq -r '.scenarios[] | select(.degraded) | .id'
     ```
 
-    A non-empty result means the scenario is degraded by your definition. Wire the same expression into a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel — the operator owns the threshold.
+    Wire that into a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel. If you need a different staleness window than the built-in 30 seconds, threshold `total_sink_failures` and the staleness of `last_successful_write_at` from this endpoint yourself.
 
 ## Scrape Integration
 

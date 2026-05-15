@@ -166,6 +166,56 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
 }
 
 #[test]
+fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
+    // Bind then drop a listener so the port is guaranteed free — every flush
+    // against it will fail to connect.
+    let dead_url = {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local addr").port();
+        format!("http://127.0.0.1:{port}")
+    };
+
+    let entry = build_log_entry(
+        "warn_dead_url",
+        SinkConfig::Loki {
+            url: dead_url,
+            batch_size: Some(500),
+            max_buffer_age: Some("250ms".to_string()),
+            retry: None,
+        },
+        OnSinkError::Warn,
+    );
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let mut handle = launch_scenario(
+        "warn-dead-url".to_string(),
+        entry,
+        Arc::clone(&shutdown),
+        None,
+    )
+    .expect("launch must succeed");
+
+    handle.join(Some(Duration::from_secs(3))).expect("join Ok");
+
+    let snap = handle.stats_snapshot();
+    assert!(
+        snap.total_sink_failures > 0,
+        "flushes against a dead URL must record sink failures, got {}",
+        snap.total_sink_failures
+    );
+    assert!(
+        snap.last_successful_write_at.is_none(),
+        "no write ever delivered — buffered writes must not advance last_successful_write_at, got {:?}",
+        snap.last_successful_write_at
+    );
+    assert!(
+        snap.consecutive_failures > 0,
+        "a buffered write must not reset consecutive_failures, got {}",
+        snap.consecutive_failures
+    );
+}
+
+#[test]
 fn fail_policy_exits_thread_with_sink_error() {
     let (listener, url) = mock_loki_listener();
     let stop = Arc::new(AtomicBool::new(false));
