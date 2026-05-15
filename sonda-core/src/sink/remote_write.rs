@@ -59,6 +59,8 @@ pub struct RemoteWriteSink {
     max_buffer_age: Duration,
     /// When the batch was last sent — drives the time-based flush check.
     last_flush_at: Instant,
+    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
+    last_write_delivered: bool,
 }
 
 impl RemoteWriteSink {
@@ -102,6 +104,7 @@ impl RemoteWriteSink {
             retry_policy,
             max_buffer_age,
             last_flush_at: Instant::now(),
+            last_write_delivered: false,
         })
     }
 
@@ -235,9 +238,11 @@ impl Sink for RemoteWriteSink {
         let size_reached = self.batch.len() >= self.batch_size;
         let age_reached =
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
-        if size_reached || age_reached {
+        let should_flush = size_reached || age_reached;
+        if should_flush {
             self.send_batch()?;
         }
+        self.last_write_delivered = should_flush;
 
         Ok(())
     }
@@ -249,6 +254,10 @@ impl Sink for RemoteWriteSink {
     /// returns `Ok(())` immediately if the batch is empty.
     fn flush(&mut self) -> Result<(), SondaError> {
         self.send_batch()
+    }
+
+    fn last_write_delivered(&self) -> bool {
+        self.last_write_delivered
     }
 }
 
@@ -385,6 +394,42 @@ mod tests {
         let body = handle.join().expect("mock server thread panicked");
         let request = decode_write_request(&body);
         assert_eq!(request.timeseries.len(), 1, "flush must deliver the batch");
+    }
+
+    // -------------------------------------------------------------------------
+    // last_write_delivered — buffered vs flushed
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn last_write_delivered_is_false_when_write_only_buffers() {
+        let (listener, url) = mock_server_listener();
+
+        let mut sink =
+            RemoteWriteSink::new(&url, 100, None, Duration::ZERO).expect("construct sink");
+        sink.write(&encode_one("cpu", 1.0)).expect("write buffers");
+
+        assert!(
+            !sink.last_write_delivered(),
+            "a write that only buffers must report last_write_delivered() == false"
+        );
+        listener.set_nonblocking(true).expect("set non-blocking");
+        assert!(listener.accept().is_err(), "no flush should have fired");
+    }
+
+    #[test]
+    fn last_write_delivered_is_true_when_write_triggers_flush() {
+        let (listener, url) = mock_server_listener();
+        let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        sink.write(&encode_one("cpu", 1.0))
+            .expect("write triggers flush");
+
+        handle.join().expect("mock server thread panicked");
+        assert!(
+            sink.last_write_delivered(),
+            "a write that triggers a successful flush must report last_write_delivered() == true"
+        );
     }
 
     // -------------------------------------------------------------------------

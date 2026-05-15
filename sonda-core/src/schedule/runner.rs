@@ -154,10 +154,12 @@ pub fn run_with_sink_gated(
             encoder.encode_metric(&event, &mut buf)?;
             let bytes_written = buf.len() as u64;
             sink.write(&buf)?;
+            let delivered = sink.last_write_delivered();
 
             Ok(TickResult {
                 bytes_written,
                 metric_event: Some(event),
+                delivered,
             })
         };
 

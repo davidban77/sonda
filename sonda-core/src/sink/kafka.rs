@@ -76,6 +76,8 @@ pub struct KafkaSink {
     max_buffer_age: Duration,
     /// When the buffer was last published — drives the time-based flush check.
     last_flush_at: Instant,
+    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
+    last_write_delivered: bool,
 }
 
 /// Build a `rustls::ClientConfig` for TLS connections to Kafka brokers.
@@ -311,6 +313,7 @@ impl KafkaSink {
             retry_policy,
             max_buffer_age,
             last_flush_at: Instant::now(),
+            last_write_delivered: false,
         })
     }
 
@@ -388,9 +391,11 @@ impl Sink for KafkaSink {
         let size_reached = self.buffer.len() >= KAFKA_BUFFER_SIZE;
         let age_reached =
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
-        if size_reached || age_reached {
+        let should_flush = size_reached || age_reached;
+        if should_flush {
             self.publish_buffer()?;
         }
+        self.last_write_delivered = should_flush;
         Ok(())
     }
 
@@ -400,6 +405,10 @@ impl Sink for KafkaSink {
     /// buffer is empty.
     fn flush(&mut self) -> Result<(), SondaError> {
         self.publish_buffer()
+    }
+
+    fn last_write_delivered(&self) -> bool {
+        self.last_write_delivered
     }
 }
 
