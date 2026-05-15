@@ -66,6 +66,9 @@ A scenario looks alive (the process is running, no error in the foreground) but 
 
     See [Self-observability via /stats](../deployment/sonda-server.md#self-observability-via-stats).
 
+    !!! warning "`total_events` is not a delivery signal for batching sinks"
+        Batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) buffer events and only deliver in bursts. `total_events` increments on every *buffered* write, so a rising counter is **not** proof that anything is reaching the backend. Read the delivery-health fields instead: `last_successful_write_at` (stale or `null` means nothing has landed) and `consecutive_failures` (non-zero means a wedged buffer). See [What a wedged batching sink looks like](../deployment/sonda-server.md#what-a-wedged-batching-sink-looks-like) for the full timeline.
+
 - **Use the `degraded` field for monitoring** -- `GET /scenarios` ships a precomputed `degraded: bool` per scenario, true when the scenario has had sink failures and has not delivered in the last 30 seconds. Use it directly for a readiness probe or alert:
 
     ```bash
