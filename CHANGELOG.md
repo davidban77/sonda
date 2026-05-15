@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0](https://github.com/davidban77/sonda/compare/v1.7.0...v1.8.0) (2026-05-15)
+
+
+### Features
+
+* **csv-replay:** derive emission rate from CSV timestamps + default_metric_name fallback ([#344](https://github.com/davidban77/sonda/issues/344)) ([bd70663](https://github.com/davidban77/sonda/commit/bd706639663a5e595bdd78bc6d9f9359ae32c5d0))
+
+
+### Documentation
+
+* remove stale "New in 1.2.0" tip from landing page ([#346](https://github.com/davidban77/sonda/issues/346)) ([438c789](https://github.com/davidban77/sonda/commit/438c789e04af2b33f646f2db0d1ee82520cd2351))
+
 ## [1.7.0](https://github.com/davidban77/sonda/compare/v1.6.4...v1.7.0) (2026-05-15)
 
 
