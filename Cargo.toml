@@ -3,7 +3,7 @@ members = ["sonda-core", "sonda", "sonda-server"]
 resolver = "2"
 
 [workspace.package]
-version = "1.6.4"
+version = "1.7.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["David Flores <davidflores77@gmail.com>"]
@@ -15,7 +15,7 @@ keywords = ["telemetry", "metrics", "observability", "testing", "synthetic"]
 categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace.dependencies]
-sonda-core = { path = "sonda-core", version = "1.6.4" }
+sonda-core = { path = "sonda-core", version = "1.7.0" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"

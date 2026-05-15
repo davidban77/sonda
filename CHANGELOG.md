@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0](https://github.com/davidban77/sonda/compare/v1.6.4...v1.7.0) (2026-05-15)
+
+
+### Features
+
+* **sink:** distinguish buffered vs delivered writes for /stats ([#294](https://github.com/davidban77/sonda/issues/294)) ([#341](https://github.com/davidban77/sonda/issues/341)) ([70a28a3](https://github.com/davidban77/sonda/commit/70a28a31eb0afb93b3888e1046c74d27f9abf1b2))
+
+
+### Bug Fixes
+
+* **sink:** time-based flush for batching sinks ([#297](https://github.com/davidban77/sonda/issues/297)) ([#338](https://github.com/davidban77/sonda/issues/338)) ([2f48b3a](https://github.com/davidban77/sonda/commit/2f48b3ae961ad4beac97cdab2d6e5cd2414ea372))
+
+
+### Documentation
+
+* visualize wedged-sink failure mode in /stats and /scenarios pages ([#343](https://github.com/davidban77/sonda/issues/343)) ([1b44895](https://github.com/davidban77/sonda/commit/1b448952fe8230cbfb6f887926c47a16b9f398d9))
+
 ## [1.6.4](https://github.com/davidban77/sonda/compare/v1.6.3...v1.6.4) (2026-05-07)
 
 
