@@ -1394,14 +1394,20 @@ fn build_log_generator_config(mode: &str, args: &LogsArgs) -> Result<LogGenerato
                 seed: args.seed,
             })
         }
-        "replay" => {
+        "csv_replay" => {
             let file = args.file.clone().ok_or_else(|| {
-                anyhow::anyhow!("--file is required when --mode replay is specified")
+                anyhow::anyhow!("--file is required when --mode csv_replay is specified")
             })?;
-            Ok(LogGeneratorConfig::Replay { file })
+            Ok(LogGeneratorConfig::CsvReplay {
+                file,
+                columns: None,
+                repeat: None,
+                timescale: None,
+                default_severity: None,
+            })
         }
         other => bail!(
-            "unknown log mode {:?}: expected one of template, replay",
+            "unknown log mode {:?}: expected one of template, csv_replay",
             other
         ),
     }
@@ -2866,43 +2872,44 @@ mod tests {
     }
 
     #[test]
-    fn load_log_config_mode_replay_with_file_produces_replay_generator() {
+    fn load_log_config_mode_csv_replay_with_file_produces_csv_replay_generator() {
         use std::io::Write;
 
         use sonda_core::generator::LogGeneratorConfig;
         use tempfile::NamedTempFile;
 
         let mut tmp = NamedTempFile::new().expect("create temp file");
-        writeln!(tmp, "line one").expect("write line");
-        writeln!(tmp, "line two").expect("write line");
+        writeln!(tmp, "timestamp,severity,message").expect("write header");
+        writeln!(tmp, "1700000000,info,first line").expect("write row");
+        writeln!(tmp, "1700000003,info,second line").expect("write row");
 
         let args = crate::cli::LogsArgs {
-            mode: Some("replay".to_string()),
+            mode: Some("csv_replay".to_string()),
             file: Some(tmp.path().to_string_lossy().into_owned()),
             rate: Some(5.0),
             ..default_logs_args()
         };
 
         let config = load_log_config(&args, &empty_catalog(), &empty_pack_catalog())
-            .expect("replay mode with file must produce config");
+            .expect("csv_replay mode with file must produce config");
         match config.generator {
-            LogGeneratorConfig::Replay { file } => {
-                assert!(!file.is_empty(), "replay file path must be set");
+            LogGeneratorConfig::CsvReplay { file, .. } => {
+                assert!(!file.is_empty(), "csv_replay file path must be set");
             }
-            other => panic!("expected Replay generator, got {other:?}"),
+            other => panic!("expected CsvReplay generator, got {other:?}"),
         }
     }
 
     #[test]
-    fn load_log_config_mode_replay_without_file_returns_error() {
+    fn load_log_config_mode_csv_replay_without_file_returns_error() {
         let args = crate::cli::LogsArgs {
-            mode: Some("replay".to_string()),
+            mode: Some("csv_replay".to_string()),
             file: None,
             ..default_logs_args()
         };
 
         let err = load_log_config(&args, &empty_catalog(), &empty_pack_catalog())
-            .expect_err("replay without --file must fail");
+            .expect_err("csv_replay without --file must fail");
         let msg = err.to_string();
         assert!(
             msg.contains("file") || msg.contains("--file"),

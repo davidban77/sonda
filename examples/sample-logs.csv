@@ -1,0 +1,11 @@
+timestamp,severity,message,user_id
+1700000000,info,GET /api/v1/health returned 200,u-42
+1700000003,info,GET /api/v1/metrics returned 200,u-17
+1700000006,warn,GET /api/v1/users returned 200 with high latency,u-91
+1700000009,info,POST /api/v1/events returned 201,u-42
+1700000012,error,POST /api/v1/events returned 500: upstream timeout,u-19
+1700000015,info,GET /api/v1/health returned 200,u-11
+1700000018,warn,DELETE /api/v1/cache returned 200 (cache cold restart),u-91
+1700000021,info,GET /api/v1/logs returned 200,u-42
+1700000024,error,GET /api/v1/billing returned 503: dependency unavailable,u-7
+1700000027,info,GET /api/v1/health returned 200,u-17

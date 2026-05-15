@@ -1,8 +1,6 @@
 # Generating logs
 
-[Getting Started](../getting-started.md#generating-logs) showed basic log generation.
-Sonda supports two log modes: **template** for synthetic messages with randomized
-fields, and **replay** for re-emitting lines from an existing log file.
+[Getting Started](../getting-started.md#generating-logs) showed basic log generation. Sonda supports two log modes: **template** for synthetic messages with randomized fields, and **csv_replay** for replaying a structured CSV of real log events at the recorded cadence.
 
 ## Template mode with field pools
 
@@ -45,39 +43,48 @@ across runs -- the exact same sequence every time.
 See [Generators](../configuration/generators.md) for the full template configuration
 reference (per-template weights, multi-template fan-out, severity normalisation).
 
-## Replay mode
+## CSV replay mode
 
-Replay lines from an existing log file:
+Replay a structured CSV of real log events. The CSV has a `timestamp` column that drives the emission cadence, plus optional `severity` and `message` columns and any number of free-form field columns.
 
 ```bash
-sonda logs --scenario examples/log-replay.yaml
+sonda logs --scenario examples/log-csv-replay.yaml
 ```
 
-```yaml title="examples/log-replay.yaml"
+```yaml title="examples/log-csv-replay.yaml"
 version: 2
 
 defaults:
-  rate: 5
-  duration: 30s
+  duration: 60s
   encoder:
     type: json_lines
   sink:
     type: stdout
 
 scenarios:
-  - id: app_logs_replay
-    signal_type: logs
-    name: app_logs_replay
+  - signal_type: logs
+    name: app_logs_csv_replay
+    rate: 1
     log_generator:
-      type: replay
-      file: examples/sample-app.log
+      type: csv_replay
+      file: examples/sample-logs.csv
+      default_severity: info
+      repeat: true
 ```
 
-Lines are replayed in order and cycle back to the start when the file is exhausted.
+The CSV looks like this:
 
-!!! tip "Bring your own log file"
-    The example uses `examples/sample-app.log` which ships with Sonda. To replay your
-    own logs, point `file:` at any text file -- one log line per line.
+```csv title="examples/sample-logs.csv"
+timestamp,severity,message,user_id
+1700000000,info,GET /api/v1/health returned 200,u-42
+1700000003,info,GET /api/v1/metrics returned 200,u-17
+1700000006,warn,GET /api/v1/users returned 200 with high latency,u-91
+```
+
+Sonda derives the replay rate from the median Δt of the timestamp column (3 seconds here → 0.33 events/s). The `rate:` in YAML is ignored -- the CSV cadence wins. Free-form columns like `user_id` become entries on the emitted event's `fields` map.
+
+!!! tip "Where this shines"
+    For the full workflow -- exporting a window from Loki via `logcli`, projecting it into a CSV with `jq`, and replaying it back through your pipeline tagged with `source="replay"` -- see the [Log CSV Replay](log-csv-replay.md) guide.
 
 ## Pair templates with the syslog encoder
 

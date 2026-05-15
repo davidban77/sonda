@@ -47,7 +47,7 @@ src/
 │   ├── histogram.rs    ← HistogramGenerator (cumulative bucket counts, Distribution, to_distribution)
 │   ├── summary.rs      ← SummaryGenerator (quantile values via sorted observations)
 │   ├── log_template.rs ← template-based log line generator
-│   └── log_replay.rs   ← file-replay log line generator
+│   └── log_csv_replay.rs ← CSV-replay log generator (structured timestamp/severity/message + fields)
 ├── schedule/
 │   ├── mod.rs          ← GapWindow, BurstWindow, CardinalitySpikeWindow, is_in_spike,
 │   │                      DynamicLabel (always-on rotating label, label_value_for_tick()),
@@ -145,7 +145,8 @@ src/
     │                      CardinalitySpikeConfig, SpikeStrategy,
     │                      DynamicLabelConfig, DynamicLabelStrategy (Counter | ValuesList),
     │                      expand_scenario (csv_replay multi-column fan-out),
-    │                      expand_entry (entry-level wrapper for expand_scenario)
+    │                      expand_log_scenario (log_csv_replay rate derivation),
+    │                      expand_entry (entry-level wrapper covering both)
     ├── aliases.rs      ← operational vocabulary aliases: desugar_entry, desugar_scenario_config.
     │                      Transforms high-level aliases (flap, steady, leak, saturation,
     │                      degradation, spike_event) into underlying GeneratorConfig variants.

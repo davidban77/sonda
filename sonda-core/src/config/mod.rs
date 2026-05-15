@@ -755,7 +755,7 @@ fn parse_csv_timestamp(cell: &str) -> Option<f64> {
     }
 }
 
-fn compute_csv_delta_seconds(path: &str) -> Result<f64, SondaError> {
+fn compute_csv_delta_seconds(path: &str, ts_col_idx: usize) -> Result<f64, SondaError> {
     const MAX_SAMPLE_ROWS: usize = 100;
 
     let lines = read_csv_first_lines(path, MAX_SAMPLE_ROWS + 1)?;
@@ -774,11 +774,11 @@ fn compute_csv_delta_seconds(path: &str) -> Result<f64, SondaError> {
 
     let mut timestamps = Vec::with_capacity(data_lines.len());
     for (row_idx, line) in data_lines.iter().enumerate() {
-        let cell = line.split(',').next().unwrap_or("");
+        let cell = line.split(',').nth(ts_col_idx).unwrap_or("");
         let ts = parse_csv_timestamp(cell).ok_or_else(|| {
             SondaError::Config(ConfigError::invalid(format!(
-                "csv_replay: failed to parse timestamp at data row {}: {:?}",
-                row_idx, cell
+                "csv_replay: failed to parse timestamp at data row {} column {}: {:?}",
+                row_idx, ts_col_idx, cell
             )))
         })?;
         timestamps.push(ts);
@@ -873,7 +873,7 @@ pub fn expand_scenario(config: ScenarioConfig) -> Result<Vec<ScenarioConfig>, So
         auto_discover_specs(parsed, default_name_opt.as_deref())?
     };
 
-    let delta = compute_csv_delta_seconds(&file)?;
+    let delta = compute_csv_delta_seconds(&file, 0)?;
     let derived_rate = timescale / delta;
     let user_rate = config.base.rate;
     if (user_rate - derived_rate).abs() > 1e-9 {
@@ -1043,19 +1043,19 @@ fn auto_discover_specs(
 /// Expand a [`ScenarioEntry`] that uses multi-column `csv_replay`.
 ///
 /// For `ScenarioEntry::Metrics`, delegates to [`expand_scenario`] and wraps
-/// the results back in `ScenarioEntry::Metrics`. For `ScenarioEntry::Logs`,
-/// returns the entry unchanged (log scenarios do not use `csv_replay`).
-///
-/// # Errors
-///
-/// Propagates errors from [`expand_scenario`].
+/// the results back in `ScenarioEntry::Metrics`. For `ScenarioEntry::Logs`
+/// with a `csv_replay` generator, delegates to [`expand_log_scenario`].
+/// All other entries pass through unchanged.
 pub fn expand_entry(entry: ScenarioEntry) -> Result<Vec<ScenarioEntry>, SondaError> {
     match entry {
         ScenarioEntry::Metrics(config) => {
             let expanded = expand_scenario(config)?;
             Ok(expanded.into_iter().map(ScenarioEntry::Metrics).collect())
         }
-        // Histogram, Summary, and Logs entries do not support csv_replay expansion.
+        ScenarioEntry::Logs(config) => {
+            let expanded = expand_log_scenario(config)?;
+            Ok(expanded.into_iter().map(ScenarioEntry::Logs).collect())
+        }
         other => Ok(vec![other]),
     }
 }
@@ -1116,6 +1116,94 @@ impl std::ops::DerefMut for LogScenarioConfig {
     fn deref_mut(&mut self) -> &mut BaseScheduleConfig {
         &mut self.base
     }
+}
+
+/// Expand a log scenario using `log_csv_replay`, deriving the scenario rate
+/// from the CSV's resolved timestamp column (`rate = timescale / median Δt`).
+///
+/// Non-`csv_replay` log generators pass through unchanged. Always returns a
+/// single-element vector.
+pub fn expand_log_scenario(
+    config: LogScenarioConfig,
+) -> Result<Vec<LogScenarioConfig>, SondaError> {
+    let (file, timescale_opt, columns) = match &config.generator {
+        LogGeneratorConfig::CsvReplay {
+            file,
+            timescale,
+            columns,
+            ..
+        } => (file.clone(), *timescale, columns.clone()),
+        _ => return Ok(vec![config]),
+    };
+
+    let timescale = validate_csv_timescale(timescale_opt)?;
+    let ts_col_idx =
+        crate::generator::log_csv_replay::resolve_timestamp_column_index(&file, columns.as_ref())?;
+    let delta = compute_csv_delta_seconds(&file, ts_col_idx)?;
+    let derived_rate = timescale / delta;
+    let user_rate = config.base.rate;
+
+    if (user_rate - derived_rate).abs() > 1e-9 {
+        tracing::warn!(
+            scenario = %config.base.name,
+            user_rate,
+            derived_rate,
+            csv_delta_secs = delta,
+            timescale,
+            "log_csv_replay '{}': overriding rate={} with derived rate={} samples/s (CSV Δt={}s, timescale={})",
+            config.base.name,
+            user_rate,
+            derived_rate,
+            delta,
+            timescale,
+        );
+    }
+
+    let fallback_count = count_log_csv_severity_fallbacks(&config.generator, &file)?;
+    if fallback_count > 0 {
+        tracing::warn!(
+            scenario = %config.base.name,
+            fallback_count,
+            "log_csv_replay '{}': {} row(s) used default_severity due to missing or unparseable severity values",
+            config.base.name,
+            fallback_count,
+        );
+    }
+
+    let mut child = config;
+    child.base.rate = derived_rate;
+    Ok(vec![child])
+}
+
+fn count_log_csv_severity_fallbacks(
+    generator: &LogGeneratorConfig,
+    file: &str,
+) -> Result<usize, SondaError> {
+    let LogGeneratorConfig::CsvReplay {
+        columns,
+        default_severity,
+        repeat,
+        ..
+    } = generator
+    else {
+        return Ok(0);
+    };
+
+    let content = std::fs::read_to_string(file).map_err(|e| {
+        SondaError::Generator(crate::GeneratorError::FileRead {
+            path: file.to_string(),
+            source: e,
+        })
+    })?;
+
+    let (_gen, fallback) =
+        crate::generator::log_csv_replay::LogCsvReplayGenerator::from_str_with_fallback_count(
+            &content,
+            columns.as_ref(),
+            default_severity.unwrap_or(crate::model::log::Severity::Info),
+            repeat.unwrap_or(true),
+        )?;
+    Ok(fallback)
 }
 
 #[cfg(all(test, feature = "config"))]
@@ -2377,8 +2465,8 @@ signal_type: logs
 name: app_logs
 rate: 1
 generator:
-  type: replay
-  file: /tmp/does-not-need-to-exist.log
+  type: csv_replay
+  file: /tmp/does-not-need-to-exist.csv
 "#;
         let logs: ScenarioEntry = serde_yaml_ng::from_str(logs_yaml).unwrap();
         assert_eq!(logs.signal_type_name(), "logs");
@@ -4002,5 +4090,168 @@ generator:
             }
             other => panic!("expected CsvReplay variant, got {other:?}"),
         }
+    }
+
+    fn write_temp_log_csv(content: &str) -> (tempfile::NamedTempFile, String) {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        write!(tmp, "{}", content).expect("write content");
+        tmp.flush().expect("flush");
+        let path = tmp.path().to_string_lossy().into_owned();
+        (tmp, path)
+    }
+
+    fn build_log_scenario(file: String, timescale: Option<f64>) -> LogScenarioConfig {
+        LogScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "log_replay".to_string(),
+                rate: 1.0,
+                duration: None,
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: OnSinkError::Warn,
+            },
+            generator: LogGeneratorConfig::CsvReplay {
+                file,
+                columns: None,
+                repeat: Some(true),
+                timescale,
+                default_severity: None,
+            },
+            encoder: EncoderConfig::JsonLines { precision: None },
+        }
+    }
+
+    #[test]
+    fn expand_log_scenario_derives_rate_from_ten_second_step_csv() {
+        let csv = "timestamp,severity,message\n\
+                   1700000000,info,a\n\
+                   1700000010,info,b\n\
+                   1700000020,info,c\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let config = build_log_scenario(path, None);
+        let expanded = expand_log_scenario(config).expect("expand must succeed");
+        assert_eq!(expanded.len(), 1);
+        assert!(
+            (expanded[0].base.rate - 0.1).abs() < 1e-9,
+            "derived rate must be 1/10s = 0.1, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_with_timescale_two_doubles_rate() {
+        let csv = "timestamp,severity,message\n\
+                   1700000000,info,a\n\
+                   1700000010,info,b\n\
+                   1700000020,info,c\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let config = build_log_scenario(path, Some(2.0));
+        let expanded = expand_log_scenario(config).expect("expand must succeed");
+        assert!(
+            (expanded[0].base.rate - 0.2).abs() < 1e-9,
+            "timescale=2.0 must double rate to 0.2, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_overrides_user_rate_when_differs() {
+        let csv = "timestamp,severity,message\n\
+                   1700000000,info,a\n\
+                   1700000010,info,b\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let mut config = build_log_scenario(path, None);
+        config.base.rate = 999.0;
+        let expanded = expand_log_scenario(config).expect("expand must succeed");
+        assert!(
+            (expanded[0].base.rate - 0.1).abs() < 1e-9,
+            "user rate=999 must be overridden by derived rate=0.1, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_auto_discovers_timestamp_column() {
+        let csv = "TIME,Severity,Message\n\
+                   1700000000,info,a\n\
+                   1700000005,info,b\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let config = build_log_scenario(path, None);
+        let expanded = expand_log_scenario(config).expect("auto-discovery must work");
+        assert!(
+            (expanded[0].base.rate - 0.2).abs() < 1e-9,
+            "5s step → rate 0.2, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_respects_explicit_columns_mapping() {
+        let csv = "ts,sev,text\n\
+                   1700000000,info,a\n\
+                   1700000003,info,b\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let mut config = build_log_scenario(path, None);
+        if let LogGeneratorConfig::CsvReplay {
+            ref mut columns, ..
+        } = config.generator
+        {
+            *columns = Some(crate::generator::log_csv_replay::LogCsvColumns {
+                timestamp: Some("ts".to_string()),
+                severity: Some("sev".to_string()),
+                message: Some("text".to_string()),
+            });
+        }
+        let expanded = expand_log_scenario(config).expect("explicit columns must work");
+        assert!(
+            (expanded[0].base.rate - (1.0 / 3.0)).abs() < 1e-9,
+            "3s step → rate 1/3, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_resolves_timestamp_in_non_zero_column() {
+        let csv = "severity,timestamp,message\n\
+                   info,1700000000,a\n\
+                   warn,1700000004,b\n\
+                   info,1700000008,c\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let config = build_log_scenario(path, None);
+        let expanded = expand_log_scenario(config)
+            .expect("timestamp in column 1 must be used for rate derivation");
+        assert!(
+            (expanded[0].base.rate - 0.25).abs() < 1e-9,
+            "4s step in column 1 → rate 0.25, got {}",
+            expanded[0].base.rate
+        );
+    }
+
+    #[test]
+    fn expand_log_scenario_rejects_non_monotonic_timestamps() {
+        let csv = "timestamp,severity,message\n\
+                   1700000000,info,a\n\
+                   1700000010,info,b\n\
+                   1700000005,info,c\n";
+        let (_tmp, path) = write_temp_log_csv(csv);
+        let config = build_log_scenario(path, None);
+        let err = expand_log_scenario(config)
+            .err()
+            .expect("non-monotonic timestamps must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("non-monotonic"),
+            "error message must mention non-monotonic, got: {msg}"
+        );
     }
 }

@@ -29,6 +29,7 @@ pub enum Severity {
     /// General informational messages.
     Info,
     /// Potentially harmful situations that warrant attention.
+    #[cfg_attr(feature = "config", serde(alias = "warning"))]
     Warn,
     /// Error events that may allow the application to continue.
     Error,

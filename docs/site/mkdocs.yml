@@ -114,4 +114,5 @@ nav:
     - Importing real data:
       - CSV Import: guides/csv-import.md
       - Grafana CSV Replay: guides/grafana-csv-replay.md
+      - Log CSV Replay: guides/log-csv-replay.md
     - Troubleshooting: guides/troubleshooting.md

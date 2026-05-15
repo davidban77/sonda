@@ -1,0 +1,18 @@
+version: 2
+
+defaults:
+  duration: 60s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
+
+scenarios:
+  - signal_type: logs
+    name: app_logs_csv_replay
+    rate: 1
+    log_generator:
+      type: csv_replay
+      file: examples/sample-logs.csv
+      default_severity: info
+      repeat: true

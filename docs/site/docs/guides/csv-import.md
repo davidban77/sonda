@@ -291,3 +291,9 @@ Exactly one of `--analyze`, `-o`, or `--run` must be specified.
     `--dry-run`, `--verbose`, and `--quiet` work with `sonda import --run`, just like any
     other subcommand. Use `sonda --dry-run import data.csv --run` to see the resolved config
     without emitting events.
+
+---
+
+## Replaying log streams from CSV
+
+`sonda import` is scoped to metric series. If your CSV is a structured log export -- for example a `timestamp,severity,message,trace_id` dump from Loki via `logcli` -- use the `log_csv_replay` generator instead. It replays each row as a `LogEvent`, derives the emission rate from the timestamp column the same way `csv_replay` does for metrics, and routes free-form columns into `LogEvent::fields`. See the [Log CSV Replay](log-csv-replay.md) guide for the end-to-end workflow.
