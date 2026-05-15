@@ -465,6 +465,10 @@ fn csv_replay_grafana_auto_yaml_expands_to_two_scenarios() {
 #[test]
 fn csv_replay_explicit_labels_yaml_expands_with_per_column_labels() {
     let yaml = read_example("examples/csv-replay-explicit-labels.yaml");
+    let absolute_csv = workspace_file("examples/sample-multi-column.csv")
+        .to_string_lossy()
+        .into_owned();
+    let yaml = yaml.replace("examples/sample-multi-column.csv", &absolute_csv);
     let compiled = compile_ok("csv-replay-explicit-labels.yaml", &yaml);
     assert_eq!(compiled.len(), 1, "compile produces one csv_replay entry");
 

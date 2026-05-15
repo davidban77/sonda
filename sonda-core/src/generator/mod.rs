@@ -245,6 +245,15 @@ pub enum GeneratorConfig {
         /// Defaults to `true`.
         #[cfg_attr(feature = "config", serde(default))]
         repeat: Option<bool>,
+        /// Replay speed multiplier (default `1.0`). `2.0` plays 2× faster,
+        /// `0.5` plays 2× slower. Must be strictly positive.
+        #[cfg_attr(feature = "config", serde(default))]
+        timescale: Option<f64>,
+        /// Fallback metric name for auto-discovered columns whose header has
+        /// no `__name__`. Suffixed with `_<index>` when multiple such columns
+        /// share the fallback.
+        #[cfg_attr(feature = "config", serde(default))]
+        default_metric_name: Option<String>,
     },
     /// A monotonic step counter: `start + tick * step_size`, with optional wrap-around.
     ///
@@ -575,6 +584,7 @@ pub fn create_generator(
             column,
             repeat,
             columns,
+            ..
         } => {
             if columns.is_some() {
                 return Err(SondaError::Config(ConfigError::invalid(
@@ -1087,6 +1097,8 @@ mod tests {
                 name: "cpu".to_string(),
                 labels: None,
             }]),
+            timescale: None,
+            default_metric_name: None,
         };
         let result = create_generator(&config, 1.0);
         match result {

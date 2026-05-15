@@ -618,6 +618,8 @@ mod tests {
             column: Some(0),
             repeat: Some(true),
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         let gen =
             super::super::create_generator(&config, 1.0).expect("csv_replay factory must succeed");
@@ -636,6 +638,8 @@ mod tests {
             column: None,
             repeat: None,
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         let gen = super::super::create_generator(&config, 1.0)
             .expect("csv_replay factory with defaults must succeed");
@@ -650,6 +654,8 @@ mod tests {
             column: None,
             repeat: None,
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         let result = super::super::create_generator(&config, 1.0);
         assert!(
@@ -676,6 +682,7 @@ repeat: false
                 column,
                 repeat,
                 columns,
+                ..
             } => {
                 assert_eq!(file, "/some/path.csv");
                 assert_eq!(column, None, "column is serde(skip), should be None");
@@ -698,6 +705,7 @@ repeat: false
                 column,
                 repeat,
                 columns,
+                ..
             } => {
                 assert_eq!(file, "data.csv");
                 assert_eq!(column, None, "column should be None (serde skip)");
@@ -749,6 +757,7 @@ sink:
                 column,
                 repeat,
                 columns,
+                ..
             } => {
                 assert_eq!(file, &csv_path);
                 assert_eq!(*column, None, "column is serde(skip)");
@@ -829,6 +838,8 @@ timestamp,cpu_percent
             column: Some(0),
             repeat: None,
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         let gen = super::super::create_generator(&config, 1.0).expect("factory must succeed");
         // With repeat defaulting to true, tick=2 on a 2-element seq should wrap.

@@ -15,17 +15,15 @@ flap, step), and emits a v2 scenario YAML wired to a generator with the right kn
 
 ## Why import instead of replay?
 
-The [csv_replay](grafana-csv-replay.md) generator plays back raw CSV values verbatim. That is
-useful for exact reproduction, but the output is tied to the original file. `sonda import`
-takes a different approach:
+The [csv_replay](grafana-csv-replay.md) generator plays back raw CSV values verbatim. It preserves the original sample interval automatically (the replay rate is derived from the CSV timestamps, not from `rate:`) and supports labels-only Grafana exports via `default_metric_name:`. Use it when you need bit-for-bit fidelity tied to a specific file.
 
-- **Portable** -- the generated YAML uses generators (`steady`, `spike_event`, `leak`, `flap`,
-  `sawtooth`, `step`), so it runs without the original CSV file.
+`sonda import` takes a different approach:
+
+- **Portable** -- the generated YAML uses generators (`steady`, `spike_event`, `leak`, `flap`, `sawtooth`, `step`), so it runs without the original CSV file.
 - **Parameterized** -- you can tune rate, duration, and generator parameters after import.
 - **Shareable** -- the YAML is self-contained. Drop it into a repo, CI pipeline, or Helm chart.
 
-Use `csv_replay` when you need bit-for-bit fidelity. Use `sonda import` when you need the
-*shape* of the data as a reusable scenario.
+Use `csv_replay` when you need bit-for-bit fidelity. Use `sonda import` when you need the *shape* of the data as a reusable scenario that does not depend on the original CSV.
 
 ---
 

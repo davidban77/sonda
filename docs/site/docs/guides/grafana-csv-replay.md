@@ -1,9 +1,6 @@
 # Grafana CSV Export Replay
 
-You have a Grafana dashboard showing a production incident. You want to replay those exact metric
-values through your pipeline -- same shapes, same labels, same timing -- to verify alert rules,
-test recording rules, or validate a new ingest path. Sonda can replay a Grafana CSV export with
-zero manual column mapping.
+You have a Grafana dashboard showing a production incident. You want to replay those exact metric values through your pipeline -- same shapes, same labels, same timing -- to verify alert rules, test recording rules, or validate a new ingest path. Sonda can replay a Grafana CSV export with zero manual column mapping, and the replay preserves the original sample interval automatically.
 
 ---
 
@@ -32,8 +29,67 @@ The exported CSV looks like this:
 1704067260000,1,1
 ```
 
-Each column header encodes the metric name and labels in `{key="value"}` syntax. Sonda parses
-these automatically.
+Each column header encodes the metric name and labels in `{key="value"}` syntax. Sonda parses these automatically.
+
+---
+
+## Replay Speed Is Driven By The CSV, Not By `rate:`
+
+Sonda reads the first column of the CSV as a timestamp series, measures the median interval between samples, and uses that to compute the replay rate. The `rate:` field on a `csv_replay` scenario is **always overridden** by this derived value -- it does not matter what you put in YAML.
+
+This is the most common point of confusion when moving from earlier releases. Before, you had to set `rate: 0.1` by hand to match a 10-second Grafana scrape interval; if you set the wrong rate, a 5-minute incident would play back in 30 seconds.
+
+```csv title="Grafana export with 15s scrape interval"
+"Time","{__name__=""cpu"", instance=""prod-01""}"
+1704067200000,42.1
+1704067215000,43.5
+1704067230000,45.8
+```
+
+```yaml title="examples/csv-replay-grafana-auto.yaml"
+defaults:
+  rate: 1      # ignored for csv_replay -- the CSV's 15s step wins
+scenarios:
+  - signal_type: metrics
+    name: incident_replay
+    generator:
+      type: csv_replay
+      file: examples/grafana-export.csv
+```
+
+```text title="Startup banner shows the derived rate"
+[1/1] ▶ cpu  signal_type: metrics | rate: 0.1/s | ...
+```
+
+The displayed `0.1/s` is the rounded view of `1 / 15` (about 0.0667 samples per second), computed from the CSV. The actual emission cadence matches the 15-second step exactly, not the rounded display value, so the 5-minute incident replays in 5 minutes.
+
+The scenario `name: incident_replay` is replaced with `cpu` because each CSV column expands into its own scenario named after the column's `__name__`. See [Replay With Auto-Discovery](#replay-with-auto-discovery) below for details.
+
+!!! info "How the derivation works"
+    Sonda reads column 0 as a timestamp series, parses each cell as a number, and computes the **median** of consecutive differences across up to the first 100 data rows. Values larger than `1e12` are treated as epoch milliseconds; smaller values are treated as epoch seconds. Both Grafana (ms) and VictoriaMetrics (s) exports are covered. The derived rate is `timescale / median_delta`.
+
+### Speeding up or slowing down with `timescale`
+
+Use `timescale:` to play the recording faster or slower without rewriting the CSV.
+
+| `timescale` | Effect | Use case |
+|-------------|--------|----------|
+| `1.0` (default) | Play at the original speed | Fidelity replay -- 1h of source data plays in 1h |
+| `2.0` | Play 2x faster | Replay 1h in 30min for faster alert-rule iteration |
+| `10.0` | Play 10x faster | Squash an overnight incident into a 5-minute test |
+| `0.5` | Play 2x slower | Stretch a 1-minute event over 2 minutes for visual inspection |
+
+```yaml title="Replay 1 hour of production data in 5 minutes"
+scenarios:
+  - signal_type: metrics
+    name: chaos_replay
+    generator:
+      type: csv_replay
+      file: production-incident.csv
+      timescale: 12.0      # 60 min CSV / 12 = 5 min replay
+```
+
+`timescale` must be a positive finite number. `timescale: 0` or a negative value is rejected at config load with `csv_replay: 'timescale' must be a positive finite number, got 0`.
 
 ---
 
@@ -150,30 +206,65 @@ Per-column labels merge with scenario-level labels, and column labels override o
 
 ## Supported Header Formats
 
-Sonda recognizes five header formats. The first two are what Grafana produces; the others
-support hand-authored CSV files.
+Sonda recognizes five header formats. The first two are what Grafana produces; the others support hand-authored CSV files.
 
 | Format | Example header | Metric name | Labels |
 |--------|---------------|-------------|--------|
 | 1. `__name__` inside braces | `{__name__="up", instance="host", job="prom"}` | `up` | `instance`, `job` |
 | 2. Name before braces | `up{instance="host", job="prom"}` | `up` | `instance`, `job` |
-| 3. Labels only (no name) | `{instance="host", job="prom"}` | none (error with auto-discovery) | `instance`, `job` |
+| 3. Labels only (no name) | `{instance="host", job="prom"}` | from `default_metric_name` | `instance`, `job` |
 | 4. Plain metric name | `cpu_percent` | `cpu_percent` | none |
 | 5. Simple word | `prometheus` | `prometheus` | none |
 
-Format 1 is what Grafana exports by default when you use **Series joined by time**. Format 2
-appears when a Grafana panel has a custom `legendFormat` that puts the metric name outside the
-braces.
+Format 1 is what Grafana exports by default when you use **Series joined by time**. Format 2 appears when a Grafana panel has a custom `legendFormat` that puts the metric name outside the braces. Format 3 is what you get when `legendFormat` strips the metric name entirely (e.g. `{{instance}}` only) -- this is covered by [`default_metric_name`](#labels-only-headers-default_metric_name).
 
-!!! info "Format 3 requires explicit columns"
-    Headers with labels but no `__name__` cannot be used with auto-discovery because there is no
-    metric name to extract. Use `columns:` with an explicit `name:` for each column instead.
+### Labels-only headers: `default_metric_name`
+
+When a Grafana panel uses a `legendFormat` that omits `__name__`, the export looks like this:
+
+```csv title="labels-only export"
+Time,"{instance=""prod-01"",job=""node""}","{instance=""prod-02"",job=""node""}"
+1704067200000,42.1,38.5
+1704067210000,43.2,39.0
+```
+
+Before, you had to hand-write a script to inject `__name__=metric` into every header before sonda could ingest the file. Now, set `default_metric_name:` on the generator and the missing name is filled in automatically.
+
+```yaml title="Replay a labels-only Grafana export"
+scenarios:
+  - signal_type: metrics
+    name: cpu_replay
+    generator:
+      type: csv_replay
+      file: cpu-export.csv
+      default_metric_name: node_cpu_usage
+```
+
+```text title="Output"
+node_cpu_usage_1{instance="prod-01",job="node"} 42.1 1778847012268
+node_cpu_usage_2{instance="prod-02",job="node"} 38.5 1778847012268
+```
+
+Naming rules:
+
+- **One** column without `__name__` -- uses `default_metric_name` verbatim. `default_metric_name: node_cpu_usage` produces `node_cpu_usage`.
+- **Multiple** columns without `__name__` -- each gets the fallback name suffixed with `_<column_index>` to keep series unique. `node_cpu_usage_1`, `node_cpu_usage_2`, and so on.
+- Columns whose header already has `__name__` (or name-before-braces) are unaffected -- they keep their own name and only the nameless columns use the fallback.
 
 ??? tip "Grafana legendFormat and header format"
-    If your Grafana panel has a custom `legendFormat` (e.g., `{{instance}}`), the CSV headers
-    will reflect that format instead of the raw `{__name__=...}` syntax. If the headers no
-    longer include the metric name, switch to `columns:` with explicit names, or clear
-    `legendFormat` before exporting.
+    If your Grafana panel has a custom `legendFormat` (e.g., `{{instance}}`), the CSV headers will reflect that format instead of the raw `{__name__=...}` syntax. You have three options: set `default_metric_name:` on the generator (recommended), clear `legendFormat` before exporting, or switch to `columns:` with explicit `name:` for each column.
+
+---
+
+## Failure modes
+
+| Error message | Cause | Fix |
+|---------------|-------|-----|
+| `csv_replay: 'timescale' must be a positive finite number, got 0` | `timescale: 0`, a negative value, or `NaN`/`Inf`. | Set `timescale` to a positive number, or remove it to use the default `1.0`. |
+| `csv_replay: file "..." has fewer than 2 data rows; cannot derive replay rate` | The CSV only has a header and one data row (or zero). | At least two data rows are required to measure the sample interval. Re-export with a wider time range. |
+| `csv_replay: non-monotonic timestamps in "..." (row N value X <= previous Y)` | A timestamp goes backward or repeats. Common with concatenated exports or paused recordings. | Sort the file by timestamp, deduplicate, or split it at the discontinuity. |
+| `csv_replay: column N has no metric name (header has labels only with no __name__); set 'default_metric_name' on the generator config` | Auto-discovery hit a `{labels...}` header without a metric name. | Add `default_metric_name:` to the generator, or switch to explicit `columns:`. |
+| `generator error: cannot read file "..."` | The CSV path does not exist or is not readable. | Paths are relative to the directory where `sonda` is launched, not to the scenario file. |
 
 ---
 
@@ -185,11 +276,15 @@ braces.
 | `columns` | list | no | -- | Explicit column specs. When absent, columns are auto-discovered from the header. |
 | `columns[].index` | integer | yes | -- | Zero-based column index in the CSV file. |
 | `columns[].name` | string | yes | -- | Metric name for the expanded scenario. |
-| `columns[].labels` | map | no | none | Per-column labels merged with scenario-level labels. Column labels override on conflict. |
+| `columns[].labels` | map | no | none | Per-column labels merged with scenario-level and header-derived labels. Column labels override on conflict. |
 | `repeat` | boolean | no | `true` | Cycle back to start or hold last value. |
+| `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` plays 2x faster, `0.5` plays 2x slower. Must be strictly positive. |
+| `default_metric_name` | string | no | -- | Fallback metric name for auto-discovered columns whose header has labels but no `__name__`. Suffixed with `_<column_index>` when multiple columns share the fallback. |
 
-For the full CSV replay parameter reference, see
-[Generators: csv_replay](../configuration/generators.md#csv_replay).
+!!! note "The scenario's `rate:` is always overridden"
+    For `csv_replay` scenarios, `rate:` is computed from the CSV's column-0 timestamps and `timescale`. Any value you set in YAML is replaced. Run `sonda --verbose --dry-run` to confirm the derived rate, or inspect the startup banner.
+
+For the full CSV replay parameter reference, see [Generators: csv_replay](../configuration/generators.md#csv_replay).
 
 !!! tip "Want portable scenarios instead of raw replay?"
     `csv_replay` plays back exact values from the file. If you want to extract the *pattern*

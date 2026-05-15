@@ -46,6 +46,16 @@ fn main() {
 /// Separated from `main` so errors can be returned with `?` and printed
 /// uniformly.
 fn run() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .without_time()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+
     // Register Ctrl+C handler. The runner loop checks `running` each tick so
     // it can exit gracefully instead of being killed mid-write.
     let running = Arc::new(AtomicBool::new(true));

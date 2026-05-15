@@ -771,6 +771,7 @@ fn generator_display(gen: &GeneratorConfig) -> String {
             column,
             repeat,
             columns,
+            ..
         } => {
             let rpt = if repeat.unwrap_or(true) {
                 "repeat"
@@ -1216,6 +1217,8 @@ mod tests {
             column: Some(2),
             repeat: Some(false),
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         assert_eq!(
             generator_display(&config),
@@ -1230,6 +1233,8 @@ mod tests {
             column: None,
             repeat: None,
             columns: None,
+            timescale: None,
+            default_metric_name: None,
         };
         assert_eq!(
             generator_display(&config),
@@ -1255,6 +1260,8 @@ mod tests {
                     labels: None,
                 },
             ]),
+            timescale: None,
+            default_metric_name: None,
         };
         assert_eq!(
             generator_display(&config),
