@@ -224,7 +224,7 @@ fn log_generator_display(gen: &sonda_core::generator::LogGeneratorConfig) -> Str
         LogGeneratorConfig::Template { templates, .. } => {
             format!("template ({} templates)", templates.len())
         }
-        LogGeneratorConfig::Replay { file } => format!("replay (file: {file})"),
+        LogGeneratorConfig::CsvReplay { file, .. } => format!("csv_replay (file: {file})"),
     }
 }
 

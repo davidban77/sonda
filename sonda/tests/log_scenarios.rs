@@ -129,23 +129,22 @@ fn log_template_yaml_generator_is_deterministic_for_same_tick() {
 }
 
 // ---------------------------------------------------------------------------
-// examples/log-replay.yaml
+// examples/log-csv-replay.yaml
 // ---------------------------------------------------------------------------
 
 #[test]
-fn log_replay_yaml_compiles_to_replay_log_entry() {
-    let config = compile_single_log_example("examples/log-replay.yaml");
+fn log_csv_replay_yaml_compiles_to_csv_replay_log_entry() {
+    let config = compile_single_log_example("examples/log-csv-replay.yaml");
     assert_eq!(
-        config.name, "app_logs_replay",
-        "name must be app_logs_replay"
+        config.name, "app_logs_csv_replay",
+        "name must be app_logs_csv_replay"
     );
-    assert_eq!(config.rate, 5.0, "rate must be 5");
 
     match &config.generator {
-        LogGeneratorConfig::Replay { file } => {
-            assert!(!file.is_empty(), "replay file path must not be empty");
+        LogGeneratorConfig::CsvReplay { file, .. } => {
+            assert!(!file.is_empty(), "csv_replay file path must not be empty");
         }
-        other => panic!("expected Replay generator, got {other:?}"),
+        other => panic!("expected CsvReplay generator, got {other:?}"),
     }
 
     assert!(

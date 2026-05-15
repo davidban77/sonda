@@ -252,21 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_replay_file_produces_generator_error_not_sink() {
-        let path = std::path::Path::new("/nonexistent/path/for/replay.log");
-        let result = generator::log_replay::LogReplayGenerator::from_file(path);
-        match result {
-            Err(ref err) => {
-                assert!(
-                    matches!(err, SondaError::Generator(_)),
-                    "missing replay file must produce Generator variant, got: {err:?}"
-                );
-            }
-            Ok(_) => panic!("missing file must return Err"),
-        }
-    }
-
-    #[test]
     fn missing_csv_file_produces_generator_error_not_sink() {
         let result = generator::csv_replay::CsvReplayGenerator::new(
             "/nonexistent/path/for/data.csv",
@@ -289,19 +274,23 @@ mod tests {
     }
 
     #[test]
-    fn log_replay_factory_missing_file_produces_generator_error() {
-        let config = generator::LogGeneratorConfig::Replay {
-            file: "/nonexistent/path/for/replay.log".to_string(),
+    fn log_csv_replay_factory_missing_file_produces_generator_error() {
+        let config = generator::LogGeneratorConfig::CsvReplay {
+            file: "/nonexistent/path/for/logs.csv".to_string(),
+            columns: None,
+            repeat: None,
+            timescale: None,
+            default_severity: None,
         };
         let result = generator::create_log_generator(&config);
         match result {
             Err(ref err) => {
                 assert!(
                     matches!(err, SondaError::Generator(_)),
-                    "factory with missing replay file must produce Generator variant, got: {err:?}"
+                    "factory with missing CSV file must produce Generator variant, got: {err:?}"
                 );
             }
-            Ok(_) => panic!("missing replay file must return Err"),
+            Ok(_) => panic!("missing CSV file must return Err"),
         }
     }
 

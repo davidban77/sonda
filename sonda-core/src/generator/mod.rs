@@ -16,7 +16,7 @@ pub mod csv_header;
 pub mod csv_replay;
 pub mod histogram;
 pub mod jitter;
-pub mod log_replay;
+pub mod log_csv_replay;
 pub mod log_template;
 pub mod sawtooth;
 pub mod sequence;
@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use self::constant::Constant;
 use self::csv_replay::CsvReplayGenerator;
-use self::log_replay::LogReplayGenerator;
+use self::log_csv_replay::{LogCsvColumns, LogCsvReplayGenerator};
 use self::log_template::{LogTemplateGenerator, TemplateEntry};
 use self::sawtooth::Sawtooth;
 use self::sequence::SequenceGenerator;
@@ -707,12 +707,19 @@ pub struct TemplateConfig {
 ///   seed: 42
 /// ```
 ///
-/// # Example YAML — replay generator
+/// # Example YAML — csv_replay generator
 ///
 /// ```yaml
 /// generator:
-///   type: replay
-///   file: /var/log/app.log
+///   type: csv_replay
+///   file: logs.csv
+///   timescale: 1.0
+///   default_severity: info
+///   repeat: true
+///   columns:
+///     timestamp: timestamp
+///     severity: severity
+///     message: message
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
@@ -730,16 +737,35 @@ pub enum LogGeneratorConfig {
         /// Seed for deterministic replay. Defaults to `0` when absent.
         seed: Option<u64>,
     },
-    /// Replays lines from a file, cycling back to the start when exhausted.
-    #[cfg_attr(feature = "config", serde(rename = "replay"))]
-    Replay {
-        /// Path to the file containing log lines to replay.
+    /// Replays structured log events from a CSV file with `timestamp`,
+    /// `severity`, `message`, and arbitrary field columns.
+    ///
+    /// The scenario rate is derived from the median Δt of the timestamp
+    /// column at config-expansion time; a user-supplied `rate:` is always
+    /// overridden (a `tracing::warn!` records the override).
+    #[cfg_attr(feature = "config", serde(rename = "csv_replay"))]
+    CsvReplay {
+        /// Path to the CSV file.
         file: String,
+        /// Optional explicit column-role mapping. When absent, roles are
+        /// auto-discovered from the CSV header.
+        #[cfg_attr(feature = "config", serde(default))]
+        columns: Option<LogCsvColumns>,
+        /// Whether to cycle rows after exhausting the CSV. Defaults to `true`.
+        #[cfg_attr(feature = "config", serde(default))]
+        repeat: Option<bool>,
+        /// Replay speed multiplier (default `1.0`, must be strictly positive).
+        #[cfg_attr(feature = "config", serde(default))]
+        timescale: Option<f64>,
+        /// Fallback severity when the severity cell is missing or unparseable.
+        /// Defaults to `Info`.
+        #[cfg_attr(feature = "config", serde(default))]
+        default_severity: Option<Severity>,
     },
 }
 
 /// Parse a severity name string into a [`Severity`] variant.
-fn parse_severity(s: &str) -> Result<Severity, SondaError> {
+pub(crate) fn parse_severity(s: &str) -> Result<Severity, SondaError> {
     match s.to_lowercase().as_str() {
         "trace" => Ok(Severity::Trace),
         "debug" => Ok(Severity::Debug),
@@ -796,10 +822,18 @@ pub fn create_log_generator(
 
             Ok(Box::new(LogTemplateGenerator::new(entries, weights, seed)))
         }
-        LogGeneratorConfig::Replay { file } => {
-            let path = std::path::Path::new(file);
-            Ok(Box::new(LogReplayGenerator::from_file(path)?))
-        }
+        LogGeneratorConfig::CsvReplay {
+            file,
+            columns,
+            repeat,
+            default_severity,
+            ..
+        } => Ok(Box::new(LogCsvReplayGenerator::new(
+            file,
+            columns.as_ref(),
+            default_severity.unwrap_or(Severity::Info),
+            repeat.unwrap_or(true),
+        )?)),
     }
 }
 
@@ -1560,15 +1594,62 @@ seed: 42
 
     #[cfg(feature = "config")]
     #[test]
-    fn deserialize_log_replay_config() {
-        let yaml = "type: replay\nfile: /var/log/app.log\n";
+    fn deserialize_log_csv_replay_config_minimal() {
+        let yaml = "type: csv_replay\nfile: /var/log/app.csv\n";
         let config: LogGeneratorConfig =
-            serde_yaml_ng::from_str(yaml).expect("deserialize replay config");
+            serde_yaml_ng::from_str(yaml).expect("deserialize csv_replay config");
         match config {
-            LogGeneratorConfig::Replay { file } => {
-                assert_eq!(file, "/var/log/app.log");
+            LogGeneratorConfig::CsvReplay {
+                file,
+                columns,
+                repeat,
+                timescale,
+                default_severity,
+            } => {
+                assert_eq!(file, "/var/log/app.csv");
+                assert_eq!(columns, None);
+                assert_eq!(repeat, None);
+                assert_eq!(timescale, None);
+                assert_eq!(default_severity, None);
             }
-            _ => panic!("expected Replay variant"),
+            _ => panic!("expected CsvReplay variant"),
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn deserialize_log_csv_replay_config_full() {
+        let yaml = "\
+type: csv_replay
+file: logs.csv
+timescale: 2.0
+default_severity: warn
+repeat: false
+columns:
+  timestamp: ts
+  severity: lvl
+  message: text
+";
+        let config: LogGeneratorConfig =
+            serde_yaml_ng::from_str(yaml).expect("deserialize full csv_replay config");
+        match config {
+            LogGeneratorConfig::CsvReplay {
+                file,
+                columns,
+                repeat,
+                timescale,
+                default_severity,
+            } => {
+                assert_eq!(file, "logs.csv");
+                assert_eq!(timescale, Some(2.0));
+                assert_eq!(repeat, Some(false));
+                assert_eq!(default_severity, Some(Severity::Warn));
+                let cols = columns.expect("columns must be present");
+                assert_eq!(cols.timestamp.as_deref(), Some("ts"));
+                assert_eq!(cols.severity.as_deref(), Some("lvl"));
+                assert_eq!(cols.message.as_deref(), Some("text"));
+            }
+            _ => panic!("expected CsvReplay variant"),
         }
     }
 
@@ -1631,34 +1712,45 @@ seed: 42
     }
 
     #[test]
-    fn factory_replay_config_missing_file_returns_error() {
-        let config = LogGeneratorConfig::Replay {
-            file: "/this/path/does/not/exist.log".into(),
+    fn factory_csv_replay_config_missing_file_returns_error() {
+        let config = LogGeneratorConfig::CsvReplay {
+            file: "/this/path/does/not/exist.csv".into(),
+            columns: None,
+            repeat: None,
+            timescale: None,
+            default_severity: None,
         };
         let result = create_log_generator(&config);
-        assert!(result.is_err(), "missing replay file must produce Err");
+        assert!(result.is_err(), "missing CSV file must produce Err");
     }
 
     #[test]
-    fn factory_replay_config_creates_working_generator() {
+    fn factory_csv_replay_config_creates_working_generator() {
         use std::io::Write;
         use tempfile::NamedTempFile;
         let mut tmp = NamedTempFile::new().expect("create temp file");
-        writeln!(tmp, "line one").expect("write");
-        writeln!(tmp, "line two").expect("write");
-        let config = LogGeneratorConfig::Replay {
+        writeln!(tmp, "timestamp,severity,message").expect("write");
+        writeln!(tmp, "1700000000,info,line one").expect("write");
+        writeln!(tmp, "1700000003,warn,line two").expect("write");
+        let config = LogGeneratorConfig::CsvReplay {
             file: tmp.path().to_string_lossy().into_owned(),
+            columns: None,
+            repeat: None,
+            timescale: None,
+            default_severity: None,
         };
         let gen =
-            create_log_generator(&config).expect("replay factory with real file must succeed");
+            create_log_generator(&config).expect("csv_replay factory with real file must succeed");
         assert_eq!(gen.generate(0).message, "line one");
+        assert_eq!(gen.generate(0).severity, Severity::Info);
         assert_eq!(gen.generate(1).message, "line two");
+        assert_eq!(gen.generate(1).severity, Severity::Warn);
         assert_eq!(gen.generate(2).message, "line one");
     }
 
     #[test]
     fn log_generators_are_send_and_sync() {
         assert_send_sync::<crate::generator::log_template::LogTemplateGenerator>();
-        assert_send_sync::<crate::generator::log_replay::LogReplayGenerator>();
+        assert_send_sync::<crate::generator::log_csv_replay::LogCsvReplayGenerator>();
     }
 }

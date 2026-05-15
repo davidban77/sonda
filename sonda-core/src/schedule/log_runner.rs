@@ -385,29 +385,29 @@ sink:
         assert!(matches!(config.sink, SinkConfig::Stdout));
     }
 
-    /// Config from YAML: log-replay style YAML → valid `LogScenarioConfig`.
+    /// Config from YAML: log_csv_replay style YAML → valid `LogScenarioConfig`.
     #[cfg(feature = "config")]
     #[test]
-    fn log_scenario_config_deserializes_replay_yaml() {
+    fn log_scenario_config_deserializes_csv_replay_yaml() {
         let yaml = r#"
-name: app_logs_replay
+name: app_logs_csv_replay
 rate: 5
 duration: 30s
 generator:
-  type: replay
-  file: /var/log/app.log
+  type: csv_replay
+  file: /var/log/app.csv
 encoder:
   type: json_lines
 sink:
   type: stdout
 "#;
         let config: LogScenarioConfig =
-            serde_yaml_ng::from_str(yaml).expect("log-replay YAML must deserialize");
-        assert_eq!(config.name, "app_logs_replay");
+            serde_yaml_ng::from_str(yaml).expect("log_csv_replay YAML must deserialize");
+        assert_eq!(config.name, "app_logs_csv_replay");
         assert_eq!(config.rate, 5.0);
         assert!(matches!(
             config.generator,
-            LogGeneratorConfig::Replay { .. }
+            LogGeneratorConfig::CsvReplay { .. }
         ));
     }
 

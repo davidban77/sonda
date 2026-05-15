@@ -119,7 +119,7 @@ See the [Capacity Planning](capacity-planning.md) guide for measurement methodol
 | File | Generator | Encoder | Sink | Description |
 |------|-----------|---------|------|-------------|
 | `log-template.yaml` | template | json_lines | stdout | Structured logs with field pools and severity weights |
-| `log-replay.yaml` | replay | json_lines | stdout | Replay lines from an existing log file |
+| `log-csv-replay.yaml` | csv_replay | json_lines | stdout | Replay structured log events from a CSV (timestamp + severity + message + fields) |
 | `loki-json-lines.yaml` | template | json_lines | loki | Push log events to a Loki instance |
 | `kafka-json-logs.yaml` | template | json_lines | kafka | Send log events to a Kafka topic |
 

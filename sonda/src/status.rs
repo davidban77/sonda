@@ -866,7 +866,7 @@ fn log_generator_display(gen: &LogGeneratorConfig) -> String {
             };
             format!("template ({tmpl_count} template(s){weights_str}{seed_str})")
         }
-        LogGeneratorConfig::Replay { file } => format!("replay (file: {file})"),
+        LogGeneratorConfig::CsvReplay { file, .. } => format!("csv_replay (file: {file})"),
     }
 }
 
@@ -1312,13 +1312,17 @@ mod tests {
     }
 
     #[test]
-    fn log_generator_display_replay() {
-        let config = LogGeneratorConfig::Replay {
-            file: "/var/log/app.log".to_string(),
+    fn log_generator_display_csv_replay() {
+        let config = LogGeneratorConfig::CsvReplay {
+            file: "/var/log/app.csv".to_string(),
+            columns: None,
+            repeat: None,
+            timescale: None,
+            default_severity: None,
         };
         assert_eq!(
             log_generator_display(&config),
-            "replay (file: /var/log/app.log)"
+            "csv_replay (file: /var/log/app.csv)"
         );
     }
 
@@ -1630,8 +1634,12 @@ mod tests {
                 jitter_seed: None,
                 on_sink_error: sonda_core::OnSinkError::Warn,
             },
-            generator: LogGeneratorConfig::Replay {
-                file: "/var/log/app.log".to_string(),
+            generator: LogGeneratorConfig::CsvReplay {
+                file: "/var/log/app.csv".to_string(),
+                columns: None,
+                repeat: None,
+                timescale: None,
+                default_severity: None,
             },
             encoder: EncoderConfig::Syslog {
                 hostname: None,

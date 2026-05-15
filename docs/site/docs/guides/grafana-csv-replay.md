@@ -290,3 +290,6 @@ For the full CSV replay parameter reference, see [Generators: csv_replay](../con
     `csv_replay` plays back exact values from the file. If you want to extract the *pattern*
     from the data and generate a self-contained scenario YAML that does not depend on the
     original file, use [sonda import](csv-import.md) instead.
+
+!!! tip "Replaying logs instead of metrics?"
+    The same workflow works for log events with `log_csv_replay`. Export the window from Loki via `logcli`, run it through `jq` to produce a `timestamp,severity,message,...fields` CSV, and point a logs scenario at the file. The rate-derivation, `timescale`, and override-warn semantics described above apply identically. Walkthrough: [Log CSV Replay](log-csv-replay.md).
