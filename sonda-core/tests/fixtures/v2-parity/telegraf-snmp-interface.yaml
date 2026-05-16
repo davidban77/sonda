@@ -3,6 +3,7 @@
 # of signals as the v1 `expand_pack` path given equivalent user-provided
 # config.
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 60s

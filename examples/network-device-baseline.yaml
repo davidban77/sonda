@@ -5,13 +5,14 @@
 # interface state uses constant (all up), and CPU/memory use sine waves.
 #
 # Run with:
-#   sonda run --scenario examples/network-device-baseline.yaml
+#   sonda run examples/network-device-baseline.yaml
 #
 # All output goes to stdout in Prometheus text format. To push to
 # VictoriaMetrics or another backend, change the sink in each scenario
 # entry to http_push or remote_write.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

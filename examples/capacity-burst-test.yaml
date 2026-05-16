@@ -11,9 +11,10 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage:
-#   sonda run --scenario examples/capacity-burst-test.yaml
+#   sonda run examples/capacity-burst-test.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   duration: 120s

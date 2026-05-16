@@ -23,11 +23,9 @@ fn dry_run_text(yaml_body: &str) -> String {
     std::fs::write(&path, yaml_body).expect("scenario file must be written");
     let pack_dir = cli_fixtures_dir().join("catalog-packs");
     let output = Command::new(sonda_bin())
-        .env_remove("SONDA_SCENARIO_PATH")
-        .env_remove("SONDA_PACK_PATH")
-        .args(["--pack-path"])
+        .args(["--catalog"])
         .arg(&pack_dir)
-        .args(["run", "--scenario"])
+        .args(["run"])
         .arg(&path)
         .arg("--dry-run")
         .output()
@@ -42,6 +40,7 @@ fn dry_run_text(yaml_body: &str) -> String {
 }
 
 const ANALYTICAL_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m
@@ -71,6 +70,7 @@ scenarios:
 "#;
 
 const NON_ANALYTICAL_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1m
@@ -100,6 +100,7 @@ scenarios:
 "#;
 
 const MIXED_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m
@@ -140,6 +141,7 @@ scenarios:
 "#;
 
 const DELAY_PRESENT: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m

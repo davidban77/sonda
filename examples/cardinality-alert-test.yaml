@@ -11,9 +11,10 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage:
-#   sonda metrics --scenario examples/cardinality-alert-test.yaml
+#   sonda run examples/cardinality-alert-test.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

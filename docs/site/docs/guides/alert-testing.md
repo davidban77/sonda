@@ -62,7 +62,7 @@ upstream Prometheus). Both land in the stack from
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
 
 # Push test data
-sonda metrics --scenario examples/vm-push-scenario.yaml
+sonda run examples/vm-push-scenario.yaml
 
 # Verify the metric exists (wait ~15s for ingestion)
 curl "http://localhost:8428/api/v1/query?query=cpu_usage"

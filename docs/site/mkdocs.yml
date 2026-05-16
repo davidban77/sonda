@@ -88,7 +88,7 @@ nav:
       - Multi-Scenario Runs: guides/tutorial-multi-scenario.md
       - The Server API: guides/tutorial-server.md
     - Catalog & packs:
-      - Built-in Scenarios: guides/scenarios.md
+      - Catalogs: guides/scenarios.md
       - Dynamic Labels: guides/dynamic-labels.md
       - Example Scenarios: guides/examples.md
       - Metric Packs: guides/metric-packs.md

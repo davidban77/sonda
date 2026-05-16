@@ -10,9 +10,10 @@
 # the full source span at the derived 0.1/s rate.
 #
 # Run with:
-#   sonda metrics --scenario examples/csv-replay-metrics.yaml
+#   sonda run examples/csv-replay-metrics.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

@@ -12,11 +12,12 @@ overlap deterministically.
 | `clock_group` | (none) | Groups scenarios under a shared timing reference |
 
 ```bash
-sonda run --scenario examples/multi-metric-correlation.yaml
+sonda run examples/multi-metric-correlation.yaml
 ```
 
 ```yaml title="examples/multi-metric-correlation.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

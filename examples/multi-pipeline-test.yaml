@@ -4,11 +4,12 @@
 # Metrics go to stdout; logs go to a JSON file for inspection.
 #
 # Usage:
-#   sonda run --scenario examples/multi-pipeline-test.yaml
+#   sonda run examples/multi-pipeline-test.yaml
 #   echo "Exit: $?"
 #   wc -l < /tmp/pipeline-logs.json
 
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

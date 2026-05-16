@@ -104,6 +104,7 @@ works directly with `rate()` and `histogram_quantile()`.
 
 ```yaml title="examples/histogram.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -129,7 +130,7 @@ scenarios:
 Run it:
 
 ```bash
-sonda histogram --scenario examples/histogram.yaml
+sonda run examples/histogram.yaml
 ```
 
 ```text title="Output (first tick)"
@@ -186,6 +187,7 @@ threshold.
 
 ```yaml title="histogram-degradation.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -211,7 +213,7 @@ scenarios:
 ```
 
 ```bash
-sonda histogram --scenario histogram-degradation.yaml
+sonda run histogram-degradation.yaml
 ```
 
 As Sonda runs, the distribution center drifts higher. After about 40 seconds, most observations
@@ -252,6 +254,7 @@ per-tick and cannot be aggregated across instances.
 
 ```yaml title="examples/summary.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -276,7 +279,7 @@ scenarios:
 ```
 
 ```bash
-sonda summary --scenario examples/summary.yaml
+sonda run examples/summary.yaml
 ```
 
 ```text title="Output (first tick)"

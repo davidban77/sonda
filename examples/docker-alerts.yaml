@@ -19,7 +19,7 @@
 #       severity: warning
 #
 # Usage with the CLI:
-#   sonda metrics --scenario examples/docker-alerts.yaml
+#   sonda run examples/docker-alerts.yaml
 #
 # Usage with sonda-server (POST to the running container):
 #   curl -X POST -H "Content-Type: text/yaml" \
@@ -27,6 +27,7 @@
 #     http://localhost:8080/scenarios
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

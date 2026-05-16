@@ -11,9 +11,10 @@
 #   - Column 3 (disk_io_mbps): no extra labels
 #
 # Run with:
-#   sonda metrics --scenario examples/csv-replay-explicit-labels.yaml
+#   sonda run examples/csv-replay-explicit-labels.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

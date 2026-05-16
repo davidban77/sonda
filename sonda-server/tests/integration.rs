@@ -13,6 +13,7 @@ use std::time::Duration;
 /// Minimal v2 metrics scenario YAML that runs at a low rate with stdout sink.
 const METRICS_YAML: &str = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 30s
@@ -32,6 +33,7 @@ scenarios:
 /// Minimal v2 logs scenario YAML that runs at a low rate with stdout sink.
 const LOGS_YAML: &str = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 30s
@@ -249,6 +251,7 @@ fn full_lifecycle_metrics_and_logs() {
 
 const NON_GATED_METRIC_YAML: &str = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 2s

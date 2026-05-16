@@ -9,9 +9,30 @@ can test how your pipeline and alerts behave under imperfect conditions.
 Drop all events for a window within a recurring cycle. Useful for simulating network
 partitions or scrape failures:
 
+```yaml title="net-bytes-gaps.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 20s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: net_bytes
+    signal_type: metrics
+    name: net_bytes
+    generator:
+      type: constant
+      value: 1.0
+    gaps:
+      every: 10s
+      for: 3s
+```
+
 ```bash
-sonda metrics --name net_bytes --rate 2 --duration 20s \
-  --gap-every 10s --gap-for 3s
+sonda run net-bytes-gaps.yaml
 ```
 
 This emits at 2/s, but goes silent for 3 seconds out of every 10-second cycle.
@@ -20,21 +41,44 @@ This emits at 2/s, but goes silent for 3 seconds out of every 10-second cycle.
 
 Temporarily multiply the emission rate. Useful for load spikes or log storms:
 
+```yaml title="req-rate-bursts.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 20s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: req_rate
+    signal_type: metrics
+    name: req_rate
+    generator:
+      type: constant
+      value: 1.0
+    bursts:
+      every: 10s
+      for: 2s
+      multiplier: 5.0
+```
+
 ```bash
-sonda metrics --name req_rate --rate 10 --duration 20s \
-  --burst-every 10s --burst-for 2s --burst-multiplier 5
+sonda run req-rate-bursts.yaml
 ```
 
 This emits at 10/s normally, but spikes to 50/s for 2 seconds every 10-second cycle.
 
-YAML works the same way:
+A larger scenario with shared defaults and labels:
 
 ```bash
-sonda metrics --scenario examples/burst-metrics.yaml --duration 20s
+sonda run examples/burst-metrics.yaml --duration 20s
 ```
 
 ```yaml title="examples/burst-metrics.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 100

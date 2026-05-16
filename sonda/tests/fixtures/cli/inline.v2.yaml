@@ -1,6 +1,7 @@
 # v2 single-signal file with `defaults:` + `scenarios:`. CLI tests use
 # this to verify `sonda run` dispatches v2 files through the v2 compiler.
 version: 2
+kind: runnable
 
 defaults:
   rate: 5

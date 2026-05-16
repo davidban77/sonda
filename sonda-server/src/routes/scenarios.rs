@@ -340,11 +340,7 @@ fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-fn parse_body(
-    body: &[u8],
-    headers: &HeaderMap,
-    pack_resolver: &InMemoryPackResolver,
-) -> Result<ParsedBody, ParseFailure> {
+fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, ParseFailure> {
     let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
 
     let version = detect_version(&text);
@@ -354,7 +350,8 @@ fn parse_body(
         )));
     }
 
-    let compiled = compile_scenario_file_compiled(&text, pack_resolver).map_err(|e| {
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(&text, &resolver).map_err(|e| {
         let detail = format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
@@ -446,7 +443,7 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|fail| {
+    let parsed = parse_body(&body, &headers).map_err(|fail| {
         warn!(error = %fail.message(), "POST /scenarios: invalid request body");
         match fail {
             ParseFailure::Syntactic(m) => bad_request(m),
@@ -963,6 +960,7 @@ mod tests {
     /// Valid v2 body for a metrics scenario with a short duration.
     const VALID_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -982,6 +980,7 @@ scenarios:
     /// Valid v2 body for a logs scenario with a short duration.
     const VALID_LOGS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -1004,6 +1003,7 @@ scenarios:
     /// Valid v2 body with an explicit `signal_type: metrics` entry.
     const VALID_TAGGED_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -1023,6 +1023,7 @@ scenarios:
     /// v2 body with `rate: 0` — must be rejected by runtime validation.
     const ZERO_RATE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   duration: 1s
   encoder:
@@ -1756,6 +1757,7 @@ scenarios:
     async fn post_with_json_content_type_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -1876,6 +1878,7 @@ scenarios:
     async fn post_yaml_with_negative_rate_returns_422() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 1s
   encoder:
@@ -1908,12 +1911,8 @@ scenarios:
     fn parse_body_accepts_v2_metrics_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_METRICS_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 metrics body must parse");
+        let parsed = parse_body(VALID_METRICS_YAML.as_bytes(), &headers)
+            .expect("v2 metrics body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
         assert_eq!(compiled.entries[0].signal_type, "metrics");
@@ -1925,12 +1924,8 @@ scenarios:
     fn parse_body_accepts_v2_logs_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_LOGS_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 logs body must parse");
+        let parsed =
+            parse_body(VALID_LOGS_YAML.as_bytes(), &headers).expect("v2 logs body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
         assert_eq!(compiled.entries[0].signal_type, "logs");
@@ -1949,8 +1944,8 @@ generator:
   type: constant
   value: 1.0
 ";
-        let err = parse_body(v1_yaml.as_bytes(), &headers, &InMemoryPackResolver::new())
-            .expect_err("v1 flat YAML must be rejected");
+        let err =
+            parse_body(v1_yaml.as_bytes(), &headers).expect_err("v1 flat YAML must be rejected");
         let msg = err.message();
         assert!(
             msg.contains("v2"),
@@ -1976,7 +1971,7 @@ scenarios:
       type: constant
       value: 1.0
 ";
-        let err = parse_body(v1_multi.as_bytes(), &headers, &InMemoryPackResolver::new())
+        let err = parse_body(v1_multi.as_bytes(), &headers)
             .expect_err("v1 multi-scenario YAML must be rejected");
         let msg = err.message();
         assert!(
@@ -1990,8 +1985,7 @@ scenarios:
     fn parse_body_rejects_garbage_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let err = parse_body(b"not valid: [}{", &headers, &InMemoryPackResolver::new())
-            .expect_err("garbage must fail");
+        let err = parse_body(b"not valid: [}{", &headers).expect_err("garbage must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
@@ -2002,6 +1996,7 @@ scenarios:
         headers.insert("content-type", "application/json".parse().unwrap());
         let json = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -2017,12 +2012,8 @@ scenarios:
                 }
             ]
         });
-        let parsed = parse_body(
-            json.to_string().as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 JSON body must parse");
+        let parsed =
+            parse_body(json.to_string().as_bytes(), &headers).expect("v2 JSON body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
     }
@@ -2032,8 +2023,7 @@ scenarios:
     fn parse_body_rejects_invalid_json() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        let err = parse_body(b"not json", &headers, &InMemoryPackResolver::new())
-            .expect_err("invalid JSON must fail");
+        let err = parse_body(b"not json", &headers).expect_err("invalid JSON must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
@@ -3577,6 +3567,7 @@ scenarios:
     /// v2 body for a valid multi-scenario batch with two entries.
     const VALID_MULTI_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -3607,6 +3598,7 @@ scenarios:
     /// "phase_offset resolved" without running afoul of that validation.
     const MULTI_YAML_WITH_PHASE_OFFSET: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -3705,6 +3697,7 @@ scenarios:
     async fn post_multi_scenario_json_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -3750,7 +3743,7 @@ scenarios:
     /// Empty v2 scenarios array returns 400 with a descriptive error.
     #[tokio::test]
     async fn post_multi_scenario_empty_array_returns_400() {
-        let yaml = "version: 2\nscenarios: []\n";
+        let yaml = "version: 2\nkind: runnable\nscenarios: []\n";
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", yaml).await;
 
@@ -3773,6 +3766,7 @@ scenarios:
     async fn post_multi_scenario_invalid_entry_returns_422_nothing_launched() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 200ms
   encoder:
@@ -3973,6 +3967,7 @@ scenarios:
     async fn post_multi_scenario_mixed_signal_types() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -4025,12 +4020,8 @@ scenarios:
     fn parse_body_returns_multi_entry_compiled_for_v2_scenarios_array() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_MULTI_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 multi YAML body must parse");
+        let parsed = parse_body(VALID_MULTI_YAML.as_bytes(), &headers)
+            .expect("v2 multi YAML body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(
             compiled.entries.len(),
@@ -4098,6 +4089,7 @@ scenarios:
     async fn post_single_scenario_with_phase_offset_returns_201() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms

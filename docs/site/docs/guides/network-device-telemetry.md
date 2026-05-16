@@ -70,11 +70,12 @@ The baseline scenario models `rtr-core-01` in a healthy state: both uplinks carr
 all interfaces up, steady CPU and memory.
 
 ```bash
-sonda --dry-run run --scenario examples/network-device-baseline.yaml
+sonda --dry-run run examples/network-device-baseline.yaml
 ```
 
 ```yaml title="examples/network-device-baseline.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -123,7 +124,7 @@ plus `device_cpu_percent` and `device_memory_percent`.
 Run it:
 
 ```bash
-sonda run --scenario examples/network-device-baseline.yaml
+sonda run examples/network-device-baseline.yaml
 ```
 
 ```text title="Sample output (interleaved from 9 threads)"
@@ -167,9 +168,9 @@ The interesting part: what happens when a primary link drops? Traffic shifts to 
 the backup saturates as it absorbs double the load, and latency climbs as the backup fills.
 Testing your dashboards and alerts against that cascade is the whole point.
 
-The built-in `link-failover` scenario models the cascade as a 3-signal causal chain. Each signal
-uses a dedicated generator (not a hand-scripted sequence) and the `after:` field tells Sonda to
-delay a signal until the one it depends on crosses a threshold:
+Model the cascade as a 3-signal causal chain. Each signal uses a dedicated generator (not a
+hand-scripted sequence) and the `after:` field tells Sonda to delay a signal until the one it
+depends on crosses a threshold:
 
 | Signal | Generator | Starts when |
 |--------|-----------|-------------|
@@ -182,12 +183,9 @@ each linked signal, so the signals still emit independently but start in the rig
 See the [v2 `after:` chain reference](../configuration/v2-scenarios.md#temporal-chains-with-after)
 for the underlying mechanics.
 
-```yaml title="scenarios/link-failover.yaml (excerpt)"
+```yaml title="link-failover.yaml"
 version: 2
-
-scenario_name: link-failover
-category: network
-description: "Edge router link failure with traffic shift to backup"
+kind: runnable
 
 defaults:
   rate: 1
@@ -226,25 +224,37 @@ scenarios:
       op: "<"
       value: 1
 
-  # ... plus latency_ms, gated on backup_link_utilization > 70
+  - id: latency_ms
+    signal_type: metrics
+    name: latency_ms
+    generator:
+      type: degradation
+      baseline: 5
+      ceiling: 150
+      time_to_degrade: 3m
+    labels:
+      path: backup
+    after:
+      ref: backup_link_utilization
+      op: ">"
+      value: 70
 ```
 
-Run the scenario from the catalog or directly from disk:
+Run the file:
 
 ```bash
-sonda catalog run link-failover
-sonda run --scenario scenarios/link-failover.yaml
+sonda run link-failover.yaml
 ```
 
 Use `--dry-run` to see the resolved `phase_offset` values that Sonda computed from the `after:`
 clauses:
 
 ```bash
-sonda run --scenario scenarios/link-failover.yaml --dry-run
+sonda --dry-run run link-failover.yaml
 ```
 
 ```text title="Output (abridged)"
-[config] file: scenarios/link-failover.yaml (version: 2, 3 scenarios)
+[config] file: link-failover.yaml (version: 2, 3 scenarios)
 
 [config] [1/3] interface_oper_state
     generator:      flap (up_duration: 60s, down_duration: 30s, up_value: 1, down_value: 0)
@@ -270,9 +280,9 @@ auto-assigned `clock_group`, so their timers start from the same reference.
 
 !!! info "Why `after:` instead of aligned sequences?"
     You can express a link failure with the `sequence` generator by hand-aligning values across
-    scenarios -- that is what the built-in [interface-flap](scenarios.md#network) scenario does.
-    `after:` is the v2 equivalent: instead of counting ticks, you declare the causal relationship
-    once and let the compiler do the timing math. The [v2 scenarios guide](../configuration/v2-scenarios.md)
+    scenarios -- which is exactly what `examples/network-link-failure.yaml` does. `after:` is the
+    v2 equivalent: instead of counting ticks, you declare the causal relationship once and let
+    the compiler do the timing math. The [v2 scenarios guide](../configuration/v2-scenarios.md)
     covers the full surface.
 
 ---
@@ -382,7 +392,7 @@ or Prometheus, change the sink in each scenario entry.
     Then modify the scenario sinks to point at VictoriaMetrics and run:
 
     ```bash
-    sonda run --scenario examples/network-device-baseline.yaml
+    sonda run examples/network-device-baseline.yaml
     ```
 
     Verify data arrived:
@@ -559,11 +569,10 @@ Model environmental sensors with sine waves:
 
 | Task | Command |
 |------|---------|
-| Validate baseline scenario | `sonda --dry-run run --scenario examples/network-device-baseline.yaml` |
-| Run baseline (stdout) | `sonda run --scenario examples/network-device-baseline.yaml` |
-| Validate failover scenario | `sonda --dry-run run --scenario scenarios/link-failover.yaml` |
-| Run failover simulation | `sonda run --scenario scenarios/link-failover.yaml` |
-| Run failover from catalog | `sonda catalog run link-failover` |
+| Validate baseline scenario | `sonda --dry-run run examples/network-device-baseline.yaml` |
+| Run baseline (stdout) | `sonda run examples/network-device-baseline.yaml` |
+| Validate failover scenario | `sonda --dry-run run link-failover.yaml` |
+| Run failover simulation | `sonda run link-failover.yaml` |
 
 **Related pages:**
 

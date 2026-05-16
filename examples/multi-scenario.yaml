@@ -1,12 +1,13 @@
 # Multi-scenario example: metrics and logs running concurrently.
 #
 # Run with:
-#   sonda run --scenario examples/multi-scenario.yaml
+#   sonda run examples/multi-scenario.yaml
 #
 # Both scenarios start at the same time on separate threads and run for 30s.
 # Metrics are written to stdout; log events are written to /tmp/sonda-logs.json.
 
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

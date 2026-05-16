@@ -102,7 +102,7 @@ jobs:
 
       - name: Push metrics above critical threshold
         run: |
-          sonda -q metrics --scenario examples/ci-alert-validation.yaml
+          sonda -q run examples/ci-alert-validation.yaml
 
       - name: Wait for alert evaluation
         run: sleep 15
@@ -205,6 +205,7 @@ both the warning threshold (70) and the critical threshold (90) defined in the a
 
 ```yaml title="examples/ci-alert-validation.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -323,7 +324,7 @@ jobs:
           done
 
       - name: Push metrics
-        run: sonda -q metrics --scenario examples/ci-alert-validation.yaml
+        run: sonda -q run examples/ci-alert-validation.yaml
 
       - name: Wait for evaluation
         run: sleep 15
@@ -367,6 +368,7 @@ that should trigger it.
 
 ```yaml title="examples/ci-high-memory-alert.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -394,11 +396,11 @@ concurrently:
 
 ```bash
 # Sequential: one scenario per rule
-sonda -q metrics --scenario examples/ci-alert-validation.yaml
-sonda -q metrics --scenario examples/ci-high-memory-alert.yaml
+sonda -q run examples/ci-alert-validation.yaml
+sonda -q run examples/ci-high-memory-alert.yaml
 
 # Concurrent: all rules in one file
-sonda -q run --scenario examples/ci-all-alerts.yaml
+sonda -q run examples/ci-all-alerts.yaml
 ```
 
 ??? tip "Organizing scenarios by rule group"

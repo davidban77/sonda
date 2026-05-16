@@ -16,6 +16,7 @@ A single v2 entry touching every available field:
 
 ```yaml title="full-example.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 100
@@ -70,7 +71,7 @@ scenarios:
 ```
 
 ```bash
-sonda run --scenario full-example.yaml
+sonda run full-example.yaml
 ```
 
 ## Field reference
@@ -288,6 +289,7 @@ works.
 
 ```yaml title="log-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10
@@ -319,7 +321,7 @@ scenarios:
 ```
 
 ```bash
-sonda run --scenario log-scenario.yaml
+sonda run log-scenario.yaml
 ```
 
 The `labels` / `dynamic_labels` fields work the same way as for metric entries. Static labels
@@ -342,6 +344,7 @@ Two metric entries correlated with `phase_offset` + a shared `clock_group:`:
 
 ```yaml title="multi-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -377,7 +380,7 @@ scenarios:
 ```
 
 ```bash
-sonda run --scenario multi-scenario.yaml
+sonda run multi-scenario.yaml
 ```
 
 The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU spikes first and memory
@@ -389,6 +392,7 @@ hand-tuned offsets.
 
 ```yaml title="mixed-signals.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -447,7 +451,7 @@ scenarios:
 ```
 
 ```bash
-sonda run --scenario mixed-signals.yaml
+sonda run mixed-signals.yaml
 ```
 
 !!! info "Histogram and summary entries use different fields"
@@ -464,6 +468,7 @@ one entry per metric at compile time:
 
 ```yaml title="pack-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -484,7 +489,7 @@ scenarios:
 ```
 
 ```bash
-sonda run --scenario pack-scenario.yaml
+sonda run pack-scenario.yaml
 ```
 
 Any `labels`, `rate`, `duration`, `encoder`, or `sink` you set on the entry applies to every
@@ -493,21 +498,17 @@ see the [Metric Packs guide](../guides/metric-packs.md) for the full reference.
 
 ## CLI overrides
 
-Any field in a scenario file can be overridden from the command line. CLI flags always take
-precedence over YAML values:
+Any of the common knobs (`rate`, `duration`, `sink`, `endpoint`, `encoder`, `label`,
+`on-sink-error`) can be overridden from the command line. CLI flags always take precedence
+over YAML values:
 
-```bash
-sonda run --scenario scenario.yaml --duration 5s --rate 2
+```bash title="scenario.yaml"
+sonda run scenario.yaml --duration 5s --rate 2
 ```
 
 This loads the file but overrides `duration` and `rate` (applied to every entry) with the CLI
-values.
-
-Per-signal flags like `--precision` also work when using the signal subcommands:
-
-```bash
-sonda metrics --scenario @cpu-spike --precision 2
-```
+values. Encoder-specific knobs like `precision` and pack-specific overrides live in the YAML —
+see [CLI Reference: sonda run](cli-reference.md#sonda-run) for the full override list.
 
 ## What next
 

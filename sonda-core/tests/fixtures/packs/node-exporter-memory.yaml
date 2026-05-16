@@ -5,6 +5,8 @@
 # constants that approximate a server with 16 GiB total memory under
 # moderate load.
 
+version: 2
+kind: composable
 name: node_exporter_memory
 description: "Memory gauge metrics (node_exporter-compatible)"
 category: infrastructure

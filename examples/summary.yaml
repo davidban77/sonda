@@ -13,13 +13,14 @@
 # Prerequisites: none -- stdout sink.
 #
 # Run:
-#   sonda summary --scenario examples/summary.yaml
+#   sonda run examples/summary.yaml
 #
 # Observable output: 4 quantile series (0.5, 0.9, 0.95, 0.99) plus
 # `_count` and `_sum`. The p50 should hover near 0.1; p99 should sit
 # near 0.15 (mean + ~2.3 stddev). `_count` ticks up by 100 every second.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

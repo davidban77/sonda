@@ -4,12 +4,10 @@
 # formatted metric values. Omit it to keep full f64 precision.
 #
 # Run all three scenarios together:
-#   sonda run --scenario examples/precision-formatting.yaml
-#
-# Or set precision via CLI flag:
-#   sonda metrics --name cpu_usage --rate 2 --duration 5s --value-mode sine --amplitude 50 --offset 50 --precision 2
+#   sonda run examples/precision-formatting.yaml
 
 version: 2
+kind: runnable
 
 scenarios:
   # Prometheus text: rounds to 2 decimal places.

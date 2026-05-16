@@ -11,9 +11,10 @@
 # Scenario-level labels (e.g., env: production) are merged as defaults.
 #
 # Run with:
-#   sonda metrics --scenario examples/csv-replay-grafana-auto.yaml
+#   sonda run examples/csv-replay-grafana-auto.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

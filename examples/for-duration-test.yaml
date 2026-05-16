@@ -9,9 +9,10 @@
 # Adjust the number of above-threshold values to match your `for:` duration.
 #
 # Usage:
-#   sonda metrics --scenario examples/for-duration-test.yaml
+#   sonda run examples/for-duration-test.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

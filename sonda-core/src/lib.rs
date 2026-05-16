@@ -18,6 +18,7 @@
 //! This lets sonda-core add new variants and fields in a minor release
 //! without a semver-major bump.
 
+pub mod analysis;
 pub mod compiler;
 pub mod config;
 pub mod emit;
@@ -25,7 +26,6 @@ pub mod encoder;
 pub mod generator;
 pub mod model;
 pub mod packs;
-pub mod scenarios;
 pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
@@ -49,7 +49,6 @@ pub use model::log::Severity;
 pub use model::metric::Labels;
 pub use model::metric::MetricEvent;
 pub use model::metric::ValidatedMetricName;
-pub use scenarios::BuiltinScenario;
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::{ScenarioState, ScenarioStats};

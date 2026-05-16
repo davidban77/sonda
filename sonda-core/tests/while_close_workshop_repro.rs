@@ -152,6 +152,7 @@ fn workshop_paused_finished_cascade_emits_stale_marker_via_multi_runner() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-paused-finished-repro
 defaults:
   rate: 50
@@ -272,6 +273,7 @@ fn workshop_paused_finished_cascade_default_batch_size_emits_stale_marker() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-paused-finished-default-batch
 defaults:
   rate: 50
@@ -377,6 +379,7 @@ fn workshop_paused_finished_multi_entry_cascade_each_metric_emits_stale_marker()
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-multi-entry-cascade
 defaults:
   rate: 50
@@ -599,6 +602,7 @@ fn workshop_paused_finished_real_timescale_emits_stale_marker() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-real-timescale-repro
 defaults:
   rate: 5
@@ -769,6 +773,7 @@ fn workshop_paused_finished_through_server_binary_emits_stale_marker() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-via-server-binary
 defaults:
   rate: 50
@@ -1013,6 +1018,7 @@ fn workshop_cascade_with_baseline_scenarios_emits_stale_marker() {
     // ------------------------------------------------------------------
     let mut baseline_yaml = String::from(
         "version: 2\n\
+         kind: runnable\n\
          scenario_name: workshop-baseline-srl2\n\
          defaults:\n  \
            rate: 20\n  \
@@ -1167,6 +1173,7 @@ fn workshop_cascade_with_baseline_scenarios_emits_stale_marker() {
     let cascade_yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-cascade-incident
 defaults:
   rate: 50
@@ -1399,6 +1406,7 @@ fn workshop_close_emit_timestamp_strictly_greater_than_active_emissions() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-close-emit-snap-to-ts-ordering
 defaults:
   rate: 50
@@ -1497,6 +1505,7 @@ fn workshop_close_emit_stale_marker_timestamp_strictly_greater_than_active_emiss
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-close-emit-stale-marker-ts-ordering
 defaults:
   rate: 50
@@ -1627,6 +1636,7 @@ fn assert_close_ts_strictly_after_preceding_actives(active_ts: &[i64], close_ts:
 fn workshop_snap_to_yaml_parses_into_delay_clause() {
     let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s
@@ -1706,6 +1716,7 @@ fn workshop_snap_to_zero_reaches_wire_via_multi_runner() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-snap-to-multi-runner
 defaults:
   rate: 50
@@ -1869,6 +1880,7 @@ fn workshop_snap_to_zero_reaches_wire_via_server_binary() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 scenario_name: workshop-snap-to-via-server
 defaults:
   rate: 50

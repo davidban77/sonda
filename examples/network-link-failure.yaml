@@ -13,9 +13,10 @@
 # creating a cyclic failure/recovery pattern.
 #
 # Run with:
-#   sonda run --scenario examples/network-link-failure.yaml
+#   sonda run examples/network-link-failure.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

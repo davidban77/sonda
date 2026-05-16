@@ -11,7 +11,7 @@ use common::{cli_fixtures_dir, sonda_bin};
 fn run_while_cascade_gates_downstream_emission() {
     let fixture = cli_fixtures_dir().join("while-cascade.v2.yaml");
     let output = Command::new(sonda_bin())
-        .args(["--quiet", "run", "--scenario"])
+        .args(["--quiet", "run"])
         .arg(&fixture)
         .output()
         .expect("must spawn sonda");
@@ -56,6 +56,7 @@ fn op_le_returns_nonzero_on_cli() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1s
@@ -83,7 +84,7 @@ scenarios:
 ";
     tmp.write_all(yaml.as_bytes()).expect("write fixture");
     let output = Command::new(sonda_bin())
-        .args(["--quiet", "run", "--scenario"])
+        .args(["--quiet", "run"])
         .arg(tmp.path())
         .output()
         .expect("must spawn sonda");
@@ -113,6 +114,7 @@ fn dry_run_renders_flap_enum_oper_state_defaults() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s
@@ -132,7 +134,7 @@ scenarios:
 ";
     tmp.write_all(yaml.as_bytes()).expect("write fixture");
     let output = Command::new(sonda_bin())
-        .args(["--dry-run", "run", "--scenario"])
+        .args(["--dry-run", "run"])
         .arg(tmp.path())
         .output()
         .expect("must spawn sonda");
@@ -154,6 +156,7 @@ fn dry_run_rejects_flap_enum_with_explicit_values() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s
@@ -174,7 +177,7 @@ scenarios:
 ";
     tmp.write_all(yaml.as_bytes()).expect("write fixture");
     let output = Command::new(sonda_bin())
-        .args(["--dry-run", "run", "--scenario"])
+        .args(["--dry-run", "run"])
         .arg(tmp.path())
         .output()
         .expect("must spawn sonda");
@@ -194,7 +197,7 @@ scenarios:
 fn run_while_cascade_progress_emits_paused_line() {
     let fixture = cli_fixtures_dir().join("while-cascade.v2.yaml");
     let output = Command::new(sonda_bin())
-        .args(["run", "--scenario"])
+        .args(["run"])
         .arg(&fixture)
         .output()
         .expect("must spawn sonda");

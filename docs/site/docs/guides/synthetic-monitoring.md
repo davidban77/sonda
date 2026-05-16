@@ -182,6 +182,7 @@ indefinitely until you stop it with `DELETE /scenarios/{id}`.
 
 ```yaml title="examples/long-running-metrics.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

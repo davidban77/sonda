@@ -42,6 +42,7 @@ When the header names don't match the conventions, use [explicit `columns:`](#ex
 
 ```yaml title="examples/log-csv-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 60s
@@ -62,7 +63,7 @@ scenarios:
 ```
 
 ```bash
-sonda -q logs --scenario examples/log-csv-replay.yaml --duration 11s
+sonda -q run examples/log-csv-replay.yaml --duration 11s
 ```
 
 ```text title="Output (first three events)"
@@ -157,6 +158,7 @@ timestamp,severity,message,pod,trace_id
 
 ```yaml title="loki-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 10m
@@ -180,7 +182,7 @@ scenarios:
 ```
 
 ```bash
-sonda logs --scenario loki-replay.yaml
+sonda run loki-replay.yaml
 ```
 
 Sonda derives the replay rate from the timestamps in `incident.csv` -- a 10-minute window plays back over 10 minutes -- and ships each event to Loki tagged with `source="replay"`, so you can query the originals and the replay side-by-side.

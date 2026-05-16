@@ -12,6 +12,7 @@
 #   cargo run -- metrics --scenario examples/cardinality-spike.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

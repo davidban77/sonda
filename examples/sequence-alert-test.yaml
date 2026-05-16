@@ -10,6 +10,7 @@
 # and resolution behavior.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

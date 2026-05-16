@@ -2,6 +2,7 @@
 # memory gauge metrics). Has a per-metric label override to exercise the
 # label-merge parity path.
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s

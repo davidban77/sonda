@@ -20,6 +20,7 @@ fn yaml_with_var(var_name: &str) -> String {
     format!(
         r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -94,6 +95,7 @@ fn required_var_unset_surfaces_as_compile_error() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -140,6 +142,7 @@ fn env_var_substitution_reaches_http_push_sink_url() {
     let yaml = format!(
         r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

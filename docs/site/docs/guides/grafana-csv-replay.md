@@ -101,6 +101,7 @@ column, and creates independent metric streams.
 
 ```yaml title="examples/csv-replay-grafana-auto.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -121,7 +122,7 @@ scenarios:
 ```
 
 ```bash
-sonda metrics --scenario examples/csv-replay-grafana-auto.yaml
+sonda run examples/csv-replay-grafana-auto.yaml
 ```
 
 ```text title="Output"
@@ -158,6 +159,7 @@ with a hand-authored CSV that has plain headers -- use `columns:` with the `labe
 
 ```yaml title="examples/csv-replay-explicit-labels.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -190,7 +192,7 @@ scenarios:
 ```
 
 ```bash
-sonda metrics --scenario examples/csv-replay-explicit-labels.yaml
+sonda run examples/csv-replay-explicit-labels.yaml
 ```
 
 ```text title="Output"
@@ -289,7 +291,7 @@ For the full CSV replay parameter reference, see [Generators: csv_replay](../con
 !!! tip "Want portable scenarios instead of raw replay?"
     `csv_replay` plays back exact values from the file. If you want to extract the *pattern*
     from the data and generate a self-contained scenario YAML that does not depend on the
-    original file, use [sonda import](csv-import.md) instead.
+    original file, use [`sonda new --from`](csv-import.md) instead.
 
 !!! tip "Replaying logs instead of metrics?"
     The same workflow works for log events with `log_csv_replay`. Export the window from Loki via `logcli`, run it through `jq` to produce a `timestamp,severity,message,...fields` CSV, and point a logs scenario at the file. The rate-derivation, `timescale`, and override-warn semantics described above apply identically. Walkthrough: [Log CSV Replay](log-csv-replay.md).

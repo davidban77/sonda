@@ -12,7 +12,7 @@
 # Prerequisites: none -- stdout sink.
 #
 # Run:
-#   sonda histogram --scenario examples/histogram.yaml
+#   sonda run examples/histogram.yaml
 #
 # Observable output: 12 `_bucket` series (default Prometheus bucket set),
 # plus `_count` and `_sum`. Watch the low-le buckets (0.005, 0.01, 0.025)
@@ -20,6 +20,7 @@
 # always equals `_count`.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

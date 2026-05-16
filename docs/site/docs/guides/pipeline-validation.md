@@ -15,11 +15,31 @@ before it reaches the dashboards.
 
 ## Smoke Testing With the CLI
 
-The simplest validation: run Sonda with a known metric, check the exit code, and count the
-output lines. Use `-q` to suppress status banners in scripts:
+The simplest validation: run a one-entry scenario, check the exit code, count the
+output lines. Scaffold a starter file with `sonda new --template`, edit the metric
+name to taste, then run it with `-q` to suppress status banners in scripts:
+
+```yaml title="smoke.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 5
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: smoke_test
+    signal_type: metrics
+    name: smoke_test
+    generator:
+      type: constant
+      value: 1.0
+```
 
 ```bash
-sonda -q metrics --name smoke_test --rate 5 --duration 2s > /tmp/smoke.txt
+sonda -q run smoke.yaml > /tmp/smoke.txt
 echo "Exit code: $?"
 wc -l < /tmp/smoke.txt
 ```
@@ -30,10 +50,11 @@ A successful run exits with code `0` and produces approximately `rate * duration
 | Exit code | Meaning |
 |-----------|---------|
 | `0` | Success -- all events emitted |
-| `1` | Error -- missing required flags, bad scenario file, or sink connection failure |
+| `1` | Runtime error -- bad scenario file, sink connection failure, validation reject |
+| `2` | Argument parse error -- unknown flag, missing argument |
 
 !!! tip "Quick validation in scripts"
-    Use the exit code in CI or shell scripts: `sonda -q metrics --name test --rate 1 --duration 1s > /dev/null && echo "OK"`.
+    Use the exit code in CI or shell scripts: `sonda -q run smoke.yaml > /dev/null && echo "OK"`.
 
 Now let's verify that every wire format makes it through your pipeline.
 
@@ -42,12 +63,12 @@ Now let's verify that every wire format makes it through your pipeline.
 ## Multi-Format Validation
 
 Run the same metric through each encoder to verify that every format arrives at its destination.
-This catches encoding regressions and misconfigured parsers.
+This catches encoding regressions and misconfigured parsers. The encoder lives in the YAML; swap the `type:` field to compare formats. Override at the command line with `--encoder` when you need a one-off variant:
 
 === "Prometheus text"
 
     ```bash
-    sonda metrics --name pipeline_test --rate 2 --duration 2s
+    sonda run pipeline-test.yaml
     ```
 
     ```
@@ -58,7 +79,7 @@ This catches encoding regressions and misconfigured parsers.
 === "InfluxDB line protocol"
 
     ```bash
-    sonda metrics --name pipeline_test --rate 2 --duration 2s --encoder influx_lp
+    sonda run pipeline-test.yaml --encoder influx_lp
     ```
 
     ```
@@ -69,22 +90,44 @@ This catches encoding regressions and misconfigured parsers.
 === "JSON Lines"
 
     ```bash
-    sonda metrics --name pipeline_test --rate 2 --duration 2s --encoder json_lines
+    sonda run pipeline-test.yaml --encoder json_lines
     ```
 
     ```json
     {"name":"pipeline_test","value":0.0,"labels":{},"timestamp":"2026-03-23T12:00:00.000Z"}
     ```
 
+The starter `pipeline-test.yaml` is two ticks of the constant generator:
+
+```yaml title="pipeline-test.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: pipeline_test
+    signal_type: metrics
+    name: pipeline_test
+    generator:
+      type: constant
+      value: 0.0
+```
+
 To push a specific format to a file for inspection, use a scenario file:
 
 ```bash
-sonda metrics --scenario examples/multi-format-test.yaml
+sonda run examples/multi-format-test.yaml
 wc -l < /tmp/pipeline-influx.txt
 ```
 
 ```yaml title="examples/multi-format-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 2
@@ -133,18 +176,21 @@ jobs:
       - name: Install Sonda
         run: cargo install sonda
 
+      - name: Scaffold a smoke-test scenario
+        run: sonda -q new --template -o /tmp/ci-smoke.yaml
+
       - name: Smoke test (Prometheus text)
         run: |
-          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
-            --output /tmp/ci-smoke-prom.txt
+          sonda -q run /tmp/ci-smoke.yaml --rate 10 --duration 5s \
+            --sink file --endpoint /tmp/ci-smoke-prom.txt
           LINES=$(wc -l < /tmp/ci-smoke-prom.txt)
           echo "Produced $LINES lines"
           [ "$LINES" -ge 40 ] || { echo "FAIL: too few lines"; exit 1; }
 
       - name: Smoke test (JSON Lines)
         run: |
-          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
-            --encoder json_lines --output /tmp/ci-smoke-json.txt
+          sonda -q run /tmp/ci-smoke.yaml --rate 10 --duration 5s \
+            --encoder json_lines --sink file --endpoint /tmp/ci-smoke-json.txt
           LINES=$(wc -l < /tmp/ci-smoke-json.txt)
           echo "Produced $LINES lines"
           [ "$LINES" -ge 40 ] || { echo "FAIL: too few lines"; exit 1; }
@@ -180,13 +226,14 @@ Use `sonda run` to push metrics and logs concurrently from a single YAML file.
 This validates that your pipeline handles multiple signal types at the same time:
 
 ```bash
-sonda run --scenario examples/multi-pipeline-test.yaml
+sonda run examples/multi-pipeline-test.yaml
 echo "Exit: $?"
 wc -l < /tmp/pipeline-logs.json
 ```
 
 ```yaml title="examples/multi-pipeline-test.yaml"
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

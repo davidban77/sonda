@@ -9,7 +9,7 @@ unique label values on a recurring schedule, so you can verify the alert fires d
 the spike and resolves after.
 
 ```bash
-sonda metrics --scenario examples/cardinality-alert-test.yaml
+sonda run examples/cardinality-alert-test.yaml
 ```
 
 ```yaml title="examples/cardinality-alert-test.yaml (key fields)"

@@ -48,7 +48,7 @@ Before you push thousands of events per second at a backend, confirm Sonda gener
 target rate on your hardware. A 5-second stdout run is enough:
 
 ```bash
-sonda -q metrics --name throughput_test --rate 1000 --duration 5s | wc -l
+sonda -q run examples/capacity-throughput-test.yaml --rate 1000 --duration 5s | wc -l
 # ~5000 lines
 ```
 
@@ -62,11 +62,12 @@ This scenario runs 3 metric streams at 1,000 events/sec each -- 3,000 data point
 hitting VictoriaMetrics:
 
 ```bash
-sonda run --scenario examples/capacity-throughput-test.yaml
+sonda run examples/capacity-throughput-test.yaml
 ```
 
 ```yaml title="examples/capacity-throughput-test.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1000
@@ -116,14 +117,13 @@ curl -s "http://localhost:8428/api/v1/query?query=throughput_memory_bytes" | jq 
 ### Scale the test up
 
 To find your saturation point, increase the rate until you see ingestion errors or data loss.
-Override rates from the CLI without editing the YAML:
+Override the rate from the CLI without editing the YAML:
 
 ```bash
-# 5,000 events/sec on a single stream
-sonda -q metrics --name throughput_test --rate 5000 --duration 30s \
-  --value-mode sine --amplitude 50 --period-secs 60 --offset 100 \
-  --label job=capacity_test --label env=load-test \
-  --output /tmp/throughput-5k.txt
+# 5,000 events/sec on a single stream — uses the throughput-test scenario above
+sonda -q run examples/capacity-throughput-test.yaml \
+  --rate 5000 --duration 30s \
+  -o /tmp/throughput-5k.txt
 
 wc -l < /tmp/throughput-5k.txt
 # ~150000 lines
@@ -167,11 +167,12 @@ This scenario pushes two metrics with overlapping cardinality spikes -- 500 uniq
 and 200 unique endpoints:
 
 ```bash
-sonda run --scenario examples/capacity-cardinality-stress.yaml
+sonda run examples/capacity-cardinality-stress.yaml
 ```
 
 ```yaml title="examples/capacity-cardinality-stress.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 50
@@ -227,14 +228,41 @@ Track query latency and memory usage at each level:
 | High | 5,000 | ~5,001 | Query timeouts, ingestion backpressure |
 | Extreme | 10,000 | ~10,001 | OOM events, disk I/O saturation |
 
-You can override the cardinality from the CLI for a quick single-metric test:
+The cardinality and spike window live in the scenario YAML. For a quick single-metric
+cardinality test, scaffold a minimal scenario with `sonda new --template`, replace the
+`generator:` block with `type: constant`, add a `cardinality_spikes:` clause, and run it:
+
+```yaml title="cardinality-quick.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    job: capacity_test
+    env: load-test
+scenarios:
+  - id: cardinality_test
+    signal_type: metrics
+    name: cardinality_test
+    generator:
+      type: constant
+      value: 1.0
+    cardinality_spikes:
+      - label: pod_name
+        every: 60s
+        for: 30s
+        cardinality: 5000
+        strategy: counter
+        prefix: "pod-"
+```
 
 ```bash
-sonda -q metrics --name cardinality_test --rate 50 --duration 60s \
-  --value 1 \
-  --label job=capacity_test --label env=load-test \
-  --spike-label pod_name --spike-every 60s --spike-for 30s \
-  --spike-cardinality 5000 --spike-prefix "pod-"
+sonda -q run cardinality-quick.yaml
 ```
 
 !!! info "Cardinality vs. throughput"
@@ -279,11 +307,12 @@ Rate ──►
 This scenario runs at 500 events/sec with 10x bursts (5,000/sec) every 30 seconds:
 
 ```bash
-sonda run --scenario examples/capacity-burst-test.yaml
+sonda run examples/capacity-burst-test.yaml
 ```
 
 ```yaml title="examples/capacity-burst-test.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   duration: 120s
@@ -461,7 +490,7 @@ BEFORE=$(curl -s "http://localhost:8428/api/v1/query?query=process_resident_memo
   | jq -r '.data.result[0].value[1]')
 
 # Run the cardinality stress test
-sonda run --scenario examples/capacity-cardinality-stress.yaml
+sonda run examples/capacity-cardinality-stress.yaml
 
 AFTER=$(curl -s "http://localhost:8428/api/v1/query?query=process_resident_memory_bytes" \
   | jq -r '.data.result[0].value[1]')
@@ -566,10 +595,10 @@ Set resource limits 2x above requests to accommodate bursts.
 | Task | Command |
 |------|---------|
 | Start backend | `docker compose -f examples/docker-compose-victoriametrics.yml up -d` |
-| Validate throughput scenario | `sonda --dry-run run --scenario examples/capacity-throughput-test.yaml` |
-| Run throughput test | `sonda run --scenario examples/capacity-throughput-test.yaml` |
-| Run cardinality stress test | `sonda run --scenario examples/capacity-cardinality-stress.yaml` |
-| Run burst test | `sonda run --scenario examples/capacity-burst-test.yaml` |
+| Validate throughput scenario | `sonda --dry-run run examples/capacity-throughput-test.yaml` |
+| Run throughput test | `sonda run examples/capacity-throughput-test.yaml` |
+| Run cardinality stress test | `sonda run examples/capacity-cardinality-stress.yaml` |
+| Run burst test | `sonda run examples/capacity-burst-test.yaml` |
 | Count series in VM | `curl -s "http://localhost:8428/api/v1/series?match[]=<metric>" \| jq '.data \| length'` |
 | Tear down | `docker compose -f examples/docker-compose-victoriametrics.yml down -v` |
 

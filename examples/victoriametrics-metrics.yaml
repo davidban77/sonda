@@ -9,7 +9,7 @@
 #     docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage with the CLI (from the host, targeting the exposed VM port):
-#   sonda metrics --scenario examples/victoriametrics-metrics.yaml
+#   sonda run examples/victoriametrics-metrics.yaml
 #
 # Usage with sonda-server (POST to the running container):
 #   curl -X POST -H "Content-Type: text/yaml" \
@@ -27,6 +27,7 @@
 #   and query: sonda_http_request_duration_ms
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

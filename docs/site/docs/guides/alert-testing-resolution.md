@@ -16,11 +16,12 @@ Gaps occupy the **tail** of each cycle. With `every: 60s` and `for: 20s`, the ga
 from second 40 to second 60 of each cycle.
 
 ```bash
-sonda metrics --scenario examples/gap-alert-test.yaml
+sonda run examples/gap-alert-test.yaml
 ```
 
 ```yaml title="examples/gap-alert-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

@@ -13,11 +13,9 @@ use common::{cli_fixtures_dir, sonda_bin};
 fn dry_run_stderr(fixture_name: &str) -> String {
     let fixture = cli_fixtures_dir().join(fixture_name);
     let output = Command::new(sonda_bin())
-        .env_remove("SONDA_SCENARIO_PATH")
-        .env_remove("SONDA_PACK_PATH")
-        .args(["--pack-path"])
+        .args(["--catalog"])
         .arg(cli_fixtures_dir().join("catalog-packs"))
-        .args(["run", "--scenario"])
+        .args(["run"])
         .arg(&fixture)
         .arg("--dry-run")
         .output()

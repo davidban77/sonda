@@ -111,6 +111,7 @@ scenario you want running until you say otherwise.
 
 ```yaml title="examples/long-running-metrics.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

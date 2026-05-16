@@ -186,29 +186,12 @@ field that controls how many decimal places appear in metric values.
 - **Default**: omit the field to keep full f64 precision.
 - **Effect**: values are rounded to the specified number of decimal places using standard rounding.
 
-You can set precision in a YAML scenario file or from the CLI with `--precision`:
+Set `precision` on the encoder block in your scenario YAML:
 
-=== "YAML"
-
-    ```yaml title="precision-formatting.yaml"
-    encoder:
-      type: prometheus_text
-      precision: 2    # 99.60573 becomes 99.61
-    ```
-
-=== "CLI"
-
-    ```bash
-    sonda metrics --name cpu_usage --rate 2 --duration 2s \
-      --value-mode sine --amplitude 50 --offset 50 \
-      --label host=web-01 --precision 2
-    ```
-
-The `--precision` flag works with `--encoder` or on its own. When you pass `--precision` without
-`--encoder`, it overrides the precision of whatever encoder your YAML file specifies:
-
-```bash
-sonda metrics --scenario examples/basic-metrics.yaml --precision 2
+```yaml title="precision-formatting.yaml (encoder fragment)"
+encoder:
+  type: prometheus_text
+  precision: 2    # 99.60573 becomes 99.61
 ```
 
 The `syslog`, `remote_write`, and `otlp` encoders do not support `precision`. Syslog encodes log

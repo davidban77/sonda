@@ -38,10 +38,10 @@ sink:
   path: /tmp/sonda-output.txt
 ```
 
-You can also use the `--output` CLI flag as a shorthand:
+You can also use the `-o` CLI flag on `sonda run` as a shorthand for `--sink file --endpoint <path>`:
 
-```bash
-sonda metrics --name cpu --rate 10 --duration 5s --output /tmp/metrics.txt
+```bash title="cpu-scenario.yaml"
+sonda run cpu-scenario.yaml -o /tmp/metrics.txt
 ```
 
 ## tcp
@@ -99,13 +99,13 @@ sink:
   batch_size: 32768
 ```
 
-**CLI equivalent** -- use `--sink http_push` with `--endpoint`, `--content-type`, and
-optionally `--batch-size`:
+**CLI override** -- `sonda run` accepts `--sink http_push` and `--endpoint` to override the file's
+sink type and URL on a one-off run. Settings like `content_type`, `batch_size`, and custom
+`headers:` live in the YAML:
 
-```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
-  --content-type "text/plain"
+```bash title="cpu-scenario.yaml"
+sonda run cpu-scenario.yaml \
+  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus
 ```
 
 ### Pushing to VictoriaMetrics
@@ -159,10 +159,11 @@ sink:
   batch_size: 5
 ```
 
-**CLI equivalent** -- use `--encoder remote_write --sink remote_write --endpoint`:
+**CLI override** -- `sonda run` accepts `--encoder remote_write`, `--sink remote_write`, and
+`--endpoint <url>` to override the file's sink and encoder on a one-off run:
 
-```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
+```bash title="cpu-scenario.yaml"
+sonda run cpu-scenario.yaml \
   --encoder remote_write \
   --sink remote_write --endpoint http://localhost:8428/api/v1/write
 ```
@@ -201,11 +202,11 @@ sink:
   topic: sonda-metrics
 ```
 
-**CLI equivalent** -- use `--sink kafka --brokers --topic`:
+Kafka brokers and topic live in the YAML; `sonda run` does not expose flags for them. Override
+the sink type from the command line with `--sink kafka` and define the rest in the file:
 
-```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --sink kafka --brokers 127.0.0.1:9092 --topic sonda-metrics
+```bash title="kafka-cpu.yaml"
+sonda run kafka-cpu.yaml
 ```
 
 Events are buffered and published as a single Kafka record to partition 0 of the configured topic. The size threshold is a fixed 64 KiB internal buffer -- it is not user-tunable -- while `max_buffer_age` (default `5s`) is the configurable knob: a non-empty batch is flushed once it has been buffered longer than that. Broker-side auto-topic-creation is supported: the sink retries metadata lookups, giving the broker time to create the topic if `auto.create.topics.enable=true`.
@@ -373,6 +374,7 @@ labels are used as Loki stream labels in the push API envelope.
 
 ```yaml title="Loki sink with top-level labels"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10
@@ -389,10 +391,11 @@ scenarios:
       env: dev
 ```
 
-**CLI equivalent** -- use `--sink loki --endpoint` and `--label` for stream labels:
+**CLI override** -- `sonda run` accepts `--sink loki`, `--endpoint <url>`, and `--label k=v`
+(repeatable) for stream labels:
 
-```bash
-sonda logs --mode template --rate 10 --duration 30s \
+```bash title="app-logs.yaml"
+sonda run app-logs.yaml \
   --sink loki --endpoint http://localhost:3100 \
   --label job=sonda --label env=dev
 ```
@@ -438,18 +441,13 @@ sink:
   batch_size: 50
 ```
 
-**CLI equivalents:**
+**CLI override** -- `sonda run` accepts `--encoder otlp`, `--sink otlp_grpc`, and `--endpoint <url>`.
+The OTLP `signal_type` is derived from the scenario's `signal_type:`, so it does not need its own
+CLI flag:
 
-```bash
-# Metrics
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --encoder otlp \
-  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
-
-# Logs (--signal-type defaults to "logs" automatically)
-sonda logs --mode template --rate 10 --duration 30s \
-  --encoder otlp \
-  --sink otlp_grpc --endpoint http://localhost:4317
+```bash title="cpu.yaml"
+sonda run cpu.yaml \
+  --encoder otlp --sink otlp_grpc --endpoint http://localhost:4317
 ```
 
 Scenario-level `labels` are automatically converted to OTLP `Resource` attributes, so they appear
@@ -532,16 +530,5 @@ Not all errors trigger retries. Each sink classifies errors as retryable (transi
     Permanent errors (like a 401 Unauthorized or a malformed request returning 400) are never
     retried. Sonda logs a warning and discards the batch immediately.
 
-### CLI flags
-
-You can also configure retry from the command line with three flags. All three must be provided
-together (all-or-nothing):
-
-```bash
-sonda metrics --name cpu --rate 10 --duration 60s \
-  --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus \
-  --retry-max-attempts 3 --retry-backoff 100ms --retry-max-backoff 5s
-```
-
-CLI retry flags override any `retry:` block in the YAML scenario file. See
-[CLI Reference](cli-reference.md#retry) for details.
+Retry settings live in the scenario YAML — there is no CLI shortcut for them. Edit the
+`retry:` block inside the sink definition to tune attempts and backoff.

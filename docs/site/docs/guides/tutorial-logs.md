@@ -4,12 +4,10 @@
 
 ## Template mode with field pools
 
-The CLI `--message` flag supports template syntax, but placeholder tokens like `{ip}`
-render as literal text. For dynamic log messages with randomized fields, use a YAML
-scenario:
+Templates render `{field}` placeholders by sampling from a per-field pool. They live in the YAML's `log_generator:` block on a `signal_type: logs` entry:
 
 ```bash
-sonda logs --scenario examples/log-template.yaml --duration 5s
+sonda run examples/log-template.yaml --duration 5s
 ```
 
 ```yaml title="examples/log-template.yaml (excerpt)"
@@ -48,11 +46,12 @@ reference (per-template weights, multi-template fan-out, severity normalisation)
 Replay a structured CSV of real log events. The CSV has a `timestamp` column that drives the emission cadence, plus optional `severity` and `message` columns and any number of free-form field columns.
 
 ```bash
-sonda logs --scenario examples/log-csv-replay.yaml
+sonda run examples/log-csv-replay.yaml
 ```
 
 ```yaml title="examples/log-csv-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 60s
@@ -88,10 +87,30 @@ Sonda derives the replay rate from the median Δt of the timestamp column (3 sec
 
 ## Pair templates with the syslog encoder
 
-Combine template logs with the syslog encoder for RFC 5424 output:
+Combine template logs with the syslog encoder for RFC 5424 output. Swap the `encoder:` block in the YAML, or override at the CLI with `--encoder syslog`:
+
+```yaml title="log-syslog.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 5s
+  encoder:
+    type: syslog
+  sink:
+    type: stdout
+scenarios:
+  - id: app_logs_syslog
+    signal_type: logs
+    name: app_logs_syslog
+    log_generator:
+      type: template
+      templates:
+        - message: "synthetic log event"
+```
 
 ```bash
-sonda logs --mode template --rate 2 --duration 5s --encoder syslog
+sonda run log-syslog.yaml
 ```
 
 The encoder wraps each generated message in the syslog header:

@@ -278,6 +278,7 @@ fn compile_inline(yaml: &str) -> Vec<ScenarioEntry> {
 fn clock_group_is_auto_true_for_synthesized_chain_name() {
     let entries = compile_inline(
         r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -330,6 +331,7 @@ scenarios:
 fn clock_group_is_auto_false_for_explicit_chain_prefix_value() {
     let entries = compile_inline(
         r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -381,6 +383,7 @@ scenarios:
 fn clock_group_is_auto_none_for_standalone_entry_with_no_group() {
     let entries = compile_inline(
         r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -407,6 +410,7 @@ scenarios:
 fn clock_group_is_auto_false_for_standalone_entry_with_explicit_group() {
     let entries = compile_inline(
         r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
