@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::ScenarioHandle;
 
 /// Shared application state for the HTTP server.
@@ -21,40 +20,22 @@ pub struct AppState {
     pub scenarios: Arc<RwLock<HashMap<String, ScenarioHandle>>>,
     /// Optional API key for bearer-token authentication on protected routes.
     pub api_key: Option<Arc<String>>,
-    /// Pack catalog populated at startup from `SONDA_PACK_PATH`. Used to
-    /// resolve `pack:` references in `POST /scenarios` bodies.
-    pub pack_resolver: Arc<InMemoryPackResolver>,
 }
 
 impl AppState {
-    /// Create a new, empty application state with no authentication and an
-    /// empty pack resolver.
+    /// Create a new, empty application state with no authentication.
     pub fn new() -> Self {
         Self {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: None,
-            pack_resolver: Arc::new(InMemoryPackResolver::new()),
         }
     }
 
-    /// Create a new, empty application state with an optional API key and an
-    /// empty pack resolver.
-    #[allow(dead_code, reason = "kept for tests; main uses with_packs")]
+    /// Create a new, empty application state with an optional API key.
     pub fn with_api_key(api_key: Option<String>) -> Self {
         Self {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: api_key.map(Arc::new),
-            pack_resolver: Arc::new(InMemoryPackResolver::new()),
-        }
-    }
-
-    /// Create a new state with both an optional API key and a pre-populated
-    /// pack resolver.
-    pub fn with_packs(api_key: Option<String>, pack_resolver: InMemoryPackResolver) -> Self {
-        Self {
-            scenarios: Arc::new(RwLock::new(HashMap::new())),
-            api_key: api_key.map(Arc::new),
-            pack_resolver: Arc::new(pack_resolver),
         }
     }
 }
