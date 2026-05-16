@@ -71,6 +71,28 @@ fn all_pack_yamls_parse_as_metric_pack_def() {
 }
 
 #[test]
+fn all_pack_yamls_parse_via_compiler_as_composable() {
+    use sonda_core::compiler::{parse::parse, Kind};
+
+    for entry in std::fs::read_dir(packs_dir()).expect("must read packs/") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
+        let file = parse(&content)
+            .unwrap_or_else(|e| panic!("{} must parse via compiler::parse: {e}", path.display()));
+        assert_eq!(
+            file.kind,
+            Kind::Composable,
+            "{} must have kind: composable",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn all_pack_names_are_snake_case() {
     let dir = packs_dir();
     for entry in std::fs::read_dir(&dir).expect("must read packs/ directory") {

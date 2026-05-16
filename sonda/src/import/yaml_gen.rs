@@ -193,6 +193,7 @@ pub fn render_yaml(specs: &[ScenarioSpec], rate: f64, duration: &str) -> String 
 
     let mut out = String::with_capacity(specs.len() * 512 + 256);
     out.push_str("version: 2\n");
+    out.push_str("kind: runnable\n");
     out.push('\n');
     out.push_str("defaults:\n");
     out.push_str(&format!("  rate: {}\n", format_rate(rate)));

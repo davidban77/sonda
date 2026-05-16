@@ -50,6 +50,10 @@ fn dry_run_emitted(out_path: &std::path::Path) {
 fn assert_v2_shape(yaml: &str) {
     assert!(yaml.contains("version: 2"), "missing version: 2:\n{yaml}");
     assert!(
+        yaml.contains("kind: runnable"),
+        "missing kind: runnable:\n{yaml}"
+    );
+    assert!(
         yaml.contains("defaults:"),
         "missing defaults block:\n{yaml}"
     );

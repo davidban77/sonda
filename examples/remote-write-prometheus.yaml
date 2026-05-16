@@ -15,6 +15,7 @@
 # When building from source: cargo build --features remote-write -p sonda
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

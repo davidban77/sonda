@@ -11,6 +11,7 @@
 # Requires VictoriaMetrics at localhost:8428.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

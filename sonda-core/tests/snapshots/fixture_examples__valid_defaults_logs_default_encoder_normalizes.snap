@@ -4,6 +4,7 @@ expression: normalized
 ---
 {
   "version": 2,
+  "kind": "runnable",
   "entries": [
     {
       "signal_type": "logs",

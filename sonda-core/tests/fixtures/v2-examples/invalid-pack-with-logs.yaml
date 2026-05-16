@@ -1,5 +1,6 @@
 # ERROR: entry 0: pack entries must have signal_type 'metrics'
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     pack: telegraf_snmp_interface

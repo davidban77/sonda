@@ -16,6 +16,7 @@
 #     | jq '.data.result | length'
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

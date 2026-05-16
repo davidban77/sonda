@@ -1,6 +1,7 @@
 # Parity fixture: v2 scenario using the node_exporter_cpu pack (8 per-mode
 # metrics). No overrides — tests the straight expansion path.
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s

@@ -8,6 +8,7 @@
 #   sonda metrics --scenario examples/dynamic-labels-regions.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 5

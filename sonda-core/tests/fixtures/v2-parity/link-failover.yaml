@@ -4,6 +4,7 @@
 # `v2_story_parity.rs::link_failover_runtime_parity` under shortened test-
 # window offsets; compile-level timing math is checked in the same suite.
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

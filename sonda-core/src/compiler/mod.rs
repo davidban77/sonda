@@ -81,6 +81,13 @@ use crate::sink::SinkConfig;
 pub struct ScenarioFile {
     /// Schema version. Must be `2`.
     pub version: u32,
+    /// Discriminator declaring whether the file is a runnable scenario
+    /// or a composable pack definition.
+    pub kind: Kind,
+    /// Optional file-level metadata tags surfaced by `sonda list --tag`.
+    /// Carried through normalization unchanged; ignored at runtime.
+    #[cfg_attr(feature = "config", serde(default))]
+    pub tags: Vec<String>,
     /// Catalog display name (kebab-case). When present it overrides the
     /// filename-derived name in the CLI catalog probe. Pure metadata —
     /// ignored by every compiler phase.
@@ -102,7 +109,24 @@ pub struct ScenarioFile {
     #[cfg_attr(feature = "config", serde(default))]
     pub defaults: Option<Defaults>,
     /// One or more scenario entries (inline signals or pack references).
+    /// Empty when `kind: composable` — composable files carry no entries.
+    #[cfg_attr(feature = "config", serde(default))]
     pub scenarios: Vec<Entry>,
+}
+
+/// Discriminator declaring the role of a v2 YAML file.
+///
+/// Required at the top level of every v2 scenario file. `Runnable` files
+/// carry one or more scenario entries (inline or via `pack:` references)
+/// and are executable. `Composable` files are pack definitions; their
+/// body matches [`MetricPackDef`](crate::packs::MetricPackDef) and they
+/// are referenced from runnable files via `pack:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+pub enum Kind {
+    Runnable,
+    Composable,
 }
 
 /// Shared defaults inherited by all entries in a v2 scenario file.

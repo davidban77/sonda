@@ -21,6 +21,7 @@
 #   curl -s http://localhost:8880/api/v1/alerts | jq .
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 2

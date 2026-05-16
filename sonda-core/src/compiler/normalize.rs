@@ -86,7 +86,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{AfterClause, Defaults, DelayClause, Entry, ScenarioFile, WhileClause};
+use super::{AfterClause, Defaults, DelayClause, Entry, Kind, ScenarioFile, WhileClause};
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
     OnSinkError,
@@ -181,6 +181,11 @@ pub enum NormalizeError {
 pub struct NormalizedFile {
     /// Schema version. Always `2` after normalization.
     pub version: u32,
+    /// File kind discriminator carried through normalization.
+    pub kind: Kind,
+    /// File-level tags carried through normalization untouched.
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub tags: Vec<String>,
     /// File-level `scenario_name` carried verbatim. Pure metadata —
     /// ignored by every compiler phase, surfaced for runtime conflict checks.
     #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
@@ -344,6 +349,8 @@ pub fn normalize(file: ScenarioFile) -> Result<NormalizedFile, NormalizeError> {
 
     Ok(NormalizedFile {
         version: file.version,
+        kind: file.kind,
+        tags: file.tags,
         scenario_name: file.scenario_name,
         defaults_labels,
         entries,
@@ -582,6 +589,7 @@ mod tests {
     fn entry_inherits_rate_and_duration_from_defaults() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -600,6 +608,7 @@ scenarios:
     fn entry_rate_overrides_defaults_rate() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -616,6 +625,7 @@ scenarios:
     fn entry_duration_overrides_defaults_duration() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -633,6 +643,7 @@ scenarios:
     fn entry_inherits_encoder_and_sink_from_defaults() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   encoder: { type: influx_lp }
@@ -655,6 +666,7 @@ scenarios:
     fn entry_encoder_overrides_defaults_encoder() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   encoder: { type: influx_lp }
@@ -685,6 +697,7 @@ scenarios:
     #[rstest::rstest]
     #[case::metrics(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -693,6 +706,7 @@ scenarios:
 "#, ExpectedEncoder::PrometheusText)]
     #[case::histogram(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: histogram
     name: http_latency
@@ -704,6 +718,7 @@ scenarios:
 "#, ExpectedEncoder::PrometheusText)]
     #[case::summary(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: summary
     name: rpc_latency
@@ -715,6 +730,7 @@ scenarios:
 "#, ExpectedEncoder::PrometheusText)]
     #[case::logs(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     name: app_logs
@@ -745,6 +761,7 @@ scenarios:
     fn labels_merge_entry_wins_on_conflict() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -779,6 +796,7 @@ scenarios:
     fn labels_from_defaults_alone_are_preserved() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -798,6 +816,7 @@ scenarios:
     fn entry_labels_preserved_when_defaults_has_no_labels() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -817,6 +836,7 @@ scenarios:
     fn no_labels_anywhere_produces_none() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -841,6 +861,7 @@ scenarios:
     #[rstest::rstest]
     #[case::inline_uses_name(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -848,6 +869,7 @@ scenarios:
 "#, "cpu")]
     #[case::pack_prefers_id(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: snmp_iface
     signal_type: metrics
@@ -855,6 +877,7 @@ scenarios:
 "#, "snmp_iface")]
     #[case::pack_falls_back_to_pack_name(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     pack: telegraf_snmp_interface
@@ -877,6 +900,7 @@ scenarios:
     fn missing_rate_message_mentions_entry_and_hint() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: bare
@@ -901,6 +925,7 @@ scenarios:
     fn shorthand_single_signal_normalizes_through_wrapped_form() {
         let yaml = r#"
 version: 2
+kind: runnable
 name: cpu_usage
 signal_type: metrics
 rate: 5
@@ -919,6 +944,7 @@ generator: { type: constant, value: 42 }
     fn shorthand_logs_signal_picks_json_lines_default() {
         let yaml = r#"
 version: 2
+kind: runnable
 name: app_logs
 signal_type: logs
 rate: 2
@@ -951,6 +977,7 @@ log_generator:
         // If we merged here the pack's job override would be unreachable.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 10m
@@ -1003,6 +1030,7 @@ scenarios:
         // Present when defaults.labels is set and non-empty.
         let yaml_with = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1025,6 +1053,7 @@ scenarios:
         // None when the file has no defaults block at all.
         let yaml_no_defaults = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1037,6 +1066,7 @@ scenarios:
         // None when defaults exists but has no labels field.
         let yaml_no_labels = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1056,6 +1086,7 @@ scenarios:
         // defaults_labels must carry the source map verbatim for Phase 3.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1121,6 +1152,7 @@ scenarios:
     fn multi_scenario_mixed_entries_all_normalize() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1218,6 +1250,7 @@ scenarios:
     fn after_clause_and_timing_fields_preserved() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -1250,6 +1283,7 @@ scenarios:
     fn histogram_fields_preserved() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -1268,6 +1302,22 @@ scenarios:
         assert_eq!(entry.observations_per_tick, Some(100));
         assert_eq!(entry.mean_shift_per_sec, Some(0.01));
         assert_eq!(entry.seed, Some(42));
+    }
+
+    #[test]
+    fn tags_survive_normalization() {
+        let yaml = r#"
+version: 2
+kind: runnable
+tags: [network, bgp, incident]
+scenarios:
+  - signal_type: metrics
+    name: x
+    rate: 1
+    generator: { type: constant, value: 1.0 }
+"#;
+        let normalized = normalize_yaml(yaml).expect("normalize must succeed");
+        assert_eq!(normalized.tags, vec!["network", "bgp", "incident"]);
     }
 
     // ======================================================================
@@ -1293,13 +1343,19 @@ scenarios:
 
     #[test]
     fn empty_scenarios_list_normalizes_to_empty_entries() {
-        let yaml = r#"
-version: 2
-scenarios: []
-"#;
-        let file = normalize_yaml(yaml).expect("must normalize empty list");
-        assert_eq!(file.version, 2);
-        assert!(file.entries.is_empty());
+        let file = ScenarioFile {
+            version: 2,
+            kind: Kind::Runnable,
+            tags: Vec::new(),
+            scenario_name: None,
+            category: None,
+            description: None,
+            defaults: None,
+            scenarios: Vec::new(),
+        };
+        let normalized = normalize(file).expect("must normalize empty list");
+        assert_eq!(normalized.version, 2);
+        assert!(normalized.entries.is_empty());
     }
 
     // ======================================================================
@@ -1367,6 +1423,7 @@ scenarios: []
     fn while_without_duration_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -1393,6 +1450,7 @@ scenarios:
     fn defaults_duration_satisfies_while_without_duration() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1416,6 +1474,7 @@ scenarios:
     fn delay_without_while_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -1439,6 +1498,7 @@ scenarios:
     fn delay_open_zero_is_accepted() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1469,6 +1529,7 @@ scenarios:
     fn delay_close_zero_is_accepted() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1503,6 +1564,7 @@ scenarios:
     fn while_value_non_finite_is_rejected_at_compile(#[case] yaml_value: &str) {
         let yaml = format!(r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -1534,6 +1596,7 @@ scenarios:
     fn close_snap_to_non_finite_is_rejected_at_compile(#[case] yaml_value: &str) {
         let yaml = format!(r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -1565,6 +1628,7 @@ scenarios:
     fn while_inherits_from_defaults() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m

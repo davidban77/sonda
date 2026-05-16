@@ -1,3 +1,5 @@
+version: 2
+kind: composable
 name: tiny_pack
 description: "Catalog test pack"
 category: network

@@ -1418,6 +1418,7 @@ mod tests {
     fn unknown_ref_surfaces_available_ids() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: cpu
     signal_type: metrics
@@ -1440,6 +1441,7 @@ scenarios:
     fn self_reference_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: loop
     signal_type: metrics
@@ -1460,6 +1462,7 @@ scenarios:
     fn saturation_greater_than_sets_offset() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: util
     signal_type: metrics
@@ -1488,6 +1491,7 @@ scenarios:
     // Flap `<` crosses at the up_duration boundary (60s → "1m").
     #[case::flap_less_than(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: link
     signal_type: metrics
@@ -1504,6 +1508,7 @@ scenarios:
     // spike_event `<` crosses at the spike_duration boundary (10s).
     #[case::spike_event_less_than(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: burst
     signal_type: metrics
@@ -1520,6 +1525,7 @@ scenarios:
     // Step `>`: ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
     #[case::step_greater_than(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: counter
     signal_type: metrics
@@ -1536,6 +1542,7 @@ scenarios:
     // Sequence `<`: index 2 (value 2) is the first < 3; rate=2 -> 1.0s.
     #[case::sequence_less_than(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: seq
     signal_type: metrics
@@ -1564,6 +1571,7 @@ scenarios:
     fn step_less_than_is_unsupported() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: counter
     signal_type: metrics
@@ -1595,6 +1603,7 @@ scenarios:
     #[rstest::rstest]
     #[case::constant(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: k
     signal_type: metrics
@@ -1610,6 +1619,7 @@ scenarios:
 "#, "constant")]
     #[case::sine(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: wave
     signal_type: metrics
@@ -1625,6 +1635,7 @@ scenarios:
 "#, "sine")]
     #[case::steady(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: base
     signal_type: metrics
@@ -1640,6 +1651,7 @@ scenarios:
 "#, "steady")]
     #[case::uniform(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: u
     signal_type: metrics
@@ -1672,6 +1684,7 @@ scenarios:
     fn transitive_chain_accumulates() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: a
     signal_type: metrics
@@ -1708,6 +1721,7 @@ scenarios:
     fn delay_is_added_to_crossing_time() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: link
     signal_type: metrics
@@ -1729,6 +1743,7 @@ scenarios:
     fn explicit_phase_offset_is_added() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: link
     signal_type: metrics
@@ -1751,6 +1766,7 @@ scenarios:
     fn phase_offset_delay_and_crossing_sum() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: link
     signal_type: metrics
@@ -1778,6 +1794,7 @@ scenarios:
     fn two_entry_cycle_is_detected() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: a
     signal_type: metrics
@@ -1801,6 +1818,7 @@ scenarios:
     fn three_entry_cycle_path_is_returned() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: a
     signal_type: metrics
@@ -1837,6 +1855,7 @@ scenarios:
     fn clock_group_auto_assigned_as_chain_plus_lowest_id() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: alpha
     signal_type: metrics
@@ -1865,6 +1884,7 @@ scenarios:
     fn explicit_clock_group_propagates_to_chain_members() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: alpha
     signal_type: metrics
@@ -1888,6 +1908,7 @@ scenarios:
     fn conflicting_clock_groups_are_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: alpha
     signal_type: metrics
@@ -1915,6 +1936,7 @@ scenarios:
     fn independent_signals_keep_no_clock_group() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: independent
     signal_type: metrics
@@ -1932,6 +1954,7 @@ scenarios:
         // and the concrete `"x"` wins for the whole component — no conflict.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: alpha
     signal_type: metrics
@@ -1958,6 +1981,7 @@ scenarios:
         // carries two distinct non-empty values -> ConflictingClockGroup.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: alpha
     signal_type: metrics
@@ -1985,6 +2009,7 @@ scenarios:
     fn log_signal_can_depend_on_metrics_target() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: err_rate
     signal_type: metrics
@@ -2006,6 +2031,7 @@ scenarios:
     fn metrics_entry_cannot_depend_on_logs_target() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: log_src
     signal_type: logs
@@ -2032,6 +2058,7 @@ scenarios:
     fn flap_alias_produces_expected_up_duration_offset() {
         let yaml_alias = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: link
     signal_type: metrics
@@ -2076,6 +2103,7 @@ metrics:
     fn dotted_pack_ref_resolves() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: dev
     signal_type: metrics
@@ -2120,6 +2148,7 @@ metrics:
 
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: host
     signal_type: metrics
@@ -2158,6 +2187,7 @@ scenarios:
     // `field == "after.delay"`.
     #[case::after_delay(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: src
     signal_type: metrics
@@ -2177,6 +2207,7 @@ scenarios:
     // `CompileAfterError::InvalidDuration` with `field == "phase_offset"`.
     #[case::phase_offset_zero(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: src
     signal_type: metrics
@@ -2198,6 +2229,7 @@ scenarios:
     // mis-classification; this regression anchors the fix.
     #[case::alias_flap_up_duration(r#"
 version: 2
+kind: runnable
 scenarios:
   - id: src
     signal_type: metrics
@@ -2339,6 +2371,7 @@ scenarios:
     fn while_yaml_compiles_and_propagates_clause() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2367,6 +2400,7 @@ scenarios:
     fn defaults_duration_carries_into_while_compiled_entry() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -2395,6 +2429,7 @@ scenarios:
     fn mixed_after_while_cycle_uses_labeled_format() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 10m
@@ -2432,6 +2467,7 @@ scenarios:
     fn pure_after_cycle_keeps_short_arrow_format() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -2457,8 +2493,9 @@ scenarios:
     #[test]
     fn deep_while_chain_compiles_quickly() {
         use std::fmt::Write;
-        let mut yaml =
-            String::from("version: 2\ndefaults:\n  rate: 1\n  duration: 1h\nscenarios:\n");
+        let mut yaml = String::from(
+            "version: 2\nkind: runnable\ndefaults:\n  rate: 1\n  duration: 1h\nscenarios:\n",
+        );
         let _ = writeln!(
             yaml,
             "  - id: n0\n    signal_type: metrics\n    name: n0\n    generator: {{ type: constant, value: 1 }}"
@@ -2482,6 +2519,7 @@ scenarios:
     fn self_while_reference_is_rejected_with_while_kind() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2506,6 +2544,7 @@ scenarios:
     fn while_targeting_logs_signal_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2540,6 +2579,7 @@ scenarios:
     fn while_against_nan_constant_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2571,6 +2611,7 @@ scenarios:
     fn while_against_nan_sequence_value_is_rejected() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2606,6 +2647,7 @@ scenarios:
         let yaml = format!(
             r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2644,6 +2686,7 @@ scenarios:
         // the rejection path stays observable alongside csv_replay's.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -2674,6 +2717,7 @@ scenarios:
     fn while_strict_operators_reject_non_strict(#[case] op: &str) {
         let yaml = format!(r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m

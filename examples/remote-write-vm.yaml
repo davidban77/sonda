@@ -19,6 +19,7 @@
 #   - Cortex/Mimir: http://localhost:9009/api/v1/push
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

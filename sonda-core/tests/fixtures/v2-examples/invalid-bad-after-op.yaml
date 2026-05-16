@@ -1,5 +1,6 @@
 # ERROR: YAML parse error -- unknown variant `==`, expected `<` or `>`
 version: 2
+kind: runnable
 scenarios:
   - id: source
     signal_type: metrics

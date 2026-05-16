@@ -8,6 +8,7 @@ mod common;
 /// Valid v2 metrics YAML (short duration for quick tests).
 const VALID_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -27,6 +28,7 @@ scenarios:
 /// Valid v2 logs YAML (short duration for quick tests).
 const VALID_LOGS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -49,6 +51,7 @@ scenarios:
 /// Valid v2 metrics YAML with an explicit `signal_type: metrics` entry.
 const VALID_TAGGED_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -193,6 +196,7 @@ fn post_yaml_with_zero_rate_returns_422() {
 
     let zero_rate_yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 1s
   encoder:
@@ -240,6 +244,7 @@ fn post_valid_json_returns_201() {
 
     let json_body = serde_json::json!({
         "version": 2,
+        "kind": "runnable",
         "defaults": {
             "rate": 10,
             "duration": "500ms",
@@ -331,6 +336,7 @@ fn post_empty_body_returns_400() {
 /// Valid v2 multi-scenario YAML with two metrics entries.
 const VALID_MULTI_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -408,6 +414,7 @@ fn post_multi_scenario_json_returns_201() {
 
     let json_body = serde_json::json!({
         "version": 2,
+        "kind": "runnable",
         "defaults": {
             "rate": 10,
             "duration": "500ms",
@@ -466,7 +473,7 @@ fn post_multi_scenario_empty_array_returns_400() {
     let resp = client
         .post(format!("http://127.0.0.1:{port}/scenarios"))
         .header("content-type", "application/x-yaml")
-        .body("version: 2\nscenarios: []\n")
+        .body("version: 2\nkind: runnable\nscenarios: []\n")
         .send()
         .expect("POST must succeed at HTTP level");
 
@@ -490,6 +497,7 @@ fn post_multi_scenario_invalid_entry_returns_422() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 500ms
   encoder:
@@ -777,6 +785,7 @@ fn post_tcp_localhost_sink_returns_warning() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -844,6 +853,7 @@ fn post_tcp_real_hostname_sink_has_no_warnings() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -907,6 +917,7 @@ fn post_udp_localhost_sink_returns_warning() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -949,6 +960,7 @@ fn post_multi_scenario_mixed_sinks_returns_one_warning() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -1026,6 +1038,7 @@ fn post_tcp_127_0_0_1_sink_returns_warning() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -1067,6 +1080,7 @@ fn post_tcp_ipv6_loopback_sink_returns_warning() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -1151,6 +1165,7 @@ mod gated_scenarios {
     /// margin for the polling loop.
     const FLAP_CASCADE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 50
   duration: 2s
@@ -1245,6 +1260,7 @@ scenarios:
     /// posted its first tick by the time the snapshot is taken.
     const PENDING_DOWNSTREAM_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 50
   duration: 30s
@@ -1315,6 +1331,7 @@ scenarios:
 
     const TWO_ENTRY_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -1399,6 +1416,7 @@ scenarios:
     /// path.
     const ALL_SIGNAL_TYPES_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 500ms
@@ -1491,6 +1509,7 @@ scenarios:
     /// the handler maps that to 400 Bad Request.
     const CYCLIC_WHILE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 1s
@@ -1612,6 +1631,7 @@ scenarios:
     /// reaches `paused` after the upstream's gate closes.
     const STALE_MARKER_CASCADE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 50
   duration: 2s
@@ -1691,6 +1711,7 @@ scenarios:
     /// is rejected at compile time and surfaces as 422 from the server.
     const CONFLICTING_DELAY_CLOSE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s
@@ -1748,6 +1769,7 @@ scenarios:
 
     const OP_LE_WHILE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s
@@ -1804,6 +1826,7 @@ scenarios:
 
     const NAN_VALUE_WHILE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s
@@ -1861,6 +1884,7 @@ scenarios:
 
 const NAMED_FLAP_INTERFACE_YAML: &str = "\
 version: 2
+kind: runnable
 scenario_name: flap-interface
 defaults:
   rate: 10
@@ -1880,6 +1904,7 @@ scenarios:
 
 const NAMED_FLAP_INTERFACE_SHORT_YAML: &str = "\
 version: 2
+kind: runnable
 scenario_name: flap-interface-short
 defaults:
   rate: 10
@@ -1899,6 +1924,7 @@ scenarios:
 
 const ANONYMOUS_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 5s

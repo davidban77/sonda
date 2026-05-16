@@ -42,6 +42,7 @@ fn dry_run_text(yaml_body: &str) -> String {
 }
 
 const ANALYTICAL_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m
@@ -71,6 +72,7 @@ scenarios:
 "#;
 
 const NON_ANALYTICAL_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1m
@@ -100,6 +102,7 @@ scenarios:
 "#;
 
 const MIXED_UPSTREAM: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m
@@ -140,6 +143,7 @@ scenarios:
 "#;
 
 const DELAY_PRESENT: &str = r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 5m

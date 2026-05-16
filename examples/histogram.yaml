@@ -20,6 +20,7 @@
 # always equals `_count`.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

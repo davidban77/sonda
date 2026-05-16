@@ -2,6 +2,7 @@
 # expansion rejects this with ExpandError::UnknownOverrideKey identifying
 # the offending key, the pack name, and the list of valid metric names.
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:

@@ -980,6 +980,7 @@ mod tests {
 
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s
@@ -1038,6 +1039,7 @@ scenarios:
 
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 50
   duration: 10s

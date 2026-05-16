@@ -381,6 +381,7 @@ fn compile_after_on_pack_override_applies_per_metric() {
 
     let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -432,6 +433,7 @@ fn compile_after_pack_entry_level_propagates_to_all_sub_signals() {
 
     let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
