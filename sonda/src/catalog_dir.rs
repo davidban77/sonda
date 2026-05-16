@@ -124,10 +124,9 @@ fn peek_entry(path: &Path) -> Result<Option<CatalogEntry>> {
     let header: CatalogEntryHeader = match serde_yaml_ng::from_str(&content) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "catalog: skipping unparseable YAML file"
+            eprintln!(
+                "warning: catalog: skipping unparseable YAML file {}: {e}",
+                path.display()
             );
             return Ok(None);
         }
