@@ -28,11 +28,17 @@ src/
 │                          Every scenario file is compiled through the v2 pipeline
 │                          (`sonda_core::compile_scenario_file`); pre-v2 YAML shapes are
 │                          rejected with a migration hint.
+├── scenario_loader.rs  ← thin loader: reads a YAML path, runs it through
+│                          `compile_scenario_file_compiled`, returns the CompiledFile.
+│                          Shared by `dry_run` and the `run` dispatch in main.rs.
 ├── catalog_dir.rs      ← filesystem catalog discovery: enumerate(dir) walks YAML files
 │                          and peeks frontmatter (kind / name / tags) without full
 │                          deserialization; resolve(dir, name) does @name lookup.
 │                          First-match-wins is a HARD ERROR on duplicate names —
 │                          ambiguity is never silently resolved.
+├── sink_format.rs      ← single source of truth for sink-display rendering shared
+│                          between `dry_run` and `status` (so the "config" view and
+│                          the "start" banner agree on how a sink prints).
 ├── new/
 │   ├── mod.rs          ← `sonda new` subcommand: dispatches between --template,
 │   │                      --from <csv>, and interactive flow; writes to -o <path>

@@ -342,7 +342,7 @@ Portability is a primary constraint. Sonda must run on bare metal, in Docker, an
 
 ## 11. MVP Scope
 
-The MVP is complete when the following criteria are met:
+The MVP is complete when the following criteria are met. (Historical wording — the CLI surface collapsed to the four verbs documented in §7 for 1.9; today the equivalent is `sonda run <file>` against a v2 YAML.)
 
 - `sonda metrics --name <n> --rate <r> --duration <d>` generates valid Prometheus text to stdout.
 - Value generators: constant, uniform random (seeded), sine, sawtooth.

@@ -7,9 +7,7 @@
 # Usage:
 #   sonda run examples/http-push-retry.yaml
 #
-# You can override retry settings from the CLI:
-#   sonda run examples/http-push-retry.yaml \
-#     --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
+# Retry settings live in the YAML `retry:` block below — they have no CLI override.
 
 version: 2
 kind: runnable

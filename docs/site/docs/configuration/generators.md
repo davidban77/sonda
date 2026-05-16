@@ -672,10 +672,6 @@ generator:
 
 Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
 
-!!! tip "Scaffold a starter"
-    `sonda new` writes a runnable `spike_event` YAML when you pick "spike_event" in the
-    interactive flow — useful for CPU-spike alert rehearsals against node-exporter-shaped labels.
-
 ??? tip "Aliases vs. core generators"
     You can always use the underlying generator directly if you need parameters that the alias
     does not expose. For example, `spike_event` does not expose the `spike` generator's

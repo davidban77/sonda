@@ -37,7 +37,9 @@ DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
 
 KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new"})
 
-# Only ``run`` supports ``--dry-run`` in the 1.9 CLI.
+# ``--dry-run`` is declared as a global flag (``#[arg(long, global = true)]``)
+# but only has an observable effect on ``run``. The validator only injects it
+# for ``run`` commands.
 DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset({"run"})
 
 DEFAULT_SONDA_BINARY = Path("target/release/sonda")
@@ -93,7 +95,7 @@ class ExtractedCommand:
 
 # Global flags that consume the next argv token. Used by ``subcommand`` to
 # skip past a value when looking for the verb.
-_GLOBAL_FLAGS_WITH_VALUE: frozenset[str] = frozenset({"--catalog"})
+_GLOBAL_FLAGS_WITH_VALUE: frozenset[str] = frozenset({"--catalog", "--format"})
 
 
 @dataclasses.dataclass
@@ -579,11 +581,12 @@ def validate_command(
 def _build_dry_run_argv(
     cmd: ExtractedCommand, sonda_bin: Path
 ) -> list[str]:
-    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` on the
+    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` for the
     ``run`` subcommand if not already present.
 
-    ``--dry-run`` is a flag on the ``run`` subcommand itself, so it must
-    appear after ``run`` (clap rejects it as a global flag).
+    ``--dry-run`` is declared as a clap global flag, so clap accepts it in
+    either position. We inject after the ``run`` verb purely as a stylistic
+    choice so the rendered command reads as ``sonda run --dry-run <args>``.
     """
     argv = list(cmd.argv)
     argv[0] = str(sonda_bin)
@@ -1018,6 +1021,13 @@ class _ExtractSondaCommandsTests(unittest.TestCase):
         out = self._extract(md)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].subcommand, "run")
+
+    def test_global_format_flag_skipped_when_finding_subcommand(self) -> None:
+        md = "```bash\nsonda --dry-run --format json run @cpu-spike\n```\n"
+        out = self._extract(md)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].subcommand, "run")
+        self.assertEqual(extract_run_target(out[0].argv), "@cpu-spike")
 
 
 class _ExtractRunTargetTests(unittest.TestCase):
