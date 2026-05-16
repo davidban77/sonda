@@ -89,6 +89,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
       -H "Content-Type: text/yaml" \
       --data-binary @- http://localhost:8080/scenarios <<'EOF'
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -120,6 +121,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
       -d @- http://localhost:8080/scenarios <<'EOF'
     {
       "version": 2,
+      "kind": "runnable",
       "defaults": {
         "rate": 10,
         "duration": "30s",
@@ -159,6 +161,7 @@ Post a v2 file with two or more `scenarios:` entries to launch them atomically:
 
     ```yaml title="examples/multi-scenario.yaml"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -201,6 +204,7 @@ Post a v2 file with two or more `scenarios:` entries to launch them atomically:
       -d @- http://localhost:8080/scenarios <<'EOF'
     {
       "version": 2,
+      "kind": "runnable",
       "defaults": {
         "rate": 10,
         "duration": "30s",
@@ -265,6 +269,7 @@ validation, the entire request is rejected and nothing is launched:
 
     ```yaml
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1

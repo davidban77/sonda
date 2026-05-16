@@ -5,7 +5,7 @@
 # period. Includes a recurring gap to test pipeline gap-fill behavior.
 #
 # Usage with the CLI:
-#   sonda metrics --scenario examples/docker-metrics.yaml
+#   sonda run examples/docker-metrics.yaml
 #
 # Usage with sonda-server (POST to the running container):
 #   curl -X POST -H "Content-Type: text/yaml" \

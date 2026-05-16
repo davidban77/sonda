@@ -67,6 +67,7 @@ sonda run examples/capacity-throughput-test.yaml
 
 ```yaml title="examples/capacity-throughput-test.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1000
@@ -171,6 +172,7 @@ sonda run examples/capacity-cardinality-stress.yaml
 
 ```yaml title="examples/capacity-cardinality-stress.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 50
@@ -310,6 +312,7 @@ sonda run examples/capacity-burst-test.yaml
 
 ```yaml title="examples/capacity-burst-test.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   duration: 120s

@@ -1,7 +1,7 @@
 # Multi-metric correlation example: testing compound alert rules.
 #
 # Run with:
-#   sonda run --scenario examples/multi-metric-correlation.yaml
+#   sonda run examples/multi-metric-correlation.yaml
 #
 # This scenario models a compound alert rule:
 #   ALERT HighCpuAndMemory

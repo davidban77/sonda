@@ -374,6 +374,7 @@ labels are used as Loki stream labels in the push API envelope.
 
 ```yaml title="Loki sink with top-level labels"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

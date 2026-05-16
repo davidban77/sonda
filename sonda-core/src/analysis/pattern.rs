@@ -1,17 +1,6 @@
-//! Time-series pattern detection for the `import` subcommand.
-//!
-//! Analyzes a `Vec<f64>` of numeric values and classifies the dominant
-//! time-series pattern. This is statistical analysis code that lives in the
-//! CLI crate — it does NOT belong in sonda-core.
-//!
-//! # Supported patterns
-//!
-//! - **Steady**: low variance, no significant trend.
-//! - **Spike**: periodic outliers above a stable baseline.
-//! - **Climb**: monotonic upward trend (leak or saturation).
-//! - **Sawtooth**: repeating climb-reset cycles.
-//! - **Flap**: bimodal distribution (two dominant value clusters).
-//! - **Step**: discrete level changes with plateaus.
+//! Time-series pattern detection. Classifies a `Vec<f64>` into one of:
+//! `Steady`, `Spike`, `Climb`, `Sawtooth`, `Flap`, `Step`. Pure statistics;
+//! no I/O or CLI concerns. Consumed by `sonda new --from <csv>`.
 
 use std::fmt;
 
@@ -745,9 +734,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
     // Pattern::name() — short variant identifiers
-    // -----------------------------------------------------------------------
 
     #[test]
     fn name_returns_steady_for_steady_variant() {
@@ -808,9 +795,7 @@ mod tests {
         assert_eq!(p.name(), "step");
     }
 
-    // -----------------------------------------------------------------------
     // Steady pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_constant_values_as_steady() {
@@ -841,9 +826,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Spike pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_periodic_spikes() {
@@ -870,9 +853,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Climb pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_linear_climb() {
@@ -914,9 +895,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Sawtooth pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_sawtooth_pattern() {
@@ -945,9 +924,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Flap pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_flap_pattern() {
@@ -980,9 +957,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Step pattern detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn detect_monotonic_counter_as_step() {
@@ -998,9 +973,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Edge cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn empty_values_returns_steady_zero() {
@@ -1037,9 +1010,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Display implementation
-    // -----------------------------------------------------------------------
 
     #[test]
     fn pattern_display_includes_parameters() {
@@ -1052,9 +1023,7 @@ mod tests {
         assert!(s.contains("50.00"));
     }
 
-    // -----------------------------------------------------------------------
     // Determinism: same input produces same output
-    // -----------------------------------------------------------------------
 
     #[test]
     fn pattern_detection_is_deterministic() {

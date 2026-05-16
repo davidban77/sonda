@@ -4,7 +4,7 @@
 # Parent directories are created automatically if they do not exist.
 #
 # Run:
-#   sonda metrics --scenario examples/influx-file.yaml
+#   sonda run examples/influx-file.yaml
 #   cat /tmp/sonda-influx-output.txt
 
 version: 2

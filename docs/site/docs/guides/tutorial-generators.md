@@ -92,6 +92,7 @@ sonda run examples/sequence-alert-test.yaml --duration 10s
 
 ```yaml title="examples/sequence-alert-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -157,6 +158,7 @@ and clears at t=10s, deterministically, every run.
 
     ```yaml title="examples/csv-replay-metrics.yaml"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1
@@ -195,6 +197,7 @@ deterministic uniform noise:
 
 ```yaml title="examples/jitter-sine.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

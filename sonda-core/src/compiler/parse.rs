@@ -5,8 +5,7 @@
 //! id uniqueness, signal type validity, generator/pack mutual exclusion).
 //!
 //! [`detect_version`] is a lightweight helper that peeks at the `version` field
-//! without fully parsing the file. It will be used by the version dispatch layer
-//! (PR 6) to route between v1 and v2 parsing paths.
+//! without fully parsing the file.
 
 use std::collections::HashSet;
 
@@ -139,16 +138,6 @@ const DISTRIBUTION_SIGNAL_TYPES: &[&str] = &["histogram", "summary"];
 /// Returns `Some(n)` when the top-level mapping contains a `version` key with
 /// an integer value, or `None` when the field is absent or cannot be parsed.
 /// This is intentionally cheap — it deserializes into a minimal struct.
-///
-/// # Examples
-///
-/// ```
-/// use sonda_core::compiler::parse::detect_version;
-///
-/// assert_eq!(detect_version("version: 2\nscenarios: []"), Some(2));
-/// assert_eq!(detect_version("version: 1"), Some(1));
-/// assert_eq!(detect_version("name: cpu_usage\nrate: 1"), None);
-/// ```
 pub fn detect_version(yaml: &str) -> Option<u32> {
     #[derive(serde::Deserialize)]
     struct VersionProbe {
@@ -342,10 +331,6 @@ impl FlatFile {
 /// Note: `after.op` is deserialized as an [`AfterOp`](super::AfterOp) enum.
 /// Invalid operator values (anything other than `"<"` or `">"`) are rejected
 /// by serde during deserialization.
-///
-/// # Errors
-///
-/// Returns [`ParseError`] describing the first validation failure found.
 pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
     if let Some(v) = detect_version(yaml) {
         if v != 2 {

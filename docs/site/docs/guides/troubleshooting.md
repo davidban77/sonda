@@ -197,6 +197,8 @@ Data arrives in chunks or only appears when the scenario ends.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
+| `v2 scenario file requires a top-level 'kind:' field` | The file is missing the `kind:` declaration | Add `kind: runnable` (for files you run) or `kind: composable` (for [metric packs](metric-packs.md)) at the top of the file, alongside `version: 2`. See [v2 Scenario Files](../configuration/v2-scenarios.md). |
+| `unknown kind '<value>': must be 'runnable' or 'composable'` | `kind:` is set to a typo or unsupported value | Use exactly `runnable` or `composable`. |
 | `invalid type` error on a numeric field | Value is quoted as a string in YAML (e.g., `rate: "10"`) | Remove quotes from numeric fields: `rate: 10` |
 | `unknown field` error | Typo in a field name, or field placed at the wrong nesting level | Check indentation. `labels` goes at the scenario level, not inside `sink` |
 | `missing field` error | Required field omitted | Run `sonda --dry-run` to see which field is missing |

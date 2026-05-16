@@ -6,7 +6,7 @@
 # vmalert enough evaluation cycles to fire a `for: 5s` alert.
 #
 # Usage:
-#   sonda metrics --scenario examples/ci-alert-validation.yaml
+#   sonda run examples/ci-alert-validation.yaml
 #
 # Requires VictoriaMetrics at localhost:8428.
 

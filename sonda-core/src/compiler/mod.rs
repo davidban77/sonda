@@ -91,16 +91,13 @@ pub struct ScenarioFile {
     /// ignored by every compiler phase.
     #[cfg_attr(feature = "config", serde(default))]
     pub scenario_name: Option<String>,
-    /// Catalog category used by `scenarios list --category <name>` and
-    /// `catalog list --category <name>`. Allowed values are enforced by
-    /// the CLI CI validation (`infrastructure`, `network`, `application`,
-    /// `observability`); the AST itself does not constrain the string.
-    /// Pure metadata — ignored by every compiler phase.
+    /// Legacy catalog category. Superseded by `tags` (filtered via
+    /// `sonda list --tag`). Carried through for back-compat with files
+    /// authored before 1.9a; not surfaced by the current CLI.
     #[cfg_attr(feature = "config", serde(default))]
     pub category: Option<String>,
-    /// One-line human-readable description surfaced by
-    /// `scenarios list` / `catalog list` and `scenarios show`. Pure
-    /// metadata — ignored by every compiler phase.
+    /// One-line human-readable description surfaced by `sonda list` and
+    /// `sonda show`. Pure metadata — ignored by every compiler phase.
     #[cfg_attr(feature = "config", serde(default))]
     pub description: Option<String>,
     /// Optional shared defaults inherited by all entries.

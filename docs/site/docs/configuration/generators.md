@@ -390,6 +390,7 @@ When `columns` is omitted, Sonda reads the CSV header and auto-discovers column 
 
     ```yaml title="Multi-column CSV replay"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1
@@ -623,10 +624,6 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
     config with an error. A leak that resets mid-run is the `saturation` pattern -- use that
     alias instead if you want repeating fill-and-reset cycles.
 
-!!! tip "Scaffold a starter"
-    `sonda new` writes a runnable `leak` YAML when you pick the "leak" situation in the
-    interactive flow — useful as a starting point for memory-leak alert rehearsals.
-
 ### degradation
 
 Models gradual performance loss with realistic noise -- latency increasing over time, error
@@ -652,10 +649,6 @@ generator:
 
 Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
 
-!!! tip "Scaffold a starter"
-    `sonda new` writes a ready-to-run `degradation` scenario with HTTP-latency-friendly defaults
-    when you pick the "degradation" situation in the interactive flow.
-
 ### spike_event
 
 Models periodic anomalous bursts above a baseline -- CPU spikes, sudden request surges,
@@ -678,10 +671,6 @@ generator:
 ```
 
 Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
-
-!!! tip "Scaffold a starter"
-    `sonda new` writes a runnable `spike_event` YAML when you pick "spike_event" in the
-    interactive flow — useful for CPU-spike alert rehearsals against node-exporter-shaped labels.
 
 ??? tip "Aliases vs. core generators"
     You can always use the underlying generator directly if you need parameters that the alias
@@ -780,6 +769,7 @@ updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `
 
 ```yaml title="examples/histogram.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -859,6 +849,7 @@ the nearest-rank method.
 
 ```yaml title="examples/summary.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -1052,6 +1043,7 @@ because it wraps any generator transparently.
 
 ```yaml title="examples/jitter-sine.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

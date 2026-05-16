@@ -9,6 +9,7 @@ sonda run examples/multi-scenario.yaml
 
 ```yaml title="examples/multi-scenario.yaml"
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics
@@ -70,6 +71,7 @@ sonda run examples/multi-metric-correlation.yaml
 
 ```yaml title="examples/multi-metric-correlation.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

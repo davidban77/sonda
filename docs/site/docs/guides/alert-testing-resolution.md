@@ -21,6 +21,7 @@ sonda run examples/gap-alert-test.yaml
 
 ```yaml title="examples/gap-alert-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

@@ -101,6 +101,7 @@ column, and creates independent metric streams.
 
 ```yaml title="examples/csv-replay-grafana-auto.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -158,6 +159,7 @@ with a hand-authored CSV that has plain headers -- use `columns:` with the `labe
 
 ```yaml title="examples/csv-replay-explicit-labels.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

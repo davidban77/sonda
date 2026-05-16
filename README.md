@@ -195,28 +195,25 @@ guided prompts. It uses operational vocabulary -- "spike event", "leak", "flap" 
 of raw generator types:
 
 ```bash
-sonda new
+sonda new -o my-scenario.yaml
 ```
 
 ```text
-? What type of signal? metrics
-? Metric name node_cpu_usage_percent
-? What situation should this metric simulate? spike_event - baseline with periodic spikes
-? Baseline value (between spikes) 35
-? Spike height (amount added during spike) 60
-? Events per second (rate) 1
-? Duration (e.g., 30s, 5m, 1h) 60s
-? Output encoding format prometheus_text
-? Where should output be sent? stdout
-? Output file path ./scenarios/node-cpu-usage-percent.yaml
+? Signal type › metrics
+? Scenario id › example
+? Generator › sine
+? Events per second › 1
+? Duration (e.g. 60s, 5m) › 60s
+? Sink › stdout
 
-Wrote scenario to ./scenarios/node-cpu-usage-percent.yaml
+wrote my-scenario.yaml
 ```
 
-The generated YAML is commented, immediately runnable, and ready to drop into a catalog
-directory. See the
-[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-new) for
-the full prompt flow and available situations.
+The generated YAML is immediately runnable. Pass `-o <path>` to write to a file
+(omit it to preview on stdout), `--template` to skip prompts and dump a minimal
+file, or `--from <csv>` to scaffold from time-series data. See the
+[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-new)
+for every prompt and flag.
 
 ## Multi-signal temporal scenarios
 

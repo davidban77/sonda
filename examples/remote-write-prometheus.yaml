@@ -5,7 +5,7 @@
 #     --profile prometheus up -d
 #
 # Usage:
-#   sonda metrics --scenario examples/remote-write-prometheus.yaml
+#   sonda run examples/remote-write-prometheus.yaml
 #
 # Verify data arrived (Prometheus query API):
 #   curl -s "http://localhost:9090/api/v1/query?query=cpu_usage_prom" \

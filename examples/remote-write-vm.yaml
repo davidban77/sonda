@@ -5,7 +5,7 @@
 #   cargo build --features remote-write -p sonda
 #
 # Usage:
-#   sonda metrics --scenario examples/remote-write-vm.yaml
+#   sonda run examples/remote-write-vm.yaml
 #
 # The encoder produces length-prefixed protobuf TimeSeries, and the
 # remote_write sink batches them into a single WriteRequest, snappy-compresses,

@@ -4,7 +4,7 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage:
-#   sonda metrics --scenario examples/vm-push-scenario.yaml
+#   sonda run examples/vm-push-scenario.yaml
 #
 # Verify data arrived:
 #   curl "http://localhost:8428/api/v1/query?query=cpu_usage"

@@ -205,6 +205,7 @@ both the warning threshold (70) and the critical threshold (90) defined in the a
 
 ```yaml title="examples/ci-alert-validation.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -367,6 +368,7 @@ that should trigger it.
 
 ```yaml title="examples/ci-high-memory-alert.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

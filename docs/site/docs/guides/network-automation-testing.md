@@ -546,6 +546,7 @@ alerts correctly. Create a BGP session scenario file:
 
 ```yaml title="bgp-session-down.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

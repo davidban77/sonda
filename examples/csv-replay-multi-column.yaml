@@ -8,7 +8,7 @@
 # avoids duplicating the shared configuration.
 #
 # Run with:
-#   sonda metrics --scenario examples/csv-replay-multi-column.yaml
+#   sonda run examples/csv-replay-multi-column.yaml
 
 version: 2
 kind: runnable
