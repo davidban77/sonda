@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use super::csv_reader::ColumnMeta;
-use super::pattern::Pattern;
 use crate::yaml_helpers::{format_float, format_rate, needs_quoting, ParamValue};
+use sonda_core::analysis::pattern::Pattern;
 
 /// A single scenario derived from one CSV column.
 #[derive(Debug)]

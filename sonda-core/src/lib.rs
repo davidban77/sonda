@@ -18,6 +18,7 @@
 //! This lets sonda-core add new variants and fields in a minor release
 //! without a semver-major bump.
 
+pub mod analysis;
 pub mod compiler;
 pub mod config;
 pub mod emit;

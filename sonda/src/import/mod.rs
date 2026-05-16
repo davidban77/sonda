@@ -9,7 +9,6 @@
 //! It does NOT belong in sonda-core.
 
 pub mod csv_reader;
-pub mod pattern;
 pub mod yaml_gen;
 
 use std::path::Path;
@@ -19,7 +18,7 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::{Stderr, Stdout};
 
 use csv_reader::{read_csv, CsvData};
-use pattern::{detect_pattern, Pattern};
+use sonda_core::analysis::pattern::{detect_pattern, Pattern};
 use yaml_gen::{pattern_to_spec, render_yaml};
 
 /// Width used for horizontal rules in the import flow.
