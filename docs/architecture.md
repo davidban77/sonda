@@ -181,51 +181,33 @@ Sink implementations follow a natural progression of complexity:
 
 A metric pack is a reusable bundle of metric names and label schemas that expands into a multi-metric scenario. Packs are a **config-level composition concept** — the `packs/` module resolves a pack reference into N `ScenarioEntry` items before `prepare_entries()` runs. The runtime (scheduler, core loop, runners) has no knowledge of packs; it only sees the expanded entries.
 
-The architecture separates **engine** (in `sonda-core`) from **data** (YAML files) and **discovery** (in the CLI crate):
+The architecture separates **engine** (in `sonda-core`) from **data** (YAML files supplied by the user):
 
-- **sonda-core `packs/` module** — contains the engine types and expansion logic only. No pack YAML is embedded in the library.
-- **`packs/` directory at repo root** — contains the pack YAML files as standalone data. These are not compiled into any crate.
-- **CLI `packs` module** — discovers pack YAML files from the filesystem via a search path and caches the results for the CLI invocation.
+- **sonda-core `packs/` module** — engine types and expansion logic only. No pack YAML is embedded in the library; sonda ships no built-in packs.
+- **User-supplied catalog directory** — pack YAML files (with `kind: composable` at the top level) live alongside runnable scenarios in a catalog directory the user owns. The CLI resolves pack references via the `--catalog <dir>` flag.
 
 Key types (in `sonda-core`):
 
-- **MetricPackDef** — a pack definition: name, description, category, shared labels, and a list of `MetricSpec` entries.
+- **MetricPackDef** — a pack definition: name, description, shared labels, and a list of `MetricSpec` entries.
 - **MetricSpec** — a single metric within a pack: name, optional per-metric labels, optional default generator.
 - **PackScenarioConfig** — user-facing YAML config that references a pack by name and provides rate, duration, sink, encoder, labels, and per-metric overrides.
 - **expand_pack()** — the expansion function. Takes a `MetricPackDef` and a `PackScenarioConfig`, returns `Vec<ScenarioEntry>`. Label merge order: shared → per-metric → user → override. Generator selection: override → spec → constant(0.0).
-
-Key types (in the CLI crate):
-
-- **PackCatalog** — cached directory scan results. Built once per CLI invocation from the search path.
-- **PackEntry** — lightweight metadata (name, description, category, metric count, source path) parsed from YAML without full deserialization.
-
-**Pack discovery search path** (priority order): `--pack-path` CLI flag > `SONDA_PACK_PATH` env var (colon-separated) > `./packs/` relative to CWD > `~/.sonda/packs/`. Name collisions are resolved by first-match-wins.
+- **PackResolver** trait — abstract pack-lookup; `CatalogPackResolver` (CLI-side) scans the `--catalog <dir>` directory, while `InMemoryPackResolver` (test-side) takes pre-built definitions.
 
 Packs like `node_exporter_cpu` contain multiple specs with the same metric name but different label sets (e.g., one `node_cpu_seconds_total` per CPU mode). Overrides key on metric name, so a single override entry applies to all specs sharing that name.
 
 > **Design note:** Packs deliberately do not carry rate, duration, sink, or encoder — those are delivery concerns supplied by the user at run time. This separation means the same pack definition works unchanged across stdout testing, remote-write to production, and Kafka ingest.
 
-### 5.6.1 Scenarios
+### 5.6.1 Catalog discovery
 
-Built-in scenarios are pre-authored YAML files that model common failure and baseline patterns (CPU spike, memory leak, interface flap, etc.). Like packs, scenarios follow the **engine / data / discovery** separation:
+A catalog is any directory containing v2 scenario YAML files. Each file declares its role with a top-level `kind:`:
 
-- **sonda-core `scenarios/` module** — contains only the `BuiltinScenario` metadata struct (name, category, signal_type, description, source_path). No scenario YAML is embedded in the library.
-- **`scenarios/` directory at repo root** — contains the scenario YAML files as standalone data. Each file includes metadata fields (`scenario_name`, `category`, `signal_type`, `description`) in its header alongside the full scenario config.
-- **CLI `scenarios` module** — discovers scenario YAML files from the filesystem via a search path, probes the metadata header, and caches the results in a `ScenarioCatalog` for the CLI invocation. Full YAML content is loaded lazily when a scenario is actually run.
+- **`kind: runnable`** — a scenario you can launch (`sonda run @name --catalog <dir>` or `sonda run path/to/file.yaml`).
+- **`kind: composable`** — a metric pack definition, referenced from a runnable scenario via `pack: <name>` and resolved against the same catalog.
 
-Key types (in `sonda-core`):
+The CLI peeks the frontmatter of every YAML file in `--catalog <dir>`, indexes them by name (file stem, overridable via the `name:` field), and hard-errors on duplicate names. `sonda list --catalog <dir>` prints the index (filterable by `--kind` and `--tag`); `sonda show @name --catalog <dir>` prints the file's raw YAML. There is no built-in catalog, no env-var override, and no implicit search path — `--catalog` is the single discovery surface.
 
-- **BuiltinScenario** — lightweight metadata: name, category, signal_type, description, and the absolute filesystem path to the YAML file.
-
-Key types (in the CLI crate):
-
-- **ScenarioCatalog** — cached directory scan results. Built once per CLI invocation from the search path.
-
-**Scenario discovery search path** (priority order): `--scenario-path` CLI flag > `SONDA_SCENARIO_PATH` env var (colon-separated) > `./scenarios/` relative to CWD > `~/.sonda/scenarios/`. Name collisions are resolved by first-match-wins.
-
-All built-in scenarios use `stdout` as their sink and have a finite `duration`, so they work out of the box with zero configuration. The `scenarios run` subcommand supports rate, duration, sink, encoder, and endpoint overrides.
-
-> **Design note:** Scenarios deliberately live outside the binary so that users can add custom scenarios by dropping YAML files into the search path without recompiling. The same discovery mechanism works for both built-in and user-authored scenarios.
+> **Design note:** Scenarios are first-class artifacts of the system the user models. They live in the user's repo (versioned alongside the alert rules and dashboards they exercise) rather than being pinned to a sonda release.
 
 ### 5.7 Cargo Features
 
@@ -292,16 +274,16 @@ The CLI crate is intentionally thin. Its only responsibilities are:
 - Instantiate the appropriate generator, encoder, and sink from `sonda-core`.
 - Hand control to the `sonda-core` scenario runner.
 
-Primary CLI surface:
+Primary CLI surface (four verbs):
 
 ```
-sonda metrics [OPTIONS] --scenario <file.yaml>
-sonda metrics --name <name> --rate <n> --duration <d> --encoder <enc> [OVERRIDES]
-
-sonda logs [OPTIONS] --scenario <file.yaml>
+sonda run <file-or-@name> [OPTIONS]              # launch a v2 scenario
+sonda list --catalog <dir> [--kind ...] [--tag ...]
+sonda show <@name> --catalog <dir>               # print the raw YAML
+sonda new [--template | --from <csv>] [-o <path>]
 ```
 
-The CLI does not contain signal generation logic. Any behavior that is tested or benchmarked belongs in `sonda-core`.
+`sonda run` accepts either a filesystem path to a YAML file or a `@name` shorthand that resolves through `--catalog <dir>`. The CLI does not contain signal generation logic. Any behavior that is tested or benchmarked belongs in `sonda-core`.
 
 ---
 

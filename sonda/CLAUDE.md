@@ -5,7 +5,7 @@ This is the binary crate. It is a **thin layer** over sonda-core. No business lo
 ## Responsibility
 
 1. Parse CLI arguments using `clap` (derive API).
-2. Load the YAML scenario file (if provided).
+2. Load the YAML scenario file (file path or `@name` from a catalog directory).
 3. Merge CLI flag overrides onto the loaded config.
 4. Validate the merged config.
 5. Instantiate the generator, encoder, and sink via sonda-core factories.
@@ -19,187 +19,107 @@ in sonda-core.
 
 ```
 src/
-├── main.rs             ← entrypoint, clap setup, orchestration
-├── cli.rs              ← clap arg structs (#[derive(Parser)]), Verbosity enum,
-│                          ScenariosArgs/ScenariosAction for the `scenarios` subcommand,
-│                          PacksArgs/PacksAction for the `packs` subcommand,
-│                          --pack-path and --scenario-path global flags
-├── config.rs           ← config loading: YAML file or @name → merge CLI overrides → ScenarioConfig.
+├── main.rs             ← entrypoint, clap dispatch, orchestration
+├── cli.rs              ← clap arg structs: Commands enum (Run / List / Show / New),
+│                          RunArgs, ListArgs, ShowArgs, NewArgs, Verbosity enum,
+│                          global --catalog and --dry-run / verbosity flags
+├── config.rs           ← config loading: YAML file or @name → catalog peek → v2
+│                          compile pipeline → merge CLI overrides → ScenarioConfig.
 │                          Every scenario file is compiled through the v2 pipeline
-│                          (`sonda_core::compile_scenario_file`); v1 YAML shapes are
-│                          rejected with a migration hint. Includes resolve_scenario_source
-│                          (@name shorthand via ScenarioCatalog), parse_builtin_scenario,
-│                          load_pack_from_catalog.
-├── packs.rs            ← filesystem-based metric pack discovery: PackCatalog, PackEntry,
-│                          build_search_path(). Scans directories for pack YAML files and
-│                          caches results for the CLI invocation.
-│                          Search path (priority): --pack-path > SONDA_PACK_PATH > ./packs/ >
-│                          ~/.sonda/packs/
-├── scenarios.rs        ← filesystem-based scenario discovery: ScenarioCatalog,
-│                          build_search_path(). Scans directories for scenario YAML files
-│                          with metadata (scenario_name, category, signal_type, description).
-│                          Search path (priority): --scenario-path > SONDA_SCENARIO_PATH >
-│                          ./scenarios/ > ~/.sonda/scenarios/
-├── import/
-│   ├── mod.rs          ← `sonda import` subcommand: top-level orchestration (analyze, generate,
-│   │                      run modes), parse_column_list()
-│   ├── csv_reader.rs   ← CSV file reading: header detection via sonda-core csv_header,
-│   │                      numeric data extraction, column selection, ColumnMeta, CsvData
-│   ├── pattern.rs      ← time-series pattern detection (statistical analysis):
-│   │                      detect_pattern() → Pattern enum (Steady, Spike, Climb, Sawtooth,
-│   │                      Flap, Step). All heuristics are in the CLI crate, not sonda-core.
-│   └── yaml_gen.rs     ← YAML scenario generation from detected patterns: pattern_to_spec(),
-│                          render_yaml(). Maps patterns to operational vocabulary aliases
-│                          (steady, spike_event, leak, flap) or base generators (sawtooth, step).
-├── init/
-│   ├── mod.rs          ← `sonda init` subcommand: top-level orchestration (run_init),
-│   │                      InitResult (yaml + run_now flag + InitScenarioType for dispatch),
-│   │                      build_prefill() merges --from data with CLI flags into Prefill,
-│   │                      prefill_from_scenario() extracts fields from @name scenario YAML
-│   │                      (including labels), prefill_from_csv() detects pattern from CSV
-│   │                      and maps to alias (gracefully handles no-numeric-columns),
-│   │                      welcome banner, YAML preview, success summary, run-now prompt
-│   │                      (bypassed by --run-now flag or non-TTY stdin),
-│   │                      print_prefill_summary() shows pre-filled values before prompts
-│   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type, domain,
-│   │                      approach (single metric vs pack), situation selection,
-│   │                      situation-specific parameters (bypassed with defaults when
-│   │                      situation is prefilled), labels, rate (validated > 0), duration
-│   │                      (validated via parse_duration), encoder, sink.
-│   │                      Histogram and summary prompt flows: distribution model selection,
-│   │                      distribution-specific parameters, observations per tick,
-│   │                      bucket/quantile boundaries, and seed. All distribution-related
-│   │                      prompts are bypassed with sensible defaults when signal_type
-│   │                      is prefilled (non-interactive mode).
-│   │                      default_distribution_params() returns defaults matching the
-│   │                      interactive prompts for each distribution model.
-│   │                      Prefill struct carries optional pre-filled values for each prompt
-│   │                      including log-specific (message_template, severity) and
-│   │                      sink-specific (kafka_brokers, kafka_topic, otlp_signal_type).
-│   │                      Each prompt fn checks prefill — valid value skips the prompt,
-│   │                      invalid value warns and falls through to interactive.
-│   │                      Two-tier sink menu (primary: stdout/http_push/file; advanced:
-│   │                      remote_write/loki/otlp_grpc/kafka/tcp/udp behind "Advanced...").
-│   │                      Prefilled advanced sinks populate extra fields from prefill.
-│   │                      Pack domain filtering (list_by_category, fallback to all).
-│   │                      enforce_encoder_for_sink() auto-overrides encoder for protocol sinks.
-│   │                      prompt_run_now() offers immediate execution after file write.
-│   └── yaml_gen.rs     ← YAML rendering from collected answers: ScenarioKind, MetricAnswers,
-│                          PackAnswers, LogAnswers, HistogramAnswers, SummaryAnswers,
-│                          DeliveryAnswers. InitScenarioType enum
-│                          (SingleMetric/Pack/Logs/Histogram/Summary) for typed dispatch
-│                          in run-now path.
-│                          required_encoder_for_sink() maps sink→encoder constraints.
-│                          render_sink() handles all sink types incl. advanced YAML fields.
-├── yaml_helpers.rs     ← shared YAML formatting and quoting utilities: ParamValue, needs_quoting(),
-│                          escape_yaml_double_quoted(), format_float(), format_rate().
-│                          Used by both init/yaml_gen and import/yaml_gen.
-├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY aware,
-│                          polls ScenarioStats via shared RwLock, all output to stderr)
-└── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed to stderr
+│                          (`sonda_core::compile_scenario_file`); pre-v2 YAML shapes are
+│                          rejected with a migration hint.
+├── catalog_dir.rs      ← filesystem catalog discovery: enumerate(dir) walks YAML files
+│                          and peeks frontmatter (kind / name / tags) without full
+│                          deserialization; resolve(dir, name) does @name lookup.
+│                          First-match-wins is a HARD ERROR on duplicate names —
+│                          ambiguity is never silently resolved.
+├── new/
+│   ├── mod.rs          ← `sonda new` subcommand: dispatches between --template,
+│   │                      --from <csv>, and interactive flow; writes to -o <path>
+│   │                      or stdout
+│   ├── prompts.rs      ← interactive prompt logic using dialoguer: signal type,
+│   │                      scenario id, generator (metrics only), rate, duration, sink
+│   ├── csv_reader.rs   ← CSV file reading for `--from <csv>`: header parsing,
+│   │                      numeric column extraction
+│   └── yaml_gen.rs     ← YAML rendering: minimal_template(), render_from_answers(),
+│                          spec_from_pattern() — maps detected patterns to v2 YAML
+│                          using operational vocabulary aliases (steady, spike_event,
+│                          leak, flap, sawtooth, step)
+├── dry_run.rs          ← compile-and-print path for `sonda --dry-run run`: renders
+│                          either the resolved scenario text or JSON for tooling
+├── progress.rs         ← live progress display during scenario execution (TTY/non-TTY
+│                          aware, polls ScenarioStats via shared RwLock, all output to
+│                          stderr)
+└── status.rs           ← colored lifecycle banners (start/stop/config/summary) printed
+                           to stderr
 ```
 
-This crate should stay small. Seven files plus subdirectory modules for complex features is the
-target. Subdirectories (e.g., `import/`) are an accepted extension when a feature requires
-multiple tightly-coupled files. If top-level file count grows beyond seven or a subdirectory
-exceeds four files, something may belong in sonda-core.
+This crate stays small. Subdirectories (e.g., `new/`) are an accepted extension when a feature
+requires multiple tightly-coupled files.
 
 ## CLI Surface
 
 ```
-sonda [--quiet | --verbose] [--dry-run] metrics --scenario <file.yaml | @builtin-name>
-sonda [--quiet | --verbose] [--dry-run] metrics --name <n> --rate <r> --duration <d> [--encoder <enc>] [--precision <0-17>] [--label k=v]... [--sink <type> --endpoint <url> ...]
-sonda [--quiet | --verbose] [--dry-run] logs --scenario <file.yaml | @builtin-name>
-sonda [--quiet | --verbose] [--dry-run] logs --mode <mode> [--sink <type> --endpoint <url> ...]
-sonda [--quiet | --verbose] [--dry-run] histogram --scenario <file.yaml | @builtin-name>
-sonda [--quiet | --verbose] [--dry-run] run --scenario <multi-scenario.yaml | @builtin-name>
-sonda scenarios list [--category <cat>] [--json]
-sonda scenarios show <name>
-sonda [--quiet | --verbose] [--dry-run] scenarios run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>]
-sonda [--pack-path <dir>] packs list [--category <cat>] [--json]
-sonda [--pack-path <dir>] packs show <name>
-sonda [--quiet | --verbose] [--dry-run] packs run <name> [--duration <d>] [--rate <r>] [--sink <type>] [--endpoint <url>] [--encoder <enc>] [--label k=v]...
-sonda import <file.csv> --analyze
-sonda import <file.csv> -o <output.yaml> [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda [--quiet | --verbose] import <file.csv> --run [--columns <1,3,5>] [--rate <r>] [--duration <d>]
-sonda init [--from <@name | path.csv>] [--signal-type <metrics|logs|histogram|summary>] [--domain <cat>] [--situation <alias>] [--metric <name>] [--pack <name>] [--rate <r>] [--duration <d>] [--encoder <enc>] [--sink <type>] [--endpoint <url>] [-o <path>] [--label k=v]... [--run-now] [--message-template <tpl>] [--severity <preset>] [--kafka-brokers <addrs>] [--kafka-topic <topic>] [--otlp-signal-type <type>]
+sonda [GLOBAL FLAGS] run <SCENARIO> [OPTIONS]
+sonda [GLOBAL FLAGS] list --catalog <DIR> [--kind <runnable|composable>] [--tag <TAG>] [--json]
+sonda [GLOBAL FLAGS] show <@NAME> --catalog <DIR>
+sonda [GLOBAL FLAGS] new [--template | --from <CSV>] [-o <PATH>]
 ```
 
-The `--scenario` flag accepts either a filesystem path or a `@name` shorthand that resolves
-a scenario from the filesystem catalog discovered via the scenario search path. Example:
-`sonda metrics --scenario @cpu-spike`.
-
-Every `--scenario` file must be a **v2 scenario** (`version: 2` at the top level). v1 YAML
-shapes — flat single-signal configs, top-level `scenarios:` lists without `version: 2`, and
-`pack:` shorthand files — are rejected with a migration hint. Pack references inside v2
-files (`pack: <name>` under a `scenarios:` entry) are resolved by the `FilesystemPackResolver`
-backed by the CLI's `PackCatalog`.
+`<SCENARIO>` is either a path to a v2 YAML file or `@name` for catalog lookup. Every scenario file
+must declare `version: 2` and `kind: runnable` (pack files declare `kind: composable`). Pre-v2
+shapes are rejected with a migration hint. Pack references inside a v2 file (`pack: <name>` under
+a `scenarios:` entry) are resolved by `CatalogPackResolver`, which reads the `--catalog <dir>`
+directory.
 
 ### Global Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--quiet` | `-q` | Suppress all status banners (start/stop/summary). Errors are still printed to stderr. |
-| `--verbose` | `-v` | Show the resolved scenario config at startup, then run normally with start/stop banners. Mutually exclusive with `--quiet`. |
-| `--dry-run` | | Parse and validate the scenario config, print it, then exit without emitting any events. Orthogonal to `--quiet`/`--verbose` — always prints the resolved config. |
-| `--pack-path` | | Directory containing metric pack YAML files. When set, this is the sole search path for packs -- `SONDA_PACK_PATH`, `./packs/`, and `~/.sonda/packs/` are not consulted. |
-| `--scenario-path` | | Directory containing scenario YAML files. When set, this is the sole search path for scenarios -- `SONDA_SCENARIO_PATH`, `./scenarios/`, and `~/.sonda/scenarios/` are not consulted. |
+| `--quiet` | `-q` | Suppress status banners. Errors still print to stderr. |
+| `--verbose` | `-v` | Show the resolved scenario config at startup. Mutually exclusive with `--quiet`. |
+| `--catalog` | | Directory containing scenario and pack YAML files for `@name` resolution. Mandatory whenever a `@name` reference appears. |
+| `--dry-run` | | `run` subcommand only: parse and validate the scenario, print it, exit without emitting events. Use `--format json` for machine-readable output. |
 
-The verbosity model is captured in the `Verbosity` enum (`Quiet`, `Normal`, `Verbose`), constructed
-from the `--quiet` and `--verbose` flags via `Verbosity::from_flags()`. `--dry-run` is orthogonal.
+There is no `SONDA_CATALOG` env var, no implicit search path, no built-in catalog. `--catalog` is
+the single discovery surface. The verbosity model is captured in the `Verbosity` enum (`Quiet`,
+`Normal`, `Verbose`), constructed from `--quiet` and `--verbose` via `Verbosity::from_flags()`.
 
-The `metrics` subcommand is the MVP entry point. `logs` emits log events. `histogram` generates
-Prometheus-style histogram data. `summary` generates Prometheus-style summary data. `run` runs
-multiple scenarios concurrently from a single v2 YAML file whose `scenarios:` list carries
-`signal_type: metrics`, `logs`, `histogram`, or `summary` entries. Pack references inside a v2
-entry (`pack: <name>`) expand to one runtime entry per pack metric via the v2 compiler's
-expand phase. `scenarios` discovers scenario YAML files from the
-search path (`--scenario-path`, `SONDA_SCENARIO_PATH`, `./scenarios/`, `~/.sonda/scenarios/`):
-`list` to browse, `show` to dump YAML, `run` to execute. `packs` provides access to metric pack
-files: `list` to browse, `show` to dump YAML, `run` to execute with rate/duration/sink/encoder
-overrides. `import` analyzes a CSV file, detects time-series patterns (steady, spike, climb,
-flap, sawtooth, step), and generates a portable scenario YAML using generators instead of
-csv_replay. Three modes: `--analyze` (read-only), `-o` (write YAML), `--run` (generate + execute).
-`init` walks through an interactive prompt flow and generates a commented, runnable scenario YAML.
-Uses operational vocabulary aliases (steady, spike_event, flap, etc.) and supports metric packs
-with domain-filtered selection. Two-tier sink menu (primary + advanced behind "Advanced...") with
-automatic encoder override for protocol sinks (remote_write, otlp_grpc). After writing the file,
-offers immediate execution via the run-now prompt (dispatched by InitScenarioType).
-Supports fully non-interactive mode via CLI flags (`--signal-type`, `--domain`, `--situation`,
-`--metric`, `--rate`, `--duration`, `--encoder`, `--sink`, `-o`, `--run-now`, etc.) and
-pre-filling from built-in scenarios (`--from @name`) or CSV files (`--from path.csv`).
-CLI flags override `--from` values. Pre-filled values skip their interactive prompts; missing
-values prompt as usual (partial non-interactive mode). Situation-specific parameters use
-defaults when the situation is prefilled. Log-specific prompts (message template, severity)
-and sink-specific extra fields (kafka brokers/topic, OTLP signal type) are also prefillable.
-Rate and duration are validated; invalid values warn and fall through.
+### Subcommand summary
 
-Multi-signal temporal scenarios (formerly delivered via the retired `story` subcommand) are
-now expressed directly as v2 scenario YAML files with `after:` clauses on entries, run through
-`sonda run --scenario <file>` or `sonda catalog run <name>`. The v2 compiler resolves `after`
-clauses into concrete `phase_offset` values via the shared timing math in
-`sonda_core::compiler::timing`.
+- **`sonda run <scenario>`** — launch a scenario. Accepts a file path or `@name`. Per-run override
+  flags: `--rate`, `--duration`, `--encoder`, `--sink`, `--endpoint`, `--label`, `-o/--output`,
+  `--on-sink-error`. `--dry-run` parses and prints without emitting. Multi-scenario v2 files
+  (multiple entries under `scenarios:`) run concurrently and respect per-entry `phase_offset`
+  and `after:` clauses; final summary line aggregates totals.
+- **`sonda list --catalog <dir>`** — enumerate every YAML in the catalog. Filters: `--kind`,
+  `--tag`. `--json` emits machine-readable output. No dry-run (the operation is purely
+  observational).
+- **`sonda show <@name> --catalog <dir>`** — print the raw source YAML for a catalog entry,
+  round-trippable through `sonda run`.
+- **`sonda new`** — scaffold a v2 scenario YAML. Default mode is interactive (signal type →
+  scenario id → generator → rate → duration → sink). `--template` dumps a minimal valid YAML
+  with no prompts. `--from <csv>` scaffolds from a CSV using `sonda_core::analysis::pattern`
+  and maps detected patterns to operational vocabulary aliases. `-o <path>` writes to a file;
+  otherwise the YAML is printed to stdout.
 
-All subcommands go through the unified `sonda_core::prepare_entries` +
-`sonda_core::launch_scenario` API introduced in Slice 3.0. No per-signal-type dispatch in main.rs.
-
-The `run` subcommand prints an aggregate summary line after all scenarios complete, showing total
-scenarios, events, bytes, errors, and elapsed time.
-
-### Discovery Search Paths
-
-Both packs and scenarios use the same priority: CLI flag (sole path) > env var (colon-separated) >
-`./packs/` or `./scenarios/` > `~/.sonda/packs/` or `~/.sonda/scenarios/`. Non-existent dirs
-silently skipped. First-match-wins on name collisions. See `packs.rs` and `scenarios.rs` for details.
+All subcommands route through the unified `sonda_core::prepare_entries` + `sonda_core::launch_scenario`
+API. No per-signal-type dispatch in main.rs.
 
 ## Adding a New Subcommand
 
+The CLI is intentionally restricted to four verbs. Adding a fifth verb is an architectural decision
+that should be paired with a written rationale — most workflows are better expressed by adding flags
+to `sonda run` or by extending the catalog metadata that `sonda list` / `sonda show` surface. If
+a new verb is genuinely warranted:
+
 1. Add a variant to the `Commands` enum in `cli.rs`.
 2. Add the corresponding clap derive struct for its flags.
-3. Add a match arm in `main.rs` that:
-   - Loads config.
-   - Calls the appropriate sonda-core runner.
-4. That's it. The actual logic stays in sonda-core.
+3. Add a match arm in `main.rs` that calls the appropriate sonda-core API.
+4. Add the verb to `sonda-server/src/main.rs`'s `SONDA_SUBCOMMANDS` so the dispatch shim
+   forwards it to the sibling `sonda` binary.
+
+The actual logic stays in sonda-core.
 
 ## Error Handling
 
@@ -211,9 +131,11 @@ silently skipped. First-match-wins on name collisions. See `packs.rs` and `scena
 ## Config Precedence
 
 From lowest to highest priority:
-1. YAML scenario file
-2. `SONDA_*` environment variables
-3. CLI flags
+1. YAML scenario file (the `defaults:` block and per-entry fields).
+2. CLI flags (`--rate`, `--duration`, `--encoder`, etc.).
+
+There are no `SONDA_*` env-var overrides for scenario fields. The only env var read by the CLI is
+`SONDA_API_KEY`, which is consumed by `sonda-server`, not the CLI itself.
 
 Example: if the YAML says `rate: 100` and the CLI says `--rate 500`, the effective rate is 500.
 
@@ -223,9 +145,9 @@ This crate depends on:
 - `sonda-core` (workspace dependency)
 - `clap` with derive feature
 - `serde` + `serde_yaml_ng` for config loading
-- `serde_json` for JSON output in `scenarios list`
+- `serde_json` for JSON output (`sonda list --json`, `sonda --dry-run run --format json`)
 - `anyhow` for error handling
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
-- `dialoguer` for interactive terminal prompts in `sonda init` (pure Rust, musl-compatible)
+- `dialoguer` for interactive terminal prompts in `sonda new` (pure Rust, musl-compatible)
 
 It should NOT depend on: `axum`, `tokio`, `hyper`, or any server-related crate.

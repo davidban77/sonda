@@ -53,7 +53,7 @@
 //! 5. pack per-metric labels
 //! 6. pack entry-level labels (the entry under `scenarios:`)
 //! 7. override-level labels (`entry.overrides[metric].labels`)
-//! 8. CLI flags (applied at runtime, PR 7 scope)
+//! 8. CLI flags (applied at runtime)
 //!
 //! Eagerly merging levels 2 and 6 into a single map (as we do for inline
 //! entries) would collapse those two layers, making it impossible for pack
@@ -327,13 +327,6 @@ pub struct NormalizedEntry {
 /// All other fields (pack info, histogram parameters, `after` clause,
 /// `phase_offset`, `clock_group`, jitter, gaps, bursts, cardinality spikes,
 /// dynamic labels, etc.) are carried through untouched.
-///
-/// # Errors
-///
-/// Returns [`NormalizeError::MissingRate`] when an entry has no `rate`
-/// defined inline and the `defaults:` block does not supply one either.
-/// The error message identifies the entry by index and, when available,
-/// its `name`, `id`, or `pack` reference.
 pub fn normalize(file: ScenarioFile) -> Result<NormalizedFile, NormalizeError> {
     let defaults = file.defaults;
     let defaults_labels = defaults

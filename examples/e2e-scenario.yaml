@@ -7,7 +7,7 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage:
-#   sonda metrics --scenario examples/e2e-scenario.yaml
+#   sonda run examples/e2e-scenario.yaml
 #   sleep 5
 #   curl -s "http://localhost:8428/api/v1/query?query=e2e_pipeline_check" \
 #     | jq '.data.result | length'

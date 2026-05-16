@@ -16,12 +16,11 @@ src/
 ├── packs/
 │   └── mod.rs          ← metric pack engine: MetricPackDef, MetricSpec, PackScenarioConfig,
 │                          MetricOverride, expand_pack(). Engine types and expansion logic only.
-│                          Pack YAML files live outside this crate, in `packs/` at repo root,
-│                          discovered by the CLI via a search path.
-├── scenarios/
-│   └── mod.rs          ← scenario metadata type: BuiltinScenario struct (owned fields + source_path).
-│                          Scenario YAML files live outside this crate, in `scenarios/` at repo root,
-│                          discovered by the CLI via a search path.
+│                          Pack YAML files are user-supplied data; sonda-core does not ship any.
+├── analysis/
+│   └── pattern.rs      ← time-series pattern detection: detect_pattern() → Pattern enum
+│                          (Steady / Spike / Climb / Sawtooth / Flap / Step). Pure statistics,
+│                          consumed by `sonda new --from <csv>`.
 ├── model/
 │   ├── mod.rs          ← module declarations
 │   ├── metric.rs       ← ValidatedMetricName (newtype over Arc<str>, validates once at construction),

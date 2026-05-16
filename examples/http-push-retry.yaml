@@ -5,10 +5,10 @@
 # retries up to max_attempts times before discarding the batch.
 #
 # Usage:
-#   sonda metrics --scenario examples/http-push-retry.yaml
+#   sonda run examples/http-push-retry.yaml
 #
 # You can override retry settings from the CLI:
-#   sonda metrics --scenario examples/http-push-retry.yaml \
+#   sonda run examples/http-push-retry.yaml \
 #     --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
 
 version: 2

@@ -5,7 +5,7 @@
 #
 # Then run:
 #
-#   sonda metrics --scenario examples/http-push-sink.yaml
+#   sonda run examples/http-push-sink.yaml
 #
 # Verify with: curl 'http://localhost:8428/api/v1/query?query=cpu_usage'
 

@@ -7,7 +7,7 @@
 #
 # Then run:
 #
-#   sonda metrics --scenario examples/prometheus-http-push.yaml
+#   sonda run examples/prometheus-http-push.yaml
 #
 # Verify with: curl 'http://localhost:8428/api/v1/query?query=node_cpu_seconds_total'
 #

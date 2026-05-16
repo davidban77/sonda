@@ -176,18 +176,21 @@ jobs:
       - name: Install Sonda
         run: cargo install sonda
 
+      - name: Scaffold a smoke-test scenario
+        run: sonda -q new --template -o /tmp/ci-smoke.yaml
+
       - name: Smoke test (Prometheus text)
         run: |
-          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
-            --output /tmp/ci-smoke-prom.txt
+          sonda -q run /tmp/ci-smoke.yaml --rate 10 --duration 5s \
+            --sink file --endpoint /tmp/ci-smoke-prom.txt
           LINES=$(wc -l < /tmp/ci-smoke-prom.txt)
           echo "Produced $LINES lines"
           [ "$LINES" -ge 40 ] || { echo "FAIL: too few lines"; exit 1; }
 
       - name: Smoke test (JSON Lines)
         run: |
-          sonda -q metrics --name ci_smoke --rate 10 --duration 5s \
-            --encoder json_lines --output /tmp/ci-smoke-json.txt
+          sonda -q run /tmp/ci-smoke.yaml --rate 10 --duration 5s \
+            --encoder json_lines --sink file --endpoint /tmp/ci-smoke-json.txt
           LINES=$(wc -l < /tmp/ci-smoke-json.txt)
           echo "Produced $LINES lines"
           [ "$LINES" -ge 40 ] || { echo "FAIL: too few lines"; exit 1; }

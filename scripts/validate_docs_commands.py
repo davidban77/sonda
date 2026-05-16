@@ -2,12 +2,15 @@
 """Docs-drift catcher for sonda CLI commands referenced in user-facing documentation.
 
 Walks ``docs/site/docs/**/*.md``, extracts fenced ``bash`` code blocks, finds
-``sonda <subcommand>`` invocations, and verifies two properties:
+``sonda <subcommand>`` invocations against the 1.9 four-verb surface
+(``run`` / ``list`` / ``show`` / ``new``), and verifies two properties:
 
-1. **File existence** — when a command passes ``--scenario <path>`` pointing at a
-   filesystem path (not a ``@builtin-name``), the path must exist on disk.
-2. **Validity** — when the subcommand supports ``--dry-run``, the script invokes
-   ``sonda`` with ``--dry-run`` appended and fails the check on a non-zero exit.
+1. **File existence** — when a command takes a positional file path (e.g.
+   ``sonda run examples/foo.yaml`` or ``sonda new --from examples/data.csv``)
+   pointing at a repo-relative path, the path must exist on disk.
+2. **Validity** — when the subcommand supports ``--dry-run`` (today, only
+   ``run``), the script invokes the binary with ``--dry-run`` injected as a
+   global flag and fails the check on a non-zero exit.
 
 Stdlib-only. Run from the repo root via ``python3 scripts/validate_docs_commands.py``.
 ``--self-test`` runs the inline unit tests without needing a ``sonda`` binary.
@@ -32,32 +35,10 @@ DOCS_GLOB_ROOT = Path("docs/site/docs")
 # `mkdocs build` emits site output under `docs/site/site/`; skip it.
 DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
 
-KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
-    {
-        "metrics",
-        "logs",
-        "histogram",
-        "summary",
-        "run",
-        "catalog",
-        "scenarios",
-        "packs",
-        "import",
-        "init",
-    }
-)
+KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new"})
 
-DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset(
-    {"metrics", "logs", "histogram", "summary", "run"}
-)
-
-DRY_RUNNABLE_WITH_ACTION: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("catalog", "run"),
-        ("scenarios", "run"),
-        ("packs", "run"),
-    }
-)
+# Only ``run`` supports ``--dry-run`` in the 1.9 CLI.
+DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset({"run"})
 
 DEFAULT_SONDA_BINARY = Path("target/release/sonda")
 
@@ -65,7 +46,7 @@ DEFAULT_SONDA_BINARY = Path("target/release/sonda")
 # roots. Bare filenames in docs (e.g. `my-scenario.yaml`) are tutorial
 # placeholders the reader creates locally.
 REPO_RELATIVE_PATH_ROOTS: frozenset[str] = frozenset(
-    {"examples", "scenarios", "packs", "docs", "tests"}
+    {"examples", "docs", "tests", "sonda-core"}
 )
 
 DEFAULT_SUBPROCESS_TIMEOUT_S = 30.0
@@ -94,39 +75,25 @@ class ExtractedCommand:
     def subcommand(self) -> str | None:
         """Return the first recognised subcommand token, or ``None``.
 
-        Global flags (``sonda --dry-run metrics ...``) are skipped.
+        Global flags (``sonda --dry-run run ...``) and global-flag values
+        (``sonda --catalog ./dir run ...``) are skipped.
         """
-        for token in self.argv[1:]:
-            if token.startswith("-"):
-                continue
-            return token if token in KNOWN_SUBCOMMANDS else None
-        return None
-
-    @property
-    def action(self) -> str | None:
-        """Return the action verb for ``catalog``/``scenarios``/``packs``,
-        or ``None``. Lets the caller differentiate ``catalog list`` (no
-        dry-run) from ``catalog run`` (dry-run)."""
-        sub = self.subcommand
-        if sub is None or sub not in {"catalog", "scenarios", "packs"}:
-            return None
-        seen_subcommand = False
         skip_next_value = False
         for token in self.argv[1:]:
             if skip_next_value:
                 skip_next_value = False
                 continue
-            if not seen_subcommand:
-                if token == sub:
-                    seen_subcommand = True
-                    continue
-                if token in {"--pack-path", "--scenario-path", "--format"}:
+            if token.startswith("-"):
+                if token in _GLOBAL_FLAGS_WITH_VALUE and "=" not in token:
                     skip_next_value = True
                 continue
-            if token.startswith("-"):
-                continue
-            return token
+            return token if token in KNOWN_SUBCOMMANDS else None
         return None
+
+
+# Global flags that consume the next argv token. Used by ``subcommand`` to
+# skip past a value when looking for the verb.
+_GLOBAL_FLAGS_WITH_VALUE: frozenset[str] = frozenset({"--catalog"})
 
 
 @dataclasses.dataclass
@@ -401,84 +368,92 @@ def is_repo_relative_path(path: str) -> bool:
     return first in REPO_RELATIVE_PATH_ROOTS
 
 
-def extract_scenario_path(argv: Sequence[str]) -> str | None:
-    """Return the ``--scenario`` path value (handles both ``--scenario foo`` and
-    ``--scenario=foo`` forms), or ``None`` if absent."""
-    for idx, tok in enumerate(argv):
-        if tok == "--scenario":
-            if idx + 1 < len(argv):
-                return argv[idx + 1]
-            return None
-        if tok.startswith("--scenario="):
-            return tok[len("--scenario=") :]
+def extract_run_target(argv: Sequence[str]) -> str | None:
+    """Return the positional ``<scenario>`` argument to ``sonda run``.
+
+    Skips global flags before the verb, the verb itself, and any
+    flag-value pairs (``--rate 5``, ``--catalog ./dir``). Returns the
+    first positional token after ``run``, which may be a file path or
+    ``@name``. Returns ``None`` for non-``run`` commands or when no
+    positional argument is present.
+    """
+    seen_run = False
+    skip_next_value = False
+    for tok in argv[1:]:
+        if skip_next_value:
+            skip_next_value = False
+            continue
+        if not seen_run:
+            if tok == "run":
+                seen_run = True
+                continue
+            if tok in _GLOBAL_FLAGS_WITH_VALUE and "=" not in tok:
+                skip_next_value = True
+            continue
+        if tok.startswith("-"):
+            # Heuristic: value-taking flags on `run`. Anything that doesn't
+            # consume a value (e.g. `--dry-run`, `--quiet`) is harmlessly
+            # skipped without consuming the next token.
+            if tok in _RUN_FLAGS_WITH_VALUE and "=" not in tok:
+                skip_next_value = True
+            continue
+        return tok
     return None
 
 
-def extract_import_or_from_file(argv: Sequence[str]) -> str | None:
-    """Return a referenced file path for ``import <file>`` and ``init --from <val>``.
+# Flags on ``sonda run`` that consume the next argv token. Used by
+# ``extract_run_target`` to skip past values when scanning for the
+# positional scenario argument.
+_RUN_FLAGS_WITH_VALUE: frozenset[str] = frozenset(
+    {
+        "--rate",
+        "--duration",
+        "--encoder",
+        "--sink",
+        "--endpoint",
+        "--output",
+        "-o",
+        "--label",
+        "--on-sink-error",
+        "--format",
+        "--catalog",
+    }
+)
 
-    Returns ``None`` for ``init --from @name`` (catalog reference, not a path).
-    """
-    if len(argv) < 2:
-        return None
-    sub = None
-    for tok in argv[1:]:
-        if tok.startswith("-"):
+
+def extract_new_from_file(argv: Sequence[str]) -> str | None:
+    """Return the value of ``--from <path>`` for ``sonda new``, or ``None``."""
+    seen_new = False
+    for idx, tok in enumerate(argv[1:], start=1):
+        if not seen_new:
+            if tok == "new":
+                seen_new = True
             continue
-        sub = tok
-        break
-    if sub == "import":
-        skip_next = False
-        seen_import = False
-        for tok in argv[1:]:
-            if skip_next:
-                skip_next = False
-                continue
-            if not seen_import:
-                if tok == "import":
-                    seen_import = True
-                continue
-            if tok.startswith("-"):
-                if tok in {"-o", "--output", "--columns", "--rate", "--duration"}:
-                    skip_next = True
-                continue
-            return tok
-        return None
-    if sub == "init":
-        for idx, tok in enumerate(argv):
-            if tok == "--from":
-                if idx + 1 < len(argv):
-                    val = argv[idx + 1]
-                    if val.startswith("@"):
-                        return None
-                    return val
-                return None
-            if tok.startswith("--from="):
-                val = tok[len("--from=") :]
-                if val.startswith("@"):
-                    return None
-                return val
-        return None
+        if tok == "--from":
+            if idx + 1 < len(argv):
+                return argv[idx + 1]
+            return None
+        if tok.startswith("--from="):
+            return tok[len("--from=") :]
+    return None
+
+
+def extract_catalog_dir(argv: Sequence[str]) -> str | None:
+    """Return the value passed to the global ``--catalog`` flag, or ``None``."""
+    for idx, tok in enumerate(argv):
+        if tok == "--catalog":
+            if idx + 1 < len(argv):
+                return argv[idx + 1]
+            return None
+        if tok.startswith("--catalog="):
+            return tok[len("--catalog=") :]
     return None
 
 
 def supports_dry_run(cmd: ExtractedCommand) -> bool:
-    """Return True when the command's subcommand (and action, if any) supports ``--dry-run``.
-
-    ``sonda import --run`` qualifies; plain ``sonda import --analyze`` or
-    ``sonda import -o foo.yaml`` does not.
-    """
+    """Return True when the command's subcommand supports ``--dry-run``."""
     sub = cmd.subcommand
-    if sub is None:
-        return False
-    if sub in DRY_RUNNABLE_SINGLE:
-        return True
-    action = cmd.action
-    if action is not None and (sub, action) in DRY_RUNNABLE_WITH_ACTION:
-        return True
-    if sub == "import" and "--run" in cmd.argv:
-        return True
-    return False
+    return sub is not None and sub in DRY_RUNNABLE_SINGLE
 
 
 def validate_command(
@@ -488,40 +463,58 @@ def validate_command(
     subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT_S,
 ) -> ValidationResult:
     """Run the file-exists + dry-run checks on a single extracted command."""
-    scenario_path = extract_scenario_path(cmd.argv)
-    scenario_is_repo_path = (
-        scenario_path is not None
-        and not scenario_path.startswith("@")
-        and is_repo_relative_path(scenario_path)
-        and scenario_path not in cmd.tutorial_titles
+    run_target = extract_run_target(cmd.argv) if cmd.subcommand == "run" else None
+    target_is_repo_path = (
+        run_target is not None
+        and not run_target.startswith("@")
+        and is_repo_relative_path(run_target)
+        and run_target not in cmd.tutorial_titles
         and not cmd.block_is_tutorial
     )
-    if scenario_is_repo_path:
-        target = (repo_root / scenario_path).resolve()  # type: ignore[arg-type]
+    if target_is_repo_path:
+        target = (repo_root / run_target).resolve()  # type: ignore[arg-type]
         if not target.exists():
             return ValidationResult(
                 command=cmd,
                 ok=False,
                 message=(
-                    f"--scenario path does not exist: {scenario_path} "
+                    f"run target path does not exist: {run_target} "
                     f"(resolved to {target})"
                 ),
             )
 
-    referenced_file = extract_import_or_from_file(cmd.argv)
+    new_from = extract_new_from_file(cmd.argv) if cmd.subcommand == "new" else None
     if (
-        referenced_file is not None
-        and is_repo_relative_path(referenced_file)
-        and referenced_file not in cmd.tutorial_titles
+        new_from is not None
+        and is_repo_relative_path(new_from)
+        and new_from not in cmd.tutorial_titles
         and not cmd.block_is_tutorial
     ):
-        target = (repo_root / referenced_file).resolve()
+        target = (repo_root / new_from).resolve()
         if not target.exists():
             return ValidationResult(
                 command=cmd,
                 ok=False,
                 message=(
-                    f"referenced file does not exist: {referenced_file} "
+                    f"--from file does not exist: {new_from} "
+                    f"(resolved to {target})"
+                ),
+            )
+
+    catalog_dir = extract_catalog_dir(cmd.argv)
+    if (
+        catalog_dir is not None
+        and is_repo_relative_path(catalog_dir)
+        and catalog_dir not in cmd.tutorial_titles
+        and not cmd.block_is_tutorial
+    ):
+        target = (repo_root / catalog_dir).resolve()
+        if not target.exists():
+            return ValidationResult(
+                command=cmd,
+                ok=False,
+                message=(
+                    f"--catalog dir does not exist: {catalog_dir} "
                     f"(resolved to {target})"
                 ),
             )
@@ -530,18 +523,14 @@ def validate_command(
         return ValidationResult(command=cmd, ok=True)
 
     # Skip dry-run on cases that can't fail "for docs drift reasons":
-    # tutorial paths the reader creates, `@name` and `catalog run <name>`
-    # catalog lookups, and tutorial blocks generally.
-    if scenario_path is not None and not scenario_path.startswith("@"):
-        if not scenario_is_repo_path:
+    # tutorial paths the reader creates locally, `@name` catalog lookups,
+    # and tutorial blocks generally.
+    if run_target is not None:
+        if run_target.startswith("@"):
             return ValidationResult(command=cmd, ok=True)
-    if scenario_path is not None and scenario_path.startswith("@"):
-        return ValidationResult(command=cmd, ok=True)
-    if cmd.action == "run" and cmd.subcommand in {"catalog", "scenarios", "packs"}:
-        return ValidationResult(command=cmd, ok=True)
+        if not target_is_repo_path:
+            return ValidationResult(command=cmd, ok=True)
     if cmd.block_is_tutorial:
-        return ValidationResult(command=cmd, ok=True)
-    if referenced_file is not None and not is_repo_relative_path(referenced_file):
         return ValidationResult(command=cmd, ok=True)
 
     if sonda_bin is None:
@@ -590,11 +579,20 @@ def validate_command(
 def _build_dry_run_argv(
     cmd: ExtractedCommand, sonda_bin: Path
 ) -> list[str]:
-    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` if absent."""
+    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` on the
+    ``run`` subcommand if not already present.
+
+    ``--dry-run`` is a flag on the ``run`` subcommand itself, so it must
+    appear after ``run`` (clap rejects it as a global flag).
+    """
     argv = list(cmd.argv)
     argv[0] = str(sonda_bin)
-    if "--dry-run" not in argv:
-        argv.insert(1, "--dry-run")
+    if "--dry-run" in argv:
+        return argv
+    for i, tok in enumerate(argv):
+        if tok == "run":
+            argv.insert(i + 1, "--dry-run")
+            return argv
     return argv
 
 
@@ -759,7 +757,7 @@ class _ExtractBashBlocksTests(unittest.TestCase):
             "```\n"
             "\n"
             "```bash\n"
-            "sonda metrics --name up --rate 1 --duration 5s\n"
+            "sonda run examples/foo.yaml\n"
             "```\n"
             "\n"
             "```text\n"
@@ -768,25 +766,25 @@ class _ExtractBashBlocksTests(unittest.TestCase):
         )
         blocks = extract_bash_blocks(md)
         self.assertEqual(len(blocks), 1)
-        self.assertIn("sonda metrics", blocks[0][1])
+        self.assertIn("sonda run", blocks[0][1])
 
     def test_indented_bash_block_in_admonition(self) -> None:
         md = (
             "!!! tip\n"
             "    ```bash\n"
-            "    sonda --dry-run metrics --name up --rate 1 --duration 5s\n"
+            "    sonda --quiet run examples/foo.yaml\n"
             "    ```\n"
         )
         blocks = extract_bash_blocks(md)
         self.assertEqual(len(blocks), 1)
-        self.assertIn("sonda --dry-run metrics", blocks[0][1])
+        self.assertIn("sonda --quiet run", blocks[0][1])
 
     def test_empty_fence_info_is_not_bash(self) -> None:
-        md = "```\nsonda metrics --rate 1\n```\n"
+        md = "```\nsonda run foo.yaml\n```\n"
         self.assertEqual(extract_bash_blocks(md), [])
 
     def test_line_number_points_at_first_body_line(self) -> None:
-        md = "line 1\nline 2\n```bash\nsonda metrics\n```\n"
+        md = "line 1\nline 2\n```bash\nsonda run foo.yaml\n```\n"
         blocks = extract_bash_blocks(md)
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0][0], 4)
@@ -794,16 +792,16 @@ class _ExtractBashBlocksTests(unittest.TestCase):
 
 class _JoinContinuationsTests(unittest.TestCase):
     def test_joins_backslash_continuation(self) -> None:
-        body = "sonda metrics \\\n  --name up --rate 1 --duration 5s"
+        body = "sonda run examples/foo.yaml \\\n  --rate 1 --duration 5s"
         out = join_continuations(body)
         self.assertEqual(len(out), 1)
         self.assertEqual(
-            out[0][1], "sonda metrics --name up --rate 1 --duration 5s"
+            out[0][1], "sonda run examples/foo.yaml --rate 1 --duration 5s"
         )
         self.assertEqual(out[0][0], 0)
 
     def test_two_separate_lines_stay_separate(self) -> None:
-        body = "sonda metrics --rate 1\nsonda logs --rate 5"
+        body = "sonda run foo.yaml\nsonda list --catalog ./dir"
         out = join_continuations(body)
         self.assertEqual(len(out), 2)
         self.assertEqual(out[1][0], 1)
@@ -814,93 +812,86 @@ class _JoinContinuationsTests(unittest.TestCase):
 
 class _StripPromptAndEnvTests(unittest.TestCase):
     def test_strips_dollar_prompt(self) -> None:
-        self.assertEqual(strip_prompt("$ sonda metrics"), "sonda metrics")
+        self.assertEqual(strip_prompt("$ sonda run foo.yaml"), "sonda run foo.yaml")
 
     def test_no_prompt_passthrough(self) -> None:
-        self.assertEqual(strip_prompt("sonda metrics"), "sonda metrics")
+        self.assertEqual(strip_prompt("sonda run foo.yaml"), "sonda run foo.yaml")
 
     def test_strips_single_env_var(self) -> None:
         self.assertEqual(
-            strip_env_prefix("RUST_LOG=debug sonda metrics"),
-            "sonda metrics",
+            strip_env_prefix("RUST_LOG=debug sonda run foo.yaml"),
+            "sonda run foo.yaml",
         )
 
     def test_strips_multiple_env_vars(self) -> None:
         self.assertEqual(
-            strip_env_prefix("RUST_LOG=debug SONDA_FOO=bar sonda metrics"),
-            "sonda metrics",
+            strip_env_prefix("RUST_LOG=debug SONDA_FOO=bar sonda run foo.yaml"),
+            "sonda run foo.yaml",
         )
 
     def test_env_prefix_not_stripped_from_middle(self) -> None:
-        # An env var in the middle is NOT an assignment prefix.
         self.assertEqual(
-            strip_env_prefix("sonda metrics RUST_LOG=debug"),
-            "sonda metrics RUST_LOG=debug",
+            strip_env_prefix("sonda run foo.yaml RUST_LOG=debug"),
+            "sonda run foo.yaml RUST_LOG=debug",
         )
 
 
 class _TrimShellTrailersTests(unittest.TestCase):
     def test_trims_redirect(self) -> None:
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics --rate 1 > /tmp/out.txt"),
-            "sonda metrics --rate 1",
+            _trim_shell_trailers("sonda run foo.yaml > /tmp/out.txt"),
+            "sonda run foo.yaml",
         )
 
     def test_trims_background(self) -> None:
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics --rate 1 &"),
-            "sonda metrics --rate 1",
+            _trim_shell_trailers("sonda run foo.yaml &"),
+            "sonda run foo.yaml",
         )
 
     def test_trims_inline_comment(self) -> None:
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics --rate 1   # comment"),
-            "sonda metrics --rate 1",
+            _trim_shell_trailers("sonda run foo.yaml   # comment"),
+            "sonda run foo.yaml",
         )
 
     def test_preserves_hash_inside_token(self) -> None:
-        # ``--label x=foo#bar`` — hash inside a token (no leading whitespace)
-        # must survive.
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics --label x=foo#bar"),
-            "sonda metrics --label x=foo#bar",
+            _trim_shell_trailers("sonda run --label x=foo#bar foo.yaml"),
+            "sonda run --label x=foo#bar foo.yaml",
         )
 
     def test_preserves_less_than_inside_token(self) -> None:
-        # Our metavar detection strips ``<FILE>`` tokens AFTER shlex, so
-        # trim-shell-trailers must NOT eat the ``<`` when it's embedded in
-        # a token. Leading whitespace before ``<`` DOES signal a redirect.
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics --rate=<FOO>"),
-            "sonda metrics --rate=<FOO>",
+            _trim_shell_trailers("sonda run --rate=<FOO> foo.yaml"),
+            "sonda run --rate=<FOO> foo.yaml",
         )
         self.assertEqual(
-            _trim_shell_trailers("sonda metrics < /tmp/in"),
-            "sonda metrics",
+            _trim_shell_trailers("sonda run foo.yaml < /tmp/in"),
+            "sonda run foo.yaml",
         )
 
     def test_preserves_inside_double_quotes(self) -> None:
-        # Shell operators inside quoted strings are literal.
         self.assertEqual(
-            _trim_shell_trailers('sonda metrics --label "a>b&c"'),
-            'sonda metrics --label "a>b&c"',
+            _trim_shell_trailers('sonda run --label "a>b&c" foo.yaml'),
+            'sonda run --label "a>b&c" foo.yaml',
         )
 
 
 class _CliPlaceholderTokenTests(unittest.TestCase):
     def test_brackets_are_placeholder(self) -> None:
         self.assertTrue(
-            _contains_cli_placeholder_token(("sonda", "metrics", "[OPTIONS]"))
+            _contains_cli_placeholder_token(("sonda", "run", "[OPTIONS]"))
         )
 
     def test_angle_brackets_are_placeholder(self) -> None:
         self.assertTrue(
-            _contains_cli_placeholder_token(("sonda", "run", "--scenario", "<FILE>"))
+            _contains_cli_placeholder_token(("sonda", "run", "<FILE>"))
         )
 
     def test_normal_command_is_not(self) -> None:
         self.assertFalse(
-            _contains_cli_placeholder_token(("sonda", "metrics", "--rate", "1"))
+            _contains_cli_placeholder_token(("sonda", "run", "foo.yaml"))
         )
 
 
@@ -908,22 +899,40 @@ class _ExtractSondaCommandsTests(unittest.TestCase):
     def _extract(self, md: str) -> list[ExtractedCommand]:
         return extract_sonda_commands(Path("/tmp/doc.md"), md)
 
-    def test_finds_basic_invocation(self) -> None:
-        md = "```bash\nsonda metrics --name up --rate 1 --duration 5s\n```\n"
+    def test_finds_run_invocation(self) -> None:
+        md = "```bash\nsonda run examples/foo.yaml --duration 5s\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "metrics")
+        self.assertEqual(out[0].subcommand, "run")
+
+    def test_finds_list_invocation(self) -> None:
+        md = "```bash\nsonda list --catalog ./my-catalog\n```\n"
+        out = self._extract(md)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].subcommand, "list")
+
+    def test_finds_show_invocation(self) -> None:
+        md = "```bash\nsonda show @cpu-spike --catalog ./my-catalog\n```\n"
+        out = self._extract(md)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].subcommand, "show")
+
+    def test_finds_new_invocation(self) -> None:
+        md = "```bash\nsonda new --template -o foo.yaml\n```\n"
+        out = self._extract(md)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].subcommand, "new")
 
     def test_ignores_non_bash_fences(self) -> None:
-        md = "```text\nsonda metrics --rate 1\n```\n"
+        md = "```text\nsonda run foo.yaml\n```\n"
         self.assertEqual(self._extract(md), [])
 
     def test_ignores_yaml_fences_with_sonda_comments(self) -> None:
-        md = "```yaml\n# sonda run --scenario foo.yaml\nversion: 2\n```\n"
+        md = "```yaml\n# sonda run foo.yaml\nversion: 2\n```\n"
         self.assertEqual(self._extract(md), [])
 
     def test_ignores_json_fences(self) -> None:
-        md = '```json\n{"sonda": "metrics"}\n```\n'
+        md = '```json\n{"sonda": "run"}\n```\n'
         self.assertEqual(self._extract(md), [])
 
     def test_ignores_bare_sonda_in_prose(self) -> None:
@@ -935,21 +944,20 @@ class _ExtractSondaCommandsTests(unittest.TestCase):
         self.assertEqual(self._extract(md), [])
 
     def test_ignores_sonda_version_flag_only(self) -> None:
-        # ``sonda --version`` has no known subcommand → excluded.
         md = "```bash\nsonda --version\n```\n"
         self.assertEqual(self._extract(md), [])
 
-    def test_ignores_commented_sonda_line(self) -> None:
-        md = "```bash\n# sonda init --help\nsonda metrics --name up --rate 1 --duration 5s\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "metrics")
+    def test_ignores_unknown_subcommand(self) -> None:
+        # The retired 1.8 verbs must not be picked up as known subcommands.
+        for verb in ("metrics", "logs", "histogram", "summary", "init", "import", "scenarios", "packs", "catalog"):
+            md = f"```bash\nsonda {verb} foo\n```\n"
+            self.assertEqual(self._extract(md), [], verb)
 
     def test_line_continuation_joined(self) -> None:
         md = (
             "```bash\n"
-            "sonda metrics \\\n"
-            "  --name up --rate 1 --duration 5s\n"
+            "sonda run examples/foo.yaml \\\n"
+            "  --duration 5s\n"
             "```\n"
         )
         out = self._extract(md)
@@ -957,225 +965,120 @@ class _ExtractSondaCommandsTests(unittest.TestCase):
         self.assertIn("--duration", " ".join(out[0].argv))
 
     def test_strips_prompt_and_env_prefix(self) -> None:
-        md = "```bash\n$ RUST_LOG=debug sonda metrics --rate 1\n```\n"
+        md = "```bash\n$ RUST_LOG=debug sonda run foo.yaml\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].argv[0], "sonda")
-        self.assertEqual(out[0].subcommand, "metrics")
+        self.assertEqual(out[0].subcommand, "run")
 
-    def test_at_name_scenario_passes_through(self) -> None:
-        md = "```bash\nsonda metrics --scenario @cpu-spike --rate 5\n```\n"
+    def test_at_name_run_target_passes_through(self) -> None:
+        md = "```bash\nsonda --catalog ./d run @cpu-spike\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
-        self.assertEqual(extract_scenario_path(out[0].argv), "@cpu-spike")
+        self.assertEqual(extract_run_target(out[0].argv), "@cpu-spike")
 
     def test_pipeline_first_sonda_segment_parsed(self) -> None:
         md = (
             "```bash\n"
-            "sonda metrics --rate 1 | curl -s --data-binary @- http://x\n"
+            "sonda run foo.yaml | curl -s --data-binary @- http://x\n"
             "```\n"
         )
         out = self._extract(md)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "metrics")
+        self.assertEqual(out[0].subcommand, "run")
 
     def test_ignores_cli_syntax_placeholder(self) -> None:
-        md = "```bash\nsonda metrics [OPTIONS]\n```\n"
+        md = "```bash\nsonda run [OPTIONS]\n```\n"
         self.assertEqual(self._extract(md), [])
 
     def test_ignores_cli_angle_bracket_placeholder(self) -> None:
-        md = "```bash\nsonda run --scenario <FILE>\n```\n"
+        md = "```bash\nsonda run <FILE>\n```\n"
         self.assertEqual(self._extract(md), [])
 
     def test_strips_shell_redirect(self) -> None:
-        md = "```bash\nsonda metrics --rate 1 > /tmp/out.txt\n```\n"
+        md = "```bash\nsonda run foo.yaml > /tmp/out.txt\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
         self.assertNotIn(">", out[0].argv)
 
     def test_strips_background_ampersand(self) -> None:
-        md = "```bash\nsonda metrics --rate 1 &\n```\n"
+        md = "```bash\nsonda run foo.yaml &\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
         self.assertNotIn("&", out[0].argv)
 
     def test_strips_inline_comment(self) -> None:
-        md = "```bash\nsonda metrics --rate 1  # inline comment\n```\n"
+        md = "```bash\nsonda run foo.yaml  # inline comment\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].argv[-1], "1")
+        self.assertEqual(out[0].argv[-1], "foo.yaml")
 
-    def test_dry_run_global_flag_recognised_as_metrics_subcommand(self) -> None:
-        md = "```bash\nsonda --dry-run metrics --name up --rate 1\n```\n"
+    def test_global_catalog_flag_skipped_when_finding_subcommand(self) -> None:
+        md = "```bash\nsonda --catalog ./d run @cpu-spike\n```\n"
         out = self._extract(md)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "metrics")
-
-    def test_catalog_run_action_detected(self) -> None:
-        md = "```bash\nsonda --dry-run catalog run cpu-spike\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "catalog")
-        self.assertEqual(out[0].action, "run")
-
-    def test_catalog_list_has_no_action_dry_run(self) -> None:
-        md = "```bash\nsonda catalog list\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "catalog")
-        self.assertEqual(out[0].action, "list")
-        self.assertFalse(supports_dry_run(out[0]))
-
-    def test_scenarios_run_action_dry_run(self) -> None:
-        md = "```bash\nsonda scenarios run cpu-spike\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertTrue(supports_dry_run(out[0]))
-
-    def test_init_subcommand_no_dry_run(self) -> None:
-        md = "```bash\nsonda init --help\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0].subcommand, "init")
-        self.assertFalse(supports_dry_run(out[0]))
-
-    def test_import_analyze_no_dry_run(self) -> None:
-        md = "```bash\nsonda import data.csv --analyze\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertFalse(supports_dry_run(out[0]))
-
-    def test_import_run_has_dry_run(self) -> None:
-        md = "```bash\nsonda import data.csv --run --duration 30s\n```\n"
-        out = self._extract(md)
-        self.assertEqual(len(out), 1)
-        self.assertTrue(supports_dry_run(out[0]))
+        self.assertEqual(out[0].subcommand, "run")
 
 
-class _ExtractScenarioPathTests(unittest.TestCase):
+class _ExtractRunTargetTests(unittest.TestCase):
+    def test_positional_file(self) -> None:
+        argv = ("sonda", "run", "examples/foo.yaml")
+        self.assertEqual(extract_run_target(argv), "examples/foo.yaml")
+
+    def test_positional_at_name(self) -> None:
+        argv = ("sonda", "--catalog", "./d", "run", "@cpu-spike")
+        self.assertEqual(extract_run_target(argv), "@cpu-spike")
+
+    def test_positional_after_value_flags(self) -> None:
+        argv = ("sonda", "run", "--rate", "5", "--duration", "10s", "examples/foo.yaml")
+        self.assertEqual(extract_run_target(argv), "examples/foo.yaml")
+
+    def test_non_run_command_returns_none(self) -> None:
+        argv = ("sonda", "list", "--catalog", "./d")
+        self.assertIsNone(extract_run_target(argv))
+
+
+class _ExtractNewFromFileTests(unittest.TestCase):
+    def test_from_path(self) -> None:
+        argv = ("sonda", "new", "--from", "examples/data.csv")
+        self.assertEqual(extract_new_from_file(argv), "examples/data.csv")
+
+    def test_from_equals_path(self) -> None:
+        argv = ("sonda", "new", "--from=examples/data.csv")
+        self.assertEqual(extract_new_from_file(argv), "examples/data.csv")
+
+    def test_no_from_flag(self) -> None:
+        argv = ("sonda", "new", "--template")
+        self.assertIsNone(extract_new_from_file(argv))
+
+    def test_non_new_command_returns_none(self) -> None:
+        argv = ("sonda", "run", "foo.yaml", "--from", "bar")
+        self.assertIsNone(extract_new_from_file(argv))
+
+
+class _ExtractCatalogDirTests(unittest.TestCase):
     def test_separate_value(self) -> None:
-        argv = ("sonda", "metrics", "--scenario", "foo.yaml")
-        self.assertEqual(extract_scenario_path(argv), "foo.yaml")
+        argv = ("sonda", "--catalog", "./my-catalog", "run", "@foo")
+        self.assertEqual(extract_catalog_dir(argv), "./my-catalog")
 
     def test_equals_value(self) -> None:
-        argv = ("sonda", "metrics", "--scenario=foo.yaml")
-        self.assertEqual(extract_scenario_path(argv), "foo.yaml")
-
-    def test_at_name(self) -> None:
-        argv = ("sonda", "metrics", "--scenario", "@cpu-spike")
-        self.assertEqual(extract_scenario_path(argv), "@cpu-spike")
+        argv = ("sonda", "--catalog=./my-catalog", "list")
+        self.assertEqual(extract_catalog_dir(argv), "./my-catalog")
 
     def test_absent(self) -> None:
-        argv = ("sonda", "metrics", "--rate", "1")
-        self.assertIsNone(extract_scenario_path(argv))
-
-
-class _ExtractImportOrFromFileTests(unittest.TestCase):
-    def test_import_positional(self) -> None:
-        argv = ("sonda", "import", "data.csv", "--analyze")
-        self.assertEqual(extract_import_or_from_file(argv), "data.csv")
-
-    def test_import_with_output_flag_before_positional(self) -> None:
-        # Unusual but valid: -o consumes next arg, then positional follows.
-        argv = ("sonda", "import", "-o", "out.yaml", "data.csv")
-        self.assertEqual(extract_import_or_from_file(argv), "data.csv")
-
-    def test_init_from_path(self) -> None:
-        argv = ("sonda", "init", "--from", "data.csv")
-        self.assertEqual(extract_import_or_from_file(argv), "data.csv")
-
-    def test_init_from_at_name_returns_none(self) -> None:
-        argv = ("sonda", "init", "--from", "@cpu-spike")
-        self.assertIsNone(extract_import_or_from_file(argv))
-
-    def test_init_from_equals_path(self) -> None:
-        argv = ("sonda", "init", "--from=data.csv")
-        self.assertEqual(extract_import_or_from_file(argv), "data.csv")
-
-    def test_metrics_has_no_import_file(self) -> None:
-        argv = ("sonda", "metrics", "--rate", "1")
-        self.assertIsNone(extract_import_or_from_file(argv))
-
-
-class _ExtractTutorialTitlesTests(unittest.TestCase):
-    def test_collects_yaml_title(self) -> None:
-        md = (
-            '```yaml title="examples/foo.yaml"\n'
-            "version: 2\n"
-            "```\n"
-        )
-        self.assertEqual(
-            extract_tutorial_file_titles(md), {"examples/foo.yaml"}
-        )
-
-    def test_collects_multiple_titles(self) -> None:
-        md = (
-            '```yaml title="examples/foo.yaml"\n'
-            "version: 2\n"
-            "```\n"
-            '```bash title="run.sh"\n'
-            "sonda metrics --rate 1\n"
-            "```\n"
-        )
-        self.assertEqual(
-            extract_tutorial_file_titles(md),
-            {"examples/foo.yaml", "run.sh"},
-        )
-
-    def test_no_titles_returns_empty(self) -> None:
-        md = "```yaml\nversion: 2\n```\n"
-        self.assertEqual(extract_tutorial_file_titles(md), set())
-
-    def test_extract_command_carries_titles(self) -> None:
-        md = (
-            '```yaml title="examples/tutorial.yaml"\n'
-            "version: 2\n"
-            "```\n"
-            "```bash\n"
-            "sonda metrics --scenario examples/tutorial.yaml\n"
-            "```\n"
-        )
-        cmds = extract_sonda_commands(Path("/tmp/x.md"), md)
-        self.assertEqual(len(cmds), 1)
-        self.assertIn("examples/tutorial.yaml", cmds[0].tutorial_titles)
-
-    def test_block_marked_tutorial_when_it_mentions_a_title(self) -> None:
-        md = (
-            '```yaml title="examples/rule-a.yaml"\n'
-            "version: 2\n"
-            "```\n"
-            "```bash\n"
-            "sonda metrics --scenario examples/rule-a.yaml\n"
-            "sonda run --scenario examples/rule-cluster.yaml\n"
-            "```\n"
-        )
-        cmds = extract_sonda_commands(Path("/tmp/x.md"), md)
-        self.assertEqual(len(cmds), 2)
-        # Both commands in the block are tagged tutorial because the block
-        # references a path that's declared as a tutorial title.
-        self.assertTrue(cmds[0].block_is_tutorial)
-        self.assertTrue(cmds[1].block_is_tutorial)
-
-    def test_block_not_tutorial_when_it_mentions_no_title(self) -> None:
-        md = (
-            "```bash\n"
-            "sonda metrics --scenario examples/real-file.yaml\n"
-            "```\n"
-        )
-        cmds = extract_sonda_commands(Path("/tmp/x.md"), md)
-        self.assertEqual(len(cmds), 1)
-        self.assertFalse(cmds[0].block_is_tutorial)
+        argv = ("sonda", "run", "foo.yaml")
+        self.assertIsNone(extract_catalog_dir(argv))
 
 
 class _RepoRelativePathTests(unittest.TestCase):
     def test_examples_path_is_repo_relative(self) -> None:
         self.assertTrue(is_repo_relative_path("examples/foo.yaml"))
 
-    def test_scenarios_path_is_repo_relative(self) -> None:
-        self.assertTrue(is_repo_relative_path("scenarios/link-failover.yaml"))
-
     def test_tests_path_is_repo_relative(self) -> None:
         self.assertTrue(is_repo_relative_path("tests/alerts/high-cpu.yaml"))
+
+    def test_sonda_core_path_is_repo_relative(self) -> None:
+        self.assertTrue(is_repo_relative_path("sonda-core/tests/fixtures/packs/foo.yaml"))
 
     def test_bare_filename_is_not_repo_relative(self) -> None:
         self.assertFalse(is_repo_relative_path("my-scenario.yaml"))
@@ -1188,8 +1091,10 @@ class _RepoRelativePathTests(unittest.TestCase):
         self.assertFalse(is_repo_relative_path("~/foo.yaml"))
 
     def test_unknown_root_is_not_repo_relative(self) -> None:
-        # ``mydir/foo.yaml`` — the first segment isn't a known root.
         self.assertFalse(is_repo_relative_path("mydir/foo.yaml"))
+        # The retired 1.8 catalog dirs are no longer treated as repo-relative.
+        self.assertFalse(is_repo_relative_path("scenarios/foo.yaml"))
+        self.assertFalse(is_repo_relative_path("packs/foo.yaml"))
 
     def test_metavar_placeholder_is_not_repo_relative(self) -> None:
         self.assertFalse(is_repo_relative_path("<FILE>"))
@@ -1213,47 +1118,46 @@ class _SupportsDryRunTests(unittest.TestCase):
             raw=raw,
         )
 
-    def test_metrics_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda metrics --rate 1")))
-
-    def test_logs_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda logs --rate 1")))
-
-    def test_histogram_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda histogram --scenario foo")))
-
-    def test_summary_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda summary --scenario foo")))
-
     def test_run_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda run --scenario foo")))
+        self.assertTrue(supports_dry_run(self._cmd("sonda run foo.yaml")))
 
-    def test_catalog_run_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda catalog run foo")))
+    def test_list_no(self) -> None:
+        self.assertFalse(supports_dry_run(self._cmd("sonda list --catalog ./d")))
 
-    def test_catalog_list_no(self) -> None:
-        self.assertFalse(supports_dry_run(self._cmd("sonda catalog list")))
+    def test_show_no(self) -> None:
+        self.assertFalse(supports_dry_run(self._cmd("sonda show @foo --catalog ./d")))
 
-    def test_scenarios_list_no(self) -> None:
-        self.assertFalse(supports_dry_run(self._cmd("sonda scenarios list")))
+    def test_new_no(self) -> None:
+        self.assertFalse(supports_dry_run(self._cmd("sonda new --template")))
 
-    def test_packs_run_yes(self) -> None:
-        self.assertTrue(supports_dry_run(self._cmd("sonda packs run foo")))
 
-    def test_init_no(self) -> None:
-        self.assertFalse(supports_dry_run(self._cmd("sonda init --help")))
-
-    def test_import_analyze_no(self) -> None:
-        self.assertFalse(supports_dry_run(self._cmd("sonda import data.csv --analyze")))
-
-    def test_import_with_output_no(self) -> None:
-        self.assertFalse(
-            supports_dry_run(self._cmd("sonda import data.csv -o out.yaml"))
+class _BuildDryRunArgvTests(unittest.TestCase):
+    def _cmd(self, raw: str) -> ExtractedCommand:
+        return ExtractedCommand(
+            file=Path("/tmp/x.md"),
+            line=1,
+            argv=tuple(shlex.split(raw)),
+            raw=raw,
         )
 
-    def test_import_run_yes(self) -> None:
-        self.assertTrue(
-            supports_dry_run(self._cmd("sonda import data.csv --run --duration 30s"))
+    def test_injects_dry_run_after_run_verb(self) -> None:
+        cmd = self._cmd("sonda run foo.yaml")
+        argv = _build_dry_run_argv(cmd, Path("/usr/local/bin/sonda"))
+        self.assertEqual(
+            argv, ["/usr/local/bin/sonda", "run", "--dry-run", "foo.yaml"]
+        )
+
+    def test_does_not_duplicate_existing_dry_run(self) -> None:
+        cmd = self._cmd("sonda run foo.yaml --dry-run")
+        argv = _build_dry_run_argv(cmd, Path("/usr/local/bin/sonda"))
+        self.assertEqual(argv.count("--dry-run"), 1)
+
+    def test_preserves_global_flags_before_run(self) -> None:
+        cmd = self._cmd("sonda --quiet --catalog ./d run @foo")
+        argv = _build_dry_run_argv(cmd, Path("/usr/local/bin/sonda"))
+        self.assertEqual(
+            argv,
+            ["/usr/local/bin/sonda", "--quiet", "--catalog", "./d", "run", "--dry-run", "@foo"],
         )
 
 
@@ -1267,11 +1171,12 @@ def _run_self_tests() -> int:
         _TrimShellTrailersTests,
         _CliPlaceholderTokenTests,
         _ExtractSondaCommandsTests,
-        _ExtractScenarioPathTests,
-        _ExtractImportOrFromFileTests,
-        _ExtractTutorialTitlesTests,
+        _ExtractRunTargetTests,
+        _ExtractNewFromFileTests,
+        _ExtractCatalogDirTests,
         _RepoRelativePathTests,
         _SupportsDryRunTests,
+        _BuildDryRunArgvTests,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     runner = unittest.TextTestRunner(verbosity=2)

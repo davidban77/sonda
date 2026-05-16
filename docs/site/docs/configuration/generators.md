@@ -624,10 +624,6 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
     config with an error. A leak that resets mid-run is the `saturation` pattern -- use that
     alias instead if you want repeating fill-and-reset cycles.
 
-!!! tip "Scaffold a starter"
-    `sonda new` writes a runnable `leak` YAML when you pick the "leak" situation in the
-    interactive flow — useful as a starting point for memory-leak alert rehearsals.
-
 ### degradation
 
 Models gradual performance loss with realistic noise -- latency increasing over time, error
@@ -652,10 +648,6 @@ generator:
 ```
 
 Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
-
-!!! tip "Scaffold a starter"
-    `sonda new` writes a ready-to-run `degradation` scenario with HTTP-latency-friendly defaults
-    when you pick the "degradation" situation in the interactive flow.
 
 ### spike_event
 

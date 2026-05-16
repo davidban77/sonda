@@ -4,7 +4,7 @@
 # Start a listener before running:
 #
 #   nc -l 9999 &
-#   sonda metrics --scenario examples/json-tcp.yaml
+#   sonda run examples/json-tcp.yaml
 #
 # Each line is a self-contained JSON object, compatible with Elasticsearch,
 # Loki, and any other NDJSON-based ingest path.

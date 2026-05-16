@@ -8,7 +8,7 @@
 #   docker compose -f examples/docker-compose-victoriametrics.yml up -d
 #
 # Usage:
-#   sonda metrics --scenario examples/rate-rule-input.yaml
+#   sonda run examples/rate-rule-input.yaml
 #
 # After 2+ minutes, verify the rate:
 #   curl -s "http://localhost:8428/api/v1/query?query=rate(http_requests_total[1m])" \
