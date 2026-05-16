@@ -18,10 +18,31 @@ Other install paths (Cargo, Docker, source) live in
 
 ## A taste
 
+```yaml title="cpu-sine.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    host: web-01
+scenarios:
+  - id: cpu_usage
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      offset: 50.0
+      period_secs: 4
+```
+
 ```bash
-sonda metrics --name cpu_usage --rate 2 --duration 2s \
-  --value-mode sine --amplitude 50 --offset 50 --period-secs 4 \
-  --label host=web-01
+sonda run cpu-sine.yaml
 ```
 
 ```text title="stdout (Prometheus exposition)"
@@ -32,8 +53,8 @@ cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 cpu_usage{host="web-01"} 50.00000000000001 1777243960974
 ```
 
-One command, shaped values, labeled output -- now wire it once in a v2 scenario file
-and replay it from CI, your laptop, or `sonda-server`.
+One file, shaped values, labeled output -- now replay it from CI, your laptop, or
+`sonda-server`. Don't want to write YAML? `sonda new` scaffolds a starter for you.
 
 ## Where to next
 
@@ -43,19 +64,19 @@ and replay it from CI, your laptop, or `sonda-server`.
 
     Install Sonda, stream your first metric, and push to a real backend.
 
--   :material-bookshelf: __[Built-in scenarios](guides/scenarios.md)__
+-   :material-bookshelf: __[Author your own scenarios](guides/scenarios.md)__
 
-    Run curated patterns instantly -- `sonda metrics --scenario @cpu-spike`.
-    Browse the catalog, pin one, customize from there.
+    Organize a catalog directory of runnable scenarios and composable packs;
+    discover them with `sonda list --catalog <dir>` and run with `sonda run @name`.
 
 -   :material-file-document-outline: __[v2 scenario files](configuration/v2-scenarios.md)__
 
-    The canonical file shape: `version: 2`, shared `defaults:`, inline packs,
-    `after:` temporal chains, and env-var interpolation.
+    The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`,
+    inline packs, `after:` temporal chains, and env-var interpolation.
 
 -   :material-database-import: __[CSV import](guides/csv-import.md)__
 
     Turn Grafana exports into portable, parameterized scenarios -- one
-    `sonda import` away.
+    `sonda new --from <csv>` away.
 
 </div>

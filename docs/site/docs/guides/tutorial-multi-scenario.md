@@ -4,7 +4,7 @@ Production systems emit multiple signals simultaneously. `sonda run` lets you or
 several scenarios concurrently from a single YAML file, each on its own thread.
 
 ```bash
-sonda run --scenario examples/multi-scenario.yaml
+sonda run examples/multi-scenario.yaml
 ```
 
 ```yaml title="examples/multi-scenario.yaml"
@@ -65,7 +65,7 @@ need both signals above threshold for a window before firing.
 Use `phase_offset` to delay a scenario's start relative to its `clock_group` peers:
 
 ```bash
-sonda run --scenario examples/multi-metric-correlation.yaml
+sonda run examples/multi-metric-correlation.yaml
 ```
 
 ```yaml title="examples/multi-metric-correlation.yaml (excerpt)"

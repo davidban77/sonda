@@ -56,8 +56,27 @@ generator:
 
 **Shape:** A flat horizontal line at the configured value.
 
+```yaml title="up-constant.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: up
+    signal_type: metrics
+    name: up
+    generator:
+      type: constant
+      value: 1.0
+```
+
 ```bash
-sonda metrics --name up --rate 2 --duration 2s --value 1
+sonda run up-constant.yaml
 ```
 
 ```text title="Output"
@@ -65,8 +84,6 @@ up 1 1774279693496
 up 1 1774279694001
 up 1 1774279694501
 ```
-
-Use `--value` from the CLI to set the constant value directly.
 
 When no generator is configured, the default is `constant` with `value: 0.0`.
 
@@ -91,9 +108,29 @@ generator:
 **Shape:** Oscillates smoothly between 0 and 100 with a 60-second period. At tick 0, the value
 equals the offset.
 
+```yaml title="cpu-sine.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      period_secs: 4
+      offset: 50.0
+```
+
 ```bash
-sonda metrics --name cpu --rate 2 --duration 2s \
-  --value-mode sine --amplitude 50 --period-secs 4 --offset 50
+sonda run cpu-sine.yaml
 ```
 
 ```text title="Output"
@@ -122,9 +159,29 @@ generator:
 
 **Shape:** A linear ramp from 0 to 100 over 60 seconds, then snaps back to 0.
 
+```yaml title="ramp-sawtooth.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: ramp
+    signal_type: metrics
+    name: ramp
+    generator:
+      type: sawtooth
+      min: 0.0
+      max: 100.0
+      period_secs: 4
+```
+
 ```bash
-sonda metrics --name ramp --rate 2 --duration 2s \
-  --value-mode sawtooth --min 0 --max 100 --period-secs 4
+sonda run ramp-sawtooth.yaml
 ```
 
 ```text title="Output"
@@ -154,9 +211,29 @@ generator:
 
 **Shape:** Random values scattered between 10 and 90. Same seed produces same sequence.
 
+```yaml title="noise-uniform.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 2s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: noise
+    signal_type: metrics
+    name: noise
+    generator:
+      type: uniform
+      min: 10.0
+      max: 90.0
+      seed: 42
+```
+
 ```bash
-sonda metrics --name noise --rate 2 --duration 2s \
-  --value-mode uniform --min 10 --max 90 --seed 42
+sonda run noise-uniform.yaml
 ```
 
 ```text title="Output"
@@ -186,7 +263,7 @@ generator:
 last value. With `repeat: false`, the last value is emitted for all subsequent ticks.
 
 ```bash
-sonda metrics --scenario examples/sequence-alert-test.yaml --duration 5s
+sonda run examples/sequence-alert-test.yaml --duration 5s
 ```
 
 ```text title="Output"
@@ -222,7 +299,7 @@ generator:
 grows without bound. With `max`, it wraps back to `start` when it reaches the threshold.
 
 ```bash
-sonda metrics --scenario examples/step-counter.yaml --duration 3s
+sonda run examples/step-counter.yaml --duration 3s
 ```
 
 ```text title="Output"
@@ -263,7 +340,7 @@ generator:
 **Shape:** Holds at 50 for most of the 60-second cycle, then jumps to 250 for 10 seconds.
 
 ```bash
-sonda metrics --scenario examples/spike-alert-test.yaml --duration 5s
+sonda run examples/spike-alert-test.yaml --duration 5s
 ```
 
 ```text title="Output"
@@ -438,8 +515,9 @@ generator:
 
 Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-second cycle.
 
-!!! tip "Built-in scenario"
-    Run `sonda metrics --scenario @steady-state` for a ready-to-use version with Prometheus labels.
+!!! tip "Scaffold a starter"
+    `sonda new` walks through signal type → generator → rate → duration → sink and writes a
+    ready-to-run YAML with the `steady` alias prefilled.
 
 ### flap
 
@@ -545,9 +623,9 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
     config with an error. A leak that resets mid-run is the `saturation` pattern -- use that
     alias instead if you want repeating fill-and-reset cycles.
 
-!!! tip "Built-in scenario"
-    Run `sonda metrics --scenario @memory-leak` for a ready-to-use version modeling a process
-    leaking from 40% to 95% over 120 seconds.
+!!! tip "Scaffold a starter"
+    `sonda new` writes a runnable `leak` YAML when you pick the "leak" situation in the
+    interactive flow — useful as a starting point for memory-leak alert rehearsals.
 
 ### degradation
 
@@ -574,9 +652,9 @@ generator:
 
 Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
 
-!!! tip "Built-in scenario"
-    Run `sonda metrics --scenario @latency-degradation` for a ready-to-use version with HTTP
-    latency labels.
+!!! tip "Scaffold a starter"
+    `sonda new` writes a ready-to-run `degradation` scenario with HTTP-latency-friendly defaults
+    when you pick the "degradation" situation in the interactive flow.
 
 ### spike_event
 
@@ -601,8 +679,9 @@ generator:
 
 Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
 
-!!! tip "Built-in scenario"
-    Run `sonda metrics --scenario @cpu-spike` for a ready-to-use version with node exporter labels.
+!!! tip "Scaffold a starter"
+    `sonda new` writes a runnable `spike_event` YAML when you pick "spike_event" in the
+    interactive flow — useful for CPU-spike alert rehearsals against node-exporter-shaped labels.
 
 ??? tip "Aliases vs. core generators"
     You can always use the underlying generator directly if you need parameters that the alias
@@ -638,9 +717,10 @@ Think of it this way: a counter tells you *how many* requests happened. A histog
     distribution, updates cumulative bucket counters, and emits the result in Prometheus format.
     The output is indistinguishable from a real instrumented service.
 
-Histogram and summary generators use dedicated subcommands (`sonda histogram`, `sonda summary`)
-and their own top-level scenario format -- not the `generator.type` field used by metric generators.
-For a hands-on walkthrough of testing latency alerts, see the
+Histograms and summaries are v2 scenario entries with `signal_type: histogram` or
+`signal_type: summary` and a `distribution:` block in place of the metric `generator:` block.
+Run them with `sonda run` just like any other scenario. For a hands-on walkthrough of testing
+latency alerts, see the
 [Histograms, Summaries, and Latency Alerts](../guides/histogram-alerts.md) guide.
 
 ### histogram
@@ -727,7 +807,7 @@ default buckets, that is 14 series per tick. All bucket counters are cumulative 
 increasing across ticks.
 
 ```bash
-sonda histogram --scenario examples/histogram.yaml
+sonda run examples/histogram.yaml
 ```
 
 ```text title="Output (first tick, abbreviated)"
@@ -807,7 +887,7 @@ quantiles, that is 6 series per tick. Quantile values are fresh per-tick snapsho
 that tick's observations. `_count` and `_sum` are cumulative.
 
 ```bash
-sonda summary --scenario examples/summary.yaml
+sonda run examples/summary.yaml
 ```
 
 ```text title="Output (first tick)"
@@ -877,8 +957,8 @@ real metrics rarely distribute evenly.
 
 ## Log generators
 
-Log generators produce structured log events instead of numeric values. They are used with the
-`sonda logs` subcommand.
+Log generators produce structured log events instead of numeric values. They live on a v2
+`signal_type: logs` entry under the `log_generator:` key (not `generator:`).
 
 ### template
 
@@ -934,7 +1014,7 @@ log_generator:
 Auto-discovery of column roles is case-insensitive: `timestamp` / `ts` / `time` → timestamp; `severity` / `level` → severity; `message` / `msg` / `log` → message. Every other header becomes a field column on every emitted `LogEvent`.
 
 ```bash
-sonda -q logs --scenario examples/log-csv-replay.yaml --duration 11s
+sonda -q run examples/log-csv-replay.yaml --duration 11s
 ```
 
 ```text title="Output"
@@ -997,7 +1077,7 @@ scenarios:
 ```
 
 ```bash
-sonda metrics --scenario examples/jitter-sine.yaml --duration 3s
+sonda run examples/jitter-sine.yaml --duration 3s
 ```
 
 Without jitter, a sine wave with `offset: 50` outputs exactly `50.0` at tick 0. With

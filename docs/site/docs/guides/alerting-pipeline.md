@@ -74,35 +74,39 @@ between 0 and 100 with a 30-second period. It crosses the warning threshold (70)
 threshold (90) twice per cycle, and pushes directly to VictoriaMetrics.
 
 ```bash
-sonda metrics --scenario examples/alertmanager/alerting-scenario.yaml
+sonda run examples/alertmanager/alerting-scenario.yaml
 ```
 
 This runs for 5 minutes at 2 events/second. You'll see alerts fire within the first 30 seconds.
 
 ??? info "What the scenario looks like"
     ```yaml title="examples/alertmanager/alerting-scenario.yaml"
-    name: docker_alert_cpu
-    rate: 2
-    duration: 300s
+    version: 2
+    kind: runnable
 
-    generator:
-      type: sine
-      amplitude: 50.0
-      period_secs: 30
-      offset: 50.0
+    defaults:
+      rate: 2
+      duration: 300s
+      encoder:
+        type: prometheus_text
+      sink:
+        type: http_push
+        url: "${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"
+        content_type: "text/plain"
+      labels:
+        host: docker-alert-demo
+        region: us-east-1
+        service: payment-service
+        env: staging
 
-    labels:
-      host: docker-alert-demo
-      region: us-east-1
-      service: payment-service
-      env: staging
-
-    encoder:
-      type: prometheus_text
-    sink:
-      type: http_push
-      url: "http://localhost:8428/api/v1/import/prometheus"
-      content_type: "text/plain"
+    scenarios:
+      - signal_type: metrics
+        name: docker_alert_cpu
+        generator:
+          type: sine
+          amplitude: 50.0
+          period_secs: 30
+          offset: 50.0
     ```
 
 ---

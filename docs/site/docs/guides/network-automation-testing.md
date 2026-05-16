@@ -135,18 +135,16 @@ a backup link that saturates after the primary drops. The first flap crosses `in
 quick one-liner:
 
 ```bash
-# Terminal 1: run the failover scenario from the built-in catalog
-sonda catalog run link-failover
-# or load the YAML directly:
-sonda run --scenario scenarios/link-failover.yaml
+# Terminal 1: run the link-failure scenario from examples/
+sonda run examples/network-link-failure.yaml
 ```
 
 !!! warning "Sink must target VictoriaMetrics"
     The example scenarios default to `stdout`. To push to VictoriaMetrics, change the sink
     in each scenario entry to `http_push` as shown in the
     [Network Device Telemetry](network-device-telemetry.md#push-to-a-monitoring-backend) guide.
-    For a quick single-metric test, create a minimal scenario file with `http_push` and the
-    sequence generator, then run it with `sonda metrics --scenario your-file.yaml`.
+    For a quick single-metric test, scaffold a minimal scenario with `sonda new --template`,
+    swap the sink for `http_push`, then run it with `sonda run your-file.yaml`.
 
 Verify the alert fired in vmalert:
 
@@ -579,11 +577,11 @@ scenarios:
 Then run both scenarios at the same time:
 
 ```bash
-# Terminal 1: link failover (primary flap, backup saturation, latency degradation)
-sonda catalog run link-failover &
+# Terminal 1: link failure scenario from examples/
+sonda run examples/network-link-failure.yaml &
 
 # Terminal 2: BGP session down
-sonda metrics --scenario bgp-session-down.yaml
+sonda run bgp-session-down.yaml
 ```
 
 Both InterfaceDown and BGPSessionDown should fire and trigger their respective workflows
@@ -613,7 +611,7 @@ rm -f examples/alertmanager/network-automation-alerts.yml
 | Task | Command |
 |------|---------|
 | Start alerting stack | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting up -d` |
-| Run failover scenario | `sonda catalog run link-failover` |
+| Run failover scenario | `sonda run examples/network-link-failure.yaml` |
 | Check vmalert for InterfaceDown | `curl -s http://localhost:8880/api/v1/alerts \| jq '.data.alerts[]'` |
 | Check Alertmanager alerts | `curl -s http://localhost:9093/api/v2/alerts \| jq '.[].labels'` |
 | Check webhook delivery | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting logs webhook-receiver` |

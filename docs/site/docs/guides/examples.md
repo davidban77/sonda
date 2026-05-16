@@ -4,7 +4,7 @@ The `examples/` directory contains ready-to-run YAML scenario files covering eve
 generator, encoder, and sink combination. Each file works as-is with the `sonda` CLI.
 
 ```bash
-sonda metrics --scenario examples/basic-metrics.yaml
+sonda run examples/basic-metrics.yaml
 ```
 
 ## Basic Metrics
@@ -37,7 +37,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `otlp-metrics.yaml` | metrics | otlp | otlp_grpc | Push sine wave metrics to an OTEL Collector via gRPC* |
 | `otlp-logs.yaml` | logs | otlp | otlp_grpc | Push template logs to an OTEL Collector via gRPC* |
 
-*Requires building from source with `--features otlp`. Pre-built binaries do not include OTLP support. Run with: `cargo run --features otlp -- metrics --scenario examples/otlp-metrics.yaml`
+*Requires building from source with `--features otlp`. Pre-built binaries do not include OTLP support. Run with: `cargo run --features otlp -- run examples/otlp-metrics.yaml`
 
 ## Encoding Formats
 
@@ -67,11 +67,11 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `histogram.yaml` | histogram | prometheus_text | stdout | Exponential distribution, 100 observations/tick (latency-style histogram) |
 | `summary.yaml` | summary | prometheus_text | stdout | Normal distribution (mean 0.1, stddev 0.02), 100 observations/tick |
 
-Run these with the matching subcommand:
+Run them with `sonda run` — histograms and summaries are just `signal_type:` variants in the v2 YAML:
 
 ```bash
-sonda histogram --scenario examples/histogram.yaml
-sonda summary --scenario examples/summary.yaml
+sonda run examples/histogram.yaml
+sonda run examples/summary.yaml
 ```
 
 See [Generators](../configuration/generators.md) for distribution options.
@@ -83,8 +83,7 @@ See [Generators](../configuration/generators.md) for distribution options.
 | `pack-scenario.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Expand a pack into per-metric scenarios with user-supplied labels |
 | `pack-with-overrides.yaml` | telegraf_snmp_interface | prometheus_text | stdout | Override one metric's generator (`ifOperStatus` -> `flap`) without editing the pack |
 
-Packs must be on the search path. Run from the repo root (where `./packs/` exists), set
-`SONDA_PACK_PATH`, or pass `--pack-path ./packs`. See [Metric Packs](metric-packs.md) for details.
+Packs are `kind: composable` YAML files in a catalog directory you control. Point `sonda run` at that directory with `--catalog <dir>` so `pack: <name>` references resolve. See [Metric Packs](metric-packs.md) for the catalog layout.
 
 ## Dynamic Labels
 
@@ -123,10 +122,10 @@ See the [Capacity Planning](capacity-planning.md) guide for measurement methodol
 | `loki-json-lines.yaml` | template | json_lines | loki | Push log events to a Loki instance |
 | `kafka-json-logs.yaml` | template | json_lines | kafka | Send log events to a Kafka topic |
 
-Run log scenarios with `sonda logs`:
+Run log scenarios with `sonda run` — log entries are just `signal_type: logs` in the v2 YAML:
 
 ```bash
-sonda logs --scenario examples/log-template.yaml
+sonda run examples/log-template.yaml
 ```
 
 ## Docker and VictoriaMetrics
@@ -196,22 +195,15 @@ See [Pipeline Validation](pipeline-validation.md) for usage patterns.
 |------|--------|-------------|
 | `network-device-baseline.yaml` | metrics | Router with 2 uplinks: traffic counters, state, CPU, memory (9 scenarios) |
 | `network-link-failure.yaml` | metrics | 6-scenario link-failure cycle on `rtr-core-01`: Gi0/0/0 down 10s, Gi0/0/1 absorbs, errors + CPU spike, then recovers |
-| `scenarios/link-failover.yaml` | multi | Edge router link failover: primary flaps, backup saturates, latency degrades (3-signal `after:` chain) |
 
 Run with `sonda run`:
 
 ```bash
-sonda run --scenario examples/network-device-baseline.yaml
-sonda run --scenario scenarios/link-failover.yaml
+sonda run examples/network-device-baseline.yaml
+sonda run examples/network-link-failure.yaml
 ```
 
-The `link-failover` scenario also ships in the built-in catalog:
-
-```bash
-sonda catalog run link-failover
-```
-
-See [Network Device Telemetry](network-device-telemetry.md) for the full walkthrough.
+See [Network Device Telemetry](network-device-telemetry.md) for the full walkthrough, including a 3-signal cascade using `after:` that you can author from scratch.
 
 ## Multi-Scenario
 
@@ -224,9 +216,9 @@ See [Network Device Telemetry](network-device-telemetry.md) for the full walkthr
 Run multi-scenario files with `sonda run`:
 
 ```bash
-sonda run --scenario examples/multi-scenario.yaml
+sonda run examples/multi-scenario.yaml
 ```
 
 !!! tip
     Override any scenario field from the CLI. For example, change the duration:
-    `sonda metrics --scenario examples/basic-metrics.yaml --duration 10s`
+    `sonda run examples/basic-metrics.yaml --duration 10s`

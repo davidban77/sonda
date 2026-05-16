@@ -14,16 +14,16 @@ Before diving into specific issues, run these quick checks.
 
 Use `--dry-run` to parse and validate a scenario without emitting any events:
 
-=== "Inline CLI flags"
-
-    ```bash
-    sonda --dry-run metrics --name cpu --rate 10 --duration 30s
-    ```
-
 === "Scenario file"
 
-    ```bash
-    sonda --dry-run run --scenario my-scenario.yaml
+    ```bash title="my-scenario.yaml"
+    sonda --dry-run run my-scenario.yaml
+    ```
+
+=== "Catalog entry"
+
+    ```bash title="./my-catalog"
+    sonda --dry-run --catalog ./my-catalog run @cpu-spike
     ```
 
 If the config is valid, Sonda prints the resolved settings and exits with code `0`. If there's
@@ -34,8 +34,8 @@ an error, it prints the problem to stderr and exits with code `1`.
 Use `--verbose` to print the resolved config at startup, then run normally. This shows exactly
 what Sonda parsed before it starts emitting events:
 
-```bash
-sonda --verbose metrics --name cpu --rate 10 --duration 30s \
+```bash title="my-scenario.yaml"
+sonda --verbose run my-scenario.yaml \
   --sink http_push --endpoint http://localhost:8428/api/v1/import/prometheus
 ```
 
@@ -44,7 +44,8 @@ sonda --verbose metrics --name cpu --rate 10 --duration 30s \
 | Code | Meaning |
 |------|---------|
 | `0` | Success -- scenario completed or `--dry-run` validation passed |
-| `1` | Error -- invalid config, connection failure, or runtime error |
+| `1` | Runtime error -- invalid config, sink unreachable, scenario validation failure |
+| `2` | Argument parse error -- unknown flag, unrecognized subcommand |
 
 ### A scenario stopped emitting silently
 

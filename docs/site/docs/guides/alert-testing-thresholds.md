@@ -19,7 +19,7 @@ about 12 seconds per 60-second cycle -- enough to trigger a bare `> 90` rule on 
 period.
 
 ```bash
-sonda metrics --scenario examples/sine-threshold-test.yaml
+sonda run examples/sine-threshold-test.yaml
 ```
 
 ```yaml title="examples/sine-threshold-test.yaml"
@@ -79,7 +79,7 @@ steps through an explicit list of values, one per tick, so you control the breac
 window down to the second:
 
 ```bash
-sonda metrics --scenario examples/for-duration-test.yaml
+sonda run examples/for-duration-test.yaml
 ```
 
 ```yaml title="examples/for-duration-test.yaml"
@@ -118,7 +118,7 @@ For sustained-breach tests longer than ~30 seconds, the
 [constant generator](../configuration/generators.md#constant) is more practical:
 
 ```bash
-sonda metrics --scenario examples/constant-threshold-test.yaml
+sonda run examples/constant-threshold-test.yaml
 ```
 
 ```yaml title="examples/constant-threshold-test.yaml"

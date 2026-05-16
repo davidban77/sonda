@@ -55,7 +55,7 @@ sonda [--catalog <DIR>] [--dry-run] [--format text|json] run <SCENARIO> [OVERRID
 
 ### Run a file
 
-```bash
+```bash title="examples/cpu-spike.yaml"
 sonda run examples/cpu-spike.yaml
 ```
 
@@ -73,7 +73,7 @@ The `@cpu-spike` reference resolves to a YAML file in `~/sonda-catalog/` whose h
 
 CLI flags win over `defaults:` inside the file. Useful for a one-off rate bump or pointing the same scenario at a different sink:
 
-```bash
+```bash title="examples/cpu-spike.yaml"
 sonda run examples/cpu-spike.yaml \
   --rate 500 \
   --duration 10s \
@@ -188,7 +188,7 @@ sonda --catalog <DIR> show <@NAME>
 
 Works for both `kind: runnable` and `kind: composable` entries. Output is the file contents byte-for-byte. For runnable entries, it round-trips through `sonda --dry-run run`:
 
-```bash
+```bash title="/tmp/snap.yaml"
 sonda --catalog ~/sonda-catalog show @cpu-spike > /tmp/snap.yaml
 sonda --dry-run run /tmp/snap.yaml
 ```
@@ -290,7 +290,7 @@ Colors are automatic. Sonda respects [`NO_COLOR`](https://no-color.org) and disa
 
 `--quiet` suppresses banners and progress (errors still print). `--verbose` prints the resolved scenario config at startup, then runs normally. The two flags are mutually exclusive.
 
-```bash
+```bash title="examples/cpu-spike.yaml"
 sonda -q run examples/cpu-spike.yaml > metrics.txt    # quiet for scripts
 sonda -v run examples/cpu-spike.yaml                  # echo config first
 ```

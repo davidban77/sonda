@@ -33,5 +33,6 @@ When you have walked through all seven pages you have everything you need to:
 - [**Validate a pipeline change end-to-end**](pipeline-validation.md).
 - [**Plan capacity for high-volume runs**](capacity-planning.md).
 
-If you would rather not write YAML by hand, run **`sonda init`** for an interactive
-wizard, or browse [**Built-in Scenarios**](scenarios.md) for ready-to-run patterns.
+If you would rather not write YAML by hand, run **`sonda new`** for an interactive
+scaffold, or browse the `examples/` directory in the repo for ready-to-run starter
+patterns.

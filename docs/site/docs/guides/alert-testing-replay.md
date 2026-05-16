@@ -16,7 +16,7 @@ The [sequence generator](../configuration/generators.md#sequence) steps through 
 explicit list of values, perfect for short, deterministic threshold patterns:
 
 ```bash
-sonda metrics --scenario examples/sequence-alert-test.yaml
+sonda run examples/sequence-alert-test.yaml
 ```
 
 ```yaml title="examples/sequence-alert-test.yaml (key fields)"
@@ -38,7 +38,7 @@ the [Grafana CSV Replay](grafana-csv-replay.md) guide for the full export-and-re
 workflow.
 
 ```bash
-sonda metrics --scenario examples/csv-replay-metrics.yaml
+sonda run examples/csv-replay-metrics.yaml
 ```
 
 ```yaml title="examples/csv-replay-metrics.yaml (key fields)"

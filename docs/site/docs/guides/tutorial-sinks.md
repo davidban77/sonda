@@ -6,49 +6,78 @@ delivery layer.
 
 Sonda supports nine sinks:
 
-| Sink | Description | CLI flag |
-|------|-------------|----------|
-| `stdout` | Print to standard output | _(default)_ |
-| `file` | Write to a file | `--output path` |
-| `tcp` | Stream to a TCP listener | YAML only |
-| `udp` | Send to a UDP endpoint | YAML only |
-| `http_push` | POST batches to an HTTP endpoint | `--sink http_push --endpoint <url>` |
-| `loki` | Push logs to Grafana Loki | `--sink loki --endpoint <url>` |
-| `kafka` | Publish to a Kafka topic | `--sink kafka --brokers <addr> --topic <t>` |
-| `remote_write` | Prometheus remote write protocol | `--sink remote_write --endpoint <url>` |
-| `otlp_grpc` | OTLP/gRPC to an OpenTelemetry Collector | `--sink otlp_grpc --endpoint <url> --signal-type <s>` |
+| Sink | Description | YAML `sink.type` |
+|------|-------------|------------------|
+| `stdout` | Print to standard output | `stdout` (default) |
+| `file` | Write to a file | `file` |
+| `tcp` | Stream to a TCP listener | `tcp` |
+| `udp` | Send to a UDP endpoint | `udp` |
+| `http_push` | POST batches to an HTTP endpoint | `http_push` |
+| `loki` | Push logs to Grafana Loki | `loki` |
+| `kafka` | Publish to a Kafka topic | `kafka` |
+| `remote_write` | Prometheus remote write protocol | `remote_write` |
+| `otlp_grpc` | OTLP/gRPC to an OpenTelemetry Collector | `otlp_grpc` |
+
+Sinks live in the YAML's `sink:` block (under `defaults:` or per entry). Quick CLI overrides exist for the common knobs — `--sink`, `--endpoint`, `--encoder`, and `-o <path>` (shorthand for `--sink file --endpoint <path>`). Anything richer (custom headers, batch size, Kafka brokers, OTLP signal type) goes in the file.
+
+The starter scenario below is reused by every sink section that follows — copy it once, then change the `sink:` block:
+
+```yaml title="cpu-base.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu
+    generator:
+      type: sine
+      amplitude: 50.0
+      offset: 50.0
+      period_secs: 60
+```
 
 ## stdout (default)
 
-No flags needed -- `stdout` is the default sink. Pipe output to any tool:
+No edit needed; the starter above writes to stdout. Pipe the output anywhere:
 
 ```bash
-sonda metrics --name up --rate 10 --duration 5s | wc -l
+sonda run cpu-base.yaml | wc -l
 ```
 
 ## file
 
-Write to a file with `--output`:
+Either set `sink.type: file` in the YAML or use the `-o` shortcut on the CLI:
 
 ```bash
-sonda metrics --name up --rate 10 --duration 5s --output /tmp/metrics.txt
+sonda run cpu-base.yaml -o /tmp/metrics.txt
+```
+
+```yaml title="file sink (YAML)"
+sink:
+  type: file
+  path: /tmp/metrics.txt
 ```
 
 ## http_push
 
-POST batched data to any HTTP endpoint. This is the most universal network sink -- it
-works with any backend that accepts HTTP imports. Use CLI flags for quick ad-hoc runs:
+POST batched data to any HTTP endpoint — the most universal network sink. Use CLI overrides for ad-hoc runs:
 
 ```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --sink http_push --endpoint http://localhost:9090/api/v1/push \
-  --content-type "text/plain; version=0.0.4"
+sonda run cpu-base.yaml \
+  --sink http_push --endpoint http://localhost:9090/api/v1/push
 ```
 
-Or use a scenario file for full control (including custom headers):
+Use a scenario file when you need custom headers or a tuned batch size:
 
 ```bash
-sonda metrics --scenario examples/http-push-sink.yaml
+sonda run examples/http-push-sink.yaml
 ```
 
 ```yaml title="examples/http-push-sink.yaml (key fields)"
@@ -58,9 +87,6 @@ sink:
   content_type: "text/plain; version=0.0.4"
   batch_size: 65536
 ```
-
-The key sink fields are `url`, `content_type`, and `batch_size` (bytes buffered before
-each POST).
 
 ## tcp and udp
 
@@ -76,11 +102,12 @@ Stream raw encoded bytes over a socket. Both are YAML-only.
     Then run:
 
     ```bash
-    sonda metrics --scenario examples/tcp-sink.yaml
+    sonda run examples/tcp-sink.yaml
     ```
 
     ```yaml title="examples/tcp-sink.yaml"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -115,11 +142,12 @@ Stream raw encoded bytes over a socket. Both are YAML-only.
     Then run:
 
     ```bash
-    sonda metrics --scenario examples/udp-sink.yaml
+    sonda run examples/udp-sink.yaml
     ```
 
     ```yaml title="examples/udp-sink.yaml"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -143,24 +171,17 @@ Stream raw encoded bytes over a socket. Both are YAML-only.
 
 ## loki
 
-Push JSON logs to Grafana Loki. The fastest way is a single CLI command:
+Push JSON logs to Grafana Loki. The full file gives you templates and field pools:
 
 ```bash
-sonda logs --mode template --rate 10 --duration 30s \
-  --sink loki --endpoint http://localhost:3100 \
-  --label job=sonda --label env=dev
-```
-
-For richer logs with field pools and severity weights, use a scenario file:
-
-```bash
-sonda logs --scenario examples/loki-json-lines.yaml
+sonda run examples/loki-json-lines.yaml
 ```
 
 ??? example "Full Loki scenario file"
 
     ```yaml title="examples/loki-json-lines.yaml"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -194,20 +215,13 @@ sonda logs --scenario examples/loki-json-lines.yaml
 
 ## kafka
 
-Publish to a Kafka topic. Use CLI flags for a quick test:
+Publish to a Kafka topic. CLI overrides work for the host/topic, but Kafka brokers and ACK mode live in the YAML:
 
 ```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --sink kafka --brokers 127.0.0.1:9092 --topic sonda-metrics
+sonda run examples/kafka-sink.yaml
 ```
 
-Or use a scenario file for full control:
-
-```bash
-sonda metrics --scenario examples/kafka-sink.yaml
-```
-
-??? example "Full Kafka scenario file"
+??? example "Kafka scenario fields"
 
     ```yaml title="examples/kafka-sink.yaml (key fields)"
     sink:
@@ -216,24 +230,23 @@ sonda metrics --scenario examples/kafka-sink.yaml
       topic: sonda-metrics
     ```
 
-    See `examples/kafka-sink.yaml` for the complete file with generator and encoder
+    See `examples/kafka-sink.yaml` for the full file including generator and encoder
     config.
 
 ## remote_write
 
-Prometheus remote write protocol -- native compatibility with VictoriaMetrics, Prometheus,
-Thanos Receive, and Cortex/Mimir. The encoder and sink must both be `remote_write`:
+Prometheus remote write protocol — native compatibility with VictoriaMetrics, Prometheus, Thanos Receive, and Cortex/Mimir. The encoder and sink must both be `remote_write`:
 
 ```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
+sonda run cpu-base.yaml \
   --encoder remote_write \
   --sink remote_write --endpoint http://localhost:8428/api/v1/write
 ```
 
-Or use a scenario file:
+Or run the canonical example file:
 
 ```bash
-sonda metrics --scenario examples/remote-write-vm.yaml
+sonda run examples/remote-write-vm.yaml
 ```
 
 ```yaml title="examples/remote-write-vm.yaml (key fields)"
@@ -247,26 +260,10 @@ sink:
 
 ## otlp_grpc
 
-Push to an OpenTelemetry Collector via gRPC. Use CLI flags for a quick test:
+Push to an OpenTelemetry Collector via gRPC. The encoder must be `otlp` and the sink type `otlp_grpc`. The signal type defaults from the scenario's `signal_type:` but is settable in the file:
 
 ```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
-  --encoder otlp \
-  --sink otlp_grpc --endpoint http://localhost:4317 --signal-type metrics
-```
-
-For logs, `--signal-type` defaults to `logs` automatically:
-
-```bash
-sonda logs --mode template --rate 10 --duration 30s \
-  --encoder otlp \
-  --sink otlp_grpc --endpoint http://localhost:4317
-```
-
-Or use a scenario file:
-
-```bash
-sonda metrics --scenario examples/otlp-metrics.yaml
+sonda run examples/otlp-metrics.yaml
 ```
 
 ```yaml title="examples/otlp-metrics.yaml (key fields)"

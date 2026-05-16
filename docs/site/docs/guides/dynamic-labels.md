@@ -125,7 +125,7 @@ scenarios:
 Run it:
 
 ```bash
-sonda metrics --scenario examples/dynamic-labels-fleet.yaml
+sonda run examples/dynamic-labels-fleet.yaml
 ```
 
 ```text title="Output (abridged)"
@@ -220,8 +220,8 @@ for testing Loki label indexing or pod-level log aggregation panels.
 Run any of them:
 
 ```bash
-sonda metrics --scenario examples/dynamic-labels-fleet.yaml
-sonda logs --scenario examples/dynamic-labels-logs.yaml
+sonda run examples/dynamic-labels-fleet.yaml
+sonda run examples/dynamic-labels-logs.yaml
 ```
 
 ## Interaction with other fields
