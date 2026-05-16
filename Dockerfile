@@ -88,17 +88,6 @@ FROM scratch
 COPY --from=builder /out/sonda /sonda
 COPY --from=builder /out/sonda-server /sonda-server
 
-# Include built-in pack YAML files so `sonda packs list/show/run` work
-# out of the box. Users can mount their own pack directories to override
-# or extend with custom packs.
-COPY packs/ /packs/
-ENV SONDA_PACK_PATH=/packs
-
-# Include built-in scenario YAML files so `sonda scenarios list/show/run`
-# and `sonda metrics --scenario @name` work out of the box.
-COPY scenarios/ /scenarios/
-ENV SONDA_SCENARIO_PATH=/scenarios
-
 EXPOSE 8080
 
 ENTRYPOINT ["/sonda-server"]

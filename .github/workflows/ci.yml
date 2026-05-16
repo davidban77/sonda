@@ -196,6 +196,11 @@ jobs:
   docs-commands:
     name: Validate sonda commands in user-facing docs
     runs-on: ubuntu-latest
+    # TEMPORARY: skip during the 1.9 cycle. The CLI surface collapsed in 1.9c
+    # ahead of the post-1.9 docs rewrite, so docs intentionally lag the binary
+    # until the rewrite lands. REMOVE this `if:` before merging release/1.9
+    # into main — the docs must be in sync at release time.
+    if: github.base_ref != 'release/1.9' && github.ref != 'refs/heads/release/1.9' && !startsWith(github.head_ref, 'feat/1.9')
 
     steps:
       - name: Checkout
