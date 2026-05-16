@@ -405,10 +405,13 @@ def run_scenario(
     *,
     timeout_s: float = SCENARIO_TIMEOUT_S,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke ``sonda <subcommand> --scenario <scenario>`` and return the
-    completed process. Run from ``repo_root`` so relative paths resolve."""
+    """Invoke ``sonda run <scenario>`` and return the completed process.
+    Run from ``repo_root`` so relative paths resolve. The ``subcommand``
+    parameter is kept on ``MatrixRow`` as a hint about the signal type
+    documented in the matrix; the 1.9 CLI dispatches purely by YAML."""
+    _ = subcommand
     return subprocess.run(
-        [str(sonda_bin), subcommand, "--scenario", str(scenario)],
+        [str(sonda_bin), "run", str(scenario)],
         capture_output=True,
         text=True,
         timeout=timeout_s,

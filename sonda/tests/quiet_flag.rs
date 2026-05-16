@@ -1,53 +1,47 @@
 //! Integration tests for the `--quiet` / `-q` CLI flag.
-//!
-//! Verifies that quiet mode suppresses status banners on stderr while still
-//! producing metric data on stdout.
 
+mod common;
+
+use std::io::Write;
 use std::process::Command;
 
-/// Return the path to the `sonda` binary built by Cargo.
-///
-/// Uses the `CARGO_BIN_EXE_sonda` env var set by Cargo during `cargo test`,
-/// falling back to building via `cargo build` artifact path.
-fn sonda_bin() -> std::path::PathBuf {
-    // When running under `cargo test`, CARGO_BIN_EXE_sonda is set automatically
-    // for binaries defined in the same package.
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_sonda") {
-        return std::path::PathBuf::from(path);
-    }
-    // Fallback: build the binary and find it in the target directory.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .parent()
-        .expect("sonda crate must have a parent directory");
-    workspace_root.join("target").join("debug").join("sonda")
+use common::sonda_bin;
+use tempfile::NamedTempFile;
+
+const FIXTURE: &str = "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 100ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: m
+    signal_type: metrics
+    name: test_banner
+    generator:
+      type: constant
+      value: 1.0
+";
+
+fn write_fixture() -> NamedTempFile {
+    let mut f = NamedTempFile::new().expect("tempfile");
+    f.write_all(FIXTURE.as_bytes()).expect("write");
+    f.flush().expect("flush");
+    f
 }
 
-/// Running with `-q` should suppress status banners on stderr.
-///
-/// We run a very short metrics scenario (100ms duration) with `-q` and verify
-/// that stderr does not contain the start/stop banner markers (the Unicode
-/// play and stop symbols).
 #[test]
 fn quiet_flag_suppresses_status_banners() {
+    let f = write_fixture();
     let output = Command::new(sonda_bin())
-        .args([
-            "-q",
-            "metrics",
-            "--name",
-            "test_quiet",
-            "--rate",
-            "10",
-            "--duration",
-            "100ms",
-        ])
+        .args(["-q", "run"])
+        .arg(f.path())
         .output()
         .expect("failed to execute sonda binary");
-
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // The start banner uses a play symbol (U+25B6) and the stop banner uses
-    // a square symbol (U+25A0). Neither should appear in quiet mode.
     assert!(
         !stderr.contains('\u{25b6}'),
         "stderr must not contain start banner in quiet mode, got: {stderr}"
@@ -56,105 +50,63 @@ fn quiet_flag_suppresses_status_banners() {
         !stderr.contains('\u{25a0}'),
         "stderr must not contain stop banner in quiet mode, got: {stderr}"
     );
-
-    // Stderr should be completely empty in quiet mode (no errors expected).
     assert!(
         stderr.is_empty(),
         "stderr must be empty in quiet mode for a successful run, got: {stderr}"
     );
 }
 
-/// Running without `-q` should produce status banners on stderr.
-///
-/// We run a very short metrics scenario and verify that stderr contains the
-/// scenario name and some recognizable status output.
 #[test]
 fn without_quiet_flag_produces_status_banners() {
+    let f = write_fixture();
     let output = Command::new(sonda_bin())
-        .args([
-            "metrics",
-            "--name",
-            "test_banner",
-            "--rate",
-            "10",
-            "--duration",
-            "100ms",
-        ])
+        .args(["run"])
+        .arg(f.path())
         .output()
         .expect("failed to execute sonda binary");
-
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // The scenario name should appear in both start and stop banners.
     assert!(
         stderr.contains("test_banner"),
         "stderr must contain scenario name in normal mode, got: {stderr}"
     );
-
-    // The stop banner should contain "completed in".
     assert!(
         stderr.contains("completed in"),
         "stderr must contain 'completed in' from the stop banner, got: {stderr}"
     );
 }
 
-/// The `-q` flag should produce metric data on stdout.
-///
-/// Even in quiet mode, the actual metric output must still go to stdout.
 #[test]
 fn quiet_flag_still_produces_stdout_output() {
+    let f = write_fixture();
     let output = Command::new(sonda_bin())
-        .args([
-            "-q",
-            "metrics",
-            "--name",
-            "test_output",
-            "--rate",
-            "10",
-            "--duration",
-            "100ms",
-        ])
+        .args(["-q", "run"])
+        .arg(f.path())
         .output()
         .expect("failed to execute sonda binary");
-
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Should have at least some metric output on stdout.
     assert!(
         !stdout.is_empty(),
         "stdout must contain metric output even in quiet mode"
     );
-
-    // The metric name should appear in the output.
     assert!(
-        stdout.contains("test_output"),
+        stdout.contains("test_banner"),
         "stdout must contain the metric name, got: {stdout}"
     );
 }
 
-/// The long-form `--quiet` flag is accepted by the CLI parser.
 #[test]
 fn long_quiet_flag_is_accepted() {
+    let f = write_fixture();
     let output = Command::new(sonda_bin())
-        .args([
-            "--quiet",
-            "metrics",
-            "--name",
-            "test_long_quiet",
-            "--rate",
-            "10",
-            "--duration",
-            "100ms",
-        ])
+        .args(["--quiet", "run"])
+        .arg(f.path())
         .output()
         .expect("failed to execute sonda binary");
-
     assert!(
         output.status.success(),
         "sonda --quiet should exit successfully, status: {}",
         output.status
     );
-
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.is_empty(),
