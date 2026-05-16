@@ -3,6 +3,7 @@
 # index, producing `{pack_name}_0.{metric}` and `{pack_name}_1.{metric}`
 # sub-signal IDs. No entry-level `id` is set on either.
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:

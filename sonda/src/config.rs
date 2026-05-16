@@ -5630,6 +5630,7 @@ mod tests {
     /// pointing at it. Each call gets a unique directory keyed by `suffix`.
     fn temp_summary_scenario(suffix: &str) -> (sonda_core::BuiltinScenario, std::path::PathBuf) {
         let yaml = r#"version: 2
+kind: runnable
 scenario_name: test-summary
 category: test
 description: Test summary scenario
@@ -5928,6 +5929,7 @@ metrics:
         std::fs::write(
             &scenario_path,
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -5986,6 +5988,7 @@ metrics:
         std::fs::write(
             &scenario_path,
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -6020,6 +6023,7 @@ scenarios:
         std::fs::write(
             &scenario_path,
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms

@@ -5,6 +5,8 @@
 # schema exactly, so sonda output can replace real device telemetry in
 # dashboards and alert rules.
 
+version: 2
+kind: composable
 name: telegraf_snmp_interface
 description: "Standard SNMP interface metrics (Telegraf-normalized)"
 category: network

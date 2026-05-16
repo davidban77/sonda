@@ -12,6 +12,7 @@
 #   - Ticks 25-29: interface up, traffic normalized
 
 version: 2
+kind: runnable
 
 scenario_name: interface-flap
 category: network

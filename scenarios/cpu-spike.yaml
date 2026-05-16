@@ -7,6 +7,7 @@
 # Pattern: baseline ~35% with periodic spikes to ~95%.
 
 version: 2
+kind: runnable
 
 scenario_name: cpu-spike
 category: infrastructure

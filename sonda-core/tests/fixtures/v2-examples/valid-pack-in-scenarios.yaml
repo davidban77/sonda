@@ -2,6 +2,7 @@
 # The id field creates dotted sub-signal IDs like primary_uplink.ifOperStatus
 # that can be referenced by after: clauses.
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 10m

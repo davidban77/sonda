@@ -16,6 +16,7 @@
 # encoder + sink combo, not just a URL change).
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 100

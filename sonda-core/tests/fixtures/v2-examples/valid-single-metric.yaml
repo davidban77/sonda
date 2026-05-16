@@ -1,6 +1,7 @@
 # Simplest v2 file: a single metric using the flat shorthand (no scenarios: key).
 # The parser wraps this into a one-entry scenarios list automatically.
 version: 2
+kind: runnable
 name: cpu_usage
 signal_type: metrics
 rate: 1

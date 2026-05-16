@@ -5,6 +5,8 @@
 # default monotonic step counter whose rate reflects typical CPU
 # utilization proportions.
 
+version: 2
+kind: composable
 name: node_exporter_cpu
 description: "Per-CPU mode counters (node_exporter-compatible)"
 category: infrastructure

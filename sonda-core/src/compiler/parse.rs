@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use super::{Entry, ScenarioFile};
+use super::{Entry, Kind, ScenarioFile};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -86,6 +86,38 @@ pub enum ParseError {
         /// The field name that is not allowed for this signal type.
         field: String,
     },
+
+    /// The required top-level `kind:` field is missing.
+    #[error(
+        "v2 scenario file requires a top-level 'kind:' field — must be 'runnable' or 'composable'"
+    )]
+    MissingKind,
+
+    /// The `kind:` field holds a value other than `runnable` or `composable`.
+    #[error("unknown kind '{0}': must be 'runnable' or 'composable'")]
+    UnknownKind(String),
+
+    /// A `kind: runnable` file has a `scenarios:` block with no entries.
+    #[error("kind: runnable scenarios block is empty; expected at least one scenario")]
+    RunnableScenariosEmpty,
+
+    /// A `kind: runnable` file has neither a `scenarios:` block nor any
+    /// flat-shorthand fields.
+    #[error(
+        "kind: runnable file has no scenarios; add a 'scenarios:' block or use single-signal shorthand"
+    )]
+    RunnableMissingBody,
+
+    /// A `kind: composable` file carries a `scenarios:` block, which is
+    /// reserved for runnable files.
+    #[error(
+        "kind: composable cannot have a 'scenarios:' block; composable files are pack definitions"
+    )]
+    ComposableHasScenarios,
+
+    /// A `kind: composable` file failed to deserialize as a pack definition.
+    #[error("kind: composable body is not a valid pack definition")]
+    ComposablePackInvalid(#[source] serde_yaml_ng::Error),
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +171,12 @@ pub fn detect_version(yaml: &str) -> Option<u32> {
 #[serde(deny_unknown_fields)]
 struct FlatFile {
     version: u32,
+
+    #[serde(default)]
+    kind: Option<Kind>,
+
+    #[serde(default)]
+    tags: Vec<String>,
 
     // Defaults-level fields (also allowed at top level in shorthand)
     #[serde(default)]
@@ -265,6 +303,8 @@ impl FlatFile {
         // canonical `scenarios:` form consumed by the CLI catalog probe.
         ScenarioFile {
             version: self.version,
+            kind: self.kind.unwrap_or(Kind::Runnable),
+            tags: self.tags,
             scenario_name: None,
             category: None,
             description: None,
@@ -307,14 +347,110 @@ impl FlatFile {
 ///
 /// Returns [`ParseError`] describing the first validation failure found.
 pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
+    if let Some(v) = detect_version(yaml) {
+        if v != 2 {
+            return Err(ParseError::InvalidVersion(v));
+        }
+    }
+
+    let kind = validate_kind_field(yaml)?;
+
+    if kind == Kind::Composable {
+        return parse_composable(yaml);
+    }
+
     let file = deserialize(yaml)?;
 
     if file.version != 2 {
         return Err(ParseError::InvalidVersion(file.version));
     }
 
+    if file.scenarios.is_empty() {
+        return Err(if has_top_level_scenarios_key(yaml) {
+            ParseError::RunnableScenariosEmpty
+        } else {
+            ParseError::RunnableMissingBody
+        });
+    }
     validate_entries(&file.scenarios)?;
+
     Ok(file)
+}
+
+fn parse_composable(yaml: &str) -> Result<ScenarioFile, ParseError> {
+    if has_top_level_scenarios_key(yaml) {
+        return Err(ParseError::ComposableHasScenarios);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ComposableHeader {
+        version: u32,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        description: Option<String>,
+    }
+
+    let header: ComposableHeader = serde_yaml_ng::from_str(yaml)?;
+    if header.version != 2 {
+        return Err(ParseError::InvalidVersion(header.version));
+    }
+
+    validate_composable_pack_body(yaml)?;
+
+    Ok(ScenarioFile {
+        version: header.version,
+        kind: Kind::Composable,
+        tags: header.tags,
+        scenario_name: None,
+        category: None,
+        description: header.description,
+        defaults: None,
+        scenarios: Vec::new(),
+    })
+}
+
+/// Probe the raw YAML for a top-level `kind:` field before full
+/// deserialization so missing/unknown values surface as typed errors
+/// (`MissingKind` / `UnknownKind`) rather than generic serde messages.
+fn validate_kind_field(yaml: &str) -> Result<Kind, ParseError> {
+    #[derive(serde::Deserialize)]
+    struct KindProbe {
+        kind: Option<serde_yaml_ng::Value>,
+    }
+
+    let probe: KindProbe = serde_yaml_ng::from_str(yaml)?;
+    let raw = probe.kind.ok_or(ParseError::MissingKind)?;
+
+    match raw {
+        serde_yaml_ng::Value::String(s) if s == "runnable" => Ok(Kind::Runnable),
+        serde_yaml_ng::Value::String(s) if s == "composable" => Ok(Kind::Composable),
+        serde_yaml_ng::Value::String(s) => Err(ParseError::UnknownKind(s)),
+        other => {
+            let rendered = serde_yaml_ng::to_string(&other)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            Err(ParseError::UnknownKind(rendered))
+        }
+    }
+}
+
+fn has_top_level_scenarios_key(yaml: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ScenariosProbe {
+        scenarios: Option<serde_yaml_ng::Value>,
+    }
+
+    serde_yaml_ng::from_str::<ScenariosProbe>(yaml)
+        .map(|p| p.scenarios.is_some())
+        .unwrap_or(false)
+}
+
+fn validate_composable_pack_body(yaml: &str) -> Result<(), ParseError> {
+    serde_yaml_ng::from_str::<crate::packs::MetricPackDef>(yaml)
+        .map(|_| ())
+        .map_err(ParseError::ComposablePackInvalid)
 }
 
 /// Determine the file shape and deserialize accordingly.
@@ -324,23 +460,34 @@ pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
 /// peek for the `scenarios` key first. If present, we parse as canonical. If
 /// absent, we parse as flat shorthand. No fallback.
 fn deserialize(yaml: &str) -> Result<ScenarioFile, ParseError> {
-    /// Minimal probe to detect whether the YAML contains a `scenarios` key.
-    /// Intentionally does NOT use `deny_unknown_fields`.
     #[derive(serde::Deserialize)]
     struct ShapeProbe {
         scenarios: Option<serde_yaml_ng::Value>,
+        signal_type: Option<serde_yaml_ng::Value>,
+        generator: Option<serde_yaml_ng::Value>,
+        log_generator: Option<serde_yaml_ng::Value>,
+        distribution: Option<serde_yaml_ng::Value>,
+        pack: Option<serde_yaml_ng::Value>,
     }
 
     let probe: ShapeProbe = serde_yaml_ng::from_str(yaml)?;
 
     if probe.scenarios.is_some() {
-        // Canonical format: top-level `scenarios` array.
         let file: ScenarioFile = serde_yaml_ng::from_str(yaml)?;
-        Ok(file)
-    } else {
-        // Flat single-signal shorthand: no `scenarios` key.
+        return Ok(file);
+    }
+
+    let has_flat_body = probe.signal_type.is_some()
+        || probe.generator.is_some()
+        || probe.log_generator.is_some()
+        || probe.distribution.is_some()
+        || probe.pack.is_some();
+
+    if has_flat_body {
         let flat: FlatFile = serde_yaml_ng::from_str(yaml)?;
         Ok(flat.into_scenario_file())
+    } else {
+        Err(ParseError::RunnableMissingBody)
     }
 }
 
@@ -491,6 +638,7 @@ mod tests {
     fn multi_scenario_with_three_entries() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu_usage
@@ -536,6 +684,7 @@ scenarios:
     fn single_signal_shorthand_inline() {
         let yaml = r#"
 version: 2
+kind: runnable
 name: cpu_usage
 signal_type: metrics
 rate: 1
@@ -563,6 +712,7 @@ generator:
     fn single_signal_shorthand_pack() {
         let yaml = r#"
 version: 2
+kind: runnable
 pack: telegraf_snmp_interface
 rate: 1
 duration: 10s
@@ -590,6 +740,7 @@ labels:
     fn flat_shorthand_never_carries_top_level_metadata() {
         let yaml = r#"
 version: 2
+kind: runnable
 name: cpu_usage
 signal_type: metrics
 rate: 1
@@ -622,6 +773,7 @@ generator:
     fn entry_with_after_clause() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu_usage
@@ -662,6 +814,7 @@ scenarios:
     fn entry_with_after_clause_and_delay() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: source
@@ -697,6 +850,7 @@ scenarios:
     fn histogram_entry_with_distribution_and_buckets() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: histogram
     name: http_request_duration_seconds
@@ -725,6 +879,7 @@ scenarios:
     fn summary_entry_with_distribution_and_quantiles() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: summary
     name: rpc_duration_seconds
@@ -752,6 +907,7 @@ scenarios:
     fn file_with_defaults_block() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: "60s"
@@ -783,6 +939,7 @@ scenarios:
     fn entry_with_all_optional_fields() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     id: full_entry
@@ -879,6 +1036,7 @@ scenarios:
     #[test]
     fn missing_version_returns_yaml_error() {
         let yaml = r#"
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -898,6 +1056,7 @@ scenarios:
     fn duplicate_ids_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     id: same_id
@@ -924,6 +1083,7 @@ scenarios:
     fn invalid_signal_type_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: traces
     name: some_trace
@@ -943,6 +1103,7 @@ scenarios:
     fn both_generator_and_pack_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: mixed
@@ -963,6 +1124,7 @@ scenarios:
     fn neither_generator_nor_pack_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: bare_entry
@@ -979,6 +1141,7 @@ scenarios:
     fn pack_with_logs_signal_type_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     pack: some_log_pack
@@ -995,6 +1158,7 @@ scenarios:
     fn logs_without_log_generator_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     name: bare_log
@@ -1011,6 +1175,7 @@ scenarios:
     fn inline_without_name_returns_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     generator:
@@ -1029,6 +1194,7 @@ scenarios:
     #[rstest::rstest]
     #[case::starts_with_digit(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     id: 123abc
@@ -1039,6 +1205,7 @@ scenarios:
 "#, "123abc")]
     #[case::contains_dot(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     id: my.id
@@ -1049,6 +1216,7 @@ scenarios:
 "#, "my.id")]
     #[case::empty_string(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     id: ""
@@ -1069,6 +1237,7 @@ scenarios:
     fn invalid_after_op_returns_yaml_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: source
@@ -1198,6 +1367,7 @@ scenarios:
     fn histogram_without_distribution_fails() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: histogram
     name: bad_histogram
@@ -1219,6 +1389,7 @@ scenarios:
     fn pack_entry_with_overrides() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     pack: telegraf_snmp_interface
@@ -1246,6 +1417,7 @@ scenarios:
     #[rstest::rstest]
     #[case::metrics_with_log_generator(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1260,6 +1432,7 @@ scenarios:
 "#, "metrics", "log_generator")]
     #[case::metrics_with_distribution(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1273,6 +1446,7 @@ scenarios:
 "#, "metrics", "distribution")]
     #[case::logs_with_generator(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     name: syslog
@@ -1287,6 +1461,7 @@ scenarios:
 "#, "logs", "generator")]
     #[case::logs_with_distribution(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: logs
     name: syslog
@@ -1302,6 +1477,7 @@ scenarios:
 "#, "logs", "distribution")]
     #[case::histogram_with_generator(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: histogram
     name: request_duration
@@ -1315,6 +1491,7 @@ scenarios:
 "#, "histogram", "generator")]
     #[case::histogram_with_log_generator(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: histogram
     name: request_duration
@@ -1330,6 +1507,7 @@ scenarios:
 "#, "histogram", "log_generator")]
     #[case::summary_with_generator(r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: summary
     name: rpc_duration
@@ -1371,6 +1549,7 @@ scenarios:
         // actual problem inside the canonical parse path.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1412,25 +1591,12 @@ scenarios:
     // ======================================================================
 
     #[test]
-    fn empty_scenarios_list_parses_successfully() {
-        // An empty scenarios array is syntactically valid at the parse level.
-        // Semantic rejection (no runnable entries) is deferred to compilation.
-        let yaml = r#"
-version: 2
-scenarios: []
-"#;
-
-        let file = parse(yaml).expect("empty scenarios list should parse");
-        assert_eq!(file.version, 2);
-        assert!(file.scenarios.is_empty());
-    }
-
-    #[test]
     fn deny_unknown_fields_rejects_typo() {
         // A misspelling of `signal_type` as `signal_typ` must produce a YAML
         // parse error (via deny_unknown_fields), not silently default to None.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_typ: metrics
     name: cpu
@@ -1469,6 +1635,7 @@ scenarios:
         // `quantiles` must infer `histogram`.
         let yaml = r#"
 version: 2
+kind: runnable
 name: http_request_duration_seconds
 rate: 1
 distribution:
@@ -1495,6 +1662,7 @@ seed: 42
         // `quantiles` must infer `summary`.
         let yaml = r#"
 version: 2
+kind: runnable
 name: rpc_duration_seconds
 rate: 1
 distribution:
@@ -1520,6 +1688,7 @@ seed: 99
         // infer `logs`.
         let yaml = r#"
 version: 2
+kind: runnable
 name: syslog
 rate: 5
 log_generator:
@@ -1548,6 +1717,7 @@ log_generator:
         // in a flat file must produce a YAML parse error.
         let yaml = r#"
 version: 2
+kind: runnable
 name: cpu_usage
 signal_type: metrics
 generator:
@@ -1583,6 +1753,7 @@ defaults:
         // AST exactly as written in the YAML.
         let yaml = r#"
 version: 2
+kind: runnable
 scenario_name: steady-state
 category: infrastructure
 description: "Normal oscillating baseline (sine + jitter)"
@@ -1615,6 +1786,7 @@ scenarios:
         // existing v2 callers are unaffected by the field additions.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1634,6 +1806,7 @@ scenarios:
     #[rstest::rstest]
     #[case::only_scenario_name(r#"
 version: 2
+kind: runnable
 scenario_name: solo-name
 scenarios:
   - signal_type: metrics
@@ -1645,6 +1818,7 @@ scenarios:
 "#, Some("solo-name"), None,                None)]
     #[case::only_category(r#"
 version: 2
+kind: runnable
 category: network
 scenarios:
   - signal_type: metrics
@@ -1656,6 +1830,7 @@ scenarios:
 "#, None,              Some("network"),     None)]
     #[case::only_description(r#"
 version: 2
+kind: runnable
 description: "terse one-liner"
 scenarios:
   - signal_type: metrics
@@ -1667,6 +1842,7 @@ scenarios:
 "#, None,              None,                Some("terse one-liner"))]
     #[case::name_and_category(r#"
 version: 2
+kind: runnable
 scenario_name: partial
 category: application
 scenarios:
@@ -1697,6 +1873,7 @@ scenarios:
         // to `None`.
         let yaml = r#"
 version: 2
+kind: runnable
 scenario_name: typo-test
 descripton: "misspelled — must be rejected"
 scenarios:
@@ -1728,6 +1905,7 @@ scenarios:
         // silently leak through.
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu
@@ -1748,5 +1926,262 @@ scenarios:
             msg.contains("category"),
             "error should mention the misplaced field, got: {msg}"
         );
+    }
+
+    // ======================================================================
+    // Kind discriminator (1.9a)
+    // ======================================================================
+
+    #[test]
+    fn kind_runnable_with_scenarios_parses() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("kind: runnable with scenarios must parse");
+        assert_eq!(file.kind, Kind::Runnable);
+        assert_eq!(file.scenarios.len(), 1);
+        assert!(file.tags.is_empty());
+    }
+
+    #[test]
+    fn kind_runnable_with_flat_shorthand_parses() {
+        let yaml = r#"
+version: 2
+kind: runnable
+name: cpu_usage
+signal_type: metrics
+rate: 1
+generator:
+  type: constant
+  value: 1.0
+"#;
+
+        let file = parse(yaml).expect("kind: runnable flat shorthand must parse");
+        assert_eq!(file.kind, Kind::Runnable);
+        assert_eq!(file.scenarios.len(), 1);
+        assert_eq!(file.scenarios[0].name.as_deref(), Some("cpu_usage"));
+        assert_eq!(file.scenarios[0].signal_type, "metrics");
+    }
+
+    #[test]
+    fn kind_composable_with_pack_body_parses() {
+        let yaml = r#"
+version: 2
+kind: composable
+name: telegraf_snmp_interface
+description: "SNMP interface metrics"
+category: network
+shared_labels:
+  device: ""
+  job: snmp
+metrics:
+  - name: ifOperStatus
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("kind: composable with pack body must parse");
+        assert_eq!(file.kind, Kind::Composable);
+        assert!(file.scenarios.is_empty());
+        assert_eq!(file.description.as_deref(), Some("SNMP interface metrics"));
+    }
+
+    #[test]
+    fn missing_kind_returns_error() {
+        let yaml = r#"
+version: 2
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse(yaml).expect_err("missing kind must fail");
+        assert!(
+            matches!(err, ParseError::MissingKind),
+            "expected MissingKind, got: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("requires a top-level 'kind:' field"),
+            "error must mention the missing field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_kind_returns_error_with_valid_values() {
+        let yaml = r#"
+version: 2
+kind: foobar
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse(yaml).expect_err("unknown kind must fail");
+        assert!(
+            matches!(err, ParseError::UnknownKind(ref k) if k == "foobar"),
+            "expected UnknownKind('foobar'), got: {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must be 'runnable' or 'composable'"),
+            "error must list valid values, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn kind_runnable_with_empty_scenarios_returns_error() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios: []
+"#;
+
+        let err = parse(yaml).expect_err("empty scenarios must fail under kind: runnable");
+        assert!(
+            matches!(err, ParseError::RunnableScenariosEmpty),
+            "expected RunnableScenariosEmpty, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("scenarios block is empty"),
+            "error must mention empty block, got: {err}"
+        );
+    }
+
+    #[test]
+    fn kind_runnable_with_no_body_returns_runnable_missing_body() {
+        let yaml = "version: 2\nkind: runnable\n";
+        let err = parse(yaml).expect_err("runnable file with no body must fail");
+        assert!(
+            matches!(err, ParseError::RunnableMissingBody),
+            "expected RunnableMissingBody, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("add a 'scenarios:' block"),
+            "error must suggest adding scenarios block, got: {err}"
+        );
+    }
+
+    #[test]
+    fn kind_composable_with_scenarios_block_returns_error() {
+        let yaml = r#"
+version: 2
+kind: composable
+name: telegraf_snmp_interface
+description: "SNMP interface metrics"
+category: network
+metrics:
+  - name: ifOperStatus
+    generator:
+      type: constant
+      value: 1.0
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let err = parse(yaml).expect_err("composable with scenarios must fail");
+        assert!(
+            matches!(err, ParseError::ComposableHasScenarios),
+            "expected ComposableHasScenarios, got: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("composable cannot have a 'scenarios:' block"),
+            "error must mention the rule, got: {err}"
+        );
+    }
+
+    #[test]
+    fn kind_composable_with_invalid_pack_body_propagates_error() {
+        let yaml = r#"
+version: 2
+kind: composable
+name: incomplete_pack
+"#;
+
+        let err = parse(yaml).expect_err("composable without pack body must fail");
+        assert!(
+            matches!(err, ParseError::ComposablePackInvalid(_)),
+            "expected ComposablePackInvalid, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tags_list_is_carried_through() {
+        let yaml = r#"
+version: 2
+kind: runnable
+tags: [network, bgp, edge]
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("file with tags must parse");
+        assert_eq!(file.tags, vec!["network", "bgp", "edge"]);
+    }
+
+    #[test]
+    fn tags_absent_defaults_to_empty_vec() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("file without tags must parse");
+        assert!(file.tags.is_empty());
+    }
+
+    #[test]
+    fn tags_empty_list_is_empty_vec() {
+        let yaml = r#"
+version: 2
+kind: runnable
+tags: []
+scenarios:
+  - signal_type: metrics
+    name: cpu
+    rate: 1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+        let file = parse(yaml).expect("file with empty tags must parse");
+        assert!(file.tags.is_empty());
     }
 }

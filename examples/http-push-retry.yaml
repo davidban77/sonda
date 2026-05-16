@@ -12,6 +12,7 @@
 #     --retry-max-attempts 5 --retry-backoff 200ms --retry-max-backoff 10s
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

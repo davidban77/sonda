@@ -2,6 +2,7 @@
 # row 1.6 — multiple signal types (metrics + logs + histogram) in one file
 # must translate side-by-side without cross-contamination between entries.
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

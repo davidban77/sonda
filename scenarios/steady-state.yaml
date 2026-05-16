@@ -6,6 +6,7 @@
 # scenario should NOT trigger any alerts.
 
 version: 2
+kind: runnable
 
 scenario_name: steady-state
 category: infrastructure

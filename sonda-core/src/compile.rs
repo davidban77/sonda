@@ -206,6 +206,7 @@ mod tests {
     fn one_shot_compiles_minimal_inline_scenario() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10
@@ -242,6 +243,7 @@ scenarios:
     fn yaml_with_while_clause_rejected_with_compiled_path_hint() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -283,6 +285,7 @@ scenarios:
     fn yaml_with_delay_clause_rejected_with_compiled_path_hint() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -332,6 +335,7 @@ scenarios:
     fn normalize_failure_surfaces_as_normalize_variant() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 scenarios:
   - id: no_rate
@@ -355,6 +359,7 @@ scenarios:
     fn expand_failure_surfaces_as_expand_variant() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -377,6 +382,7 @@ scenarios:
     fn compile_after_failure_surfaces_as_compile_after_variant() {
         let yaml = r#"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

@@ -12,6 +12,7 @@
 # entry to http_push or remote_write.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

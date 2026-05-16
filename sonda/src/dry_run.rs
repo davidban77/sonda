@@ -735,6 +735,7 @@ mod tests {
     fn text_header_includes_file_version_and_count() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -758,6 +759,7 @@ scenarios:
     fn text_pluralizes_count_when_multi_scenario() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -788,6 +790,7 @@ scenarios:
     fn text_prints_phase_offset_and_clock_group_for_after_chain() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -835,6 +838,7 @@ scenarios:
     fn json_output_has_stable_shape() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 2
   duration: 500ms
@@ -864,6 +868,7 @@ scenarios:
     fn text_renders_while_block_with_first_open_for_analytical_upstream() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -910,6 +915,7 @@ scenarios:
     fn text_renders_indeterminate_marker_for_non_analytical_upstream() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1m
@@ -948,6 +954,7 @@ scenarios:
     fn text_renders_delay_block_when_present() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -989,6 +996,7 @@ scenarios:
     fn text_renders_both_after_and_while_for_mixed_upstream() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1051,6 +1059,7 @@ scenarios:
     fn json_dto_includes_while_delay_first_open_for_gated_entry() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 5m
@@ -1103,6 +1112,7 @@ scenarios:
     fn json_dto_omits_clauses_when_absent() {
         let compiled = compile(
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms

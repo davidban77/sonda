@@ -4,6 +4,7 @@ expression: normalized
 ---
 {
   "version": 2,
+  "kind": "runnable",
   "defaults_labels": {
     "device": "rtr-edge-01",
     "region": "us-west-2"

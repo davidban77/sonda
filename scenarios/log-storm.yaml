@@ -6,6 +6,7 @@
 # 5 seconds. Useful for testing log pipeline backpressure and alerting.
 
 version: 2
+kind: runnable
 
 scenario_name: log-storm
 category: application

@@ -10,6 +10,7 @@
 # Loki, and any other NDJSON-based ingest path.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 20

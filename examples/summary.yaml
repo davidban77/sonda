@@ -20,6 +20,7 @@
 # near 0.15 (mean + ~2.3 stddev). `_count` ticks up by 100 every second.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

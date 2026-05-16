@@ -11,6 +11,7 @@
 #   sonda metrics --scenario examples/sine-threshold-test.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

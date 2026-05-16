@@ -11,6 +11,7 @@
 #   sonda metrics --scenario examples/dynamic-labels-fleet.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

@@ -2,6 +2,7 @@
 # v2 compile errors surface through the CLI with a useful diagnostic
 # (non-zero exit + stderr mentions the source path and/or SelfReference).
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

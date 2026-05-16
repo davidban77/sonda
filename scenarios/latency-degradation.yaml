@@ -6,6 +6,7 @@
 # Useful for testing latency SLO alerting.
 
 version: 2
+kind: runnable
 
 scenario_name: latency-degradation
 category: application

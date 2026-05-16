@@ -6,6 +6,7 @@
 # (e.g., p99 latency SLOs) and Grafana heatmap panels.
 
 version: 2
+kind: runnable
 
 scenario_name: histogram-latency
 category: application

@@ -8,6 +8,7 @@
 #   cat /tmp/sonda-influx-output.txt
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 50

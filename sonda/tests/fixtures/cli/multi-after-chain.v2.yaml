@@ -2,6 +2,7 @@
 # pretty dry-run output path — the second entry's `phase_offset:` and
 # auto-assigned `clock_group:` annotations must render.
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

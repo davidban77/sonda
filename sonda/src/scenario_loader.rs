@@ -287,6 +287,7 @@ mod tests {
             &dir,
             "v2.yaml",
             r#"version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 200ms
@@ -339,6 +340,7 @@ metrics:
             &scenario_dir,
             "v2-pack.yaml",
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 100ms
@@ -367,6 +369,7 @@ scenarios:
             &scenarios_dir,
             "my-scenario.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: my-scenario
 category: test
 description: test
@@ -536,6 +539,7 @@ duration: 100ms
             &dir,
             "broken.yaml",
             r#"version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:

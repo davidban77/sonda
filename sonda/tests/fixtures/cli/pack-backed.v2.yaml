@@ -2,6 +2,7 @@
 # the `tiny_pack` metric `pack_metric_a` gets its generator overridden
 # inline, so dry-run output should tag that metric's generator line.
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
