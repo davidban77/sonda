@@ -25,6 +25,7 @@ path = "src/main.rs"
 
 [dependencies]
 sonda-core = { workspace = true }
+sonda-parsers = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }

@@ -68,6 +68,7 @@ nav:
     - Encoders: configuration/encoders.md
     - Sinks: configuration/sinks.md
     - Sink Batching: configuration/sink-batching.md
+    - Parsers: configuration/parsers.md
     - CLI Reference: configuration/cli-reference.md
   - Deployment:
     - deployment/index.md
@@ -115,4 +116,5 @@ nav:
       - CSV Import: guides/csv-import.md
       - Grafana CSV Replay: guides/grafana-csv-replay.md
       - Log CSV Replay: guides/log-csv-replay.md
+      - Raw Log Parser: guides/rawlog-parser.md
     - Troubleshooting: guides/troubleshooting.md

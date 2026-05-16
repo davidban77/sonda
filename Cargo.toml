@@ -1,5 +1,5 @@
 [workspace]
-members = ["sonda-core", "sonda", "sonda-server"]
+members = ["sonda-core", "sonda", "sonda-server", "sonda-parsers"]
 resolver = "2"
 
 [workspace.package]
@@ -16,6 +16,7 @@ categories = ["command-line-utilities", "development-tools::testing"]
 
 [workspace.dependencies]
 sonda-core = { path = "sonda-core", version = "1.8.0" }
+sonda-parsers = { path = "sonda-parsers", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
 serde_json = "1"

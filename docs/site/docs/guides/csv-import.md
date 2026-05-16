@@ -297,3 +297,5 @@ Exactly one of `--analyze`, `-o`, or `--run` must be specified.
 ## Replaying log streams from CSV
 
 `sonda import` is scoped to metric series. If your CSV is a structured log export -- for example a `timestamp,severity,message,trace_id` dump from Loki via `logcli` -- use the `log_csv_replay` generator instead. It replays each row as a `LogEvent`, derives the emission rate from the timestamp column the same way `csv_replay` does for metrics, and routes free-form columns into `LogEvent::fields`. See the [Log CSV Replay](log-csv-replay.md) guide for the end-to-end workflow.
+
+If your starting point is not a CSV at all but a **raw log file** -- an `access.log` from NGINX, the captured stdout of a service, a 10 MB tail of a pod log -- the [Raw Log Parser](rawlog-parser.md) is the one-step bridge. `sonda parsers rawlog --format nginx` (or `--format plain`) reads the file, picks out the structured columns the format implies, and emits both the canonical CSV and the scenario YAML in a single command.

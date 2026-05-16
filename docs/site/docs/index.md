@@ -58,4 +58,9 @@ and replay it from CI, your laptop, or `sonda-server`.
     Turn Grafana exports into portable, parameterized scenarios -- one
     `sonda import` away.
 
+-   :material-file-tree-outline: __[Raw log parser](guides/rawlog-parser.md)__
+
+    Have an `access.log` already? `sonda parsers rawlog` converts plain
+    text or NGINX combined into a replayable scenario YAML.
+
 </div>

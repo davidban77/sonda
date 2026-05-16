@@ -1,0 +1,23 @@
+[package]
+name = "sonda-parsers"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools::testing"]
+description = "Parsers that convert external byte streams into the canonical Sonda CSV/YAML format"
+readme = "../README.md"
+
+[dependencies]
+sonda-core = { workspace = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+rstest = { workspace = true }

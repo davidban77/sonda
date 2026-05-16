@@ -1184,6 +1184,66 @@ sonda import data.csv --columns 1,3,5 -o scenario.yaml
     validate the generated scenario without emitting events, or `sonda --verbose import data.csv --run`
     to see the resolved config at startup.
 
+## sonda parsers
+
+Convert external byte streams into the canonical Sonda log CSV plus a runnable v2 scenario YAML. Each subcommand under `parsers` is a parser **family**. v1 ships one family, `rawlog`, with two formats (`plain` and `nginx`). For the end-to-end walkthrough with worked input and output, see the [Raw Log Parser guide](../guides/rawlog-parser.md); for the full per-format reference (column shapes, status-severity mapping, edge cases) see the [Parsers reference](parsers.md).
+
+```bash
+sonda parsers <COMMAND> [OPTIONS]
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `rawlog` | Convert a line-oriented log file (`plain`, `nginx`) into the canonical CSV + scenario YAML. |
+
+### sonda parsers rawlog
+
+```bash
+sonda parsers rawlog <FILE> --format <FORMAT> -o <OUTPUT> [OPTIONS]
+```
+
+| Argument / Flag | Type | Required | Default | Description |
+|-----------------|------|----------|---------|-------------|
+| `<FILE>` | path | yes | -- | Path to the input log file. Read fully into memory; the parser is synchronous. |
+| `--format <FORMAT>` | string | yes | -- | Log line format to parse. One of `plain`, `nginx`. Case-sensitive. |
+| `-o, --output <OUTPUT>` | path | yes | -- | Path to write the emitted scenario YAML. The companion CSV lands in the same directory, named after the input log's file stem. |
+| `--delta-seconds <SECONDS>` | float | no | `1.0` | Step in seconds between synthesized timestamps for rows that have no parseable timestamp (always for `plain`, never for valid `nginx` lines). |
+| `--scenario-name <NAME>` | string | no | `<file_stem>_replay` | Override the `name:` field written into the emitted YAML's scenario entry. |
+
+On success, two files are written -- the YAML at `--output` and the canonical CSV at `<output_dir>/<input_stem>.csv` -- and a status block prints to stderr:
+
+```text
+parsed 20 rows from "examples/sample-nginx.log" (format: nginx)
+wrote csv:  examples/sample-nginx.csv
+wrote yaml: examples/rawlog-nginx-replay.yaml
+validate:   sonda --dry-run run --scenario examples/rawlog-nginx-replay.yaml
+```
+
+The CSV path inside the YAML is **relative to the YAML's parent directory**, so the pair is portable -- commit them together or copy them to a server and `sonda run --scenario <yaml>` still resolves the CSV correctly.
+
+Parse, validate, run -- the canonical workflow:
+
+```bash
+sonda parsers rawlog examples/sample-nginx.log --format nginx -o examples/rawlog-nginx-replay.yaml
+sonda --dry-run run --scenario examples/rawlog-nginx-replay.yaml
+sonda run --scenario examples/rawlog-nginx-replay.yaml
+```
+
+Adjust the synthesized cadence for `plain` (10 events per second):
+
+```bash
+sonda parsers rawlog app.log --format plain --delta-seconds 0.1 -o app-replay.yaml
+```
+
+Override the scenario name:
+
+```bash
+sonda parsers rawlog access.log --format nginx --scenario-name prod_replay_v1 -o prod.yaml
+```
+
+!!! tip "Edit the emitted YAML to change sink and timescale"
+    The emitted YAML defaults to `stdout` + `json_lines` with `repeat: false`. Edit the file to swap in a real sink (e.g. `type: loki`, `endpoint: http://localhost:3100/loki/api/v1/push`) or to add `timescale: 10.0` under `log_generator:` to play 10x faster. Everything `log_csv_replay` supports is available on the emitted scenario -- see the [Log CSV Replay](../guides/log-csv-replay.md) guide.
+
 ## sonda init
 
 Create a new scenario YAML file. By default, `sonda init` walks you through an interactive

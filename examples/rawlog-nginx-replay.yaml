@@ -1,0 +1,16 @@
+version: 2
+defaults:
+  rate: 1
+  duration: 38s
+  encoder:
+    type: json_lines
+  sink:
+    type: stdout
+scenarios:
+- signal_type: logs
+  name: sample_nginx_replay
+  log_generator:
+    type: csv_replay
+    file: sample-nginx.csv
+    default_severity: info
+    repeat: false

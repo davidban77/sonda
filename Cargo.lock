@@ -2201,6 +2201,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "sonda-core",
+ "sonda-parsers",
  "tempfile",
  "tracing-subscriber",
 ]
@@ -2231,6 +2232,19 @@ dependencies = [
  "tracing-test",
  "ureq",
  "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "sonda-parsers"
+version = "0.1.0"
+dependencies = [
+ "rstest",
+ "serde",
+ "serde_yaml_ng",
+ "sonda-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

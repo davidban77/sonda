@@ -1,0 +1,21 @@
+timestamp,severity,message,method,path,remote_addr,status,user_agent
+1778832000,info,GET /api/v1/users HTTP/1.1 200,GET,/api/v1/users,192.168.1.10,200,Mozilla/5.0 (X11; Linux x86_64)
+1778832002,info,GET /api/v1/health HTTP/1.1 200,GET,/api/v1/health,192.168.1.11,200,checker/1.0
+1778832004,warn,POST /api/v1/login HTTP/1.1 401,POST,/api/v1/login,192.168.1.12,401,Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
+1778832006,warn,GET /api/v1/missing HTTP/1.1 404,GET,/api/v1/missing,192.168.1.13,404,curl/7.85.0
+1778832008,info,GET /api/v1/users/42 HTTP/1.1 200,GET,/api/v1/users/42,192.168.1.14,200,Mozilla/5.0 (Windows NT 10.0)
+1778832010,info,POST /api/v1/orders HTTP/1.1 201,POST,/api/v1/orders,192.168.1.15,201,kit/2.0
+1778832012,info,GET /api/v1/cache HTTP/1.1 304,GET,/api/v1/cache,192.168.1.16,304,Mozilla/5.0
+1778832014,error,POST /api/v1/orders HTTP/1.1 500,POST,/api/v1/orders,192.168.1.17,500,kit/2.0
+1778832016,info,GET /api/v1/products HTTP/1.1 200,GET,/api/v1/products,192.168.1.18,200,Mozilla/5.0 (X11; Linux x86_64)
+1778832018,info,DELETE /api/v1/sessions/abc HTTP/1.1 204,DELETE,/api/v1/sessions/abc,192.168.1.19,204,kit/2.0
+1778832020,error,GET /api/v1/billing HTTP/1.1 503,GET,/api/v1/billing,192.168.1.20,503,kit/2.0
+1778832022,info,PUT /api/v1/users/42 HTTP/1.1 200,PUT,/api/v1/users/42,192.168.1.21,200,kit/2.0
+1778832024,warn,GET /api/v1/admin HTTP/1.1 403,GET,/api/v1/admin,192.168.1.22,403,Mozilla/5.0
+1778832026,info,GET /api/v1/health HTTP/1.1 200,GET,/api/v1/health,192.168.1.23,200,checker/1.0
+1778832028,info,GET /api/v1/products/9 HTTP/1.1 200,GET,/api/v1/products/9,192.168.1.24,200,Mozilla/5.0
+1778832030,error,POST /api/v1/events HTTP/1.1 502,POST,/api/v1/events,192.168.1.25,502,Mozilla/5.0
+1778832032,info,GET /api/v1/metrics HTTP/1.1 200,GET,/api/v1/metrics,192.168.1.26,200,checker/1.0
+1778832034,info,GET /api/v1/billing HTTP/1.1 200,GET,/api/v1/billing,192.168.1.27,200,Mozilla/5.0
+1778832036,warn,GET /api/v1/products HTTP/1.1 429,GET,/api/v1/products,192.168.1.28,429,kit/2.0
+1778832038,info,GET /api/v1/health HTTP/1.1 200,GET,/api/v1/health,192.168.1.29,200,checker/1.0

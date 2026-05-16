@@ -36,6 +36,9 @@ Any header that does not match one of those becomes a free-form field column. So
 
 When the header names don't match the conventions, use [explicit `columns:`](#explicit-column-mapping) to point Sonda at the right columns by name.
 
+!!! tip "Producing the CSV from a raw log file"
+    Already have an `access.log` or other line-oriented log on disk? Use [`sonda parsers rawlog`](rawlog-parser.md) to produce the canonical CSV plus a matching scenario YAML in one step. The parser supports `plain` (line-per-row text) and `nginx` (combined log format with status-derived severity) today; the emitted YAML uses `log_csv_replay` under the hood, so everything below applies.
+
 ---
 
 ## The minimal scenario
@@ -293,4 +296,4 @@ log_generator:
   default_severity: info
 ```
 
-If your source data is genuinely unstructured text and you cannot convert it to CSV, the raw-file replay capability is planned in a separate `sonda-integrations` adapter. Track [issue #347](https://github.com/davidban77/sonda/issues/347) for status.
+If your source data is genuinely unstructured text, the [Raw Log Parser](rawlog-parser.md) does the conversion for you. `sonda parsers rawlog <file> --format plain -o replay.yaml` produces a CSV with synthesized timestamps plus a runnable scenario YAML in one step; `--format nginx` handles NGINX combined log format with real timestamps and status-derived severity.

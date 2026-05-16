@@ -157,6 +157,54 @@ pub enum Commands {
     ///
     /// The generated YAML can be immediately run with `sonda run --scenario`.
     Init(InitArgs),
+    /// Convert external byte streams into the canonical Sonda log CSV plus
+    /// a runnable scenario YAML.
+    ///
+    /// `rawlog` consumes line-oriented log files (`plain`, `nginx`) and
+    /// emits a CSV consumable by `log_csv_replay` alongside a v2 scenario
+    /// YAML pointing at it.
+    Parsers(ParsersArgs),
+}
+
+/// Arguments for the `parsers` subcommand.
+#[derive(Debug, Args)]
+pub struct ParsersArgs {
+    /// The parser family to invoke.
+    #[command(subcommand)]
+    pub action: ParsersAction,
+}
+
+/// Actions available under `sonda parsers`.
+#[derive(Debug, Subcommand)]
+pub enum ParsersAction {
+    /// Convert a line-oriented log file into the canonical CSV + scenario YAML.
+    Rawlog(RawlogArgs),
+}
+
+/// Arguments for `sonda parsers rawlog`.
+#[derive(Debug, Args)]
+pub struct RawlogArgs {
+    /// Path to the input log file.
+    pub file: PathBuf,
+
+    /// Log line format to parse. One of: `plain`, `nginx`.
+    #[arg(long)]
+    pub format: String,
+
+    /// Path to write the emitted scenario YAML. The companion CSV lands
+    /// next to it with a `.csv` extension.
+    #[arg(short = 'o', long)]
+    pub output: PathBuf,
+
+    /// Synthesized timestamp step in seconds (used by the `plain` format
+    /// and by `nginx` rows whose timestamp is unparseable). Default: `1.0`.
+    #[arg(long)]
+    pub delta_seconds: Option<f64>,
+
+    /// Override the scenario `name:` written into the YAML. Defaults to
+    /// `<file-stem>_replay`.
+    #[arg(long)]
+    pub scenario_name: Option<String>,
 }
 
 /// Arguments for the `histogram` subcommand.

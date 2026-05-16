@@ -11,6 +11,7 @@ mod dry_run;
 mod import;
 mod init;
 mod packs;
+mod parsers;
 mod progress;
 mod scenario_loader;
 mod scenarios;
@@ -217,6 +218,9 @@ fn run() -> anyhow::Result<()> {
                     &running,
                 )?;
             }
+        }
+        Commands::Parsers(ref args) => {
+            parsers::run(args)?;
         }
     }
 
