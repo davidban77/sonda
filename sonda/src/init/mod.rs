@@ -342,7 +342,7 @@ fn prefill_from_csv(path: &str) -> Result<Prefill> {
     }
 
     if let Some(values) = data.values.first() {
-        let pattern = import::pattern::detect_pattern(values);
+        let pattern = sonda_core::analysis::pattern::detect_pattern(values);
         prefill.situation = Some(pattern_to_situation(&pattern));
     }
 
@@ -350,14 +350,14 @@ fn prefill_from_csv(path: &str) -> Result<Prefill> {
 }
 
 /// Map an import pattern to an operational vocabulary alias for the prefill.
-fn pattern_to_situation(pattern: &import::pattern::Pattern) -> String {
+fn pattern_to_situation(pattern: &sonda_core::analysis::pattern::Pattern) -> String {
     match pattern {
-        import::pattern::Pattern::Steady { .. } => "steady".to_string(),
-        import::pattern::Pattern::Spike { .. } => "spike_event".to_string(),
-        import::pattern::Pattern::Climb { .. } => "leak".to_string(),
-        import::pattern::Pattern::Sawtooth { .. } => "saturation".to_string(),
-        import::pattern::Pattern::Flap { .. } => "flap".to_string(),
-        import::pattern::Pattern::Step { .. } => "steady".to_string(),
+        sonda_core::analysis::pattern::Pattern::Steady { .. } => "steady".to_string(),
+        sonda_core::analysis::pattern::Pattern::Spike { .. } => "spike_event".to_string(),
+        sonda_core::analysis::pattern::Pattern::Climb { .. } => "leak".to_string(),
+        sonda_core::analysis::pattern::Pattern::Sawtooth { .. } => "saturation".to_string(),
+        sonda_core::analysis::pattern::Pattern::Flap { .. } => "flap".to_string(),
+        sonda_core::analysis::pattern::Pattern::Step { .. } => "steady".to_string(),
     }
 }
 
@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_steady() {
-        let pattern = import::pattern::Pattern::Steady {
+        let pattern = sonda_core::analysis::pattern::Pattern::Steady {
             center: 50.0,
             amplitude: 5.0,
         };
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_spike() {
-        let pattern = import::pattern::Pattern::Spike {
+        let pattern = sonda_core::analysis::pattern::Pattern::Spike {
             baseline: 0.0,
             spike_height: 100.0,
             spike_duration_points: 5,
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_climb() {
-        let pattern = import::pattern::Pattern::Climb {
+        let pattern = sonda_core::analysis::pattern::Pattern::Climb {
             baseline: 0.0,
             ceiling: 100.0,
         };
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_sawtooth() {
-        let pattern = import::pattern::Pattern::Sawtooth {
+        let pattern = sonda_core::analysis::pattern::Pattern::Sawtooth {
             min: 0.0,
             max: 100.0,
             period_points: 60,
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_flap() {
-        let pattern = import::pattern::Pattern::Flap {
+        let pattern = sonda_core::analysis::pattern::Pattern::Flap {
             up_value: 1.0,
             down_value: 0.0,
             up_duration_points: 10,
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn pattern_to_situation_step() {
-        let pattern = import::pattern::Pattern::Step {
+        let pattern = sonda_core::analysis::pattern::Pattern::Step {
             start: 0.0,
             step_size: 10.0,
         };
