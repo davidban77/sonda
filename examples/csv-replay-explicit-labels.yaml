@@ -14,6 +14,7 @@
 #   sonda metrics --scenario examples/csv-replay-explicit-labels.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

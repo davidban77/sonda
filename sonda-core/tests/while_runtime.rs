@@ -1150,6 +1150,7 @@ fn close_emit_conflict_compile_error_when_snap_to_and_stale_marker_false() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s
@@ -1203,6 +1204,7 @@ fn delay_close_legacy_shorthand_still_deserializes() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s
@@ -1296,6 +1298,7 @@ fn delay_close_extended_form_deserializes_all_fields() {
 
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 5
   duration: 1s

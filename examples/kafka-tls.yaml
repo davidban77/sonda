@@ -15,6 +15,7 @@
 #   sonda metrics --scenario examples/kafka-tls.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10.0

@@ -4,6 +4,7 @@
 # is intentionally a non-existent stub: the translator-semantic test only
 # inspects compiled shape and never opens the file.
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

@@ -5,6 +5,7 @@
 # to ~160 GB over 120 seconds. Useful for testing disk-full predictions.
 
 version: 2
+kind: runnable
 
 scenario_name: disk-fill
 category: infrastructure

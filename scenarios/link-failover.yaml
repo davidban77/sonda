@@ -24,6 +24,7 @@
 # it does not cap the total wall-clock.
 
 version: 2
+kind: runnable
 
 scenario_name: link-failover
 category: network

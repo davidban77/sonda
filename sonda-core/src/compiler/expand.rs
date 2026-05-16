@@ -1017,6 +1017,7 @@ mod tests {
     fn expand_produces_one_entry_per_pack_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:
@@ -1036,6 +1037,7 @@ scenarios:
     fn expanded_signal_type_is_metrics() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1059,6 +1061,7 @@ scenarios:
     // the clean `{entry_id}.{metric}` shape.
     #[case::user_supplied_entry_id(r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: primary
@@ -1070,6 +1073,7 @@ scenarios:
     // `telegraf_snmp_interface_0`.
     #[case::auto_generated_entry_id(r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1091,6 +1095,7 @@ scenarios:
     fn two_anonymous_pack_entries_disambiguate_by_index() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1147,6 +1152,7 @@ scenarios:
 
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1181,6 +1187,7 @@ scenarios:
         // final map for pack-expanded signals.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1217,6 +1224,7 @@ scenarios:
 
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1237,6 +1245,7 @@ scenarios:
         // shows up here — not doubled, not missing a defaults key.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   labels:
@@ -1264,6 +1273,7 @@ scenarios:
     fn override_generator_replaces_pack_generator() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: e
@@ -1309,6 +1319,7 @@ scenarios:
 
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1329,6 +1340,7 @@ scenarios:
     fn entry_level_after_propagates_to_every_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: tail
@@ -1353,6 +1365,7 @@ scenarios:
     fn entry_level_while_propagates_to_every_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1, duration: 5m }
 scenarios:
   - id: head
@@ -1390,6 +1403,7 @@ scenarios:
     fn override_while_replaces_entry_while_for_that_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1, duration: 5m }
 scenarios:
   - id: head
@@ -1435,6 +1449,7 @@ scenarios:
     fn override_after_replaces_entry_after_for_that_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: tail
@@ -1476,6 +1491,7 @@ scenarios:
     fn schedule_delivery_fields_propagate_to_every_metric() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 2m
@@ -1521,6 +1537,7 @@ scenarios:
         // runs, the output shape cannot carry unresolved pack references.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1543,6 +1560,7 @@ scenarios:
     fn unknown_override_key_is_an_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1576,6 +1594,7 @@ scenarios:
     fn unresolvable_pack_is_an_error() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1607,6 +1626,7 @@ scenarios:
         resolver.insert("empty", pack);
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1626,6 +1646,7 @@ scenarios:
     fn inline_entries_pass_through_untouched() {
         let yaml = r#"
 version: 2
+kind: runnable
 scenarios:
   - id: cpu
     signal_type: metrics
@@ -1653,6 +1674,7 @@ scenarios:
     fn mixed_inline_and_pack_entries_interleave_correctly() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: cpu
@@ -1681,6 +1703,7 @@ scenarios:
     fn repeated_metric_names_produce_one_entry_per_spec_instance() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: cpu
@@ -1722,6 +1745,7 @@ scenarios:
         // "#{spec_index}" suffix per the module-level auto-ID docs.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: cpu
@@ -1764,6 +1788,7 @@ scenarios:
         // `after.ref` into a pack sub-signal stays ergonomic.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: net
@@ -1794,6 +1819,7 @@ scenarios:
     // this pass must catch the collision.
     #[case::inline_first_then_auto(r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: telegraf_snmp_interface_1
@@ -1808,6 +1834,7 @@ scenarios:
     // the collision regardless of source order.
     #[case::auto_first_then_inline(r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics
@@ -1861,6 +1888,7 @@ scenarios:
         // first.
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - id: telegraf_snmp_interface_1
@@ -1898,6 +1926,7 @@ scenarios:
     fn pack_by_file_path_is_resolved_through_trait() {
         let yaml = r#"
 version: 2
+kind: runnable
 defaults: { rate: 1 }
 scenarios:
   - signal_type: metrics

@@ -27,6 +27,7 @@
 #   and query: sonda_http_request_duration_ms
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

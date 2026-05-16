@@ -7,6 +7,7 @@
 # Metrics are written to stdout; log events are written to /tmp/sonda-logs.json.
 
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

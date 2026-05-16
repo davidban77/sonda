@@ -1,6 +1,7 @@
 # Long-running scenario — no duration, runs until stopped.
 # Use with sonda-server: POST to start, DELETE to stop.
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

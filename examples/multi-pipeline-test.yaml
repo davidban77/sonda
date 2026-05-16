@@ -9,6 +9,7 @@
 #   wc -l < /tmp/pipeline-logs.json
 
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

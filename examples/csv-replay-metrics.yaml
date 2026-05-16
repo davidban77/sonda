@@ -13,6 +13,7 @@
 #   sonda metrics --scenario examples/csv-replay-metrics.yaml
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

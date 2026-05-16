@@ -6,6 +6,7 @@
 # and anomaly detection.
 
 version: 2
+kind: runnable
 
 scenario_name: error-rate-spike
 category: application

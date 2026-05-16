@@ -15,6 +15,7 @@
 # See docs/guide-alert-testing.md Section 5 for a detailed walkthrough.
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

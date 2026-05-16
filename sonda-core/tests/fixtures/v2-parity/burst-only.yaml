@@ -2,6 +2,7 @@
 # row 7.2 — `bursts` window settings (every/for/multiplier) must round-trip
 # unchanged through the v2 translator on a log-signal entry.
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: logs

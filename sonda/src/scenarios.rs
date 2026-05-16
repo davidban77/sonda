@@ -623,6 +623,7 @@ sink:
             &dir,
             "log-storm.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: log-storm
 category: application
 description: "v2 log storm"
@@ -644,6 +645,7 @@ scenarios:
             &dir,
             "histogram-latency.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: histogram-latency
 category: application
 description: "v2 histogram latency"
@@ -665,6 +667,7 @@ scenarios:
             &dir,
             "mixed.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: mixed
 category: infrastructure
 signal_type: metrics
@@ -742,6 +745,7 @@ sink:
             &dir,
             "empty.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: empty
 category: infrastructure
 description: "v2 with empty scenarios list"
@@ -763,6 +767,7 @@ scenarios: []
             &dir,
             "link-failure.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: link-failure
 category: network
 description: "v2 multi-signal link failure"
@@ -788,6 +793,7 @@ scenarios:
             &dir,
             "interface-flap.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: interface-flap
 category: network
 description: "v2 two-entry multi boundary"
@@ -811,6 +817,7 @@ scenarios:
             &dir,
             "solo.yaml",
             r#"version: 2
+kind: runnable
 scenario_name: solo
 category: infrastructure
 description: "v2 single entry falls through to first-entry branch"

@@ -15,6 +15,7 @@
 #     | jq '.data.result[0].value[1]'
 
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

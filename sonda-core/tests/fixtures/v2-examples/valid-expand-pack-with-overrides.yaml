@@ -3,6 +3,7 @@
 # the §2.2 precedence chain. Used as the canonical pack-expansion snapshot
 # target (Phase 3 compilation).
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 2m

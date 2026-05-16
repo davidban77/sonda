@@ -56,6 +56,7 @@ fn op_le_returns_nonzero_on_cli() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 1s
@@ -113,6 +114,7 @@ fn dry_run_renders_flap_enum_oper_state_defaults() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s
@@ -154,6 +156,7 @@ fn dry_run_rejects_flap_enum_with_explicit_values() {
         .expect("create temp YAML fixture");
     let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 1
   duration: 30s

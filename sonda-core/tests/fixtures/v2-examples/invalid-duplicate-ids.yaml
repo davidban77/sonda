@@ -1,5 +1,6 @@
 # ERROR: duplicate entry id: 'my_signal'
 version: 2
+kind: runnable
 scenarios:
   - id: my_signal
     signal_type: metrics

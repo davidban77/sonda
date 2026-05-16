@@ -1,5 +1,6 @@
 # ERROR: entry 0: inline signal must have 'name'
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     rate: 1

@@ -2,6 +2,7 @@
 # row 6.12 — TCP sink `retry` block (max_attempts + initial_backoff +
 # max_backoff) must round-trip unchanged through the v2 translator.
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

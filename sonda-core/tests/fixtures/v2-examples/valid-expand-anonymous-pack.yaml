@@ -3,6 +3,7 @@
 # expanded metrics remain addressable through sub-signal ids
 # (e.g. `telegraf_snmp_interface_0.ifOperStatus`).
 version: 2
+kind: runnable
 defaults:
   rate: 1
 scenarios:

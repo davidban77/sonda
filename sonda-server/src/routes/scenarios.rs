@@ -963,6 +963,7 @@ mod tests {
     /// Valid v2 body for a metrics scenario with a short duration.
     const VALID_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -982,6 +983,7 @@ scenarios:
     /// Valid v2 body for a logs scenario with a short duration.
     const VALID_LOGS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -1004,6 +1006,7 @@ scenarios:
     /// Valid v2 body with an explicit `signal_type: metrics` entry.
     const VALID_TAGGED_METRICS_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -1023,6 +1026,7 @@ scenarios:
     /// v2 body with `rate: 0` — must be rejected by runtime validation.
     const ZERO_RATE_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   duration: 1s
   encoder:
@@ -1756,6 +1760,7 @@ scenarios:
     async fn post_with_json_content_type_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -1876,6 +1881,7 @@ scenarios:
     async fn post_yaml_with_negative_rate_returns_422() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 1s
   encoder:
@@ -2002,6 +2008,7 @@ scenarios:
         headers.insert("content-type", "application/json".parse().unwrap());
         let json = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -3577,6 +3584,7 @@ scenarios:
     /// v2 body for a valid multi-scenario batch with two entries.
     const VALID_MULTI_YAML: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -3607,6 +3615,7 @@ scenarios:
     /// "phase_offset resolved" without running afoul of that validation.
     const MULTI_YAML_WITH_PHASE_OFFSET: &str = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -3705,6 +3714,7 @@ scenarios:
     async fn post_multi_scenario_json_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
+            "kind": "runnable",
             "defaults": {
                 "rate": 10,
                 "duration": "200ms",
@@ -3750,7 +3760,7 @@ scenarios:
     /// Empty v2 scenarios array returns 400 with a descriptive error.
     #[tokio::test]
     async fn post_multi_scenario_empty_array_returns_400() {
-        let yaml = "version: 2\nscenarios: []\n";
+        let yaml = "version: 2\nkind: runnable\nscenarios: []\n";
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", yaml).await;
 
@@ -3773,6 +3783,7 @@ scenarios:
     async fn post_multi_scenario_invalid_entry_returns_422_nothing_launched() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   duration: 200ms
   encoder:
@@ -3973,6 +3984,7 @@ scenarios:
     async fn post_multi_scenario_mixed_signal_types() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms
@@ -4098,6 +4110,7 @@ scenarios:
     async fn post_single_scenario_with_phase_offset_returns_201() {
         let yaml = "\
 version: 2
+kind: runnable
 defaults:
   rate: 10
   duration: 200ms

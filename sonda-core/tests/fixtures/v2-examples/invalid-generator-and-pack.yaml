@@ -1,5 +1,6 @@
 # ERROR: entry 0: must have either 'generator' or 'pack', not both
 version: 2
+kind: runnable
 scenarios:
   - signal_type: metrics
     name: cpu_usage

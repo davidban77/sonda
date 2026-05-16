@@ -232,6 +232,7 @@ mod tests {
     fn compile_single_entry_with_sink(sink_yaml: &str) -> ScenarioEntry {
         let yaml = format!(
             "version: 2\n\
+             kind: runnable\n\
              defaults:\n\
              \x20\x20rate: 10\n\
              \x20\x20duration: 500ms\n\

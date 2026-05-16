@@ -280,7 +280,7 @@ fn render_single_metric(answers: &MetricAnswers, delivery: &DeliveryAnswers) -> 
         &[],
     );
 
-    out.push_str("version: 2\n\n");
+    out.push_str("version: 2\nkind: runnable\n\n");
     // Labels on a single-entry file live at the entry level so CLI `--label`
     // merges work consistently; defaults.labels stays empty.
     write_defaults_block(&mut out, delivery, &BTreeMap::new());
@@ -329,7 +329,7 @@ fn render_pack_scenario(answers: &PackAnswers, delivery: &DeliveryAnswers) -> St
         &[],
     );
 
-    out.push_str("version: 2\n\n");
+    out.push_str("version: 2\nkind: runnable\n\n");
     write_defaults_block(&mut out, delivery, &BTreeMap::new());
 
     out.push_str("scenarios:\n");
@@ -354,7 +354,7 @@ fn render_logs_scenario(answers: &LogAnswers, delivery: &DeliveryAnswers) -> Str
         &[],
     );
 
-    out.push_str("version: 2\n\n");
+    out.push_str("version: 2\nkind: runnable\n\n");
     write_defaults_block(&mut out, delivery, &BTreeMap::new());
 
     out.push_str("scenarios:\n");
@@ -406,7 +406,7 @@ fn render_histogram_scenario(answers: &HistogramAnswers, delivery: &DeliveryAnsw
         &[],
     );
 
-    out.push_str("version: 2\n\n");
+    out.push_str("version: 2\nkind: runnable\n\n");
     write_defaults_block(&mut out, delivery, &BTreeMap::new());
 
     out.push_str("scenarios:\n");
@@ -470,7 +470,7 @@ fn render_summary_scenario(answers: &SummaryAnswers, delivery: &DeliveryAnswers)
         &[],
     );
 
-    out.push_str("version: 2\n\n");
+    out.push_str("version: 2\nkind: runnable\n\n");
     write_defaults_block(&mut out, delivery, &BTreeMap::new());
 
     out.push_str("scenarios:\n");
@@ -660,6 +660,10 @@ mod tests {
             "missing `version: 2`, got:\n{yaml}"
         );
         assert!(
+            yaml.contains("kind: runnable"),
+            "missing `kind: runnable`, got:\n{yaml}"
+        );
+        assert!(
             yaml.contains("defaults:"),
             "missing `defaults:`, got:\n{yaml}"
         );
@@ -676,11 +680,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let version_pos = stripped.find("version: 2").expect("has version");
+        let kind_pos = stripped.find("kind: runnable").expect("has kind");
         let defaults_pos = stripped.find("defaults:").expect("has defaults");
         let scenarios_pos = stripped.find("scenarios:").expect("has scenarios");
         assert!(
-            version_pos < defaults_pos && defaults_pos < scenarios_pos,
-            "ordering violated: version/defaults/scenarios in:\n{stripped}"
+            version_pos < kind_pos && kind_pos < defaults_pos && defaults_pos < scenarios_pos,
+            "ordering violated: version/kind/defaults/scenarios in:\n{stripped}"
         );
     }
 
