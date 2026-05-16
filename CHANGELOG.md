@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0](https://github.com/davidban77/sonda/compare/v1.8.0...v1.9.0) (2026-05-16)
+
+
+### Features
+
+* **cli:** 1.9c — collapse to 4 verbs; mandatory --catalog; sonda new replaces init ([#356](https://github.com/davidban77/sonda/issues/356)) ([9570233](https://github.com/davidban77/sonda/commit/957023345d936ade817eb1e328bbbca965c6fdc9))
+* **compiler:** require kind: frontmatter on v2 YAML; add optional tags: ([#353](https://github.com/davidban77/sonda/issues/353)) ([ade5f88](https://github.com/davidban77/sonda/commit/ade5f8807976fa41d72b68b020e6c641464efe82))
+* **log-csv-replay:** structured-CSV log replay with derived rate, severity column, and field columns ([#349](https://github.com/davidban77/sonda/issues/349)) ([a2e75b5](https://github.com/davidban77/sonda/commit/a2e75b539a91866a9fb0cd31c556962dc076d768))
+* **server:** drop SONDA_PACK_PATH catalog; trim SONDA_SUBCOMMANDS to 4 verbs (1.9d) ([#357](https://github.com/davidban77/sonda/issues/357)) ([0e82d30](https://github.com/davidban77/sonda/commit/0e82d30661d30be623b8de97b89ac26699bd29b0))
+
+
+### Documentation
+
+* **1.9:** collapse user-facing docs to the four-verb CLI ([#359](https://github.com/davidban77/sonda/issues/359)) ([7893286](https://github.com/davidban77/sonda/commit/7893286977890502fc14a4ba414efa981f224206))
+* **cli-reference:** rewrite for the 4-verb 1.9 CLI surface (1.9e) ([#358](https://github.com/davidban77/sonda/issues/358)) ([8bb9e1d](https://github.com/davidban77/sonda/commit/8bb9e1df37e8ea1aef74bbe069bcb47b46e4f0aa))
+
+
+### Miscellaneous
+
+* **1.9:** final-gate polish — docs sweep, smoke tests, validator rewrite ([#360](https://github.com/davidban77/sonda/issues/360)) ([9698bff](https://github.com/davidban77/sonda/commit/9698bfff5491309325fbbdbe40e1fcc58c87bf01))
+
+
+### Refactoring
+
+* **analysis:** move pattern detector from sonda CLI to sonda-core::analysis ([#354](https://github.com/davidban77/sonda/issues/354)) ([659cf42](https://github.com/davidban77/sonda/commit/659cf42687882627e28ff997342d9422e9f4ba80))
+
 ## [1.8.0](https://github.com/davidban77/sonda/compare/v1.7.0...v1.8.0) (2026-05-15)
 
 
