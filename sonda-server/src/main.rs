@@ -4,7 +4,6 @@
 //! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
 mod auth;
-mod packs;
 mod routes;
 mod state;
 
@@ -23,18 +22,7 @@ use crate::state::AppState;
 
 /// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
 /// Mirror of `sonda`'s clap definition.
-const SONDA_SUBCOMMANDS: &[&str] = &[
-    "metrics",
-    "logs",
-    "histogram",
-    "summary",
-    "run",
-    "catalog",
-    "scenarios",
-    "packs",
-    "import",
-    "init",
-];
+const SONDA_SUBCOMMANDS: &[&str] = &["run", "list", "show", "new"];
 
 /// Command-line arguments for sonda-server.
 ///
@@ -107,8 +95,7 @@ async fn main() -> anyhow::Result<()> {
         info!("API key authentication disabled — all endpoints are public");
     }
 
-    let pack_resolver = packs::load_pack_resolver(&packs::build_search_path());
-    let state = AppState::with_packs(api_key, pack_resolver);
+    let state = AppState::with_api_key(api_key);
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
@@ -239,18 +226,7 @@ mod tests {
 
     #[test]
     fn dispatch_list_covers_all_known_subcommands() {
-        let expected = [
-            "metrics",
-            "logs",
-            "histogram",
-            "summary",
-            "run",
-            "catalog",
-            "scenarios",
-            "packs",
-            "import",
-            "init",
-        ];
+        let expected = ["run", "list", "show", "new"];
         assert_eq!(SONDA_SUBCOMMANDS.len(), expected.len());
         for name in expected {
             assert!(

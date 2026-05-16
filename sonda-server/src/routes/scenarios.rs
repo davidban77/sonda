@@ -340,11 +340,7 @@ fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-fn parse_body(
-    body: &[u8],
-    headers: &HeaderMap,
-    pack_resolver: &InMemoryPackResolver,
-) -> Result<ParsedBody, ParseFailure> {
+fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, ParseFailure> {
     let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
 
     let version = detect_version(&text);
@@ -354,7 +350,8 @@ fn parse_body(
         )));
     }
 
-    let compiled = compile_scenario_file_compiled(&text, pack_resolver).map_err(|e| {
+    let resolver = InMemoryPackResolver::new();
+    let compiled = compile_scenario_file_compiled(&text, &resolver).map_err(|e| {
         let detail = format!(
             "v2 scenario body failed to compile: {}",
             format_error_chain(&e)
@@ -446,7 +443,7 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let parsed = parse_body(&body, &headers, &state.pack_resolver).map_err(|fail| {
+    let parsed = parse_body(&body, &headers).map_err(|fail| {
         warn!(error = %fail.message(), "POST /scenarios: invalid request body");
         match fail {
             ParseFailure::Syntactic(m) => bad_request(m),
@@ -1914,12 +1911,8 @@ scenarios:
     fn parse_body_accepts_v2_metrics_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_METRICS_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 metrics body must parse");
+        let parsed = parse_body(VALID_METRICS_YAML.as_bytes(), &headers)
+            .expect("v2 metrics body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
         assert_eq!(compiled.entries[0].signal_type, "metrics");
@@ -1931,12 +1924,8 @@ scenarios:
     fn parse_body_accepts_v2_logs_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_LOGS_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 logs body must parse");
+        let parsed =
+            parse_body(VALID_LOGS_YAML.as_bytes(), &headers).expect("v2 logs body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
         assert_eq!(compiled.entries[0].signal_type, "logs");
@@ -1955,8 +1944,8 @@ generator:
   type: constant
   value: 1.0
 ";
-        let err = parse_body(v1_yaml.as_bytes(), &headers, &InMemoryPackResolver::new())
-            .expect_err("v1 flat YAML must be rejected");
+        let err =
+            parse_body(v1_yaml.as_bytes(), &headers).expect_err("v1 flat YAML must be rejected");
         let msg = err.message();
         assert!(
             msg.contains("v2"),
@@ -1982,7 +1971,7 @@ scenarios:
       type: constant
       value: 1.0
 ";
-        let err = parse_body(v1_multi.as_bytes(), &headers, &InMemoryPackResolver::new())
+        let err = parse_body(v1_multi.as_bytes(), &headers)
             .expect_err("v1 multi-scenario YAML must be rejected");
         let msg = err.message();
         assert!(
@@ -1996,8 +1985,7 @@ scenarios:
     fn parse_body_rejects_garbage_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let err = parse_body(b"not valid: [}{", &headers, &InMemoryPackResolver::new())
-            .expect_err("garbage must fail");
+        let err = parse_body(b"not valid: [}{", &headers).expect_err("garbage must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
@@ -2024,12 +2012,8 @@ scenarios:
                 }
             ]
         });
-        let parsed = parse_body(
-            json.to_string().as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 JSON body must parse");
+        let parsed =
+            parse_body(json.to_string().as_bytes(), &headers).expect("v2 JSON body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
     }
@@ -2039,8 +2023,7 @@ scenarios:
     fn parse_body_rejects_invalid_json() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        let err = parse_body(b"not json", &headers, &InMemoryPackResolver::new())
-            .expect_err("invalid JSON must fail");
+        let err = parse_body(b"not json", &headers).expect_err("invalid JSON must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
@@ -4037,12 +4020,8 @@ scenarios:
     fn parse_body_returns_multi_entry_compiled_for_v2_scenarios_array() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(
-            VALID_MULTI_YAML.as_bytes(),
-            &headers,
-            &InMemoryPackResolver::new(),
-        )
-        .expect("v2 multi YAML body must parse");
+        let parsed = parse_body(VALID_MULTI_YAML.as_bytes(), &headers)
+            .expect("v2 multi YAML body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(
             compiled.entries.len(),
