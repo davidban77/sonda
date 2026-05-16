@@ -127,6 +127,7 @@ wc -l < /tmp/pipeline-influx.txt
 
 ```yaml title="examples/multi-format-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 2
@@ -229,6 +230,7 @@ wc -l < /tmp/pipeline-logs.json
 
 ```yaml title="examples/multi-pipeline-test.yaml"
 version: 2
+kind: runnable
 
 scenarios:
   - signal_type: metrics

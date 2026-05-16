@@ -168,6 +168,7 @@ The batch never fills to `batch_size` at this rate, so the size trigger never fi
 
 ```yaml title="Low-rate scenario with explicit time threshold"
 version: 2
+kind: runnable
 
 defaults:
   rate: 0.05  # one event every 20 seconds

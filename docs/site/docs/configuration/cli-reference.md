@@ -2,9 +2,6 @@
 
 The `sonda` binary has four verbs: `run`, `list`, `show`, and `new`. `run` executes a [v2 scenario YAML file](v2-scenarios.md), `list` and `show` browse a catalog directory of scenarios and composable packs, and `new` scaffolds a starter file. Anything that used to live behind a per-signal subcommand (`metrics`, `logs`, `histogram`, `summary`) is now a v2 scenario YAML — pick a generator in the file, point `sonda run` at it.
 
-!!! info "1.9 in progress"
-    1.9 collapses the previous 9-verb surface into the four verbs documented here. The wider docs site still references the older surface in places; that rewrite ships alongside the rest of the 1.9 series. This page is the authoritative reference for the CLI shape in 1.9.
-
 ## Global options
 
 ```

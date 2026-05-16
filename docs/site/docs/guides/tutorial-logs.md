@@ -51,6 +51,7 @@ sonda run examples/log-csv-replay.yaml
 
 ```yaml title="examples/log-csv-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 60s

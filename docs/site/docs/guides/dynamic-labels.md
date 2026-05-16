@@ -96,6 +96,7 @@ in one label. With dynamic labels, one entry does the job.
 
 ```yaml title="examples/dynamic-labels-fleet.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10

@@ -50,6 +50,7 @@ sonda run examples/recording-rule-test.yaml &
 
 ```yaml title="examples/recording-rule-test.yaml (key fields)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -134,6 +135,7 @@ sonda run examples/rate-rule-input.yaml &
 
 ```yaml title="examples/rate-rule-input.yaml (key fields)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

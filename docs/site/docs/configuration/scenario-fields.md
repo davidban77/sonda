@@ -16,6 +16,7 @@ A single v2 entry touching every available field:
 
 ```yaml title="full-example.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 100
@@ -288,6 +289,7 @@ works.
 
 ```yaml title="log-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10
@@ -342,6 +344,7 @@ Two metric entries correlated with `phase_offset` + a shared `clock_group:`:
 
 ```yaml title="multi-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -389,6 +392,7 @@ hand-tuned offsets.
 
 ```yaml title="mixed-signals.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -464,6 +468,7 @@ one entry per metric at compile time:
 
 ```yaml title="pack-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

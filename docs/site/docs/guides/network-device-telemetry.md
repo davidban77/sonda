@@ -75,6 +75,7 @@ sonda --dry-run run examples/network-device-baseline.yaml
 
 ```yaml title="examples/network-device-baseline.yaml (excerpt)"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

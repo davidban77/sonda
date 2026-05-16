@@ -1,11 +1,13 @@
 # v2 Scenario Files
 
-The v2 scenario format is Sonda's way to describe one or many signals in a single YAML file.
-One top-level block declares shared defaults; another lists the scenarios. Packs, `after:`
-temporal dependencies, and clock groups all compose inside the same file.
+The v2 scenario format is Sonda's way to describe one or many signals in a single YAML file. One top-level block declares shared defaults; another lists the scenarios. Packs, `after:` temporal dependencies, and clock groups all compose inside the same file.
 
-Every scenario file must declare `version: 2` at the top. Everything else you already know
-about scenarios -- generators, encoders, sinks, labels -- still applies.
+Every scenario file declares two top-level fields:
+
+- **`version: 2`** — the format version. Always `2`.
+- **`kind: runnable`** — a file you can run with `sonda run`. Use `kind: composable` for files that define a [metric pack](../guides/metric-packs.md) used by other scenarios.
+
+Everything else you already know about scenarios — generators, encoders, sinks, labels — still applies.
 
 !!! warning "v1 YAML is no longer accepted"
     Sonda only accepts v2 scenario YAML. Both `sonda run` and the HTTP server
@@ -19,6 +21,7 @@ about scenarios -- generators, encoders, sinks, labels -- still applies.
 
 ```yaml title="hello-v2.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -177,6 +180,7 @@ This is the main ergonomic win over legacy multi-scenario files, where you typed
 
 ```yaml title="defaults-example.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 10
@@ -225,6 +229,7 @@ Set the policy at `defaults:` to apply it to every entry, or per-entry to overri
 
 ```yaml title="sink-error-policy.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 100
@@ -272,9 +277,10 @@ link saturates once the primary drops, and latency degrades once the backup fill
 
 ```yaml title="link-failover.yaml"
 version: 2
+kind: runnable
 
-scenario_name: link-failover
-category: network
+name: link-failover
+tags: [network]
 description: "Edge router link failure with traffic shift to backup"
 
 defaults:
@@ -419,6 +425,7 @@ For continuous gating that pauses and resumes a downstream as the upstream's val
 
 ```yaml title="link-traffic.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -562,6 +569,7 @@ The tradeoff is per-metric specificity: `snap_to:` requires you to choose a reco
 
 ```yaml title="scenarios/bgp-session-cascade.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -638,6 +646,7 @@ To make the backup track the primary's state continuously, swap `after:` for `wh
 
 ```yaml title="link-failover-recovery.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -681,6 +690,7 @@ expands the pack at compile time -- you get one prepared scenario per metric in 
 
 ```yaml title="snmp-interface.v2.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -817,6 +827,7 @@ anything and prints the error alongside a pointer to this guide.
 
     ```yaml title="After (v2)"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 100
@@ -872,6 +883,7 @@ anything and prints the error alongside a pointer to this guide.
 
     ```yaml title="After (v2)"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -925,6 +937,7 @@ anything and prints the error alongside a pointer to this guide.
 
     ```yaml title="After (v2)"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 10
@@ -980,6 +993,7 @@ anything and prints the error alongside a pointer to this guide.
 
     ```yaml title="After (v2)"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1
@@ -1027,6 +1041,7 @@ anything and prints the error alongside a pointer to this guide.
 
     ```yaml title="After (v2)"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1

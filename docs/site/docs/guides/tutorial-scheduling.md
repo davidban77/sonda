@@ -78,6 +78,7 @@ sonda run examples/burst-metrics.yaml --duration 20s
 
 ```yaml title="examples/burst-metrics.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 100

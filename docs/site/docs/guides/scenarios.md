@@ -1,10 +1,6 @@
 # Catalogs
 
-Sonda discovers your scenario YAML files from a **catalog directory** you point it at. The
-catalog is just a folder of v2 YAML files with a `kind:` header: `kind: runnable` for scenarios
-you run, `kind: composable` for [metric packs](metric-packs.md) you reference from other
-scenarios. Sonda no longer ships any built-in scenario or pack catalog — you own the catalog,
-keep it in your own repo, and point `--catalog <dir>` at it.
+A **catalog** is a directory of v2 YAML files that Sonda discovers via `--catalog <dir>`. Each file declares a `kind:` — `runnable` for scenarios you can run, `composable` for [metric packs](metric-packs.md) other scenarios reference. Sonda doesn't ship a built-in catalog: yours lives in your own repo, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become first-class artifacts of the system they model instead of being pinned to a Sonda release.
 
 ## The minimum
 

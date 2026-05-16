@@ -390,6 +390,7 @@ When `columns` is omitted, Sonda reads the CSV header and auto-discovers column 
 
     ```yaml title="Multi-column CSV replay"
     version: 2
+    kind: runnable
 
     defaults:
       rate: 1
@@ -780,6 +781,7 @@ updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `
 
 ```yaml title="examples/histogram.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -859,6 +861,7 @@ the nearest-rank method.
 
 ```yaml title="examples/summary.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -1052,6 +1055,7 @@ because it wraps any generator transparently.
 
 ```yaml title="examples/jitter-sine.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

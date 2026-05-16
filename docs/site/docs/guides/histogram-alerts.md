@@ -104,6 +104,7 @@ works directly with `rate()` and `histogram_quantile()`.
 
 ```yaml title="examples/histogram.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -186,6 +187,7 @@ threshold.
 
 ```yaml title="histogram-degradation.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -252,6 +254,7 @@ per-tick and cannot be aggregated across instances.
 
 ```yaml title="examples/summary.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

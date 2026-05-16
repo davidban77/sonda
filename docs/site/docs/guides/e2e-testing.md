@@ -44,6 +44,7 @@ sonda run examples/e2e-scenario.yaml
 
 ```yaml title="examples/e2e-scenario.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1

@@ -42,6 +42,7 @@ When the header names don't match the conventions, use [explicit `columns:`](#ex
 
 ```yaml title="examples/log-csv-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 60s
@@ -157,6 +158,7 @@ timestamp,severity,message,pod,trace_id
 
 ```yaml title="loki-replay.yaml"
 version: 2
+kind: runnable
 
 defaults:
   duration: 10m

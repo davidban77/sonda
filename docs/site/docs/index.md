@@ -18,12 +18,27 @@ Other install paths (Cargo, Docker, source) live in
 
 ## A taste
 
-```yaml title="cpu-sine.yaml"
+Two commands. No YAML to hand-author yet — `sonda new --template` scaffolds a runnable starter file, and `sonda run` plays it back:
+
+```bash title="hello.yaml"
+sonda new --template -o hello.yaml
+sonda run hello.yaml --duration 3s
+```
+
+```text title="stdout (Prometheus exposition)"
+example_metric 1 1777243958972
+example_metric 1 1777243959978
+example_metric 1 1777243960981
+```
+
+Edit `hello.yaml` to shape the signal — swap `constant` for `sine`, add labels, point the sink at a real backend:
+
+```yaml title="hello.yaml (edited)"
 version: 2
 kind: runnable
 defaults:
   rate: 2
-  duration: 2s
+  duration: 5s
   encoder:
     type: prometheus_text
   sink:
@@ -41,20 +56,14 @@ scenarios:
       period_secs: 4
 ```
 
-```bash
-sonda run cpu-sine.yaml
-```
-
-```text title="stdout (Prometheus exposition)"
+```text title="Output"
 cpu_usage{host="web-01"} 50 1777243958972
 cpu_usage{host="web-01"} 85.35533905932738 1777243959525
 cpu_usage{host="web-01"} 100 1777243959982
 cpu_usage{host="web-01"} 85.35533905932738 1777243960481
-cpu_usage{host="web-01"} 50.00000000000001 1777243960974
 ```
 
-One file, shaped values, labeled output -- now replay it from CI, your laptop, or
-`sonda-server`. Don't want to write YAML? `sonda new` scaffolds a starter for you.
+Same file runs from your laptop, from CI, or [posted to `sonda-server` over HTTP](deployment/sonda-server.md). For a guided walkthrough — including pushing to a real Prometheus, Loki, or OTLP backend — see [Getting Started](getting-started.md).
 
 ## Where to next
 

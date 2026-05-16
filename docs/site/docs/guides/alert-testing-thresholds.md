@@ -24,6 +24,7 @@ sonda run examples/sine-threshold-test.yaml
 
 ```yaml title="examples/sine-threshold-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -84,6 +85,7 @@ sonda run examples/for-duration-test.yaml
 
 ```yaml title="examples/for-duration-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
@@ -123,6 +125,7 @@ sonda run examples/constant-threshold-test.yaml
 
 ```yaml title="examples/constant-threshold-test.yaml"
 version: 2
+kind: runnable
 
 defaults:
   rate: 1
