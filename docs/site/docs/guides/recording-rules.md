@@ -45,7 +45,7 @@ The [constant generator](../configuration/generators.md#constant) emits the same
 tick -- perfect for deterministic rule testing:
 
 ```bash
-sonda metrics --scenario examples/recording-rule-test.yaml &
+sonda run examples/recording-rule-test.yaml &
 ```
 
 ```yaml title="examples/recording-rule-test.yaml (key fields)"
@@ -129,7 +129,7 @@ For `rate()` or `irate()` rules, you need a metric whose value increases over ti
 producing a predictable rate.
 
 ```bash
-sonda metrics --scenario examples/rate-rule-input.yaml &
+sonda run examples/rate-rule-input.yaml &
 ```
 
 ```yaml title="examples/rate-rule-input.yaml (key fields)"

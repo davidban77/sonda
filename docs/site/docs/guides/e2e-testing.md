@@ -13,7 +13,7 @@ Every e2e check is the same three steps. The encoder, sink, and backend change; 
 shape does not.
 
 1. **Start the backend** — `docker compose up -d` against an `examples/docker-compose-*.yml` stack.
-2. **Push a known value** — `sonda <signal> --scenario examples/<scenario>.yaml` with a unique metric or log name.
+2. **Push a known value** — `sonda run examples/<scenario>.yaml` with a unique metric or log name.
 3. **Query the backend** — `curl ... | jq ...` and assert the value arrived.
 
 This is the heavier sibling of the [Pipeline Validation](pipeline-validation.md) smoke
@@ -39,7 +39,7 @@ docker compose -f examples/docker-compose-victoriametrics.yml up -d
 ```
 
 ```bash title="Push a known value"
-sonda metrics --scenario examples/e2e-scenario.yaml
+sonda run examples/e2e-scenario.yaml
 ```
 
 ```yaml title="examples/e2e-scenario.yaml"
@@ -155,7 +155,7 @@ Grafana with a pre-provisioned VictoriaMetrics datasource:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
-sonda metrics --scenario examples/vm-push-scenario.yaml
+sonda run examples/vm-push-scenario.yaml
 open http://localhost:3000
 ```
 

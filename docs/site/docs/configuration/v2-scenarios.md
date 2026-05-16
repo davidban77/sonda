@@ -8,10 +8,9 @@ Every scenario file must declare `version: 2` at the top. Everything else you al
 about scenarios -- generators, encoders, sinks, labels -- still applies.
 
 !!! warning "v1 YAML is no longer accepted"
-    Sonda only accepts v2 scenario YAML. The CLI (`sonda run`, `sonda metrics`,
-    `sonda catalog run`, every `--scenario` consumer) and the HTTP server (`POST /scenarios`)
-    both refuse files or bodies without `version: 2` at the top and print a migration hint
-    pointing at this page.
+    Sonda only accepts v2 scenario YAML. Both `sonda run` and the HTTP server
+    (`POST /scenarios`) refuse files or bodies without `version: 2` at the top and print a
+    migration hint pointing at this page.
 
     If you are upgrading from a Sonda release before this change, jump straight to
     [Migrating from v1](#migrating-from-v1).
@@ -41,7 +40,7 @@ scenarios:
 Run it like any other scenario file:
 
 ```bash
-sonda run --scenario hello-v2.yaml
+sonda run hello-v2.yaml
 ```
 
 ```text title="Output"
@@ -64,15 +63,16 @@ demo_cpu 42 1776090152619
 
 ## Catalog metadata
 
-v2 files can carry optional top-level metadata that powers the unified catalog --
-`sonda catalog list`, `sonda catalog show`, and the `--category` filter. The fields sit at
-the root, alongside `version:` and `defaults:`:
+v2 files can carry optional top-level metadata that powers the catalog views --
+`sonda list` and `sonda show` against a `--catalog <dir>`. The fields sit at the root,
+alongside `version:`, `kind:`, and `defaults:`:
 
-```yaml title="scenarios/steady-state.yaml"
+```yaml title="my-catalog/steady-state.yaml"
 version: 2
+kind: runnable
 
-scenario_name: steady-state
-category: infrastructure
+name: steady-state
+tags: [infrastructure, baseline]
 description: "Normal oscillating baseline (sine + jitter)"
 
 scenarios:
@@ -93,29 +93,23 @@ scenarios:
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `scenario_name` | no | Kebab-case identifier. Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda catalog run`. When posted to a running `sonda-server`, this field also acts as a uniqueness key — POSTing two cascades that share an active `scenario_name` returns [`409 Conflict`](../deployment/sonda-server.md#duplicate-scenario_name-returns-409). |
-| `category` | no | Catalog grouping. One of `infrastructure`, `network`, `application`, `observability`. Scenarios without a category render as `uncategorized` and drop out of `--category` filters. |
+| `kind` | yes | `runnable` for runnable scenarios; `composable` for packs. Required at the top level of every v2 file. |
+| `name` | no | Catalog identifier (kebab-case). Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda run @name`. When posted to a running `sonda-server`, this field also acts as a uniqueness key — POSTing two cascades that share an active `name` returns [`409 Conflict`](../deployment/sonda-server.md#duplicate-scenario_name-returns-409). |
+| `tags` | no | List of strings shown in the catalog table and filterable via `sonda list --tag <t>`. |
 | `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
 
-The compiler ignores these fields -- they only feed the catalog. `deny_unknown_fields` stays
-in force, so typos like `scenarioName:` or `desc:` are rejected at parse time.
+The compiler ignores `tags:` and `description:` — they only feed the catalog. `deny_unknown_fields`
+stays in force, so typos like `tag:` (singular) or `desc:` are rejected at parse time.
 
-!!! info "Same field names as legacy v1"
-    The retired v1 format used the same top-level field names (`scenario_name`, `category`,
-    `description`). Migrating a v1 file to v2 keeps the metadata as-is -- you add
-    `version: 2` and reshape the body around `defaults:` + `scenarios:`.
-
-Drop a v2 file into any directory on the
-[scenario search path](../guides/scenarios.md#scenario-search-path) and it shows up
-immediately:
+Drop a v2 file into your catalog directory and it shows up immediately:
 
 ```bash
-sonda catalog list --category infrastructure
+sonda --catalog ./my-catalog list --tag infrastructure
 ```
 
 ```text
-NAME           TYPE      CATEGORY         SIGNAL    RUNNABLE   DESCRIPTION
-steady-state   scenario  infrastructure   metrics   yes        Normal oscillating baseline (sine + jitter)
+KIND        NAME           TAGS                      DESCRIPTION
+runnable    steady-state   infrastructure,baseline   Normal oscillating baseline (sine + jitter)
 ...
 ```
 
@@ -135,10 +129,10 @@ defaults:
 
 ```bash
 # Host CLI -- LOKI_URL unset, default wins
-sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
+sonda run examples/loki-json-lines.yaml --duration 1s --dry-run
 
 # Override -- every ${LOKI_URL} resolves to this value
-LOKI_URL=http://loki:3100 sonda run --scenario examples/loki-json-lines.yaml --duration 1s --dry-run
+LOKI_URL=http://loki:3100 sonda run examples/loki-json-lines.yaml --duration 1s --dry-run
 ```
 
 ### Syntax
@@ -265,7 +259,7 @@ The `noisy_logs` entry tolerates Loki blips. The `canary` entry treats any sink 
 !!! tip "When to pick `fail`"
     Pick `fail` when sink delivery is itself the contract under test -- CI gates that compare metric counts against an expected total, or smoke tests that should abort the moment the backend goes away. Pick `warn` (the default) for everything else: long-running fleets, demo environments, or any scenario where you want runtime self-observability via [`/stats`](../deployment/sonda-server.md#self-observability-via-stats) instead of thread death.
 
-`--on-sink-error <warn|fail>` on every CLI subcommand (`sonda run`, `sonda metrics`, `sonda logs`, `sonda histogram`, `sonda summary`) overrides `defaults.on_sink_error` for one-off invocations -- handy when you want to point a single CI run at a YAML that defaults to `warn`. See [CLI Reference](cli-reference.md#sonda-run).
+`--on-sink-error <warn|fail>` on `sonda run` overrides `defaults.on_sink_error` for one-off invocations -- handy when you want to point a single CI run at a YAML that defaults to `warn`. See [CLI Reference](cli-reference.md#sonda-run).
 
 ## Temporal chains with `after:`
 
@@ -276,7 +270,7 @@ from each generator's shape.
 The built-in `link-failover` scenario is a worked example: a primary interface flaps, a backup
 link saturates once the primary drops, and latency degrades once the backup fills.
 
-```yaml title="scenarios/link-failover.yaml"
+```yaml title="link-failover.yaml"
 version: 2
 
 scenario_name: link-failover
@@ -345,11 +339,11 @@ start reference.
 Use `--dry-run` to see the resolved timing:
 
 ```bash
-sonda run --scenario scenarios/link-failover.yaml --dry-run
+sonda --dry-run run link-failover.yaml
 ```
 
 ```text
-[config] file: scenarios/link-failover.yaml (version: 2, 3 scenarios)
+[config] file: link-failover.yaml (version: 2, 3 scenarios)
 
 [config] [1/3] interface_oper_state
 
@@ -405,10 +399,11 @@ because of the `after:` relationship.
 
     The CLI `--duration` flag (and the body-level `duration` field on `POST /scenarios`) shorten **every entry's `duration` individually**; they do not cap the cascade's total wall-clock. Running the same chain with `--duration 2m` produces `152.308s + 2m ≈ 4m32s`, because every entry now runs for 2m from its own start.
 
-The scenario also ships in the built-in catalog:
+Run it from your catalog the same way as any other scenario — save the YAML under
+`my-catalog/link-failover.yaml`, then:
 
 ```bash
-sonda catalog run link-failover
+sonda --catalog ./my-catalog run @link-failover
 ```
 
 !!! tip "Supported generators in `after:`"
@@ -422,7 +417,7 @@ For continuous gating that pauses and resumes a downstream as the upstream's val
 
 `after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately.
 
-```yaml title="scenarios/link-traffic.yaml"
+```yaml title="link-traffic.yaml"
 version: 2
 
 defaults:
@@ -607,7 +602,7 @@ The two clauses may also reference different upstreams (e.g. `after:` on a link 
 
 ### `--dry-run` preview
 
-`sonda run --scenario scenarios/link-traffic.yaml --dry-run` renders the gate plumbing alongside the existing layout:
+`sonda --dry-run run link-traffic.yaml` renders the gate plumbing alongside the existing layout:
 
 ```
 [config] [2/2] backup_link_throughput
@@ -641,7 +636,7 @@ The `link-failover` scenario described above uses `after:` to start a `backup_li
 
 To make the backup track the primary's state continuously, swap `after:` for `while:` on the cascade members that should pause when the primary recovers:
 
-```yaml title="scenarios/link-failover-recovery.yaml"
+```yaml title="link-failover-recovery.yaml"
 version: 2
 
 defaults:
@@ -727,55 +722,41 @@ Or let Sonda auto-assign one when you use `after:` -- every scenario in the same
 ends up in the same auto-named group (`chain_<head>`).
 
 The start banner and the grouped run summary both show the `clock_group`. See
-[Status output -- clock groups](cli-reference.md#clock-groups-in-status-output) for what the
-banners look like at runtime.
+[CLI Reference -- Status output](cli-reference.md#status-output) for what the banners look
+like at runtime.
 
-## Scaffolding v2 files with `sonda init`
+## Scaffolding v2 files with `sonda new`
 
-`sonda init` emits v2 YAML by default:
+`sonda new` emits v2 YAML. The fastest path is `--template`, which prints a minimal runnable
+file and exits with no prompts:
 
 ```bash
-sonda init \
-  --signal-type metrics \
-  --domain infrastructure \
-  --metric demo_cpu \
-  --situation spike_event \
-  --rate 5 --duration 30s \
-  --encoder prometheus_text --sink stdout \
-  -o ./scenarios/demo-cpu.yaml
+sonda new --template -o ./my-catalog/demo.yaml
 ```
 
-```yaml title="./scenarios/demo-cpu.yaml"
-# demo_cpu: infrastructure scenario using the 'spike_event' pattern.
-#
-# Generated by `sonda init`. Run with:
-#   sonda run --scenario <this-file>
-
+```yaml title="./my-catalog/demo.yaml"
 version: 2
-
-# Defaults inherited by every entry in scenarios: below.
+kind: runnable
 defaults:
-  rate: 5
-  duration: 30s
+  rate: 1
+  duration: 60s
   encoder:
     type: prometheus_text
   sink:
     type: stdout
 
 scenarios:
-  - signal_type: metrics
-    name: demo_cpu
+  - id: example
+    signal_type: metrics
+    name: example_metric
     generator:
-      type: spike_event
-      baseline: 0.0
-      spike_height: 100.0
-      spike_duration: "10s"
-      spike_interval: "30s"
+      type: constant
+      value: 1.0
 ```
 
-Run the generated file with `sonda run --scenario`. For the full guided scaffolding flow
-(signal types, packs, logs, histograms, summaries), see
-[`sonda init`](cli-reference.md#sonda-init).
+Drop the `--template` flag to walk the interactive flow (signal type → generator → rate →
+duration → sink type → output path), or use `--from <csv>` to seed the scaffold from
+existing CSV data. See [`sonda new`](cli-reference.md#sonda-new) for the full flag reference.
 
 ## Migrating from v1
 
@@ -786,15 +767,13 @@ Every legacy v1 shape maps cleanly to v2. Pick the tab that matches the file you
 When Sonda encounters a file or request body without `version: 2`, it stops before running
 anything and prints the error alongside a pointer to this guide.
 
-=== "CLI (`sonda run`, `sonda metrics`, ...)"
+=== "CLI (`sonda run`)"
 
     ```text title="stderr"
     error: scenario file /path/to/legacy.yaml is not a v2 scenario. Sonda only accepts v2 YAML (`version: 2` at the top level). Migrate this file to v2 — see docs/configuration/v2-scenarios.md for the migration guide.
     ```
 
-    Exit code: `1`. Applies to `sonda run`, `sonda metrics`, `sonda logs`,
-    `sonda histogram`, `sonda summary`, and `sonda catalog run` -- every `--scenario`
-    consumer.
+    Exit code: `1`.
 
 === "Server (`POST /scenarios`)"
 
@@ -1088,8 +1067,8 @@ anything and prints the error alongside a pointer to this guide.
 - **`deny_unknown_fields` is strict.** Typos like `scenarioName:` or `desc:` at the top of a
   v2 file are rejected at parse time with the offending field name in the error. Fix the
   typo and re-run.
-- **`sonda import` already emits v2.** Regenerate any imported scenarios with
-  [`sonda import`](cli-reference.md#sonda-import) if you kept older output around.
+- **`sonda new --from <csv>` emits v2.** Regenerate any older scaffolded scenarios with
+  [`sonda new --from <csv>`](cli-reference.md#sonda-new) if you kept older output around.
 
 ## What next
 

@@ -34,22 +34,28 @@ See [Server API](sonda-server.md) for the full endpoint reference.
 # Start the server
 docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
 
-# Run the CLI instead — first argument is auto-detected as a sonda subcommand.
-docker run --rm ghcr.io/davidban77/sonda:latest \
-  metrics --name up --rate 10 --duration 5s
+# Run the CLI against a mounted catalog (auto-detected as a sonda subcommand)
+docker run --rm \
+  -v "$PWD/my-catalog":/catalog \
+  ghcr.io/davidban77/sonda:latest \
+  --catalog /catalog run @cpu-spike
 
-# Mount scenario files from the host
-docker run -p 8080:8080 -v ./examples:/scenarios ghcr.io/davidban77/sonda:latest
+# Or run a single file directly
+docker run --rm \
+  -v "$PWD/scenarios":/work \
+  ghcr.io/davidban77/sonda:latest \
+  run /work/cpu-spike.yaml
 ```
 
 !!! info "No `--entrypoint /sonda` needed"
     The default entrypoint inspects `argv[1]` and `exec`s the sibling `sonda` CLI when
-    it matches a known subcommand. Recipes that pass `--entrypoint /sonda` still work.
+    it matches a known subcommand (`run`, `list`, `show`, `new`). Recipes that pass
+    `--entrypoint /sonda` still work.
 
-The image includes built-in [scenario](../guides/scenarios.md) and
-[pack](../guides/metric-packs.md) YAML files at `/scenarios` and `/packs`, with
-`SONDA_SCENARIO_PATH=/scenarios` and `SONDA_PACK_PATH=/packs` set so all built-in patterns
-work out of the box. Mount a host directory to the same path to add or override scenarios.
+The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML
+files (typically `kind: runnable` and `kind: composable` v2 files) at any path inside the
+container and pass `--catalog <path>` to point `sonda` at it. See
+[Catalogs](../guides/scenarios.md) for the directory layout.
 
 ## Authentication
 
@@ -221,11 +227,32 @@ run from your host CLI. See
 You can also push from the host CLI using a pipe to VictoriaMetrics.
 See [Sinks](../configuration/sinks.md) for all available sink types (`http_push`, `remote_write`, `loki`, etc.).
 
+```yaml title="sonda-demo.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    job: sonda
+    instance: local
+scenarios:
+  - id: sonda_demo
+    signal_type: metrics
+    name: sonda_demo
+    generator:
+      type: sine
+      amplitude: 40.0
+      period_secs: 30
+      offset: 60.0
+```
+
 ```bash
-sonda metrics \
-  --name sonda_demo --rate 10 --duration 30s \
-  --value-mode sine --amplitude 40 --period-secs 30 --offset 60 \
-  --encoder prometheus_text --label job=sonda --label instance=local \
+sonda run sonda-demo.yaml \
   | curl -s --data-binary @- \
     -H "Content-Type: text/plain" \
     "http://localhost:8428/api/v1/import/prometheus"
@@ -257,7 +284,7 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 Push a threshold-crossing metric and watch alerts flow through to the webhook:
 
 ```bash
-sonda metrics --scenario examples/alertmanager/alerting-scenario.yaml
+sonda run examples/alertmanager/alerting-scenario.yaml
 ```
 
 See the [Alerting Pipeline](../guides/alerting-pipeline.md) guide for the full walkthrough.

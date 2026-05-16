@@ -13,8 +13,9 @@ cargo run -p sonda-server
 cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
 ```
 
-See [CLI Reference: sonda-server](../configuration/cli-reference.md#sonda-server) for all `sonda-server` flags.
-Control log verbosity with the `RUST_LOG` environment variable (default: `info`):
+`sonda-server` accepts `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`),
+and `--api-key <KEY>` (or `SONDA_API_KEY` env var). Control log verbosity with the `RUST_LOG`
+environment variable (default `info`):
 
 ```bash
 RUST_LOG=debug cargo run -p sonda-server -- --port 8080
@@ -317,10 +318,10 @@ carries the compiler's error message instead. See
 shape conversions.
 
 !!! info "Pack references over HTTP"
-    The server has no filesystem pack catalog. Bodies that reference a named pack
-    (`pack: telegraf_snmp_interface`) compile against an empty in-memory resolver and fail
-    with a pack-not-found error. For now, pack-backed scenarios must run via the CLI or be
-    expanded into per-metric entries before posting.
+    The server compiles posted bodies against an empty pack resolver. Bodies that reference a
+    named pack (`pack: telegraf_snmp_interface`) fail with a pack-not-found error. Inline the
+    pack's metrics into the posted body, or run the scenario via the CLI with
+    `--catalog <dir>` where the pack file lives.
 
 ### Error response reference
 

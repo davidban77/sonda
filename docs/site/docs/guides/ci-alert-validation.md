@@ -102,7 +102,7 @@ jobs:
 
       - name: Push metrics above critical threshold
         run: |
-          sonda -q metrics --scenario examples/ci-alert-validation.yaml
+          sonda -q run examples/ci-alert-validation.yaml
 
       - name: Wait for alert evaluation
         run: sleep 15
@@ -323,7 +323,7 @@ jobs:
           done
 
       - name: Push metrics
-        run: sonda -q metrics --scenario examples/ci-alert-validation.yaml
+        run: sonda -q run examples/ci-alert-validation.yaml
 
       - name: Wait for evaluation
         run: sleep 15
@@ -394,11 +394,11 @@ concurrently:
 
 ```bash
 # Sequential: one scenario per rule
-sonda -q metrics --scenario examples/ci-alert-validation.yaml
-sonda -q metrics --scenario examples/ci-high-memory-alert.yaml
+sonda -q run examples/ci-alert-validation.yaml
+sonda -q run examples/ci-high-memory-alert.yaml
 
 # Concurrent: all rules in one file
-sonda -q run --scenario examples/ci-all-alerts.yaml
+sonda -q run examples/ci-all-alerts.yaml
 ```
 
 ??? tip "Organizing scenarios by rule group"

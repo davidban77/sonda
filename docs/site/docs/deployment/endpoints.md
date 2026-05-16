@@ -14,13 +14,13 @@ invocation paths, and they resolve `localhost` very differently.
 
 === "Host CLI"
 
-    You run `sonda metrics --scenario file.yaml` on your laptop or a bare host. The
+    You run `sonda run file.yaml` on your laptop or a bare host. The
     scenario runs **in the shell process on your host**. `http://localhost:8428` resolves
     to your host's loopback, which reaches whatever is listening on port 8428 there --
     typically a Compose-published port or a native install.
 
     ```bash
-    sonda metrics --scenario examples/victoriametrics-metrics.yaml
+    sonda run examples/victoriametrics-metrics.yaml
     ```
 
 === "`sonda-server` in a container"
@@ -134,7 +134,7 @@ Service names come from `examples/docker-compose-victoriametrics.yml`. Match the
     ```
 
     ```bash
-    sonda metrics --scenario examples/vm-push-scenario.yaml
+    sonda run examples/vm-push-scenario.yaml
     ```
 
 === "sonda-server (Compose) to VictoriaMetrics (Compose)"

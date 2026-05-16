@@ -17,10 +17,9 @@ break real pipelines: gaps, micro-bursts, cardinality spikes, and shaped value s
 | **Sinks** | stdout, file, TCP, UDP, HTTP push, Prometheus remote write, Kafka, Loki, OTLP/gRPC |
 | **Scheduling** | configurable rate, duration, gap windows, burst windows, cardinality spikes, dynamic labels, jitter |
 | **Signals** | metrics (gauge, histogram, summary), logs (template and replay modes) |
-| **CSV import** | Analyze CSV files, detect time-series patterns (steady, spike, leak, flap, sawtooth, step), generate portable scenario YAML |
-| **Interactive scaffolding** | `sonda init` guided wizard -- operational vocabulary, metric pack support, commented YAML output |
-| **Built-in scenarios** | 11 curated patterns (cpu-spike, memory-leak, interface-flap, log-storm, and more) |
-| **Metric packs** | 3 reusable metric bundles (telegraf-snmp-interface, node-exporter-cpu, node-exporter-memory) |
+| **CSV import** | `sonda new --from <csv>` analyzes CSV files, detects time-series patterns (steady, spike, leak, flap, sawtooth, step), generates portable scenario YAML |
+| **Interactive scaffolding** | `sonda new` walks signal type → generator → rate → duration → sink and writes commented v2 YAML |
+| **Catalogs** | author your own catalog directory of `kind: runnable` scenarios and `kind: composable` packs; discover with `sonda list --catalog <dir>` and run with `@name` references |
 | **Deployment** | static binary, Docker, Kubernetes (Helm chart) |
 
 ## Quick install
@@ -40,104 +39,146 @@ cargo install sonda
 **Docker:**
 
 ```bash
-docker run --rm ghcr.io/davidban77/sonda:latest metrics --name up --rate 5 --duration 10s
+docker run --rm -v "$PWD":/work -w /work \
+  ghcr.io/davidban77/sonda:latest run my-scenario.yaml
 ```
 
 See the [Getting Started](https://davidban77.github.io/sonda/getting-started/) guide for all installation options.
 
-## Your first metric
+## Your first scenario
 
-Emit a constant value -- the simplest signal for health-check or baseline testing:
+Sonda runs YAML scenario files. Scaffold one with `sonda new --template`, save it, and run it:
 
 ```bash
-sonda metrics --name up --rate 1 --duration 5s --value 1
+sonda new --template -o hello.yaml
+sonda run hello.yaml --duration 5s
 ```
 
 ```text
-up 1 1775518552355
-up 1 1775518553360
-up 1 1775518554360
+example_metric 1 1775518552355
+example_metric 1 1775518553360
+example_metric 1 1775518554360
 ```
 
-Shape the signal with a sine wave, labels, and any of the eight built-in generators:
+Each stdout line is Prometheus exposition format: `metric_name value timestamp_ms`. The
+template gives you a one-line constant value at 1 event per second; edit the `generator:`
+block to swap in a sine wave, labels, and any of the eight built-in generators:
 
-```bash
-sonda metrics --name cpu_usage --rate 2 --duration 5s \
-  --value-mode sine --amplitude 50 --period-secs 10 --offset 50 \
-  --label host=web-01
+```yaml title="cpu-sine.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+  labels:
+    host: web-01
+scenarios:
+  - id: cpu_usage
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: sine
+      amplitude: 50.0
+      offset: 50.0
+      period_secs: 10
 ```
 
-Push directly to a backend -- no scenario file needed:
+```bash
+sonda run cpu-sine.yaml
+```
+
+Push to any sink (HTTP, Loki, Kafka, OTLP, Prometheus remote-write) by editing the
+`sink:` block, or override at the command line with `--sink`, `--endpoint`, and `--encoder`:
 
 ```bash
-sonda metrics --name cpu --rate 10 --duration 30s \
+sonda run cpu-sine.yaml \
   --encoder remote_write \
   --sink remote_write --endpoint http://localhost:8428/api/v1/write
 ```
 
-Define complex scenarios in YAML for repeatable runs with `sonda metrics --scenario config.yaml`.
 The [Tutorial](https://davidban77.github.io/sonda/guides/tutorial/) walks through every generator,
 encoder, sink, and scheduling option step by step.
 
-## Built-in scenarios
+## Catalogs and the `@name` shorthand
 
-Sonda ships with 11 pre-built patterns you can run instantly -- no YAML needed:
+Organize your scenarios into a directory and Sonda discovers them as a catalog. Each file
+carries a `kind: runnable` (a scenario you run) or `kind: composable` (a metric pack you
+reference from other scenarios with `pack: <name>`).
 
 ```bash
-sonda scenarios list                       # browse the catalog
-sonda scenarios run cpu-spike              # run a pattern directly
-sonda scenarios show memory-leak           # view the YAML to customize it
-sonda metrics --scenario @cpu-spike        # @name shorthand in any subcommand
+sonda --catalog ./my-catalog list                # browse the catalog
+sonda --catalog ./my-catalog show @cpu-spike     # view the YAML
+sonda --catalog ./my-catalog run @cpu-spike      # run a scenario
 ```
 
-See the [Built-in Scenarios](https://davidban77.github.io/sonda/guides/scenarios/) guide for the
-full catalog and customization workflow.
+See the [Catalogs](https://davidban77.github.io/sonda/guides/scenarios/) guide for the
+directory layout and authoring conventions.
 
 ## Metric packs
 
-Metric packs are reusable bundles of metric names and label schemas that expand into multi-metric
-scenarios. Each pack models a real exporter (Telegraf SNMP, node_exporter) so generated data
-matches the exact schema your dashboards and alert rules expect.
+Metric packs are reusable bundles of metric names and label schemas that expand into
+multi-metric scenarios. Each pack models a real exporter (Telegraf SNMP, node_exporter) so
+generated data matches the exact schema your dashboards and alert rules expect.
 
-Pack YAML files live in the `packs/` directory and are discovered from the filesystem at runtime.
-Run from the repo root, set `SONDA_PACK_PATH`, or use `--pack-path` to point to a custom
-directory:
+Author a pack as a `kind: composable` YAML file in your catalog directory and reference it
+from any runnable scenario:
+
+```yaml title="snmp-edge.yaml"
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - signal_type: metrics
+    pack: telegraf_snmp_interface
+    labels:
+      device: rtr-edge-01
+      ifName: GigabitEthernet0/0/0
+      ifIndex: "1"
+```
 
 ```bash
-sonda packs list                                     # browse discovered packs
-sonda packs show telegraf_snmp_interface              # view the raw YAML definition
-sonda packs run telegraf_snmp_interface --rate 1 \
-  --duration 60s --label device=rtr-edge-01           # run a pack directly
+sonda --catalog ./my-catalog run snmp-edge.yaml
 ```
 
 Override the generator for specific metrics without editing the pack definition:
 
 ```yaml
-# scenario.yaml
-pack: node_exporter_cpu
-rate: 1
-duration: 60s
-labels:
-  instance: web-01:9100
-overrides:
-  node_cpu_seconds_total:
-    generator:
-      type: spike
-      baseline: 0.1
-      spike_value: 0.95
-      spike_duration: 5
-      spike_interval: 30
+scenarios:
+  - signal_type: metrics
+    pack: node_exporter_cpu
+    labels:
+      instance: web-01:9100
+    overrides:
+      node_cpu_seconds_total:
+        generator:
+          type: spike
+          baseline: 0.1
+          spike_value: 0.95
+          spike_duration: 5
+          spike_interval: 30
 ```
 
 ## CSV import
 
-Turn any CSV file into a parameterized scenario. `sonda import` analyzes time-series data,
-detects dominant patterns, and generates portable YAML using generators instead of raw CSV replay:
+Turn any CSV file into a parameterized scenario. `sonda new --from <csv>` analyzes
+time-series data, detects dominant patterns, and generates portable YAML using generators
+instead of raw CSV replay:
 
 ```bash
-sonda import data.csv --analyze                    # see detected patterns
-sonda import data.csv -o scenario.yaml             # generate a scenario file
-sonda import data.csv --run --duration 30s         # generate and run immediately
+sonda new --from data.csv -o scenario.yaml         # generate a scenario file
+sonda new --from data.csv                          # preview the YAML on stdout
 ```
 
 Works with Grafana "Series joined by time" exports -- metric names and labels are extracted
@@ -149,27 +190,16 @@ full walkthrough.
 
 ## Interactive scaffolding
 
-Don't want to write YAML by hand? `sonda init` walks you through building a scenario with
+Don't want to write YAML by hand? `sonda new` walks you through building a scenario with
 guided prompts. It uses operational vocabulary -- "spike event", "leak", "flap" -- instead
-of raw generator types, and supports metric packs for multi-metric scenarios:
+of raw generator types:
 
 ```bash
-sonda init
-```
-
-Pre-fill from a built-in scenario or CSV file, or run fully non-interactively with flags:
-
-```bash
-sonda init --from @cpu-spike --rate 5 --duration 2m -o scenario.yaml
-sonda init --signal-type metrics --domain infrastructure --situation steady \
-  --metric cpu_usage --rate 1 --duration 60s --encoder prometheus_text \
-  --sink stdout -o cpu.yaml --run-now
+sonda new
 ```
 
 ```text
 ? What type of signal? metrics
-? What domain? infrastructure
-? How would you like to define metrics? Single metric
 ? Metric name node_cpu_usage_percent
 ? What situation should this metric simulate? spike_event - baseline with periodic spikes
 ? Baseline value (between spikes) 35
@@ -180,17 +210,12 @@ sonda init --signal-type metrics --domain infrastructure --situation steady \
 ? Where should output be sent? stdout
 ? Output file path ./scenarios/node-cpu-usage-percent.yaml
 
-✔ Scenario created
-  name:  node_cpu_usage_percent
-  type:  metrics
-  file:  ./scenarios/node-cpu-usage-percent.yaml
-
-? Run it now? Yes
+Wrote scenario to ./scenarios/node-cpu-usage-percent.yaml
 ```
 
-The generated YAML is commented, immediately runnable, and includes scenario metadata so it
-appears in `sonda scenarios list`. See the
-[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-init) for
+The generated YAML is commented, immediately runnable, and ready to drop into a catalog
+directory. See the
+[CLI Reference](https://davidban77.github.io/sonda/configuration/cli-reference/#sonda-new) for
 the full prompt flow and available situations.
 
 ## Multi-signal temporal scenarios
@@ -198,23 +223,18 @@ the full prompt flow and available situations.
 Multi-signal scenarios with temporal causality are expressed directly as
 [v2 scenario files](https://davidban77.github.io/sonda/configuration/v2-scenarios/): define
 several entries and use `after:` clauses to express when one signal starts relative to another
--- Sonda resolves the timing into concrete `phase_offset` values at compile time. The built-in
-`link-failover` scenario is a worked example:
-
-```bash
-sonda catalog run link-failover --duration 5m --sink stdout
-# or from a file
-sonda run --scenario scenarios/link-failover.yaml --duration 5m --sink stdout
-```
+-- Sonda resolves the timing into concrete `phase_offset` values at compile time. See the
+[Network Device Telemetry](https://davidban77.github.io/sonda/guides/network-device-telemetry/)
+guide for a worked link-failover cascade.
 
 ## Documentation
 
 Full documentation is available at **https://davidban77.github.io/sonda/**.
 
-- [**Getting Started**](https://davidban77.github.io/sonda/getting-started/) -- installation, first metric, first log scenario
+- [**Getting Started**](https://davidban77.github.io/sonda/getting-started/) -- installation, first scenario, first log scenario
 - [**Tutorial**](https://davidban77.github.io/sonda/guides/tutorial/) -- generators, encoders, sinks, gaps, bursts, multi-scenario runs
-- [**Configuration Reference**](https://davidban77.github.io/sonda/configuration/scenario-file/) -- scenario files, generators, encoders, sinks
-- [**CLI Reference**](https://davidban77.github.io/sonda/configuration/cli-reference/) -- every flag for `metrics`, `logs`, `histogram`, `summary`, and `run`
+- [**Configuration Reference**](https://davidban77.github.io/sonda/configuration/scenario-fields/) -- scenario files, generators, encoders, sinks
+- [**CLI Reference**](https://davidban77.github.io/sonda/configuration/cli-reference/) -- every flag for `run`, `list`, `show`, `new`
 - [**Deployment**](https://davidban77.github.io/sonda/deployment/docker/) -- Docker, Kubernetes, sonda-server HTTP API
 - [**Guides**](https://davidban77.github.io/sonda/guides/alert-testing/) -- alert testing, pipeline validation, CSV replay, example catalog
 
