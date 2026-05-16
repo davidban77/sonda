@@ -23,11 +23,9 @@ fn dry_run_text(yaml_body: &str) -> String {
     std::fs::write(&path, yaml_body).expect("scenario file must be written");
     let pack_dir = cli_fixtures_dir().join("catalog-packs");
     let output = Command::new(sonda_bin())
-        .env_remove("SONDA_SCENARIO_PATH")
-        .env_remove("SONDA_PACK_PATH")
-        .args(["--pack-path"])
+        .args(["--catalog"])
         .arg(&pack_dir)
-        .args(["run", "--scenario"])
+        .args(["run"])
         .arg(&path)
         .arg("--dry-run")
         .output()

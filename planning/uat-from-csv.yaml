@@ -1,0 +1,21 @@
+version: 2
+kind: runnable
+
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: cpu_percent
+    signal_type: metrics
+    name: cpu_percent
+    generator:
+      type: steady
+      center: 41.916
+      amplitude: 41.9
+      period: "60s"
+

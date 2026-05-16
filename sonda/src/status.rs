@@ -567,19 +567,6 @@ pub fn print_version() {
     eprintln!("{name} {version}{features_suffix} {dash} {tagline}");
 }
 
-/// Print a styled header line for the `scenarios show` subcommand to stderr.
-///
-/// Displays the scenario name, category, and signal type in a format
-/// consistent with the start banner styling. The YAML content itself is
-/// printed separately to stdout.
-pub fn print_show_header(name: &str, category: &str, signal_type: &str) {
-    let name_label = "scenario:".if_supports_color(Stderr, |t| t.dimmed());
-    let bold_name = name.if_supports_color(Stderr, |t| t.bold());
-    let cat_label = "category:".if_supports_color(Stderr, |t| t.dimmed());
-    let sig_label = "signal:".if_supports_color(Stderr, |t| t.dimmed());
-    eprintln!("{name_label} {bold_name}  {cat_label} {category}  {sig_label} {signal_type}");
-}
-
 /// Aggregate stats for the `run` subcommand summary line.
 ///
 /// Collected from individual scenario handles after all complete.
@@ -1694,15 +1681,6 @@ mod tests {
             vs.starts_with("sonda "),
             "version_string() must start with 'sonda ', got: {vs}"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // print_show_header: does not panic
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn print_show_header_does_not_panic() {
-        print_show_header("cpu-spike", "infrastructure", "metrics");
     }
 
     // -----------------------------------------------------------------------

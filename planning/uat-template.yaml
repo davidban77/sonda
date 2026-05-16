@@ -1,0 +1,17 @@
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+
+scenarios:
+  - id: example
+    signal_type: metrics
+    name: example_metric
+    generator:
+      type: constant
+      value: 1.0

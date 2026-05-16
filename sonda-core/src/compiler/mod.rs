@@ -67,10 +67,8 @@ use crate::sink::SinkConfig;
 ///
 /// The three optional fields [`scenario_name`](Self::scenario_name),
 /// [`category`](Self::category), and [`description`](Self::description)
-/// mirror the v1 top-level metadata shape so the CLI catalog probe
-/// (`sonda::scenarios::read_scenario_metadata`) reads v1 and v2 files
-/// through the same `Deserialize` struct. The compiler pipeline itself
-/// (normalize → expand → compile_after → prepare) does **not** consume
+/// carry top-level metadata used by catalog probes. The compiler pipeline
+/// itself (normalize → expand → compile_after → prepare) does **not** consume
 /// these fields — they are pure metadata, not compile input.
 #[derive(Debug, Clone)]
 #[cfg_attr(
