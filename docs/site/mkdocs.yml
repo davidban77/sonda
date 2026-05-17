@@ -9,7 +9,6 @@ copyright: Copyright &copy; 2026 David Flores · Built with Material for MkDocs
 
 not_in_nav: |
   /includes/
-  /logo-lab.md
 
 theme:
   name: material
