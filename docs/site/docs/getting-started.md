@@ -1,6 +1,19 @@
-# Getting Started
+---
+title: Getting started with Sonda
+description: Install Sonda, stream your first synthetic metric, and send it to a real backend in under five minutes.
+hide:
+  - toc
+---
 
-Install Sonda and stream your first synthetic metrics and logs to stdout.
+<div class="sonda-section-hero" markdown>
+
+<span class="sonda-section-hero__eyebrow">Quickstart · ~5 minutes</span>
+
+<h1 class="sonda-section-hero__title">Get started with Sonda</h1>
+
+<p class="sonda-section-hero__subtitle">Install Sonda, stream your first synthetic metric to stdout, then point the sink at a real Prometheus, Loki, or OTLP backend. No YAML to hand-write — <code>sonda new</code> scaffolds it.</p>
+
+</div>
 
 ## Installation
 

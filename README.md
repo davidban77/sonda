@@ -1,7 +1,16 @@
-# Sonda
+<p align="center">
+  <img src=".github/assets/sonda-banner.svg" alt="Sonda — synthetic telemetry generator" width="640">
+</p>
 
-[![crates.io](https://img.shields.io/crates/v/sonda.svg)](https://crates.io/crates/sonda)
-[![crates.io](https://img.shields.io/crates/v/sonda-core.svg)](https://crates.io/crates/sonda-core)
+<p align="center">
+  <a href="https://crates.io/crates/sonda"><img alt="crates.io" src="https://img.shields.io/crates/v/sonda.svg?logo=rust&color=1e3a8a"></a>
+  <a href="https://crates.io/crates/sonda-core"><img alt="sonda-core on crates.io" src="https://img.shields.io/crates/v/sonda-core.svg?label=sonda-core&color=1e40af"></a>
+  <a href="https://github.com/davidban77/sonda/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/davidban77/sonda/ci.yml?branch=main&color=1e40af"></a>
+  <a href="https://github.com/davidban77/sonda/blob/main/Cargo.toml"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75-3b82f6"></a>
+  <a href="https://github.com/davidban77/sonda/blob/main/LICENSE-MIT"><img alt="License" src="https://img.shields.io/crates/l/sonda.svg?color=84cc16"></a>
+</p>
+
+# Sonda
 
 Sonda is a synthetic telemetry generator written in Rust. It produces realistic observability
 signals -- metrics and logs -- for testing pipelines, validating ingest paths, and simulating

@@ -1,9 +1,12 @@
-# Configuration
+<div class="sonda-section-hero" markdown>
 
-Every knob you can turn on a Sonda scenario. The CLI flags, the YAML fields, the
-generators, encoders, and sinks -- this section is the reference you reach for when
-you know what you want to change and need to confirm the exact field name or the
-default value.
+<span class="sonda-section-hero__eyebrow">Reference</span>
+
+<h1 class="sonda-section-hero__title">Configuration</h1>
+
+<p class="sonda-section-hero__subtitle">Every knob you can turn on a Sonda scenario — CLI flags, YAML fields, generators, encoders, sinks. This is the reference you reach for when you already know what you want to change and need to confirm the exact field name or the default value.</p>
+
+</div>
 
 If you are looking for *which* generator to pick or *how* to wire a Loki sink into
 your pipeline, start with the [Tutorial](../guides/tutorial.md) or jump to the

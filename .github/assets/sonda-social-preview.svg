@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="Sonda — synthetic telemetry generator">
+  <title>Sonda — synthetic telemetry generator</title>
+  <!-- GitHub social preview (1280x640). Self-contained brand card — same
+       midnight→navy gradient + lime ping as the docs hero. Composition
+       leaves the safe zone (centered ~1200x600) intact so Twitter's
+       1.91:1 crop doesn't cut the wordmark. -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#0f172a"/>
+      <stop offset="55%"  stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+    <radialGradient id="ping" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#a3e635" stop-opacity="0.22"/>
+      <stop offset="50%"  stop-color="#a3e635" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Faint scan-line texture for the "synthetic signal" nod. -->
+    <pattern id="scan" x="0" y="0" width="60" height="60" patternUnits="userSpaceOnUse" patternTransform="rotate(115)">
+      <line x1="0" y1="0" x2="60" y2="0" stroke="#ffffff" stroke-opacity="0.025" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bgGrad)"/>
+  <rect width="1280" height="640" fill="url(#scan)"/>
+  <circle cx="1220" cy="590" r="420" fill="url(#ping)"/>
+
+  <!-- Square-wave mark on the left. Scaled from the 64-unit grid to 240px. -->
+  <g transform="translate(110, 200) scale(3.75)">
+    <path d="M 52 12
+             L 14 12
+             L 14 32
+             L 50 32
+             L 50 52
+             L 12 52"
+          fill="none"
+          stroke="#a3e635"
+          stroke-width="8"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+  </g>
+
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <!-- Wordmark -->
+    <text x="450" y="320"
+          font-size="168"
+          font-weight="800"
+          letter-spacing="-4"
+          fill="#ffffff">sonda</text>
+
+    <!-- Eyebrow / category line -->
+    <text x="456" y="372"
+          font-size="22"
+          font-weight="700"
+          letter-spacing="5"
+          fill="#a3e635">SYNTHETIC TELEMETRY GENERATOR</text>
+
+    <!-- Tagline / pitch -->
+    <text x="450" y="465"
+          font-size="44"
+          font-weight="500"
+          fill="#e2e8f0">Telemetry that looks real, on demand.</text>
+
+    <!-- Detail line -->
+    <text x="450" y="510"
+          font-size="22"
+          font-weight="400"
+          fill="#cbd5e1"
+          opacity="0.88">Metrics · logs · histograms · summaries — in a single static binary.</text>
+
+    <!-- URL footer (right-aligned) -->
+    <text x="1180" y="600"
+          font-size="20"
+          font-weight="600"
+          letter-spacing="0.5"
+          fill="#a3e635"
+          fill-opacity="0.75"
+          text-anchor="end"
+          font-family="ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace">github.com/davidban77/sonda</text>
+  </g>
+</svg>

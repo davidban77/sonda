@@ -1,47 +1,84 @@
 site_name: Sonda
-site_description: Synthetic telemetry generator for testing observability pipelines
+site_description: Synthetic telemetry generator for the people who run the pipeline — metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary.
 site_url: https://davidban77.github.io/sonda/
 repo_url: https://github.com/davidban77/sonda
 repo_name: davidban77/sonda
+edit_uri: edit/main/docs/site/docs/
+
+copyright: Copyright &copy; 2026 David Flores · Built with Material for MkDocs
 
 not_in_nav: |
   /includes/
 
 theme:
   name: material
+  language: en
+  logo: assets/sonda-logo.svg
+  favicon: assets/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: amber
+      primary: indigo
+      accent: light green
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-sunny
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: amber
+      primary: indigo
+      accent: light green
       toggle:
-        icon: material/brightness-4
+        icon: material/weather-night
         name: Switch to light mode
   features:
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
-    - navigation.expand
     - navigation.indexes
     - navigation.top
+    - navigation.tracking
+    - navigation.instant
+    - navigation.footer
+    - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
+    - content.code.annotate
     - content.tabs.link
+    - content.action.edit
+    - content.tooltips
     - toc.follow
+
+extra_css:
+  - stylesheets/sonda.css
 
 markdown_extensions:
   - abbr
   - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - def_list
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.highlight:
       anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
   - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.snippets:
@@ -52,10 +89,22 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
-  - attr_list
-  - md_in_html
   - toc:
       permalink: true
+      toc_depth: 3
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/davidban77/sonda
+      name: Sonda on GitHub
+    - icon: fontawesome/brands/rust
+      link: https://crates.io/crates/sonda
+      name: Sonda on crates.io
+    - icon: fontawesome/brands/docker
+      link: https://github.com/davidban77/sonda/pkgs/container/sonda
+      name: Sonda container image
+  generator: false
 
 nav:
   - Home: index.md
