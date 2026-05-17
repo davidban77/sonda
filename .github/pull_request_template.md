@@ -1,3 +1,7 @@
+<p align="right">
+  <img src="../.github/assets/sonda-logo.svg" alt="" width="40" height="40">
+</p>
+
 ## Summary
 
 <!-- Brief description of what this PR does and why. -->

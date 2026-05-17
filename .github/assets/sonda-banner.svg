@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" role="img" aria-label="Sonda — synthetic telemetry generator">
+  <title>Sonda — synthetic telemetry generator</title>
+  <!-- Self-contained banner: navy rounded card so it reads on GitHub's
+       light OR dark theme without a <picture> swap. Square-wave mark on
+       the left, wordmark + tagline on the right. -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#0f172a"/>
+      <stop offset="55%"  stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#1e40af"/>
+    </linearGradient>
+    <!-- Subtle lime sonar return in the bottom-right corner. -->
+    <radialGradient id="ping" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#a3e635" stop-opacity="0.18"/>
+      <stop offset="55%"  stop-color="#a3e635" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="640" height="160" rx="18" fill="url(#bgGrad)"/>
+  <circle cx="620" cy="150" r="170" fill="url(#ping)"/>
+
+  <!-- Square-wave S mark, scaled and translated to sit on the left. -->
+  <g transform="translate(40, 38) scale(1.31)">
+    <path d="M 52 12
+             L 14 12
+             L 14 32
+             L 50 32
+             L 50 52
+             L 12 52"
+          fill="none"
+          stroke="#a3e635"
+          stroke-width="8"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+  </g>
+
+  <!-- Wordmark + tagline. system-ui keeps rendering consistent across
+       macOS / Windows / Linux without embedded font payload. -->
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" fill="#ffffff">
+    <text x="150" y="86"
+          font-size="58"
+          font-weight="800"
+          letter-spacing="-1.5">sonda</text>
+    <text x="152" y="118"
+          font-size="16"
+          font-weight="600"
+          letter-spacing="3.4"
+          fill="#a3e635"
+          text-transform="uppercase"
+          opacity="0.92">SYNTHETIC TELEMETRY GENERATOR</text>
+  </g>
+</svg>
