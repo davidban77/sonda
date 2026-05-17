@@ -110,6 +110,32 @@ gaps:
 
 This emits events for 1m40s, then goes silent for 20s, then repeats.
 
+!!! tip "Verifying gaps live in Prometheus / Grafana"
+    Gaps are visually unintuitive at default settings. Two common pitfalls trip up first-time users:
+
+    - **Instant queries**: `interface_oper_state` in the Prometheus expression bar uses a 5-minute `lookback_delta`. A series that stopped emitting 10 seconds ago still appears "live" for up to 5 minutes — so a 20-second gap is *invisible* at the default settings.
+    - **Auto step size**: `present_over_time(interface_oper_state[5s])` over a 5-minute range gets evaluated at ~30-second steps in Grafana Explore. A 4-minute run with 240k samples collapses to ~7 dots on the graph. The data is there; the *evaluation cadence* hid it.
+
+    To see the duty cycle with your own eyes, use this query in **Grafana Explore**:
+
+    ```promql
+    count_over_time(interface_oper_state[1s])
+    ```
+
+    With these panel settings:
+
+    - **Min step**: `1s` (otherwise Grafana picks a larger step and smears the gaps)
+    - **Time range**: `Last 5 minutes` (shows two-plus full cycles of the example below)
+    - **View**: Time series (default)
+
+    ![Gap duty cycle in Grafana Explore](img/gap-duty-cycle.svg)
+
+    *Above: `count_over_time(interface_oper_state[1s])` against [`examples/basic-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/basic-metrics.yaml) — which declares `rate: 1000` and `gaps: every: 2m for: 20s`. You see ~100s of ~1000 samples/sec, then 20s of zero, repeating.*
+
+    Why every x-axis point is honest data: `count_over_time(...[1s])` buckets samples into 1-second windows and returns `0` for empty buckets (not null) — no connect-null-values toggle needed. With a 1-second min step Grafana evaluates once per second, so one bucket maps to one x-axis point. What you see is what landed.
+
+    The same trick works for `bursts:` (the rate rises during a burst window) and for any other rate-shaping field. The recurring lesson: when verifying short-window behavior, push your evaluation step *below* the window you're trying to see.
+
 ### Burst window
 
 Bursts create recurring high-rate periods. All three fields must be provided together. If a gap
