@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Sonda — gradient">
+  <title>Sonda — F. Gradient</title>
+  <!-- F. Gradient: stroke transitions from navy at the top to lime at the
+       bottom — probe sweeps from deep ocean to the surface ping. Reads as
+       a brand mark on its own (does not rely on currentColor). -->
+  <defs>
+    <linearGradient id="sonda-stroke" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#1e3a8a"/>
+      <stop offset="55%"  stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#a3e635"/>
+    </linearGradient>
+  </defs>
+  <path d="M 52 12
+           C 52 4, 12 4, 12 22
+           C 12 40, 52 24, 52 42
+           C 52 60, 12 60, 12 52"
+        fill="none"
+        stroke="url(#sonda-stroke)"
+        stroke-width="9"
+        stroke-linecap="round"/>
+</svg>

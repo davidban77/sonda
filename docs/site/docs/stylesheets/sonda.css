@@ -1,0 +1,585 @@
+/* ===========================================================================
+ * Sonda — docs theme
+ *
+ * Sister to the Modern Network Observability hub and the AutoCon5 workshops:
+ * shared layout DNA, Inter + JetBrains Mono. Sonda's own palette:
+ *   Probe — midnight navy + sonar lime. The dominant surface is deep ocean
+ *   (slate-900 → blue-900), the accent is the sonar-ping return (lime-400/500).
+ * =========================================================================== */
+
+:root {
+  /* Brand surface — midnight to royal navy */
+  --sonda-gradient-start: #0f172a;   /* slate-900  */
+  --sonda-gradient-mid:   #1e3a8a;   /* blue-900   */
+  --sonda-gradient-end:   #1e40af;   /* blue-800   */
+
+  /* Sonar ping — lime accent */
+  --sonda-accent:         #84cc16;   /* lime-500   */
+  --sonda-accent-bright:  #a3e635;   /* lime-400   */
+  --sonda-ink:            #0a1f0a;   /* deep green ink, sits on lime */
+
+  /* Hairline / surface tints */
+  --sonda-tint-soft:      rgba(30, 64, 175, 0.06);
+  --sonda-tint-accent:    rgba(132, 204, 22, 0.10);
+}
+
+[data-md-color-scheme="slate"] {
+  --sonda-gradient-start: #020617;   /* slate-950 */
+  --sonda-gradient-mid:   #0c1326;   /* slate-900 cooler */
+  --sonda-gradient-end:   #1e3a8a;   /* blue-900   */
+
+  --sonda-accent:         #a3e635;   /* lime-400 (brighter for dark) */
+  --sonda-accent-bright:  #bef264;   /* lime-300 */
+  --sonda-ink:            #0a1f0a;
+
+  --sonda-tint-soft:      rgba(163, 230, 53, 0.06);
+  --sonda-tint-accent:    rgba(163, 230, 53, 0.12);
+}
+
+/* Pull Material's accent toward our lime, in both schemes. */
+[data-md-color-scheme="default"] {
+  --md-accent-fg-color: #65a30d;            /* lime-600 — slightly darker for AA on white */
+  --md-accent-fg-color--transparent: rgba(101, 163, 13, 0.10);
+}
+[data-md-color-scheme="slate"] {
+  --md-accent-fg-color: #a3e635;
+  --md-accent-fg-color--transparent: rgba(163, 230, 53, 0.12);
+}
+
+/* ---------- Hero (homepage) -------------------------------------------- */
+
+.sonda-hero {
+  background: linear-gradient(
+    135deg,
+    var(--sonda-gradient-start) 0%,
+    var(--sonda-gradient-mid) 55%,
+    var(--sonda-gradient-end) 100%
+  );
+  color: #fff;
+  border-radius: 14px;
+  padding: 3rem 2.25rem;
+  margin: 0 0 2.5rem;
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.35),
+    0 0 0 1px rgba(163, 230, 53, 0.08) inset;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Sonar ping — two concentric lime rings in the bottom-right, soft and
+ * subtle so they read as a probe return rather than decoration. */
+.sonda-hero::before {
+  content: "";
+  position: absolute;
+  right: -120px;
+  bottom: -120px;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  background:
+    radial-gradient(closest-side,
+      rgba(163, 230, 53, 0.16) 0%,
+      rgba(163, 230, 53, 0.10) 36%,
+      rgba(163, 230, 53, 0.04) 56%,
+      transparent 70%);
+  pointer-events: none;
+}
+
+/* Faint horizon scan-lines — quieter than v1, kept for the "synthetic
+ * signal" texture nod. */
+.sonda-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    115deg,
+    transparent 0,
+    transparent 24px,
+    rgba(255, 255, 255, 0.025) 24px,
+    rgba(255, 255, 255, 0.025) 25px
+  );
+  pointer-events: none;
+}
+
+.sonda-hero > * { position: relative; z-index: 1; }
+
+.sonda-hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.85rem 0.3rem 0.6rem;
+  background: rgba(163, 230, 53, 0.14);
+  color: var(--sonda-accent-bright);
+  border: 1px solid rgba(163, 230, 53, 0.30);
+  border-radius: 999px;
+  margin-bottom: 1.1rem;
+}
+
+.sonda-hero__badge::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--sonda-accent-bright);
+  box-shadow: 0 0 8px var(--sonda-accent-bright);
+}
+
+/* Hero title/subtitle — selectors are doubled with `.md-typeset` so they
+ * beat Material's `.md-typeset h1`/`.md-typeset p` color overrides, which
+ * otherwise paint the title in body-text color (dark on light theme,
+ * unreadable on the navy hero). */
+.md-typeset .sonda-hero__title,
+.sonda-hero .sonda-hero__title {
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.6rem;
+  color: #ffffff;
+}
+
+.md-typeset .sonda-hero__subtitle,
+.sonda-hero .sonda-hero__subtitle {
+  font-size: 1.35rem;
+  font-weight: 400;
+  opacity: 0.95;
+  margin: 0 0 1.5rem;
+  max-width: 56rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+
+.sonda-hero__ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.sonda-hero a.md-button {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+  font-weight: 600;
+  backdrop-filter: blur(4px);
+  transition: transform 0.15s ease, box-shadow 0.15s ease,
+              background 0.15s ease, color 0.15s ease,
+              border-color 0.15s ease;
+}
+
+.sonda-hero a.md-button--primary {
+  background: var(--sonda-accent);
+  color: var(--sonda-ink);
+  border-color: var(--sonda-accent);
+}
+
+.sonda-hero a.md-button:hover,
+.sonda-hero a.md-button:focus {
+  background: var(--sonda-accent-bright);
+  color: var(--sonda-ink);
+  border-color: var(--sonda-accent-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(163, 230, 53, 0.30);
+}
+
+.sonda-hero__install {
+  margin-top: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 0.9rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(163, 230, 53, 0.20);
+  border-radius: 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.sonda-hero__install::before {
+  content: "$";
+  color: var(--sonda-accent-bright);
+  font-weight: 700;
+}
+
+/* ---------- Section hero (per-page) ------------------------------------ */
+
+.sonda-section-hero {
+  background: linear-gradient(
+    100deg,
+    rgba(30, 64, 175, 0.08) 0%,
+    rgba(132, 204, 22, 0.05) 100%
+  );
+  border-left: 4px solid var(--sonda-gradient-mid);
+  border-radius: 0 10px 10px 0;
+  padding: 1.5rem 1.75rem;
+  margin: 0.25rem 0 2rem;
+}
+
+[data-md-color-scheme="slate"] .sonda-section-hero {
+  background: linear-gradient(
+    100deg,
+    rgba(30, 58, 138, 0.18) 0%,
+    rgba(163, 230, 53, 0.06) 100%
+  );
+  border-left-color: var(--sonda-accent);
+}
+
+.sonda-section-hero__eyebrow {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.65rem;
+  background: var(--sonda-gradient-mid);
+  color: var(--sonda-accent-bright);
+  border-radius: 999px;
+  margin-bottom: 0.65rem;
+}
+
+[data-md-color-scheme="slate"] .sonda-section-hero__eyebrow {
+  background: var(--sonda-accent);
+  color: var(--sonda-ink);
+}
+
+/* Section-hero title — doubled selector for the same specificity reason
+ * as the homepage hero title. */
+.md-typeset .sonda-section-hero__title,
+.sonda-section-hero .sonda-section-hero__title {
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset .sonda-section-hero__subtitle,
+.sonda-section-hero .sonda-section-hero__subtitle {
+  font-size: 1.05rem;
+  font-weight: 400;
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+  line-height: 1.55;
+  max-width: 56rem;
+}
+
+/* ---------- Material grid-cards lift ----------------------------------- */
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > .card {
+  border-radius: 10px;
+  transition: transform 0.15s ease, border-color 0.15s ease,
+              box-shadow 0.15s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards > .card:hover {
+  transform: translateY(-2px);
+  border-color: var(--sonda-accent);
+  box-shadow: 0 6px 20px rgba(30, 64, 175, 0.18);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ul > li:hover,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > .card:hover {
+  border-color: var(--sonda-accent-bright);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.40);
+}
+
+.md-typeset .grid.cards .twemoji svg {
+  fill: var(--sonda-gradient-mid);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .grid.cards .twemoji svg {
+  fill: var(--sonda-accent);
+}
+
+/* ---------- Reading polish --------------------------------------------- */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-weight: 600;
+}
+
+.md-typeset pre > code {
+  border-radius: 8px;
+  transition: box-shadow 0.15s ease;
+}
+
+.md-typeset .highlight:hover pre > code {
+  box-shadow: 0 4px 12px rgba(30, 64, 175, 0.14);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .highlight:hover pre > code {
+  box-shadow: 0 4px 12px rgba(163, 230, 53, 0.10);
+}
+
+.md-typeset blockquote {
+  border-left-width: 4px;
+  border-left-color: var(--sonda-gradient-mid);
+  background: var(--sonda-tint-soft);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset blockquote {
+  border-left-color: var(--sonda-accent);
+}
+
+.md-typeset table:not([class]) th {
+  background: rgba(30, 64, 175, 0.06);
+  font-weight: 600;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background: rgba(163, 230, 53, 0.06);
+}
+
+.md-typeset h1 {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 2.5rem;
+  padding-top: 0.25rem;
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.md-typeset code {
+  background: rgba(30, 64, 175, 0.08);
+  color: #1e3a8a;
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.88em;
+}
+
+[data-md-color-scheme="slate"] .md-typeset code {
+  background: rgba(163, 230, 53, 0.10);
+  color: var(--sonda-accent-bright);
+}
+
+/* Tabbed code blocks — active label uses lime accent. */
+.md-typeset .tabbed-labels > label { font-weight: 600; }
+
+.md-typeset .tabbed-labels > input:checked + label {
+  color: var(--sonda-accent);
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels > input:checked + label {
+  color: var(--sonda-accent-bright);
+}
+
+.md-typeset .tabbed-labels > input:checked + label::after,
+.md-typeset .tabbed-labels::before {
+  background: var(--sonda-accent) !important;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels > input:checked + label::after,
+[data-md-color-scheme="slate"] .md-typeset .tabbed-labels::before {
+  background: var(--sonda-accent-bright) !important;
+}
+
+/* Links — lime on hover */
+.md-typeset a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.md-typeset a:hover {
+  color: var(--md-accent-fg-color);
+}
+
+/* ---------- Cross-page nav footer (prev / next) ------------------------ */
+
+.sonda-nav-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 3rem 0 1rem;
+}
+
+.sonda-nav-footer > p { margin: 0; }
+
+.sonda-nav-footer a {
+  display: block;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 10px;
+  text-decoration: none;
+  color: var(--md-default-fg-color);
+  transition: border-color 0.15s ease, background 0.15s ease,
+              transform 0.15s ease;
+}
+
+.sonda-nav-footer a:hover {
+  border-color: var(--sonda-accent);
+  background: var(--sonda-tint-accent);
+  transform: translateY(-1px);
+}
+
+.sonda-nav-footer__label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.25rem;
+}
+
+.sonda-nav-footer__title { font-size: 1.05rem; font-weight: 600; }
+.sonda-nav-footer__next  { text-align: right; }
+
+@media (max-width: 600px) {
+  .sonda-nav-footer { grid-template-columns: 1fr; }
+  .sonda-nav-footer__next { text-align: left; }
+}
+
+/* ---------- Wider layout ----------------------------------------------- */
+
+.md-grid { max-width: 1400px; }
+
+.md-content {
+  max-width: 60rem;
+  margin-right: auto;
+}
+
+@media screen and (min-width: 1400px) {
+  .md-sidebar--secondary { margin-left: auto; }
+}
+
+/* ---------- Header & tabs (navy + lime) -------------------------------- */
+
+.md-header {
+  background-color: var(--sonda-gradient-start);
+  box-shadow:
+    0 0 0 1px rgba(163, 230, 53, 0.06) inset,
+    0 1px 0 rgba(163, 230, 53, 0.10);
+}
+
+.md-tabs {
+  background: linear-gradient(
+    90deg,
+    var(--sonda-gradient-start) 0%,
+    var(--sonda-gradient-mid) 60%,
+    var(--sonda-gradient-end) 100%
+  );
+  border-bottom: 1px solid rgba(163, 230, 53, 0.18);
+}
+
+.md-tabs__link {
+  opacity: 0.85;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+
+.md-tabs__link--active {
+  opacity: 1;
+  font-weight: 700;
+  color: var(--sonda-accent-bright);
+}
+
+.md-tabs__link:hover { opacity: 1; color: var(--sonda-accent-bright); }
+
+/* Logo mark — paint with currentColor so it picks up the header text fill. */
+.md-header__button.md-logo,
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  color: var(--sonda-accent-bright);
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.7rem;
+  width: 1.7rem;
+  object-fit: contain;
+}
+
+/* ---------- Header search polish --------------------------------------- */
+
+.md-search__form {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.md-search__form:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+[dir="ltr"] .md-search__input { padding-left: 2.6rem; }
+
+.md-search__icon[for="__search"] { opacity: 0.9; }
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form,
+.md-search__form:focus-within {
+  background: #fff;
+  color: var(--md-default-fg-color);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.30);
+}
+
+.md-search__form:focus-within .md-search__input::placeholder {
+  color: var(--md-default-fg-color--light);
+}
+
+/* ---------- Wire pill (inline brand pill) ------------------------------ */
+
+.md-typeset .wire {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.55rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.82em;
+  font-weight: 600;
+  background: var(--sonda-tint-accent);
+  color: var(--sonda-gradient-mid);
+  border: 1px solid rgba(132, 204, 22, 0.30);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .wire {
+  color: var(--sonda-accent-bright);
+  border-color: rgba(163, 230, 53, 0.35);
+}
+
+/* ---------- Footer ----------------------------------------------------- */
+
+.md-footer {
+  background-color: var(--sonda-gradient-start);
+}
+
+.md-footer-meta {
+  background: var(--sonda-gradient-start);
+  border-top: 1px solid rgba(163, 230, 53, 0.10);
+}
+
+/* ---------- Print: hide hero embellishments ---------------------------- */
+
+@media print {
+  .sonda-hero::before,
+  .sonda-hero::after { display: none; }
+  .sonda-nav-footer { display: none; }
+}

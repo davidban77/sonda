@@ -1,10 +1,12 @@
-# Guides
+<div class="sonda-section-hero" markdown>
 
-Task-shaped pages: pick the one that matches what you are trying to do.
+<span class="sonda-section-hero__eyebrow">How-to</span>
 
-The [**Tutorial**](tutorial.md) is the guided tour through every part of Sonda.
-The rest of this section is organized by what you are testing: alert rules,
-ingest pipelines, network telemetry, real-data replay, or operational scale.
+<h1 class="sonda-section-hero__title">Guides</h1>
+
+<p class="sonda-section-hero__subtitle">Task-shaped pages — pick the one that matches what you are trying to do. The <a href="tutorial/"><strong>Tutorial</strong></a> is the guided tour through every part of Sonda; the rest is organized by what you are testing: alert rules, ingest pipelines, network telemetry, real-data replay, or operational scale.</p>
+
+</div>
 
 !!! tip "New to Sonda?"
     Start with the [**Tutorial**](tutorial.md) -- a seven-page walkthrough of
