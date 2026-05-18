@@ -213,11 +213,9 @@ for testing Loki label indexing or pod-level log aggregation panels.
 
 When the sink is `loki`, each unique `dynamic_labels` combination becomes its own **Loki stream** in the push envelope. The rotation values auto-promote into the stream label set — they're queryable in Grafana the same way scenario-level static labels are.
 
-The pre-1.9.4 trap: the rotation value only appeared inside the log line text, never as a stream label. Querying `{peer_address="10.1.2.2"}` returned nothing because Loki never knew that label existed. Post-1.9.4, the same YAML produces one stream per peer.
-
 ### Worked example — 20 BGP peers from one scenario
 
-This is the pattern that previously needed 20 hand-written scenarios (one per peer) to get queryable stream labels. With auto-promotion, it's a single scenario with a 20-element `values` list:
+One scenario with a 20-element `values` list produces 20 distinct Loki streams, one per peer, each queryable by `peer_address`:
 
 ```yaml title="examples/bgp-peer-logs.yaml"
 version: 2
@@ -264,7 +262,7 @@ Loki sees one stream per peer:
 ...
 ```
 
-Grafana queries that previously came back empty now work:
+Standard Grafana queries work against the per-peer streams:
 
 ```promql
 # All events for a specific peer
