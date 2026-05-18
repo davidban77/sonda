@@ -130,7 +130,7 @@ wait_for_kafka() {
 
     info "Waiting for Kafka broker to be ready (up to ${max_secs}s)..."
     while true; do
-        if docker exec "${KAFKA_CONTAINER}" kafka-topics.sh \
+        if docker exec "${KAFKA_CONTAINER}" /opt/kafka/bin/kafka-topics.sh \
                 --bootstrap-server 127.0.0.1:9092 \
                 --list >/dev/null 2>&1; then
             info "Kafka is healthy."
@@ -150,7 +150,7 @@ wait_for_kafka() {
 query_kafka_count() {
     local topic="$1"
     local count
-    count=$(docker exec "${KAFKA_CONTAINER}" kafka-console-consumer.sh \
+    count=$(docker exec "${KAFKA_CONTAINER}" /opt/kafka/bin/kafka-console-consumer.sh \
         --bootstrap-server 127.0.0.1:9092 \
         --topic "${topic}" \
         --partition 0 \
@@ -387,7 +387,11 @@ fi
 # ---------------------------------------------------------------------------
 
 info "Building sonda (release)..."
-cargo build --release -p sonda --manifest-path "${REPO_ROOT}/Cargo.toml"
+# Feature set matches the production Dockerfile (`-p sonda -F remote-write,kafka,otlp`).
+# Without these the e2e scenarios that target Kafka or remote-write will fail at
+# scenario start with `sink type '...' requires the '...' feature` — the dry-run
+# parses are insensitive to feature gating, only the actual sink push needs it.
+cargo build --release -p sonda --features remote-write,kafka,otlp --manifest-path "${REPO_ROOT}/Cargo.toml"
 info "Build complete: ${SONDA_BIN}"
 
 # ---------------------------------------------------------------------------
