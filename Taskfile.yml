@@ -135,25 +135,25 @@ tasks:
     desc: Send Prometheus text metrics to VictoriaMetrics
     deps: [build:release]
     cmds:
-      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/vm-prometheus-text.yaml {{.CLI_ARGS}}
+      - ./target/release/sonda run {{.SCENARIO_DIR}}/vm-prometheus-text.yaml {{.CLI_ARGS}}
 
   run:vm-influx:
     desc: Send InfluxDB LP metrics to VictoriaMetrics
     deps: [build:release]
     cmds:
-      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/vm-influx-lp.yaml {{.CLI_ARGS}}
+      - ./target/release/sonda run {{.SCENARIO_DIR}}/vm-influx-lp.yaml {{.CLI_ARGS}}
 
   run:kafka:
     desc: Send Prometheus text metrics to Kafka topic sonda-e2e-metrics
     deps: [build:release]
     cmds:
-      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/kafka-prometheus-text.yaml {{.CLI_ARGS}}
+      - ./target/release/sonda run {{.SCENARIO_DIR}}/kafka-prometheus-text.yaml {{.CLI_ARGS}}
 
   run:loki:
     desc: Send log events to Loki (requires stack:up)
     deps: [build:release]
     cmds:
-      - ./target/release/sonda logs --scenario examples/loki-json-lines.yaml {{.CLI_ARGS}}
+      - ./target/release/sonda run examples/loki-json-lines.yaml {{.CLI_ARGS}}
 
   run:constant:
     desc: Run a quick constant metric to stdout
@@ -197,7 +197,7 @@ tasks:
       - echo "Sending sine wave metrics to VictoriaMetrics for 30s..."
       - 'echo "Open Grafana at http://localhost:3000 and explore!"'
       - echo ""
-      - ./target/release/sonda metrics --scenario {{.SCENARIO_DIR}}/demo.yaml
+      - ./target/release/sonda run {{.SCENARIO_DIR}}/demo.yaml
       - echo ""
       - 'echo "Done! Explore metrics in Grafana at http://localhost:3000"'
       - 'echo "Query: demo_sine_wave"'

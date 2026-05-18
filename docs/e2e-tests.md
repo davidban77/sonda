@@ -149,14 +149,14 @@ Dashboards are great for exploration. For repeatable manual tests, run scenarios
 task stack:up
 
 # Run individual scenarios
-sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
-sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
+sonda run tests/e2e/scenarios/vm-prometheus-text.yaml
+sonda run tests/e2e/scenarios/kafka-prometheus-text.yaml
 
 # Verify VictoriaMetrics received data
 curl "http://localhost:8428/api/v1/series?match[]={__name__=%22sonda_e2e_vm_prom_text%22}"
 
 # Verify Kafka received messages
-docker exec sonda-e2e-kafka kafka-console-consumer.sh \
+docker exec sonda-e2e-kafka /opt/kafka/bin/kafka-console-consumer.sh \
     --bootstrap-server 127.0.0.1:9092 \
     --topic sonda-e2e-metrics \
     --from-beginning --timeout-ms 5000
