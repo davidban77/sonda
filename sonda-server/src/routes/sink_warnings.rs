@@ -151,11 +151,6 @@ pub(crate) fn log_warnings(route: &str, warnings: &[String]) {
     }
 }
 
-/// One informational warning per logs+loki+`dynamic_labels` entry, naming
-/// the predicted upper bound on distinct Loki streams the scenario will
-/// produce over its lifetime alongside the active `max_streams_per_push`
-/// cap. Lets users see — at registration time — whether their cardinality
-/// will fit before flushes start hitting the cap at runtime.
 pub(crate) fn loki_cardinality_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
     let mut warnings = Vec::new();
     for entry in entries {
@@ -463,8 +458,6 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    // ---- loki cardinality preview --------------------------------------
-
     fn compile_logs_entry(body_yaml: &str) -> ScenarioEntry {
         let yaml = format!(
             "version: 2\nkind: runnable\n\
@@ -527,7 +520,6 @@ mod tests {
         );
         let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
         assert_eq!(out.len(), 1);
-        // LCM(3, 2) = 6 distinct (peer, pod) combinations.
         assert!(out[0].contains("up to 6 distinct"), "got: {}", out[0]);
     }
 
@@ -559,8 +551,6 @@ mod tests {
 
     #[test]
     fn loki_cardinality_warning_does_not_fire_for_metrics_entry() {
-        // metrics + dynamic_labels (no Loki sink possible for metrics in
-        // practice) — the cardinality preview is logs-only.
         let yaml = "version: 2\nkind: runnable\n\
                     defaults:\n  rate: 10\n  duration: 500ms\n\
                     \x20\x20encoder:\n    type: prometheus_text\n\
