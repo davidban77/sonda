@@ -290,26 +290,23 @@ pub enum SinkConfig {
     KafkaDisabled {},
 
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
-    ///
-    /// Each call to `write()` appends one log line to the batch. When the batch
-    /// reaches `batch_size` entries, it is automatically flushed as a single POST
-    /// to `{url}/loki/api/v1/push`. Call `flush()` at shutdown to send any
-    /// remaining buffered entries.
-    ///
-    /// Stream labels are sourced from the scenario-level `labels` configuration
-    /// and passed to [`create_sink()`] via the `labels` parameter, keeping label
-    /// config consistent with all other signal types.
-    ///
-    /// Requires the `http` Cargo feature to be enabled.
+    /// Entries are grouped by combined label set (constructor labels + per-event
+    /// overlay from `dynamic_labels`) into one stream per unique combination.
+    /// Requires the `http` Cargo feature.
     #[cfg(feature = "http")]
     #[cfg_attr(feature = "config", serde(rename = "loki"))]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
         url: String,
 
-        /// Flush threshold in log entries. Defaults to `100` if not specified.
+        /// Flush threshold in log entries.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Hard cap on unique streams per push. Defaults to
+        /// [`DEFAULT_MAX_STREAMS_PER_PUSH`](loki::DEFAULT_MAX_STREAMS_PER_PUSH).
+        #[cfg_attr(feature = "config", serde(default))]
+        max_streams_per_push: Option<u32>,
 
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
@@ -478,10 +475,12 @@ pub fn create_sink(
         SinkConfig::Loki {
             url,
             batch_size,
+            max_streams_per_push,
             max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(loki::DEFAULT_BATCH_SIZE);
+            let cap = max_streams_per_push.unwrap_or(loki::DEFAULT_MAX_STREAMS_PER_PUSH);
             let loki_labels = labels.cloned().unwrap_or_default();
             let rp = retry_cfg
                 .as_ref()
@@ -496,6 +495,7 @@ pub fn create_sink(
                 url.clone(),
                 loki_labels,
                 bs,
+                cap,
                 rp,
                 buffer_age,
             )?))
@@ -1134,6 +1134,7 @@ headers: {}
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
+            max_streams_per_push: None,
             max_buffer_age: None,
             retry: None,
         };
