@@ -23,6 +23,7 @@ pub mod udp;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::model::log::LogEvent;
 use crate::SondaError;
 
 /// A sink consumes encoded bytes and delivers them to a destination.
@@ -39,6 +40,17 @@ pub trait Sink: Send + Sync {
     /// when the most recent `write()` triggered a successful flush.
     fn last_write_delivered(&self) -> bool {
         true
+    }
+
+    /// Write an encoded log event to the sink, with the originating
+    /// [`LogEvent`] alongside for sinks that build their own delivery
+    /// envelope from per-event context (e.g. labels).
+    ///
+    /// The default impl ignores the event reference and forwards to
+    /// [`Sink::write`], preserving the bytes-only contract every existing
+    /// sink relies on. Sinks that need per-event labels override this.
+    fn write_log_event(&mut self, _event: &LogEvent, encoded: &[u8]) -> Result<(), SondaError> {
+        self.write(encoded)
     }
 }
 
@@ -1348,6 +1360,42 @@ retry:
         assert!(
             msg.contains("cargo build -F remote-write"),
             "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Default `write_log_event` impl on the Sink trait forwards to `write`.
+    // Sinks that don't override the new method (every sink today except Loki in
+    // PR 2) must keep behaving exactly as they did before this PR landed.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn default_write_log_event_forwards_encoded_bytes_to_write() {
+        use crate::model::log::{LogEvent, Severity};
+        use crate::model::metric::Labels;
+        use memory::MemorySink;
+        use std::collections::BTreeMap;
+        use std::time::SystemTime;
+
+        let mut sink = MemorySink::new();
+        let event = LogEvent::with_timestamp(
+            SystemTime::UNIX_EPOCH,
+            Severity::Info,
+            "hello".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        let encoded = b"<encoded payload>";
+
+        // MemorySink does not override `write_log_event`, so the call must
+        // route through the default impl and end up appended to `buffer`
+        // exactly as `write(encoded)` would.
+        sink.write_log_event(&event, encoded)
+            .expect("default write_log_event must succeed");
+
+        assert_eq!(
+            sink.buffer, encoded,
+            "default impl must forward the encoded bytes to write() unchanged"
         );
     }
 
