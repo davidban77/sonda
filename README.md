@@ -48,9 +48,17 @@ cargo install sonda
 **Docker:**
 
 ```bash
+# Run a single scenario file
 docker run --rm -v "$PWD":/work -w /work \
   ghcr.io/davidban77/sonda:latest run my-scenario.yaml
+
+# Run a scenario from a mounted catalog by @name
+docker run --rm -v "$PWD/my-catalog":/catalog \
+  ghcr.io/davidban77/sonda:latest \
+  run @cpu-spike --catalog /catalog
 ```
+
+> `--catalog` lives **after** the subcommand when running through the image's default entrypoint. The host CLI accepts both orderings; the Docker constraint is the dispatch shim that routes `argv[1]` (`run | list | show | new`) to the `sonda` CLI. See [Deployment → Docker](https://davidban77.github.io/sonda/deployment/docker/#running-with-docker) for the full rationale and the `--entrypoint /sonda` escape hatch.
 
 See the [Getting Started](https://davidban77.github.io/sonda/getting-started/) guide for all installation options.
 
