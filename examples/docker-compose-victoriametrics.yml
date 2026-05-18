@@ -273,7 +273,7 @@ services:
   # This service is only started with --profile alerting.
   # ---------------------------------------------------------------------------
   vmalert:
-    image: victoriametrics/vmalert:v1.140.0
+    image: victoriametrics/vmalert:v1.142.0
     profiles: [alerting]
     ports:
       - "8880:8880"
