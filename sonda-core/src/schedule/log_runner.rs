@@ -127,7 +127,7 @@ pub fn run_logs_with_sink_gated(
             buf.clear();
             encoder.encode_log(&event, &mut buf)?;
             let bytes_written = buf.len() as u64;
-            sink.write(&buf)?;
+            sink.write_log_event(&event, &buf)?;
             let delivered = sink.last_write_delivered();
 
             Ok(TickResult {
