@@ -209,6 +209,94 @@ scenarios:
 Each emitted JSON log event carries `pod_name=api-0`, `api-1`, or `api-2` in rotation. Useful
 for testing Loki label indexing or pod-level log aggregation panels.
 
+## Dynamic labels with the Loki sink
+
+When the sink is `loki`, each unique `dynamic_labels` combination becomes its own **Loki stream** in the push envelope. The rotation values auto-promote into the stream label set — they're queryable in Grafana the same way scenario-level static labels are.
+
+The pre-1.9.4 trap: the rotation value only appeared inside the log line text, never as a stream label. Querying `{peer_address="10.1.2.2"}` returned nothing because Loki never knew that label existed. Post-1.9.4, the same YAML produces one stream per peer.
+
+### Worked example — 20 BGP peers from one scenario
+
+This is the pattern that previously needed 20 hand-written scenarios (one per peer) to get queryable stream labels. With auto-promotion, it's a single scenario with a 20-element `values` list:
+
+```yaml title="examples/bgp-peer-logs.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 60s
+  encoder:
+    type: json_lines
+  sink:
+    type: loki
+    url: http://localhost:3100
+scenarios:
+  - id: srl1_bgp_logs
+    signal_type: logs
+    name: srl1_bgp_logs
+    labels:
+      device: srl1
+      vendor_facility_process: BGP
+    dynamic_labels:
+      - key: peer_address
+        values:
+          - "10.1.2.2"
+          - "10.1.7.2"
+          - "10.1.12.2"
+          - "10.1.17.2"
+          - "10.1.22.2"
+          # ... up to 20 peers
+    log_generator:
+      type: template
+      templates:
+        - message: "BGP neighbor {peer_address}: state changed to {state}"
+          field_pools:
+            peer_address: ["10.1.2.2", "10.1.7.2", "10.1.12.2", "10.1.17.2", "10.1.22.2"]
+            state: ["established", "active", "open-confirm", "idle"]
+```
+
+Loki sees one stream per peer:
+
+```
+{device="srl1", peer_address="10.1.2.2",  vendor_facility_process="BGP"}
+{device="srl1", peer_address="10.1.7.2",  vendor_facility_process="BGP"}
+{device="srl1", peer_address="10.1.12.2", vendor_facility_process="BGP"}
+...
+```
+
+Grafana queries that previously came back empty now work:
+
+```promql
+# All events for a specific peer
+{peer_address="10.1.2.2"}
+
+# Establishment events across all peers
+{device="srl1"} |= "established"
+
+# Peer state churn — distinct streams matching device
+sum by (peer_address) (count_over_time({device="srl1"}[5m]))
+```
+
+### Cardinality cap — `max_streams_per_push`
+
+The Loki sink refuses pushes that would emit more than [`max_streams_per_push`](../configuration/sinks.md#loki) unique streams (default `128`). The cap is per-flush, not lifetime — high-cardinality rotations work fine if the batch size is small enough that each flush stays under the cap.
+
+When you POST a scenario to `sonda-server`, the server emits a registration-time preview naming the predicted stream count and the active cap, so cardinality issues surface before runtime:
+
+```
+scenario entry 'srl1_bgp_logs' will produce up to 20 distinct Loki streams
+(dynamic_labels: peer_address). max_streams_per_push is 128.
+```
+
+If your scenario genuinely needs more than 128 streams, raise the cap on the sink:
+
+```yaml
+sink:
+  type: loki
+  url: http://localhost:3100
+  max_streams_per_push: 512
+```
+
 ## Runnable examples
 
 | File | Signal | Strategy | What to look for |

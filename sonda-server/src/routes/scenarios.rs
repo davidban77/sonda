@@ -40,7 +40,9 @@ use sonda_core::config::ScenarioEntry;
 use sonda_core::schedule::launch::prepare_entries;
 use sonda_core::schedule::multi_runner::launch_multi_compiled;
 
-use crate::routes::sink_warnings::{log_warnings, sink_loopback_warnings};
+use crate::routes::sink_warnings::{
+    log_warnings, loki_cardinality_warnings, sink_loopback_warnings,
+};
 use crate::state::AppState;
 
 // ---- Response types ---------------------------------------------------------
@@ -485,7 +487,8 @@ pub async fn post_scenario(
         unprocessable(e)
     })?;
     let warning_entries: Vec<ScenarioEntry> = prepared.into_iter().map(|p| p.entry).collect();
-    let warnings = sink_loopback_warnings(&warning_entries);
+    let mut warnings = sink_loopback_warnings(&warning_entries);
+    warnings.extend(loki_cardinality_warnings(&warning_entries));
     log_warnings("POST /scenarios", &warnings);
     drop(warning_entries);
 
