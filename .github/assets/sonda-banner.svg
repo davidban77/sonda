@@ -9,11 +9,11 @@
       <stop offset="55%"  stop-color="#1e3a8a"/>
       <stop offset="100%" stop-color="#1e40af"/>
     </linearGradient>
-    <!-- Subtle lime sonar return in the bottom-right corner. -->
+    <!-- Subtle coral sunrise glow in the bottom-right corner. -->
     <radialGradient id="ping" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0%"   stop-color="#a3e635" stop-opacity="0.18"/>
-      <stop offset="55%"  stop-color="#a3e635" stop-opacity="0.06"/>
-      <stop offset="100%" stop-color="#a3e635" stop-opacity="0"/>
+      <stop offset="0%"   stop-color="#fdba74" stop-opacity="0.18"/>
+      <stop offset="55%"  stop-color="#fdba74" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#fdba74" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
@@ -29,7 +29,7 @@
              L 50 52
              L 12 52"
           fill="none"
-          stroke="#a3e635"
+          stroke="#fdba74"
           stroke-width="8"
           stroke-linecap="round"
           stroke-linejoin="round"/>
@@ -46,7 +46,7 @@
           font-size="16"
           font-weight="600"
           letter-spacing="3.4"
-          fill="#a3e635"
+          fill="#fdba74"
           text-transform="uppercase"
           opacity="0.92">SYNTHETIC TELEMETRY GENERATOR</text>
   </g>

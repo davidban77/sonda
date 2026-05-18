@@ -7,7 +7,7 @@
   <a href="https://crates.io/crates/sonda-core"><img alt="sonda-core on crates.io" src="https://img.shields.io/crates/v/sonda-core.svg?label=sonda-core&color=1e40af"></a>
   <a href="https://github.com/davidban77/sonda/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/davidban77/sonda/ci.yml?branch=main&color=1e40af"></a>
   <a href="https://github.com/davidban77/sonda/blob/main/Cargo.toml"><img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75-3b82f6"></a>
-  <a href="https://github.com/davidban77/sonda/blob/main/LICENSE-MIT"><img alt="License" src="https://img.shields.io/crates/l/sonda.svg?color=84cc16"></a>
+  <a href="https://github.com/davidban77/sonda/blob/main/LICENSE-MIT"><img alt="License" src="https://img.shields.io/crates/l/sonda.svg?color=f97316"></a>
 </p>
 
 # Sonda

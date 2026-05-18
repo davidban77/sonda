@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Sonda">
   <title>Sonda</title>
-  <!-- Square-wave S: digital-scope flavour. Lime stroke baked in so it
+  <!-- Square-wave S: digital-scope flavour. Coral stroke baked in so it
        renders correctly when loaded via <img> (where currentColor would
        resolve to black, not the header text color). -->
   <path d="M 52 12
@@ -10,7 +10,7 @@
            L 50 52
            L 12 52"
         fill="none"
-        stroke="#a3e635"
+        stroke="#fdba74"
         stroke-width="8"
         stroke-linecap="round"
         stroke-linejoin="round"/>

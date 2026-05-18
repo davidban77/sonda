@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-label="Sonda — synthetic telemetry generator">
   <title>Sonda — synthetic telemetry generator</title>
   <!-- GitHub social preview (1280x640). Self-contained brand card — same
-       midnight→navy gradient + lime ping as the docs hero. Composition
-       leaves the safe zone (centered ~1200x600) intact so Twitter's
-       1.91:1 crop doesn't cut the wordmark. -->
+       midnight→navy gradient + coral sunrise glow as the docs hero.
+       Composition leaves the safe zone (centered ~1200x600) intact so
+       Twitter's 1.91:1 crop doesn't cut the wordmark. -->
   <defs>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%"   stop-color="#0f172a"/>
@@ -11,9 +11,9 @@
       <stop offset="100%" stop-color="#1e40af"/>
     </linearGradient>
     <radialGradient id="ping" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0%"   stop-color="#a3e635" stop-opacity="0.22"/>
-      <stop offset="50%"  stop-color="#a3e635" stop-opacity="0.08"/>
-      <stop offset="100%" stop-color="#a3e635" stop-opacity="0"/>
+      <stop offset="0%"   stop-color="#fdba74" stop-opacity="0.22"/>
+      <stop offset="50%"  stop-color="#fdba74" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#fdba74" stop-opacity="0"/>
     </radialGradient>
     <!-- Faint scan-line texture for the "synthetic signal" nod. -->
     <pattern id="scan" x="0" y="0" width="60" height="60" patternUnits="userSpaceOnUse" patternTransform="rotate(115)">
@@ -34,7 +34,7 @@
              L 50 52
              L 12 52"
           fill="none"
-          stroke="#a3e635"
+          stroke="#fdba74"
           stroke-width="8"
           stroke-linecap="round"
           stroke-linejoin="round"/>
@@ -53,7 +53,7 @@
           font-size="22"
           font-weight="700"
           letter-spacing="5"
-          fill="#a3e635">SYNTHETIC TELEMETRY GENERATOR</text>
+          fill="#fdba74">SYNTHETIC TELEMETRY GENERATOR</text>
 
     <!-- Tagline / pitch -->
     <text x="450" y="465"
@@ -73,7 +73,7 @@
           font-size="20"
           font-weight="600"
           letter-spacing="0.5"
-          fill="#a3e635"
+          fill="#fdba74"
           fill-opacity="0.75"
           text-anchor="end"
           font-family="ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace">github.com/davidban77/sonda</text>
