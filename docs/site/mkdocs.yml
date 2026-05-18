@@ -3,7 +3,6 @@ site_description: Synthetic telemetry generator for the people who run the pipel
 site_url: https://davidban77.github.io/sonda/
 repo_url: https://github.com/davidban77/sonda
 repo_name: davidban77/sonda
-edit_uri: edit/main/docs/site/docs/
 
 copyright: Copyright &copy; 2026 David Flores · Built with Material for MkDocs
 
@@ -52,7 +51,6 @@ theme:
     - content.code.copy
     - content.code.annotate
     - content.tabs.link
-    - content.action.edit
     - content.tooltips
     - toc.follow
 

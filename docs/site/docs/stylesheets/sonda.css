@@ -596,3 +596,63 @@
   .sonda-hero::after { display: none; }
   .sonda-nav-footer { display: none; }
 }
+
+/* ---------- Hero titles: hide TOC permalink anchor --------------------- */
+/* The `toc: permalink: true` markdown extension appends a `¶` headerlink
+ * to every h1-h6 for deep-linking. Hero titles are decorative page entry
+ * points, not section anchors anyone needs to share, so the anchor adds
+ * visual noise (especially on touch devices where tap=hover keeps the
+ * normally-hidden ¶ permanently visible — flagged on iPhone 2026-05-18). */
+.sonda-hero h1 .headerlink,
+.sonda-section-hero h1 .headerlink {
+  display: none;
+}
+
+/* ---------- Mobile polish ---------------------------------------------- */
+/* Narrow-viewport refinements for the hero. The desktop sizes (3rem title,
+ * 1.35rem subtitle, 3rem padding) are too big for a phone — words wrap
+ * mid-syllable and the hero eats most of the first screen. Same hero,
+ * compressed proportions, still reads as the brand opening. */
+@media (max-width: 600px) {
+  .sonda-hero {
+    padding: 1.75rem 1.25rem;
+    border-radius: 12px;
+    margin-bottom: 1.75rem;
+  }
+
+  .md-typeset .sonda-hero__title,
+  .sonda-hero .sonda-hero__title {
+    font-size: 2rem;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    overflow-wrap: break-word;
+    hyphens: none;
+  }
+
+  .md-typeset .sonda-hero__subtitle,
+  .sonda-hero .sonda-hero__subtitle {
+    font-size: 1.05rem;
+    line-height: 1.5;
+  }
+
+  .sonda-hero__badge {
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
+    padding: 0.22rem 0.7rem 0.22rem 0.5rem;
+  }
+
+  /* Stack the CTAs full-width — easier tap targets, no awkward 3-up wrap. */
+  .sonda-hero__ctas { flex-direction: column; align-items: stretch; }
+  .sonda-hero__ctas .md-button { text-align: center; }
+
+  /* Install snippet keeps `white-space: nowrap` (commands shouldn't wrap)
+   * but bump to a smaller font so more of it fits before horizontal scroll. */
+  .sonda-hero__install { font-size: 0.78rem; padding: 0.55rem 0.75rem; }
+
+  /* Section hero — same proportions story, less drastic. */
+  .sonda-section-hero { padding: 1.25rem 1.25rem; }
+  .md-typeset .sonda-section-hero__title,
+  .sonda-section-hero .sonda-section-hero__title { font-size: 1.55rem; }
+  .md-typeset .sonda-section-hero__subtitle,
+  .sonda-section-hero .sonda-section-hero__subtitle { font-size: 0.98rem; }
+}
