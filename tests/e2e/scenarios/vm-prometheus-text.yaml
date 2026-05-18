@@ -5,30 +5,34 @@
 #
 # Run this scenario after starting the e2e stack:
 #   docker compose -f tests/e2e/docker-compose.yml up -d
-#   sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
+#   sonda run tests/e2e/scenarios/vm-prometheus-text.yaml
 #
 # Verify data arrived:
 #   curl "http://localhost:8428/api/v1/query?query=sonda_e2e_vm_prom_text"
-name: sonda_e2e_vm_prom_text
-rate: 50
-duration: 5s
+version: 2
+kind: runnable
 
-generator:
-  type: sine
-  amplitude: 10.0
-  period_secs: 10
-  offset: 50.0
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: http_push
+    url: "http://localhost:8428/api/v1/import/prometheus"
+    content_type: "text/plain"
+    batch_size: 4096
+  labels:
+    scenario: vm-prometheus-text
+    encoder: prometheus_text
+    sink: http_push
 
-labels:
-  scenario: vm-prometheus-text
-  encoder: prometheus_text
-  sink: http_push
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: http_push
-  url: "http://localhost:8428/api/v1/import/prometheus"
-  content_type: "text/plain"
-  batch_size: 4096
+scenarios:
+  - id: sonda_e2e_vm_prom_text
+    signal_type: metrics
+    name: sonda_e2e_vm_prom_text
+    generator:
+      type: sine
+      amplitude: 10.0
+      period_secs: 10
+      offset: 50.0

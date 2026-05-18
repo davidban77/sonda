@@ -189,7 +189,7 @@ print(total)
 " 2>/dev/null || echo "0"
 }
 
-# Run a single Loki scenario: execute sonda logs, then verify log entries
+# Run a single Loki scenario: execute `sonda run`, then verify log entries
 # arrived in Loki by querying its API with the given label selector.
 # Usage: run_loki_scenario <scenario_file> <label_selector> <description>
 run_loki_scenario() {
@@ -202,8 +202,7 @@ run_loki_scenario() {
     info "  Selector: ${label_selector}"
 
     local timeout_secs=$((SCENARIO_DURATION + 10))
-    "${SONDA_BIN}" logs \
-            --scenario "${scenario_file}" \
+    "${SONDA_BIN}" run "${scenario_file}" \
             --duration "${SCENARIO_DURATION}s" \
             >/dev/null 2>/tmp/sonda-e2e-stderr.log &
     local sonda_pid=$!
@@ -257,8 +256,7 @@ run_kafka_scenario() {
     info "  Topic: ${topic}"
 
     local timeout_secs=$((SCENARIO_DURATION + 10))
-    "${SONDA_BIN}" metrics \
-            --scenario "${scenario_file}" \
+    "${SONDA_BIN}" run "${scenario_file}" \
             --duration "${SCENARIO_DURATION}s" \
             >/dev/null 2>/tmp/sonda-e2e-stderr.log &
     local sonda_pid=$!
@@ -313,8 +311,7 @@ run_scenario() {
     # Run sonda for SCENARIO_DURATION seconds. The scenario YAML also sets duration.
     # Use a background process + wait for portable timeout (macOS has no `timeout`).
     local timeout_secs=$((SCENARIO_DURATION + 10))
-    "${SONDA_BIN}" metrics \
-            --scenario "${scenario_file}" \
+    "${SONDA_BIN}" run "${scenario_file}" \
             --duration "${SCENARIO_DURATION}s" \
             >/dev/null 2>/tmp/sonda-e2e-stderr.log &
     local sonda_pid=$!

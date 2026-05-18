@@ -149,8 +149,8 @@ Dashboards are great for exploration. For repeatable manual tests, run scenarios
 task stack:up
 
 # Run individual scenarios
-sonda metrics --scenario tests/e2e/scenarios/vm-prometheus-text.yaml
-sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
+sonda run tests/e2e/scenarios/vm-prometheus-text.yaml
+sonda run tests/e2e/scenarios/kafka-prometheus-text.yaml
 
 # Verify VictoriaMetrics received data
 curl "http://localhost:8428/api/v1/series?match[]={__name__=%22sonda_e2e_vm_prom_text%22}"

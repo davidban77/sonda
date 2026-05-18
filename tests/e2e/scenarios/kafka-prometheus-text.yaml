@@ -6,7 +6,7 @@
 #
 # Run this scenario after starting the e2e stack:
 #   docker compose -f tests/e2e/docker-compose.yml up -d
-#   sonda metrics --scenario tests/e2e/scenarios/kafka-prometheus-text.yaml
+#   sonda run tests/e2e/scenarios/kafka-prometheus-text.yaml
 #
 # Verify data arrived:
 #   docker exec sonda-e2e-kafka kafka-console-consumer.sh \
@@ -14,25 +14,29 @@
 #     --topic sonda-e2e-metrics \
 #     --from-beginning \
 #     --timeout-ms 5000
-name: sonda_e2e_kafka_prom_text
-rate: 50
-duration: 5s
+version: 2
+kind: runnable
 
-generator:
-  type: sine
-  amplitude: 10.0
-  period_secs: 10
-  offset: 50.0
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: kafka
+    brokers: "localhost:9094"
+    topic: sonda-e2e-metrics
+  labels:
+    scenario: kafka-prometheus-text
+    encoder: prometheus_text
+    sink: kafka
 
-labels:
-  scenario: kafka-prometheus-text
-  encoder: prometheus_text
-  sink: kafka
-
-encoder:
-  type: prometheus_text
-
-sink:
-  type: kafka
-  brokers: "localhost:9094"
-  topic: sonda-e2e-metrics
+scenarios:
+  - id: sonda_e2e_kafka_prom_text
+    signal_type: metrics
+    name: sonda_e2e_kafka_prom_text
+    generator:
+      type: sine
+      amplitude: 10.0
+      period_secs: 10
+      offset: 50.0
