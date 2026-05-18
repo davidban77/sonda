@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.1](https://github.com/davidban77/sonda/compare/v1.9.0...v1.9.1) (2026-05-18)
+
+
+### Features
+
+* **docs:** switch theme from Probe (lime) to Sunrise (coral) + warm dark-mode code surfaces ([#369](https://github.com/davidban77/sonda/issues/369)) ([d8ed9b6](https://github.com/davidban77/sonda/commit/d8ed9b615a28ca08f2db1281ae79fa95933acc8b))
+
+
+### Documentation
+
+* **deployment:** correct --catalog position for Docker invocations; document the dispatch shim ([#367](https://github.com/davidban77/sonda/issues/367)) ([7ef0342](https://github.com/davidban77/sonda/commit/7ef034274fe6db2342006587948cc7a110372e07))
+* modernize site with Probe palette + sine-wave S branding ([#364](https://github.com/davidban77/sonda/issues/364)) ([7915c43](https://github.com/davidban77/sonda/commit/7915c43e5e0745e8ad2ed421b27bb0b831287d12))
+* **scenario-fields:** add Prometheus/Grafana verification guide to §Gap window ([#366](https://github.com/davidban77/sonda/issues/366)) ([2a48555](https://github.com/davidban77/sonda/commit/2a48555c7629fa45e342462fae44220ed64054bb))
+
+
+### Miscellaneous
+
+* **e2e:** migrate fixtures to v2 + update runner for the post-1.9 CLI ([#368](https://github.com/davidban77/sonda/issues/368)) ([dc1d830](https://github.com/davidban77/sonda/commit/dc1d8304db90bbf84c29da11a19bb10a5bd0e1eb))
+* release as 1.9.1 ([#370](https://github.com/davidban77/sonda/issues/370)) ([63ea6af](https://github.com/davidban77/sonda/commit/63ea6afbc9a4e4afdee1883efc4a543b92a02bd5))
+* release-please override → 1.9.1 ([f4be633](https://github.com/davidban77/sonda/commit/f4be63337768dfba75aace2b56dce9e178ab67e0))
+
 ## [1.9.0](https://github.com/davidban77/sonda/compare/v1.8.0...v1.9.0) (2026-05-16)
 
 
