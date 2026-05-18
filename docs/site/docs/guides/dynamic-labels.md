@@ -211,11 +211,13 @@ for testing Loki label indexing or pod-level log aggregation panels.
 
 ## Dynamic labels with the Loki sink
 
-When the sink is `loki`, each unique `dynamic_labels` combination becomes its own **Loki stream** in the push envelope. The rotation values auto-promote into the stream label set — they're queryable in Grafana the same way scenario-level static labels are.
+Point a scenario with `dynamic_labels:` at a Loki sink and each rotating value becomes its own **Loki stream** — the smallest unit Loki indexes by, identified by its label set. The rotation values auto-promote into the stream label set alongside the scenario's static `labels:`, so a rotation through N values shows up in Grafana as N separate log streams, each queryable by that label.
+
+This is how you build a realistic per-source feed from a single scenario entry: one entry stands in for a fleet of senders, but downstream looks like a fleet — per-source dashboards work, alerts can target a single source, and ingest behaviour exercises real per-stream paths instead of one fat stream.
 
 ### Worked example — 20 BGP peers from one scenario
 
-One scenario with a 20-element `values` list produces 20 distinct Loki streams, one per peer, each queryable by `peer_address`:
+Say you want to test a Grafana dashboard that breaks down BGP neighbor state per peer, or an alert that fires when a *specific* peer flaps. You need 20 distinct log streams that share most of their labels but differ in `peer_address`. One scenario with a 20-element `values` list does it:
 
 ```yaml title="examples/bgp-peer-logs.yaml"
 version: 2
@@ -253,7 +255,9 @@ scenarios:
             state: ["established", "active", "open-confirm", "idle"]
 ```
 
-Loki sees one stream per peer:
+### What lands in Loki
+
+Loki sees one stream per peer. The label set on each stream is the merge of the scenario's `labels:` with the current `dynamic_labels` value:
 
 ```
 {device="srl1", peer_address="10.1.2.2",  vendor_facility_process="BGP"}
@@ -262,31 +266,34 @@ Loki sees one stream per peer:
 ...
 ```
 
-Standard Grafana queries work against the per-peer streams:
+In Grafana's stream selector you'll see 20 distinct streams under `device="srl1"`, one per peer address.
 
-```promql
-# All events for a specific peer
+### What queries become possible
+
+Because each peer is its own stream, all the usual LogQL shapes work against the dataset:
+
+```logql
 {peer_address="10.1.2.2"}
+```
+Returns every log line for one specific peer — useful for drilling into a single neighbor.
 
-# Establishment events across all peers
+```logql
 {device="srl1"} |= "established"
+```
+Returns establishment events across all peers on the device — useful for spotting the global pattern.
 
-# Peer state churn — distinct streams matching device
+```logql
 sum by (peer_address) (count_over_time({device="srl1"}[5m]))
 ```
+Returns a per-peer event count over the last 5 minutes — the shape you'd graph as "which peers are noisiest right now".
 
-### Cardinality cap — `max_streams_per_push`
+### Cardinality and the per-push cap
 
-The Loki sink refuses pushes that would emit more than [`max_streams_per_push`](../configuration/sinks.md#loki) unique streams (default `128`). The cap is per-flush, not lifetime — high-cardinality rotations work fine if the batch size is small enough that each flush stays under the cap.
+Loki indexes by stream, and unique stream count is the dimension that drives ingester memory and index cost. Pushing too many distinct streams in a single request is the classic way to overload an ingester, so the Sonda Loki sink caps unique streams **per push** at `max_streams_per_push` (default `128`). A flush that would exceed the cap fails with a message naming the offending count and the cap.
 
-When you POST a scenario to `sonda-server`, the server emits a registration-time preview naming the predicted stream count and the active cap, so cardinality issues surface before runtime:
+The cap is per-flush, not lifetime — a scenario that rotates through hundreds of values can still work if each flush stays under the cap (drop `batch_size` on the sink so each push carries fewer entries, hence fewer distinct streams).
 
-```
-scenario entry 'srl1_bgp_logs' will produce up to 20 distinct Loki streams
-(dynamic_labels: peer_address). max_streams_per_push is 128.
-```
-
-If your scenario genuinely needs more than 128 streams, raise the cap on the sink:
+If your Loki ingester is sized for higher cardinality, raise the cap on the [Loki sink](../configuration/sinks.md#loki):
 
 ```yaml
 sink:
@@ -294,6 +301,17 @@ sink:
   url: http://localhost:3100
   max_streams_per_push: 512
 ```
+
+### Stream-count preview when posting to `sonda-server`
+
+When you POST a scenario to `sonda-server`, the response includes a registration-time preview naming the predicted stream count and the active cap — so high-cardinality misconfigurations surface at submission time, not the first time a flush fails:
+
+```
+scenario entry 'srl1_bgp_logs' will produce up to 20 distinct Loki streams
+(dynamic_labels: peer_address). max_streams_per_push is 128.
+```
+
+See the [`dynamic_labels` field reference](../configuration/scenario-fields.md#dynamic-labels) for the full set of options on the rotating label itself.
 
 ## Runnable examples
 
