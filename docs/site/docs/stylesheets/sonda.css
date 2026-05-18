@@ -3,8 +3,10 @@
  *
  * Sister to the Modern Network Observability hub and the AutoCon5 workshops:
  * shared layout DNA, Inter + JetBrains Mono. Sonda's own palette:
- *   Probe — midnight navy + sonar lime. The dominant surface is deep ocean
- *   (slate-900 → blue-900), the accent is the sonar-ping return (lime-400/500).
+ *   Sunrise — midnight navy + warm coral. The dominant surface is deep
+ *   ocean (slate-900 → blue-900); the accent is dawn light hitting the
+ *   surface (orange-500/300). Coral lowers saturation vs. the earlier
+ *   lime accent so dark-mode code surfaces read editorial, not console.
  * =========================================================================== */
 
 :root {
@@ -13,14 +15,14 @@
   --sonda-gradient-mid:   #1e3a8a;   /* blue-900   */
   --sonda-gradient-end:   #1e40af;   /* blue-800   */
 
-  /* Sonar ping — lime accent */
-  --sonda-accent:         #84cc16;   /* lime-500   */
-  --sonda-accent-bright:  #a3e635;   /* lime-400   */
-  --sonda-ink:            #0a1f0a;   /* deep green ink, sits on lime */
+  /* Sunrise — warm coral accent */
+  --sonda-accent:         #f97316;   /* orange-500 */
+  --sonda-accent-bright:  #fdba74;   /* orange-300 */
+  --sonda-ink:            #431407;   /* orange-950 — dark warm brown for text on coral */
 
   /* Hairline / surface tints */
   --sonda-tint-soft:      rgba(30, 64, 175, 0.06);
-  --sonda-tint-accent:    rgba(132, 204, 22, 0.10);
+  --sonda-tint-accent:    rgba(249, 115, 22, 0.10);
 }
 
 [data-md-color-scheme="slate"] {
@@ -28,22 +30,28 @@
   --sonda-gradient-mid:   #0c1326;   /* slate-900 cooler */
   --sonda-gradient-end:   #1e3a8a;   /* blue-900   */
 
-  --sonda-accent:         #a3e635;   /* lime-400 (brighter for dark) */
-  --sonda-accent-bright:  #bef264;   /* lime-300 */
-  --sonda-ink:            #0a1f0a;
+  --sonda-accent:         #fdba74;   /* orange-300 (lifted for dark) */
+  --sonda-accent-bright:  #fed7aa;   /* orange-200 (softer, less neon) */
+  --sonda-ink:            #431407;
 
-  --sonda-tint-soft:      rgba(163, 230, 53, 0.06);
-  --sonda-tint-accent:    rgba(163, 230, 53, 0.12);
+  --sonda-tint-soft:      rgba(253, 186, 116, 0.06);
+  --sonda-tint-accent:    rgba(253, 186, 116, 0.12);
+
+  /* Warm dark-mode code surfaces — drop the cool midnight grey for stone,
+   * which reads as "editorial dark" rather than "console output". Pairs
+   * naturally with the warm coral accent. */
+  --md-code-bg-color:     #1c1917;   /* stone-900 */
+  --md-code-fg-color:     #e7e5e4;   /* stone-200 */
 }
 
-/* Pull Material's accent toward our lime, in both schemes. */
+/* Pull Material's accent toward our coral, in both schemes. */
 [data-md-color-scheme="default"] {
-  --md-accent-fg-color: #65a30d;            /* lime-600 — slightly darker for AA on white */
-  --md-accent-fg-color--transparent: rgba(101, 163, 13, 0.10);
+  --md-accent-fg-color: #ea580c;            /* orange-600 — slightly darker for AA on white */
+  --md-accent-fg-color--transparent: rgba(234, 88, 12, 0.10);
 }
 [data-md-color-scheme="slate"] {
-  --md-accent-fg-color: #a3e635;
-  --md-accent-fg-color--transparent: rgba(163, 230, 53, 0.12);
+  --md-accent-fg-color: #fdba74;
+  --md-accent-fg-color--transparent: rgba(253, 186, 116, 0.12);
 }
 
 /* ---------- Hero (homepage) -------------------------------------------- */
@@ -61,13 +69,13 @@
   margin: 0 0 2.5rem;
   box-shadow:
     0 12px 32px rgba(15, 23, 42, 0.35),
-    0 0 0 1px rgba(163, 230, 53, 0.08) inset;
+    0 0 0 1px rgba(253, 186, 116, 0.08) inset;
   position: relative;
   overflow: hidden;
 }
 
-/* Sonar ping — two concentric lime rings in the bottom-right, soft and
- * subtle so they read as a probe return rather than decoration. */
+/* Sunrise glow — a warm radial in the bottom-right, soft and subtle so it
+ * reads as the first light on the horizon rather than decoration. */
 .sonda-hero::before {
   content: "";
   position: absolute;
@@ -78,15 +86,14 @@
   border-radius: 50%;
   background:
     radial-gradient(closest-side,
-      rgba(163, 230, 53, 0.16) 0%,
-      rgba(163, 230, 53, 0.10) 36%,
-      rgba(163, 230, 53, 0.04) 56%,
+      rgba(253, 186, 116, 0.18) 0%,
+      rgba(253, 186, 116, 0.10) 36%,
+      rgba(253, 186, 116, 0.04) 56%,
       transparent 70%);
   pointer-events: none;
 }
 
-/* Faint horizon scan-lines — quieter than v1, kept for the "synthetic
- * signal" texture nod. */
+/* Faint horizon scan-lines — kept for the "synthetic signal" texture nod. */
 .sonda-hero::after {
   content: "";
   position: absolute;
@@ -112,9 +119,9 @@
   letter-spacing: 0.18em;
   text-transform: uppercase;
   padding: 0.3rem 0.85rem 0.3rem 0.6rem;
-  background: rgba(163, 230, 53, 0.14);
+  background: rgba(253, 186, 116, 0.14);
   color: var(--sonda-accent-bright);
-  border: 1px solid rgba(163, 230, 53, 0.30);
+  border: 1px solid rgba(253, 186, 116, 0.30);
   border-radius: 999px;
   margin-bottom: 1.1rem;
 }
@@ -183,7 +190,7 @@
   color: var(--sonda-ink);
   border-color: var(--sonda-accent-bright);
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(163, 230, 53, 0.30);
+  box-shadow: 0 6px 18px rgba(253, 186, 116, 0.30);
 }
 
 .sonda-hero__install {
@@ -193,7 +200,7 @@
   gap: 0.6rem;
   padding: 0.65rem 0.9rem;
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(163, 230, 53, 0.20);
+  border: 1px solid rgba(253, 186, 116, 0.20);
   border-radius: 8px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 0.88rem;
@@ -215,7 +222,7 @@
   background: linear-gradient(
     100deg,
     rgba(30, 64, 175, 0.08) 0%,
-    rgba(132, 204, 22, 0.05) 100%
+    rgba(249, 115, 22, 0.05) 100%
   );
   border-left: 4px solid var(--sonda-gradient-mid);
   border-radius: 0 10px 10px 0;
@@ -227,7 +234,7 @@
   background: linear-gradient(
     100deg,
     rgba(30, 58, 138, 0.18) 0%,
-    rgba(163, 230, 53, 0.06) 100%
+    rgba(253, 186, 116, 0.06) 100%
   );
   border-left-color: var(--sonda-accent);
 }
@@ -324,8 +331,10 @@
   box-shadow: 0 4px 12px rgba(30, 64, 175, 0.14);
 }
 
+/* Dark-mode code-block hover shadow: depth only, no brand tint. The earlier
+ * tinted shadow made stacked code blocks feel like glowing scope traces. */
 [data-md-color-scheme="slate"] .md-typeset .highlight:hover pre > code {
-  box-shadow: 0 4px 12px rgba(163, 230, 53, 0.10);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
 }
 
 .md-typeset blockquote {
@@ -346,7 +355,7 @@
 }
 
 [data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
-  background: rgba(163, 230, 53, 0.06);
+  background: rgba(253, 186, 116, 0.06);
 }
 
 .md-typeset h1 {
@@ -366,6 +375,10 @@
   letter-spacing: -0.005em;
 }
 
+/* Inline `code` — light mode keeps the navy tint that David liked. Dark mode
+ * uses a soft warm-stone background + pastel peach text so the word reads
+ * as "highlighted token" rather than "live signal" — much less video-game
+ * than the earlier lime-on-near-black. */
 .md-typeset code {
   background: rgba(30, 64, 175, 0.08);
   color: #1e3a8a;
@@ -375,11 +388,11 @@
 }
 
 [data-md-color-scheme="slate"] .md-typeset code {
-  background: rgba(163, 230, 53, 0.10);
-  color: var(--sonda-accent-bright);
+  background: rgba(231, 229, 228, 0.08);     /* warm stone tint */
+  color: #fde4cd;                            /* pastel peach */
 }
 
-/* Tabbed code blocks — active label uses lime accent. */
+/* Tabbed code blocks — active label uses the brand accent. */
 .md-typeset .tabbed-labels > label { font-weight: 600; }
 
 .md-typeset .tabbed-labels > input:checked + label {
@@ -400,7 +413,7 @@
   background: var(--sonda-accent-bright) !important;
 }
 
-/* Links — lime on hover */
+/* Links — coral on hover. */
 .md-typeset a {
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -469,13 +482,13 @@
   .md-sidebar--secondary { margin-left: auto; }
 }
 
-/* ---------- Header & tabs (navy + lime) -------------------------------- */
+/* ---------- Header & tabs (navy + coral) ------------------------------- */
 
 .md-header {
   background-color: var(--sonda-gradient-start);
   box-shadow:
-    0 0 0 1px rgba(163, 230, 53, 0.06) inset,
-    0 1px 0 rgba(163, 230, 53, 0.10);
+    0 0 0 1px rgba(253, 186, 116, 0.06) inset,
+    0 1px 0 rgba(253, 186, 116, 0.10);
 }
 
 .md-tabs {
@@ -485,7 +498,7 @@
     var(--sonda-gradient-mid) 60%,
     var(--sonda-gradient-end) 100%
   );
-  border-bottom: 1px solid rgba(163, 230, 53, 0.18);
+  border-bottom: 1px solid rgba(253, 186, 116, 0.18);
 }
 
 .md-tabs__link {
@@ -555,14 +568,14 @@
   font-weight: 600;
   background: var(--sonda-tint-accent);
   color: var(--sonda-gradient-mid);
-  border: 1px solid rgba(132, 204, 22, 0.30);
+  border: 1px solid rgba(249, 115, 22, 0.30);
   border-radius: 999px;
   white-space: nowrap;
 }
 
 [data-md-color-scheme="slate"] .md-typeset .wire {
   color: var(--sonda-accent-bright);
-  border-color: rgba(163, 230, 53, 0.35);
+  border-color: rgba(253, 186, 116, 0.35);
 }
 
 /* ---------- Footer ----------------------------------------------------- */
@@ -573,7 +586,7 @@
 
 .md-footer-meta {
   background: var(--sonda-gradient-start);
-  border-top: 1px solid rgba(163, 230, 53, 0.10);
+  border-top: 1px solid rgba(253, 186, 116, 0.10);
 }
 
 /* ---------- Print: hide hero embellishments ---------------------------- */
