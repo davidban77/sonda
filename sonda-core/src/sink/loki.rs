@@ -1,29 +1,5 @@
-//! Loki sink — batches encoded log lines and delivers them to Grafana Loki via HTTP POST.
-//!
-//! The sink accumulates entries in an internal batch. Each entry pairs a
-//! timestamp-and-line with an optional **per-event label overlay** so events
-//! produced by a single scenario can be split across multiple Loki streams
-//! based on `dynamic_labels` rotation. When the batch reaches `batch_size`,
-//! or when [`Sink::flush`] is called explicitly, the batch is grouped by
-//! (constructor labels + overlay) into one Loki stream per unique label
-//! combination and POSTed to `{url}/loki/api/v1/push`.
-//!
-//! The Loki push API format (multi-stream, one stream per unique label set):
-//! ```json
-//! {
-//!   "streams": [
-//!     { "stream": { "device": "srl1", "peer_address": "10.1.2.2" },
-//!       "values": [["<unix_nanoseconds>", "<log_line>"], ...] },
-//!     { "stream": { "device": "srl1", "peer_address": "10.1.7.2" },
-//!       "values": [["<unix_nanoseconds>", "<log_line>"], ...] }
-//!   ]
-//! }
-//! ```
-//!
-//! Per-event labels arrive via [`Sink::write_log_event`], which is called by
-//! the log runner. Direct callers of [`Sink::write`] (e.g. tests, ad-hoc
-//! integrations) get the legacy single-stream behaviour using only the
-//! constructor labels — no per-event labels are available at that entry point.
+//! Loki sink — batches encoded log lines, groups by (constructor labels +
+//! per-event overlay), and POSTs as a multi-stream push envelope.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -33,84 +9,33 @@ use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
 use crate::SondaError;
 
-/// Default batch size in entries — sized so low-rate scenarios flush within seconds.
 pub const DEFAULT_BATCH_SIZE: usize = 5;
 
-/// Default maximum unique Loki streams emitted in a single push. A flush that
-/// would exceed this errors loudly so high-cardinality `dynamic_labels`
-/// configurations surface as a config issue rather than a silent Loki melt.
-/// Override per-sink via `LokiSinkConfig::max_streams_per_push`.
+/// Default cap on unique streams per push. Above this, flushes error so
+/// high-cardinality `dynamic_labels` configurations surface as a config
+/// issue rather than a silent Loki melt.
 pub const DEFAULT_MAX_STREAMS_PER_PUSH: u32 = 128;
 
-/// A single buffered Loki entry — the encoded log line plus any per-event
-/// label overlay that should merge into the stream label set at flush time.
-///
-/// The overlay is empty for entries that arrived via the legacy
-/// [`Sink::write`] path; entries from [`Sink::write_log_event`] capture
-/// `event.labels` so events with rotating `dynamic_labels` group into
-/// distinct Loki streams.
 struct LokiEntry {
-    /// Unix-nanoseconds timestamp string, as Loki's push API requires.
     timestamp_ns: String,
-    /// The encoded log line, with any trailing `\n` stripped for clean
-    /// rendering in the Loki UI.
     line: String,
-    /// Per-event labels merged into the stream label set at flush time.
-    /// Event labels win on key collision with constructor labels.
-    /// Empty for entries from the legacy `write()` path.
     overlay: BTreeMap<String, String>,
 }
 
-/// Delivers encoded log lines to Grafana Loki via its HTTP push API.
-///
-/// Log lines are accumulated in a batch and grouped by combined label set
-/// (constructor labels + per-event overlay) at flush time. Each unique
-/// label combination becomes one Loki stream in the push envelope.
 pub struct LokiSink {
-    /// The ureq HTTP agent used for all requests.
     client: ureq::Agent,
-    /// Base URL for the Loki instance, e.g. `"http://localhost:3100"`.
     url: String,
-    /// Constructor-time stream labels, e.g. `{"job": "sonda", "env": "dev"}`.
-    /// Per-event labels merge into this set at flush time.
     labels: HashMap<String, String>,
-    /// Flush threshold in entries. When `batch.len() == batch_size`, the batch is sent.
     batch_size: usize,
-    /// Hard cap on unique streams per push — see [`DEFAULT_MAX_STREAMS_PER_PUSH`].
     max_streams_per_push: u32,
-    /// Accumulated entries waiting to be grouped and sent.
     batch: Vec<LokiEntry>,
-    /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
-    /// Maximum age a non-empty batch may reach before a time-based flush.
-    /// `Duration::ZERO` disables time-based flushing.
     max_buffer_age: Duration,
-    /// When the batch was last sent — drives the time-based flush check.
     last_flush_at: Instant,
-    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
     last_write_delivered: bool,
 }
 
 impl LokiSink {
-    /// Create a new `LokiSink`.
-    ///
-    /// # Arguments
-    ///
-    /// - `url` — the base URL of the Loki instance, e.g. `"http://localhost:3100"`.
-    ///   The push endpoint `/loki/api/v1/push` is appended automatically.
-    /// - `labels` — constructor-time stream labels attached to every log push.
-    ///   Per-event labels (when present, via [`Sink::write_log_event`]) merge
-    ///   into this set at flush time.
-    /// - `batch_size` — number of log entries to accumulate before auto-flushing.
-    /// - `max_streams_per_push` — hard cap on unique streams per push. Flushes
-    ///   that would exceed this error loudly. Use [`DEFAULT_MAX_STREAMS_PER_PUSH`]
-    ///   if no override is needed.
-    /// - `max_buffer_age` — maximum age a non-empty batch may reach before a
-    ///   time-based flush. `Duration::ZERO` disables time-based flushing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SondaError::Sink`] if the URL scheme is invalid (not `http://` or `https://`).
     pub fn new(
         url: String,
         labels: HashMap<String, String>,
@@ -145,12 +70,8 @@ impl LokiSink {
         })
     }
 
-    /// Combine the constructor labels with a per-event overlay. Overlay wins
-    /// on key collision so a scenario's `dynamic_labels` rotation can take
-    /// precedence over constructor defaults.
-    ///
-    /// Returns a sorted `BTreeMap` so the result is stable as a group key
-    /// regardless of insertion order.
+    /// Overlay wins on key collision so `dynamic_labels` rotation can take
+    /// precedence over constructor labels.
     fn combine_labels(&self, overlay: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut combined: BTreeMap<String, String> = self
             .labels
@@ -163,13 +84,6 @@ impl LokiSink {
         combined
     }
 
-    /// Group the current batch by combined label set. Returns one entry per
-    /// unique combination, preserving insertion order of values within each
-    /// group (Loki accepts arbitrary value order but stable order is nicer
-    /// for debugging).
-    ///
-    /// The group key is a sorted `BTreeMap` so identical label sets always
-    /// hash to the same bucket regardless of overlay insertion order.
     fn group_by_labels(&self) -> BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>> {
         let mut groups: BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>> = BTreeMap::new();
         for entry in &self.batch {
@@ -179,7 +93,6 @@ impl LokiSink {
         groups
     }
 
-    /// Build the multi-stream Loki push JSON envelope from grouped entries.
     fn build_envelope(groups: &BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>>) -> String {
         let streams = groups
             .iter()
@@ -205,27 +118,13 @@ impl LokiSink {
         format!("{{\"streams\":[{}]}}", streams)
     }
 
-    /// POST the current batch to Loki and clear it.
-    ///
-    /// Entries are grouped by combined label set (constructor labels + per-event
-    /// overlay) so each unique combination becomes its own stream in the push
-    /// envelope. If the grouping would exceed [`max_streams_per_push`](Self), the
-    /// batch is cleared and a loud error returned — high-cardinality
-    /// `dynamic_labels` configurations surface as a config issue rather than a
-    /// silent Loki melt.
-    ///
-    /// Uses the configured [`RetryPolicy`] for transient HTTP failures. When no
-    /// policy is configured, errors are returned immediately. The batch is
-    /// always cleared after the HTTP call to prevent unbounded buffer growth.
     fn flush_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
         }
 
-        // Build the body in a scoped block so the `&LokiEntry` borrows into
-        // `self.batch` drop before we touch other `self` fields. Without this
-        // the borrow checker (correctly) refuses to let us assign to
-        // `self.last_flush_at` while `groups` is still alive.
+        // Scoped so `groups`' borrows into `self.batch` drop before we mutate
+        // other `self` fields below.
         let body = {
             let groups = self.group_by_labels();
             let stream_count = groups.len();
@@ -343,19 +242,6 @@ impl LokiSink {
 }
 
 impl Sink for LokiSink {
-    /// Append one encoded log line to the batch without any per-event labels.
-    ///
-    /// Used by direct callers (tests, ad-hoc integrations) where no
-    /// [`LogEvent`] is available. The entry's overlay is empty, so it groups
-    /// into the constructor-labels-only stream at flush time.
-    ///
-    /// The log runner does NOT call this method — it calls
-    /// [`Sink::write_log_event`] so per-event labels are captured. Use that
-    /// path when you have a `LogEvent` reference.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SondaError::Sink`] if an auto-flush fails.
     fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         let ts_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -365,15 +251,9 @@ impl Sink for LokiSink {
         self.push_entry(ts_ns, data, BTreeMap::new())
     }
 
-    /// Append one encoded log line to the batch, capturing the event's
-    /// labels as a per-stream overlay so `dynamic_labels` rotation values
-    /// promote to distinct Loki streams at flush time.
-    ///
-    /// The event's `timestamp` is preferred over `SystemTime::now()` so
-    /// Loki sees event-time, not write-time — important for log-replay
-    /// scenarios where the event time is set deterministically by the
-    /// generator.
     fn write_log_event(&mut self, event: &LogEvent, encoded: &[u8]) -> Result<(), SondaError> {
+        // Prefer event-time over wall-clock — meaningful for log-replay
+        // scenarios where the generator sets a deterministic timestamp.
         let ts_ns = event
             .timestamp
             .duration_since(UNIX_EPOCH)
@@ -388,14 +268,6 @@ impl Sink for LokiSink {
         self.push_entry(ts_ns, encoded, overlay)
     }
 
-    /// Flush any remaining buffered entries to Loki.
-    ///
-    /// Safe to call multiple times. Returns `Ok(())` immediately if the batch is empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SondaError::Sink`] if the HTTP request fails or the batch
-    /// would exceed [`max_streams_per_push`](Self::new).
     fn flush(&mut self) -> Result<(), SondaError> {
         self.flush_batch()
     }
@@ -406,9 +278,6 @@ impl Sink for LokiSink {
 }
 
 impl LokiSink {
-    /// Shared push path for both [`Sink::write`] (empty overlay) and
-    /// [`Sink::write_log_event`] (event-derived overlay). Owns the
-    /// newline-stripping, batch append, and auto-flush trigger.
     fn push_entry(
         &mut self,
         timestamp_ns: String,
@@ -1417,19 +1286,6 @@ sink:
         }
     }
 
-    // -------------------------------------------------------------------------
-    // write_log_event: per-event labels promote to Loki stream labels.
-    //
-    // These tests verify the fix for issue #296 — `dynamic_labels` rotation
-    // values now appear as queryable Loki stream labels instead of being
-    // silently dropped at the sink boundary. Each test builds a LokiSink
-    // against a mock HTTP server, feeds it crafted LogEvents, flushes, and
-    // asserts on the streams the server received.
-    // -------------------------------------------------------------------------
-
-    /// Build a LogEvent with the given per-event labels and message.
-    /// Uses a fixed timestamp so assertions on the serialized envelope are
-    /// stable across test runs.
     fn make_log_event(labels: &[(&str, &str)], message: &str) -> crate::model::log::LogEvent {
         use crate::model::log::{LogEvent, Severity};
         use crate::model::metric::Labels;
@@ -1446,7 +1302,6 @@ sink:
         )
     }
 
-    /// Parse the captured request body and return the `streams` array.
     fn parse_streams(body: Vec<u8>) -> Vec<serde_json::Value> {
         let body = String::from_utf8(body).expect("UTF-8");
         let parsed: serde_json::Value =
@@ -1459,9 +1314,6 @@ sink:
 
     #[test]
     fn write_log_event_single_stream_when_no_per_event_labels() {
-        // Empty event.labels means no overlay. Constructor labels remain the
-        // only stream labels — single stream in the envelope, matching the
-        // pre-PR behaviour for this case.
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1483,8 +1335,6 @@ sink:
 
     #[test]
     fn write_log_event_multi_stream_grouping_by_event_labels() {
-        // Two events with distinct `peer_address` overlays must produce two
-        // streams in the envelope, each grouping the matching events.
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1509,7 +1359,6 @@ sink:
             "two distinct peer_address values must produce two streams"
         );
 
-        // Find each stream by its peer_address and check the line count.
         let mut by_peer: std::collections::HashMap<String, usize> = Default::default();
         for s in &streams {
             let peer = s["stream"]["peer_address"]
@@ -1530,9 +1379,6 @@ sink:
 
     #[test]
     fn write_log_event_overlay_overrides_constructor_label_on_conflict() {
-        // When an event label collides with a constructor label key, the
-        // event value wins. This lets `dynamic_labels` rotation take
-        // precedence over scenario-level static labels.
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1563,8 +1409,6 @@ sink:
 
     #[test]
     fn flush_with_stream_count_at_cap_succeeds() {
-        // Exactly N=cap streams in a single flush must succeed. Sets cap=3
-        // and pushes 3 events with distinct overlays.
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1587,9 +1431,6 @@ sink:
 
     #[test]
     fn flush_exceeding_cap_returns_helpful_error_and_clears_batch() {
-        // cap=2, push 3 distinct-label events → flush must error with a
-        // message that names the count, the cap, and points at the
-        // workaround. Batch is cleared so subsequent writes can recover.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         drop(listener);
@@ -1617,7 +1458,6 @@ sink:
             "must point at the workaround: {msg}"
         );
 
-        // Subsequent flush (now empty) must be a no-op success.
         assert!(
             sink.flush().is_ok(),
             "batch must be cleared after cap error"
@@ -1626,9 +1466,6 @@ sink:
 
     #[test]
     fn direct_write_falls_back_to_constructor_labels_only() {
-        // Calling Sink::write directly (bypassing the log runner) must keep
-        // the legacy single-stream behaviour: no overlay, one stream from
-        // constructor labels only. Backward-compatible for direct callers.
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 

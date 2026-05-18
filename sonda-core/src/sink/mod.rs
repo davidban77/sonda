@@ -290,35 +290,20 @@ pub enum SinkConfig {
     KafkaDisabled {},
 
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
-    ///
-    /// Each call to `write_log_event()` (or `write()` for non-runner callers)
-    /// appends one entry to the batch. When the batch reaches `batch_size`,
-    /// it is grouped by combined label set (constructor labels + per-event
-    /// overlay) and POSTed as a multi-stream push envelope to
-    /// `{url}/loki/api/v1/push`. Call `flush()` at shutdown to send any
-    /// remaining buffered entries.
-    ///
-    /// Constructor labels are sourced from the scenario-level `labels`
-    /// configuration and passed to [`create_sink()`] via the `labels`
-    /// parameter. Per-event labels (from `dynamic_labels` rotation) merge
-    /// into the stream label set at flush time, producing one Loki stream
-    /// per unique combination.
-    ///
-    /// Requires the `http` Cargo feature to be enabled.
+    /// Entries are grouped by combined label set (constructor labels + per-event
+    /// overlay from `dynamic_labels`) into one stream per unique combination.
+    /// Requires the `http` Cargo feature.
     #[cfg(feature = "http")]
     #[cfg_attr(feature = "config", serde(rename = "loki"))]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
         url: String,
 
-        /// Flush threshold in log entries. Defaults to `100` if not specified.
+        /// Flush threshold in log entries.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
 
-        /// Hard cap on unique streams per push. A flush that would exceed
-        /// this errors loudly so high-cardinality `dynamic_labels`
-        /// configurations surface as a config issue rather than a silent
-        /// Loki melt. Defaults to
+        /// Hard cap on unique streams per push. Defaults to
         /// [`DEFAULT_MAX_STREAMS_PER_PUSH`](loki::DEFAULT_MAX_STREAMS_PER_PUSH).
         #[cfg_attr(feature = "config", serde(default))]
         max_streams_per_push: Option<u32>,
