@@ -27,18 +27,23 @@ docker pull ghcr.io/davidban77/sonda:latest
 
 ## Running with Docker
 
-The default entrypoint is `sonda-server`, which starts the HTTP API on port 8080.
-See [Server API](sonda-server.md) for the full endpoint reference.
+The default entrypoint is `sonda-server`, which starts the HTTP API on port 8080. See [Server API](sonda-server.md) for the full endpoint reference.
 
 ```bash
-# Start the server
+# Start the server (default behaviour)
 docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
 
-# Run the CLI against a mounted catalog (auto-detected as a sonda subcommand)
+# Run the CLI against a mounted catalog by @name
 docker run --rm \
   -v "$PWD/my-catalog":/catalog \
   ghcr.io/davidban77/sonda:latest \
-  --catalog /catalog run @cpu-spike
+  run @cpu-spike --catalog /catalog
+
+# List what's in the mounted catalog
+docker run --rm \
+  -v "$PWD/my-catalog":/catalog \
+  ghcr.io/davidban77/sonda:latest \
+  list --catalog /catalog
 
 # Or run a single file directly
 docker run --rm \
@@ -47,15 +52,27 @@ docker run --rm \
   run /work/cpu-spike.yaml
 ```
 
-!!! info "No `--entrypoint /sonda` needed"
-    The default entrypoint inspects `argv[1]` and `exec`s the sibling `sonda` CLI when
-    it matches a known subcommand (`run`, `list`, `show`, `new`). Recipes that pass
-    `--entrypoint /sonda` still work.
+!!! info "`argv[1]` must be the subcommand"
+    The default entrypoint is `sonda-server`, which inspects `argv[1]` and `exec`s the sibling `sonda` CLI when it matches one of the four subcommands (`run`, `list`, `show`, `new`). That means **global flags like `--catalog` belong after the subcommand** when running through the default entrypoint — `sonda run @x --catalog /catalog`, not `sonda --catalog /catalog run @x`. The host CLI accepts both orderings; the Docker constraint is the dispatch shim, not clap.
 
-The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML
-files (typically `kind: runnable` and `kind: composable` v2 files) at any path inside the
-container and pass `--catalog <path>` to point `sonda` at it. See
-[Catalogs](../guides/scenarios.md) for the directory layout.
+    For invocations that don't start with a subcommand (`--help`, `--version`, or the global-flag-first style), override the entrypoint:
+
+    ```bash
+    # Inspect the 4-verb CLI surface
+    docker run --rm --entrypoint /sonda \
+      ghcr.io/davidban77/sonda:latest --help
+
+    # Global-flag-first form, matching the host CLI
+    docker run --rm --entrypoint /sonda \
+      -v "$PWD/my-catalog":/catalog \
+      ghcr.io/davidban77/sonda:latest \
+      --catalog /catalog list
+    ```
+
+The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML files (typically `kind: runnable` and `kind: composable` v2 files) at any path inside the container and pass `--catalog <path>` to point `sonda` at it. See [Catalogs](../guides/scenarios.md) for the directory layout.
+
+!!! warning "Pre-1.9 env vars are gone"
+    Earlier releases let the image discover scenarios from `SONDA_PACK_PATH=/packs` and `SONDA_SCENARIO_PATH=/scenarios` env vars (with companion `/packs` and `/scenarios` directories baked into the image). Both were dropped in 1.9. Discovery is explicit via `--catalog <dir>` — no env-var fallback, no implicit search path. Old recipes built around `docker run … run @scenario` (expecting `SONDA_PACK_PATH` to do the lookup) will fail with "catalog dir does not exist or is not a directory" or a `@name` resolution error — add `--catalog /catalog` and mount your catalog volume there.
 
 ## Authentication
 
