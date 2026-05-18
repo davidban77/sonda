@@ -117,6 +117,7 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
         SinkConfig::Loki {
             url,
             batch_size: Some(5),
+            max_streams_per_push: None,
             max_buffer_age: Some("0s".to_string()),
             retry: None,
         },
@@ -180,6 +181,7 @@ fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
         SinkConfig::Loki {
             url: dead_url,
             batch_size: Some(500),
+            max_streams_per_push: None,
             max_buffer_age: Some("250ms".to_string()),
             retry: None,
         },
@@ -228,6 +230,7 @@ fn fail_policy_exits_thread_with_sink_error() {
         SinkConfig::Loki {
             url,
             batch_size: Some(5),
+            max_streams_per_push: None,
             max_buffer_age: Some("0s".to_string()),
             retry: None,
         },

@@ -176,6 +176,7 @@ fn parse_sink_override(name: &str, endpoint: Option<&str>) -> Result<SinkConfig>
                 Ok(SinkConfig::Loki {
                     url: url.to_string(),
                     batch_size: None,
+                    max_streams_per_push: None,
                     max_buffer_age: None,
                     retry: None,
                 })
