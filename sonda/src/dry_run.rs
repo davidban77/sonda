@@ -10,7 +10,7 @@ use sonda_core::compiler::timing::{
     uniform_crossing_secs, Operator, TimingError,
 };
 use sonda_core::compiler::{DelayClause, WhileClause, WhileOp};
-use sonda_core::config::validate::parse_duration;
+use sonda_core::config::validate::{parse_duration, validate_sink_config};
 use sonda_core::generator::GeneratorConfig;
 
 use crate::sink_format::sink_display;
@@ -61,10 +61,10 @@ pub fn print_dry_run_compiled(
     Ok(())
 }
 
-/// Surface alias-validation errors that would otherwise only fire inside
-/// `prepare_entries` (which dry-run never calls). Today this catches the
-/// `flap` `enum:` mutual-exclusion check; extend here for any future alias
-/// mutex / shape constraint that should reach operators at dry-run time.
+/// Surface alias-validation and sink-config errors that would otherwise only
+/// fire inside `prepare_entries` (which dry-run never calls) or the sink
+/// factory at run time. Extend here for any future invariant that should
+/// reach operators at dry-run time.
 fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
     for entry in &compiled.entries {
         if let Some(GeneratorConfig::Flap {
@@ -81,6 +81,10 @@ fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
                 ));
             }
         }
+        validate_sink_config(&entry.sink).map_err(|e| {
+            let id = entry.id.as_deref().unwrap_or("<anonymous>");
+            anyhow::anyhow!("scenario '{id}': {e}")
+        })?;
     }
     Ok(())
 }
@@ -1140,5 +1144,98 @@ scenarios:
             !body.contains("first_open"),
             "first_open must be omitted when None, got:\n{body}"
         );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn dry_run_rejects_bad_sink_max_buffer_age() {
+        let compiled = compile(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: bad
+    signal_type: metrics
+    name: metric_a
+    generator:
+      type: constant
+      value: 1.0
+    sink:
+      type: http_push
+      url: "http://localhost:9090/push"
+      max_buffer_age: "garbage"
+"#,
+        );
+        let err = validate_alias_invariants(&compiled).expect_err("must reject garbage duration");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("garbage"),
+            "error must mention offending value, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn dry_run_rejects_bad_sink_retry_initial_backoff() {
+        let compiled = compile(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: bad
+    signal_type: metrics
+    name: metric_a
+    generator:
+      type: constant
+      value: 1.0
+    sink:
+      type: http_push
+      url: "http://localhost:9090/push"
+      retry:
+        max_attempts: 3
+        initial_backoff: "garbage"
+        max_backoff: "5s"
+"#,
+        );
+        let err =
+            validate_alias_invariants(&compiled).expect_err("must reject garbage initial_backoff");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("garbage"),
+            "error must mention offending value, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn dry_run_accepts_valid_sink_durations() {
+        let compiled = compile(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: ok
+    signal_type: metrics
+    name: metric_a
+    generator:
+      type: constant
+      value: 1.0
+    sink:
+      type: http_push
+      url: "http://localhost:9090/push"
+      max_buffer_age: "5s"
+      retry:
+        max_attempts: 3
+        initial_backoff: "100ms"
+        max_backoff: "5s"
+"#,
+        );
+        assert!(validate_alias_invariants(&compiled).is_ok());
     }
 }
