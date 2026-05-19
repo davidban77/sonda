@@ -423,7 +423,14 @@ fn delay_clause_display(delay: &DelayClause) -> String {
         .close
         .map(|d| format!("{}s", d.as_secs_f64()))
         .unwrap_or_else(|| "0s".to_string());
-    format!("open={open} close={close}")
+    let mut out = format!("open={open} close={close}");
+    if let Some(v) = delay.close_snap_to {
+        out.push_str(&format!(" snap_to={}", format_value(v)));
+    }
+    if let Some(b) = delay.close_stale_marker {
+        out.push_str(&format!(" stale_marker={b}"));
+    }
+    out
 }
 
 fn first_open_display(upstream: Option<&CompiledEntry>, clause: &WhileClause) -> String {
@@ -993,6 +1000,50 @@ scenarios:
         assert!(
             out.contains("delay:") && out.contains("open=5s") && out.contains("close=10s"),
             "delay block must render, got:\n{out}"
+        );
+    }
+
+    fn delay_with(
+        open_secs: u64,
+        close_secs: u64,
+        snap_to: Option<f64>,
+        stale_marker: Option<bool>,
+    ) -> DelayClause {
+        DelayClause {
+            open: Some(std::time::Duration::from_secs(open_secs)),
+            close: Some(std::time::Duration::from_secs(close_secs)),
+            close_snap_to: snap_to,
+            close_stale_marker: stale_marker,
+        }
+    }
+
+    #[test]
+    fn delay_clause_display_renders_open_close_only_when_no_extras() {
+        let d = delay_with(5, 10, None, None);
+        assert_eq!(delay_clause_display(&d), "open=5s close=10s");
+    }
+
+    #[test]
+    fn delay_clause_display_appends_snap_to_when_set() {
+        let d = delay_with(5, 10, Some(1.0), None);
+        assert_eq!(delay_clause_display(&d), "open=5s close=10s snap_to=1");
+    }
+
+    #[test]
+    fn delay_clause_display_appends_stale_marker_when_set() {
+        let d = delay_with(5, 10, None, Some(false));
+        assert_eq!(
+            delay_clause_display(&d),
+            "open=5s close=10s stale_marker=false"
+        );
+    }
+
+    #[test]
+    fn delay_clause_display_appends_snap_to_and_stale_marker_in_order() {
+        let d = delay_with(0, 5, Some(1.0), Some(true));
+        assert_eq!(
+            delay_clause_display(&d),
+            "open=0s close=5s snap_to=1 stale_marker=true"
         );
     }
 

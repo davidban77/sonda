@@ -148,6 +148,18 @@ pub enum NormalizeError {
          NaN and infinity cannot be emitted as a recovery sample"
     )]
     CloseSnapToIsNan { source_id: String },
+
+    #[error(
+        "entry '{source_id}': delay.close.stale_marker: true requires sink.type: remote_write \
+         — the marker is a Prometheus remote-write-specific signal and silently no-ops on \
+         sink.type: {sink_kind}. \
+         Either set sink.type: remote_write, or replace stale_marker with snap_to: <value> \
+         for a sink-agnostic recovery emit, or drop the field to disable the close-emit entirely."
+    )]
+    CloseStaleMarkerNotSupported {
+        source_id: String,
+        sink_kind: &'static str,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +440,15 @@ fn normalize_entry(
                 });
             }
         }
+        if d.close_stale_marker == Some(true)
+            && d.close_snap_to.is_none()
+            && !is_remote_write_sink(&sink)
+        {
+            return Err(NormalizeError::CloseStaleMarkerNotSupported {
+                source_id: diagnostic_label,
+                sink_kind: sink_kind_str(&sink),
+            });
+        }
     }
 
     Ok(NormalizedEntry {
@@ -520,6 +541,47 @@ fn default_encoder_for(signal_type: &str) -> EncoderConfig {
 /// Return the built-in sink default (`stdout`).
 fn default_sink() -> SinkConfig {
     SinkConfig::Stdout
+}
+
+fn is_remote_write_sink(sink: &SinkConfig) -> bool {
+    #[cfg(feature = "remote-write")]
+    {
+        matches!(sink, SinkConfig::RemoteWrite { .. })
+    }
+    #[cfg(not(feature = "remote-write"))]
+    {
+        let _ = sink;
+        false
+    }
+}
+
+fn sink_kind_str(sink: &SinkConfig) -> &'static str {
+    match sink {
+        SinkConfig::Stdout => "stdout",
+        SinkConfig::File { .. } => "file",
+        SinkConfig::Tcp { .. } => "tcp",
+        SinkConfig::Udp { .. } => "udp",
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush { .. } => "http_push",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } => "http_push",
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { .. } => "remote_write",
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => "remote_write",
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka { .. } => "kafka",
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => "kafka",
+        #[cfg(feature = "http")]
+        SinkConfig::Loki { .. } => "loki",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled { .. } => "loki",
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => "otlp_grpc",
+    }
 }
 
 /// Merge a file-level labels map with an entry-level labels map.
@@ -1615,6 +1677,156 @@ scenarios:
             }
             other => panic!("expected CloseSnapToIsNan, got {other:?}"),
         }
+    }
+
+    #[rustfmt::skip]
+    #[rstest::rstest]
+    #[case::stdout("sink: { type: stdout }",                            "stdout")]
+    #[case::file("sink: { type: file, path: /tmp/out.txt }",            "file")]
+    #[case::tcp("sink: { type: tcp, address: '127.0.0.1:9999' }",       "tcp")]
+    #[case::udp("sink: { type: udp, address: '127.0.0.1:9999' }",       "udp")]
+    fn close_stale_marker_true_rejected_on_non_remote_write_sink(
+        #[case] sink_yaml: &str,
+        #[case] expected_kind: &str,
+    ) {
+        let yaml = format!(r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1m
+  {sink_yaml}
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: {{ type: constant, value: 1 }}
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: {{ type: constant, value: 1 }}
+    while: {{ ref: src, op: ">", value: 0 }}
+    delay:
+      close:
+        duration: 5s
+        stale_marker: true
+"#);
+        let err = normalize_yaml(&yaml)
+            .expect_err("stale_marker: true on non-remote_write sink must fail");
+        match err {
+            NormalizeError::CloseStaleMarkerNotSupported {
+                source_id,
+                sink_kind,
+            } => {
+                assert_eq!(source_id, "gated");
+                assert_eq!(sink_kind, expected_kind);
+            }
+            other => panic!("expected CloseStaleMarkerNotSupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn close_stale_marker_true_with_snap_to_is_accepted_on_non_remote_write_sink() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1m
+  sink: { type: stdout }
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+    delay:
+      close:
+        duration: 5s
+        snap_to: 1.0
+        stale_marker: true
+"#;
+        let file = normalize_yaml(yaml)
+            .expect("snap_to: <v> + stale_marker: true must pass — snap_to wins silently");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        let delay = gated.delay_clause.as_ref().expect("delay clause present");
+        assert_eq!(delay.close_snap_to, Some(1.0));
+        assert_eq!(delay.close_stale_marker, Some(true));
+    }
+
+    #[test]
+    fn close_stale_marker_unset_is_accepted_on_non_remote_write_sink() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1m
+  sink: { type: stdout }
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+    delay: { open: "0s", close: "5s" }
+"#;
+        let file = normalize_yaml(yaml).expect("default (None) stale_marker must pass");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        let delay = gated.delay_clause.as_ref().expect("delay clause present");
+        assert_eq!(delay.close_stale_marker, None);
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn close_stale_marker_true_is_accepted_on_remote_write_sink() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 1m
+  sink: { type: remote_write, url: "http://localhost:8428/api/v1/write" }
+scenarios:
+  - id: src
+    signal_type: metrics
+    name: src
+    generator: { type: constant, value: 1 }
+  - id: gated
+    signal_type: metrics
+    name: gated
+    generator: { type: constant, value: 1 }
+    while: { ref: src, op: ">", value: 0 }
+    delay:
+      close:
+        duration: 5s
+        stale_marker: true
+"#;
+        let file =
+            normalize_yaml(yaml).expect("stale_marker: true on remote_write sink must be accepted");
+        let gated = file
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gated"))
+            .unwrap();
+        let delay = gated.delay_clause.as_ref().expect("delay clause present");
+        assert_eq!(delay.close_stale_marker, Some(true));
     }
 
     #[test]
