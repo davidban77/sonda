@@ -55,6 +55,8 @@ you want to validate against.
     "flapping service" pattern -- useful for testing that your alert hysteresis or
     `keep_firing_for` clause actually suppresses the noise.
 
+Gaps drive recovery passively — Prometheus resolves the alert on its own once the metric goes silent for the lookback-delta window. For active recovery, where Sonda emits a stale marker or an explicit recovery value the moment a `while:`-gated entry pauses, see [Recovering Prometheus alerts on gate close](../configuration/v2-scenarios.md#recovering-prometheus-alerts-on-gate-close). Gate close clears alerts on the next scrape rather than waiting for the lookback window, at the cost of being `remote_write`-specific unless you pair it with `snap_to:`.
+
 ## Next
 
 Single-metric resolution is straightforward. Compound rules that depend on two or more

@@ -529,7 +529,7 @@ The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` 
         snap_to: 1            # emit one literal sample with this value before pausing
 ```
 
-`snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close.
+`snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close. Setting `stale_marker: true` on a non-`remote_write` sink is rejected at normalize time, because the marker is a Prometheus remote-write-specific signal that would otherwise no-op silently — either switch to `sink.type: remote_write`, replace it with `snap_to:` for a sink-agnostic recovery sample, or drop the field. The exception is when `snap_to` is set on the same `close:` block: an explicit `stale_marker: true` paired with `snap_to` is accepted because `snap_to` already wins.
 
 To suppress the default emit entirely, set `stale_marker: false` instead:
 
@@ -546,6 +546,8 @@ Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to`
 A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an additional close-emit; the buffer was already flushed on the earlier `running → paused` transition. The recently-active tuple set is sourced from a runtime buffer capped at 100 events; high-cardinality scenarios that exceed this ceiling under-emit on close. Track scenarios with more than ~100 distinct label sets via per-scenario `/stats` rather than relying on close-emit alone.
 
 Close-emit timestamps are strictly greater than the most recent active-emission timestamp for the same series. This avoids duplicate-timestamp rejection at the receiver — Prometheus and other TSDBs that dedup on `(series, timestamp)` would otherwise drop the recovery sample silently.
+
+Gate-close emission is the active recovery primitive — Sonda writes a recovery sample (or stale marker) the moment a gate closes. For the passive counterpart, where Prometheus resolves the alert on its own once a metric stops emitting for the lookback-delta window, see [Alert resolution via gaps](../guides/alert-testing-resolution.md). The two compose: gaps drive absence-based recovery on any sink, gate close drives marker-based recovery on `remote_write`.
 
 #### Prefer `snap_to:` for `remote_write` integrations
 
