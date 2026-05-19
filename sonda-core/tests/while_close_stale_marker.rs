@@ -660,6 +660,102 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
 }
 
 #[test]
+fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
+    use sonda_core::sink::memory::MemorySink;
+
+    let bus = Arc::new(GateBus::new());
+    bus.tick(1.0);
+    let (rx, init) = bus.subscribe(while_gt_zero());
+
+    let delay = DelayClause {
+        open: None,
+        close: Some(Duration::from_millis(0)),
+        close_stale_marker: None,
+        close_snap_to: Some(0.0),
+    };
+
+    let config = ScenarioConfig {
+        base: BaseScheduleConfig {
+            name: "snap_duration_expiry".to_string(),
+            rate: 100.0,
+            duration: Some("200ms".to_string()),
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            dynamic_labels: None,
+            labels: None,
+            sink: SinkConfig::Stdout,
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: sonda_core::OnSinkError::Warn,
+        },
+        generator: GeneratorConfig::Constant { value: 1.0 },
+        encoder: EncoderConfig::PrometheusText { precision: None },
+    };
+
+    let mut sink = MemorySink::new();
+    let stats = Arc::new(std::sync::RwLock::new(
+        sonda_core::schedule::stats::ScenarioStats::default(),
+    ));
+
+    let stats_for_thread = Arc::clone(&stats);
+    let bus_for_thread = Arc::clone(&bus);
+    let runner = thread::spawn(move || {
+        let _ = bus_for_thread;
+        let shutdown = Arc::new(AtomicBool::new(true));
+        sonda_core::schedule::runner::run_with_sink_gated(
+            &config,
+            &mut sink,
+            Some(shutdown.as_ref()),
+            Some(stats_for_thread),
+            None,
+            Some(GateContext {
+                gate_rx: rx,
+                initial: init,
+                delay: Some(delay),
+                has_after: false,
+                has_while: true,
+                close_emit: None,
+            }),
+        )
+        .expect("runner must succeed");
+        sink
+    });
+
+    // Gate stays open for the whole 200ms duration — the loop exits via
+    // LoopExit::DurationExpired, not a running→paused commit.
+    let sink_after = runner.join().expect("runner joined");
+
+    let text = std::str::from_utf8(&sink_after.buffer).expect("utf-8");
+    let snap_count = text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| l.split_whitespace().next() == Some("snap_duration_expiry"))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .nth(1)
+                .and_then(|t| t.parse::<f64>().ok())
+        })
+        .filter(|v| v.to_bits() == 0.0_f64.to_bits())
+        .count();
+    assert_eq!(
+        snap_count, 1,
+        "tail close-emit on duration expiry must write exactly one snap_to=0 marker, \
+         got {snap_count} in:\n{text}"
+    );
+
+    let st = stats.read().expect("stats lock");
+    assert!(
+        st.close_emit_series.is_empty(),
+        "close_emit_series must be drained empty after the scenario ends, got {} entries",
+        st.close_emit_series.len()
+    );
+}
+
+#[test]
 fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
