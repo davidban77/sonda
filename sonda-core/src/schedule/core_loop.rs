@@ -113,6 +113,7 @@ pub(crate) type TickFn<'a> =
 /// Resolved once at runner-build time and captured into the closure; the
 /// gated loop no longer re-derives this on each commit.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum CloseSignal {
     /// Emit a Prometheus stale-NaN sample for every recently-active series.
     StaleMarker,
