@@ -57,6 +57,17 @@ Use this skill when implementing a new output sink for sonda-core.
 - **`write()` gets pre-encoded data.** Don't re-encode or transform. Just deliver.
 - **`flush()` must be idempotent.** Safe to call multiple times, including after errors.
 
+## Per-event context: `write_log_event`
+
+The `Sink` trait carries a second log-write method, `write_log_event(&mut self, event:
+&LogEvent, encoded: &[u8])`. The default impl ignores the event and forwards the encoded
+bytes to `write()`. **Override it whenever your sink consumes any per-event field (labels,
+severity, timestamp) for delivery routing** — stream selection, partition keys, structured
+envelopes. The Loki sink (`sink/loki.rs`) is the in-tree example: it overrides to promote
+`LogEvent.labels` into the Loki stream label set so each unique label combination becomes
+its own stream. Inheriting the default when you actually need the event context silently
+drops that context at runtime and produces wrong output.
+
 ## Quality Checklist
 
 - [ ] `new()` returns `Result` and handles I/O failures.

@@ -213,7 +213,14 @@ JSON encoders pre-round the value before passing it to serde. Precision is valid
 4. Register in `src/sink/mod.rs` factory. The `create_sink()` function accepts an optional
    `labels: Option<&HashMap<String, String>>` parameter. Most sinks ignore this (pass `None`).
    The Loki sink uses it for stream labels, sourced from the scenario-level `labels` config.
-5. Test with a mock or in-memory buffer sink.
+5. **Override `write_log_event` when the sink consumes per-event context.** The default impl
+   discards the `&LogEvent` and forwards the encoded bytes to `write()`. If your sink uses any
+   per-event field (labels, severity, timestamp) for delivery routing — stream selection,
+   partition keys, structured envelopes — you MUST override `write_log_event`. Inheriting the
+   default silently drops that context at runtime and produces wrong output (see `sink/loki.rs`
+   for the in-tree example: it overrides to promote `LogEvent.labels` into the Loki stream
+   label set).
+6. Test with a mock or in-memory buffer sink.
 
 ## Performance Guidelines
 
