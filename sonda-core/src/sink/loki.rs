@@ -70,38 +70,24 @@ impl LokiSink {
         })
     }
 
-    /// Overlay wins on key collision so `dynamic_labels` rotation can take
-    /// precedence over constructor labels.
-    fn combine_labels(&self, overlay: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-        let mut combined: BTreeMap<String, String> = self
-            .labels
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        for (k, v) in overlay {
-            combined.insert(k.clone(), v.clone());
-        }
-        combined
-    }
-
-    fn group_by_labels(&self) -> BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>> {
-        let mut groups: BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>> = BTreeMap::new();
+    fn group_by_overlay(&self) -> BTreeMap<&BTreeMap<String, String>, Vec<&LokiEntry>> {
+        let mut groups: BTreeMap<&BTreeMap<String, String>, Vec<&LokiEntry>> = BTreeMap::new();
         for entry in &self.batch {
-            let key = self.combine_labels(&entry.overlay);
-            groups.entry(key).or_default().push(entry);
+            // TODO(perf): LogEvent.labels could be Arc<Labels> so the overlay
+            // doesn't allocate per event; deferred from 1.9.4 scope.
+            groups.entry(&entry.overlay).or_default().push(entry);
         }
         groups
     }
 
-    fn build_envelope(groups: &BTreeMap<BTreeMap<String, String>, Vec<&LokiEntry>>) -> String {
+    fn build_envelope(
+        &self,
+        groups: &BTreeMap<&BTreeMap<String, String>, Vec<&LokiEntry>>,
+    ) -> String {
         let streams = groups
             .iter()
-            .map(|(labels, entries)| {
-                let stream_labels = labels
-                    .iter()
-                    .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
-                    .collect::<Vec<_>>()
-                    .join(",");
+            .map(|(overlay, entries)| {
+                let stream_labels = self.format_stream_labels(overlay);
                 let values = entries
                     .iter()
                     .map(|e| format!("[\"{}\",\"{}\"]", e.timestamp_ns, escape_json(&e.line)))
@@ -118,6 +104,25 @@ impl LokiSink {
         format!("{{\"streams\":[{}]}}", streams)
     }
 
+    /// Merge constructor labels with the per-group overlay and emit them as
+    /// sorted JSON object members. Overlay wins on key collision so
+    /// `dynamic_labels` rotation can take precedence over constructor labels.
+    fn format_stream_labels(&self, overlay: &BTreeMap<String, String>) -> String {
+        let mut combined: BTreeMap<&str, &str> = self
+            .labels
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        for (k, v) in overlay {
+            combined.insert(k.as_str(), v.as_str());
+        }
+        combined
+            .iter()
+            .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     fn flush_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
@@ -126,7 +131,7 @@ impl LokiSink {
         // Scoped so `groups`' borrows into `self.batch` drop before we mutate
         // other `self` fields below.
         let body = {
-            let groups = self.group_by_labels();
+            let groups = self.group_by_overlay();
             let stream_count = groups.len();
 
             if stream_count as u32 > self.max_streams_per_push {
@@ -141,7 +146,7 @@ impl LokiSink {
                      raise max_streams_per_push on the sink, or split into per-value scenarios."
                 ))));
             }
-            Self::build_envelope(&groups)
+            self.build_envelope(&groups)
         };
 
         let push_url = format!("{}/loki/api/v1/push", self.url);

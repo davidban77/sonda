@@ -1364,12 +1364,6 @@ retry:
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // Default `write_log_event` impl on the Sink trait forwards to `write`.
-    // Sinks that don't override the new method (every sink today except Loki in
-    // PR 2) must keep behaving exactly as they did before this PR landed.
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn default_write_log_event_forwards_encoded_bytes_to_write() {
         use crate::model::log::{LogEvent, Severity};

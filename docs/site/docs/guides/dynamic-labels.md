@@ -249,11 +249,12 @@ scenarios:
     log_generator:
       type: template
       templates:
-        - message: "BGP neighbor {peer_address}: state changed to {state}"
+        - message: "BGP neighbor state changed to {state}"
           field_pools:
-            peer_address: ["10.1.2.2", "10.1.7.2", "10.1.12.2", "10.1.17.2", "10.1.22.2"]
             state: ["established", "active", "open-confirm", "idle"]
 ```
+
+The peer identity rides on the stream label (`peer_address`), not in the message text, so each Loki stream stays consistent with its label set.
 
 ### What lands in Loki
 
