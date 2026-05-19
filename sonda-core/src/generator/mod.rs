@@ -99,6 +99,7 @@ pub struct CsvColumnSpec {
     derive(serde::Serialize, serde::Deserialize),
     serde(rename_all = "snake_case")
 )]
+#[non_exhaustive]
 pub enum FlapEnum {
     Boolean,
     LinkState,
