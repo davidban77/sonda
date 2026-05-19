@@ -14,5 +14,6 @@ expression: resp
   "in_gap": false,
   "in_burst": false,
   "consecutive_failures": 0,
-  "total_sink_failures": 0
+  "total_sink_failures": 0,
+  "degraded": false
 }

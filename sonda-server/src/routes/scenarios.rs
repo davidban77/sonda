@@ -97,6 +97,8 @@ pub struct ScenarioDetail {
     /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
     pub state: String,
     pub elapsed_secs: f64,
+    /// Whether the scenario has sink failures and no recent successful delivery.
+    pub degraded: bool,
     pub stats: StatsResponse,
 }
 
@@ -143,6 +145,8 @@ pub struct StatsResponse {
     pub last_sink_error: Option<String>,
     /// Wall-clock Unix-nanoseconds timestamp of the last successful write.
     pub last_successful_write_at: Option<u64>,
+    /// Whether the scenario has sink failures and no recent successful delivery.
+    pub degraded: bool,
 }
 
 impl From<ScenarioStats> for StatsResponse {
@@ -156,6 +160,7 @@ impl From<ScenarioStats> for StatsResponse {
             total_sink_failures: s.total_sink_failures,
             last_sink_error: s.last_sink_error,
             last_successful_write_at: s.last_successful_write_at,
+            degraded: false,
         }
     }
 }
@@ -193,6 +198,8 @@ pub struct DetailedStatsResponse {
     pub last_sink_error: Option<String>,
     /// Wall-clock Unix-nanoseconds timestamp of the last successful write.
     pub last_successful_write_at: Option<u64>,
+    /// Whether the scenario has sink failures and no recent successful delivery.
+    pub degraded: bool,
 }
 
 // ---- Error helpers ----------------------------------------------------------
@@ -615,13 +622,23 @@ pub async fn get_scenario(
         .get(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
+    let now_unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
     let snap = handle.stats_snapshot();
+    let degraded = snap.is_degraded(now_unix_nanos);
+    let state = state_string(&snap).to_string();
+    let mut stats: StatsResponse = snap.into();
+    stats.degraded = degraded;
     let detail = ScenarioDetail {
         id: id.clone(),
         name: handle.name.clone(),
-        state: state_string(&snap).to_string(),
+        state,
         elapsed_secs: handle.elapsed().as_secs_f64(),
-        stats: snap.into(),
+        degraded,
+        stats,
     };
 
     Ok(Json(detail))
@@ -710,8 +727,14 @@ pub async fn get_scenario_stats(
         .get(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
+    let now_unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
     let snap = handle.stats_snapshot();
     let state = state_string(&snap).to_string();
+    let degraded = snap.is_degraded(now_unix_nanos);
     let response = DetailedStatsResponse {
         total_events: snap.total_events,
         current_rate: snap.current_rate,
@@ -726,6 +749,7 @@ pub async fn get_scenario_stats(
         total_sink_failures: snap.total_sink_failures,
         last_sink_error: snap.last_sink_error,
         last_successful_write_at: snap.last_successful_write_at,
+        degraded,
     };
 
     Ok(Json(response))
@@ -1249,6 +1273,65 @@ scenarios:
         assert!(stats.get("errors").is_some(), "stats must have errors");
     }
 
+    // ---- GET /scenarios/{id}: degraded field on detail + nested stats --------
+
+    #[tokio::test]
+    async fn get_scenario_degraded_false_for_healthy_scenario() {
+        let h = make_handle(
+            "id-detail-healthy",
+            "detail_healthy",
+            1000,
+            Duration::from_millis(50),
+        );
+        let app = router_with_handles(vec![h]);
+
+        let req = Request::builder()
+            .uri("/scenarios/id-detail-healthy")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = body_json(resp).await;
+
+        assert!(body["degraded"].is_boolean(), "degraded must be a boolean");
+        assert_eq!(
+            body["degraded"], false,
+            "a scenario with no sink failures must report degraded=false"
+        );
+        assert_eq!(
+            body["stats"]["degraded"], false,
+            "nested stats.degraded must mirror the top-level field"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_scenario_degraded_true_when_failures_and_no_delivery() {
+        let mut stats = ScenarioStats::default();
+        stats.total_sink_failures = 5;
+        stats.consecutive_failures = 5;
+        stats.last_sink_error = Some("connection refused".to_string());
+        stats.last_successful_write_at = None;
+        let h = make_handle_with_stats("id-detail-degraded", "detail_degraded", 100.0, stats, true);
+        let app = router_with_handles(vec![h]);
+
+        let req = Request::builder()
+            .uri("/scenarios/id-detail-degraded")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = body_json(resp).await;
+
+        assert_eq!(
+            body["degraded"], true,
+            "failures with no successful delivery must report degraded=true"
+        );
+        assert_eq!(
+            body["stats"]["degraded"], true,
+            "nested stats.degraded must mirror the top-level field"
+        );
+    }
+
     // ---- GET /scenarios/{id}: stats.total_events > 0 after running ------------
 
     /// After running for a short time, stats.total_events > 0.
@@ -1494,6 +1577,7 @@ scenarios:
             name: "detail".to_string(),
             state: "stopped".to_string(),
             elapsed_secs: 42.0,
+            degraded: false,
             stats: StatsResponse {
                 total_events: 100,
                 current_rate: 5.0,
@@ -1503,12 +1587,15 @@ scenarios:
                 total_sink_failures: 0,
                 last_sink_error: None,
                 last_successful_write_at: None,
+                degraded: false,
             },
         };
         let json = serde_json::to_value(&d).unwrap();
         assert_eq!(json["id"], "xyz");
+        assert_eq!(json["degraded"], false);
         assert_eq!(json["stats"]["total_events"], 100);
         assert_eq!(json["stats"]["errors"], 1);
+        assert_eq!(json["stats"]["degraded"], false);
     }
 
     // ========================================================================
@@ -2623,6 +2710,50 @@ scenarios:
         );
     }
 
+    // ---- /stats endpoint: degraded field --------------------------------------
+
+    #[tokio::test]
+    async fn stats_endpoint_degraded_false_for_healthy_scenario() {
+        let h = make_handle_with_stats(
+            "id-stats-healthy",
+            "stats_healthy",
+            10.0,
+            ScenarioStats::default(),
+            true,
+        );
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-healthy").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert!(body["degraded"].is_boolean(), "degraded must be a boolean");
+        assert_eq!(
+            body["degraded"], false,
+            "a scenario with no sink failures must report degraded=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn stats_endpoint_degraded_true_when_failures_and_no_delivery() {
+        let mut stats = ScenarioStats::default();
+        stats.total_sink_failures = 3;
+        stats.consecutive_failures = 3;
+        stats.last_sink_error = Some("connection refused".to_string());
+        stats.last_successful_write_at = None;
+        let h = make_handle_with_stats("id-stats-degraded", "stats_degraded", 10.0, stats, true);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_stats_req(app, "id-stats-degraded").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["degraded"], true,
+            "failures with no successful delivery must report degraded=true"
+        );
+    }
+
     // ---- Fields update as scenario progresses --------------------------------
 
     /// Stats fields update as the scenario background thread emits events.
@@ -2873,6 +3004,7 @@ scenarios:
             total_sink_failures: 0,
             last_sink_error: None,
             last_successful_write_at: None,
+            degraded: false,
         };
         let json = serde_json::to_value(&resp).expect("must serialize");
         assert_eq!(json["total_events"], 42);
@@ -2884,6 +3016,7 @@ scenarios:
         assert_eq!(json["state"], "running");
         assert_eq!(json["in_gap"], true);
         assert_eq!(json["in_burst"], false);
+        assert_eq!(json["degraded"], false);
     }
 
     // ---- Stats 200 returns JSON Content-Type ----------------------------------
@@ -4169,6 +4302,7 @@ scenarios:
             total_sink_failures: 7,
             last_sink_error: Some("connection refused".to_string()),
             last_successful_write_at: Some(1_700_000_000_000_000_000),
+            degraded: true,
         };
         snapshot_settings().bind(|| {
             insta::assert_json_snapshot!("detailed_stats_response", resp);
@@ -4207,6 +4341,7 @@ scenarios:
             total_sink_failures: 0,
             last_sink_error: None,
             last_successful_write_at: None,
+            degraded: false,
         };
         assert_eq!(resp.state, wire);
         snapshot_settings().bind(|| {

@@ -15,5 +15,6 @@ expression: resp
   "consecutive_failures": 2,
   "total_sink_failures": 7,
   "last_sink_error": "connection refused",
-  "last_successful_write_at": 1700000000000000000
+  "last_successful_write_at": 1700000000000000000,
+  "degraded": true
 }
