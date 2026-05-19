@@ -589,7 +589,8 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
   "consecutive_failures": 4,
   "total_sink_failures": 12,
   "last_sink_error": "HTTP 500 from 'http://loki:3100/loki/api/v1/push'",
-  "last_successful_write_at": 1714694400000000000
+  "last_successful_write_at": 1714694400000000000,
+  "degraded": true
 }
 ```
 
@@ -640,6 +641,7 @@ This is the shape to look for: rising `total_events`, `last_successful_write_at`
 | `total_sink_failures` | integer | Lifetime sink-error count. Monotonic. |
 | `last_sink_error` | string \| null | Text of the most recent sink error, or `null` if none has been observed. |
 | `last_successful_write_at` | integer \| null | Wall-clock time of the most recent successful *delivery*, expressed as Unix nanoseconds. `null` until the first delivery succeeds. |
+| `degraded` | bool | `true` when `total_sink_failures > 0` and no successful delivery in the last 30 seconds (or ever). Mirrors the field on [`GET /scenarios`](#scenarios-list). |
 
 !!! info "Delivery-accurate, not buffer-accurate, for batching sinks"
     The batching sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — buffer events and flush them to the backend in batches. `last_successful_write_at` and `consecutive_failures` track actual *delivery* to the destination, not buffering: `last_successful_write_at` advances only when a write triggers a successful flush, and a write that merely buffers neither advances it nor resets `consecutive_failures`. So a batching sink that is buffering but failing to reach its backend shows a *stale* `last_successful_write_at` and a *non-zero* `consecutive_failures` — the honest signal that nothing is landing. Non-batching sinks (`stdout`, `file`, `tcp`, `udp`) deliver synchronously on every write, so the two readings always reflect the latest write.
