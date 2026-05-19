@@ -1,0 +1,42 @@
+# Scenario: sonda -> Loki, dynamic_labels promotes to per-stream labels
+#
+# Proves that a single scenario with a 3-value `dynamic_labels` rotation
+# produces 3 distinct Loki streams (one per peer_address), each queryable
+# by the rotation key.
+#
+# Run this scenario after starting the e2e stack:
+#   docker compose -f tests/e2e/docker-compose.yml up -d
+#   sonda run tests/e2e/scenarios/loki-multi-stream.yaml
+#
+# Verify N=3 distinct streams arrived:
+#   curl -s -G 'http://localhost:3100/loki/api/v1/series' \
+#     --data-urlencode 'match[]={scenario="loki-multi-stream"}' \
+#     | python3 -c 'import sys,json; print(len(json.load(sys.stdin)["data"]))'
+version: 2
+kind: runnable
+
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: json_lines
+  sink:
+    type: loki
+    url: http://localhost:3100
+  labels:
+    job: sonda-e2e
+    scenario: loki-multi-stream
+
+scenarios:
+  - id: sonda_e2e_loki_multi_stream
+    signal_type: logs
+    name: sonda_e2e_loki_multi_stream
+    dynamic_labels:
+      - key: peer_address
+        values: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+    log_generator:
+      type: template
+      templates:
+        - message: "BGP neighbor state changed to {state}"
+          field_pools:
+            state: ["established", "active", "idle"]
