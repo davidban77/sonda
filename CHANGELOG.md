@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.3](https://github.com/davidban77/sonda/compare/v1.9.2...v1.9.3) (2026-05-19)
+
+
+### Bug Fixes
+
+* **loki:** address [@reviewer](https://github.com/reviewer) findings on 1.9.4 cumulative diff ([#378](https://github.com/davidban77/sonda/issues/378)) ([af69b20](https://github.com/davidban77/sonda/commit/af69b205189756f652dc9ad85e2444fa044e282e))
+* **loki:** auto-promote dynamic_labels to Loki streams + cardinality cap (PR 2/4 for [#296](https://github.com/davidban77/sonda/issues/296)) ([#376](https://github.com/davidban77/sonda/issues/376)) ([b6e0111](https://github.com/davidban77/sonda/commit/b6e0111dcf7c375b0cc072fa1beb50b498ea67ab))
+* **server:** loki cardinality preview + docs sweep (PR 3/4 for [#296](https://github.com/davidban77/sonda/issues/296)) ([#377](https://github.com/davidban77/sonda/issues/377)) ([faeb9b9](https://github.com/davidban77/sonda/commit/faeb9b9af8c7f110bffeb06c785551ff90df0c74))
+* **sink:** add Sink::write_log_event with bytes-only default impl ([#375](https://github.com/davidban77/sonda/issues/375)) ([0189bf6](https://github.com/davidban77/sonda/commit/0189bf61d48e9d9dee838816e393e91d84cfd543))
+
+
+### Documentation
+
+* **theme:** mobile hero polish + hide TOC permalink on hero titles ([#373](https://github.com/davidban77/sonda/issues/373)) ([c176e3f](https://github.com/davidban77/sonda/commit/c176e3f44fb433ec6acae9363c05867201b45ecb))
+
 ## [1.9.2](https://github.com/davidban77/sonda/compare/v1.9.1...v1.9.2) (2026-05-18)
 
 
