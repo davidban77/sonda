@@ -15,7 +15,7 @@ spec:
       {{- if .Values.serviceMonitor.scrapeTimeout }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
       {{- end }}
-      path: {{ .Values.serviceMonitor.path }}
+      path: {{ required "serviceMonitor.enabled is true but serviceMonitor.path is empty — set it to a Prometheus-text endpoint such as /scenarios/<scenario-id>/metrics" .Values.serviceMonitor.path }}
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}

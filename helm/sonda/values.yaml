@@ -123,11 +123,17 @@ ingress:
   tls: []
 
 # ServiceMonitor for Prometheus Operator.
+#
+# `path` must point at a Prometheus-text endpoint. sonda-server exposes
+# per-scenario metrics at /scenarios/<scenario-id>/metrics; choose the
+# scenario you want scraped and set `path` to that route. When enabled
+# without a path the chart install fails with a clear error rather than
+# silently scraping a non-metrics endpoint.
 serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
-  path: /health
+  path: ""
   additionalLabels: {}
 
 # Node selector for pod scheduling.

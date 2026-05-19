@@ -149,12 +149,18 @@ instructions.
 
 ### ServiceMonitor
 
+Sonda emits Prometheus metrics **per scenario** at `GET /scenarios/<scenario-id>/metrics`, not at a fixed top-level `/metrics` endpoint. A ServiceMonitor endpoint scrapes a single path, so you must point `serviceMonitor.path` at the specific scenario you want scraped — typically a long-running synthetic monitoring scenario whose ID is known ahead of time (for example, one loaded from the `scenarios` ConfigMap and reachable at a stable route).
+
+`serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error telling you to set the path to a Prometheus-text endpoint such as `/scenarios/<scenario-id>/metrics`. This avoids silently producing a ServiceMonitor that scrapes a non-metrics route.
+
+For scraping more than one scenario, apply a custom ServiceMonitor with one `endpoints` entry per scenario ID — see [ServiceMonitor](#servicemonitor_1) below the values reference.
+
 | Value | Default | Description |
 |-------|---------|-------------|
 | `serviceMonitor.enabled` | `false` | Enable Prometheus Operator ServiceMonitor |
 | `serviceMonitor.interval` | `30s` | Scrape interval |
 | `serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout |
-| `serviceMonitor.path` | `/health` | Metrics endpoint path |
+| `serviceMonitor.path` | `""` (required when enabled) | Metrics endpoint path, e.g. `/scenarios/<scenario-id>/metrics` |
 | `serviceMonitor.additionalLabels` | `{}` | Extra labels on the ServiceMonitor resource |
 
 ### Scenarios (ConfigMap)
