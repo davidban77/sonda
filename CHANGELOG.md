@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.0](https://github.com/davidban77/sonda/compare/v1.9.3...v1.10.0) (2026-05-19)
+
+
+### Features
+
+* **core:** mark FlapEnum and CloseSignal as #[non_exhaustive] ([#385](https://github.com/davidban77/sonda/issues/385)) ([ed4fd85](https://github.com/davidban77/sonda/commit/ed4fd859cfc6fd2a31e8491cfe920792f48069d0))
+* **core:** reject stale_marker on non-remote_write sinks; surface snap_to and stale_marker in --dry-run ([#386](https://github.com/davidban77/sonda/issues/386)) ([a1bf3f8](https://github.com/davidban77/sonda/commit/a1bf3f859cfe431253030a95f0f1486333169427))
+* **server:** add degraded field to scenario detail and stats endpoints ([#383](https://github.com/davidban77/sonda/issues/383)) ([9cefb2b](https://github.com/davidban77/sonda/commit/9cefb2b614f42632cc60aee802e3955ed30c214d))
+
+
+### Bug Fixes
+
+* **config:** validate sink duration fields in --dry-run ([#381](https://github.com/davidban77/sonda/issues/381)) ([25378ce](https://github.com/davidban77/sonda/commit/25378ce74f629a1a61000eb49f96e18ac0d0957c))
+* **helm:** require explicit ServiceMonitor path; document per-scenario metrics ([#384](https://github.com/davidban77/sonda/issues/384)) ([c257bce](https://github.com/davidban77/sonda/commit/c257bce064b50c0a98097ac94f788f010c0fc66b))
+
 ## [1.9.3](https://github.com/davidban77/sonda/compare/v1.9.2...v1.9.3) (2026-05-19)
 
 
