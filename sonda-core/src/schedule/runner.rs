@@ -226,6 +226,10 @@ fn build_close_emit(
     };
 
     let encoder = create_encoder(&config.encoder).ok()?;
+    match stats.write() {
+        Ok(mut st) => st.enable_close_series_tracking(),
+        Err(p) => p.into_inner().enable_close_series_tracking(),
+    }
     Some(make_close_emitter(stats, encoder, signal))
 }
 
@@ -245,17 +249,14 @@ fn make_close_emitter(
     Box::new(move |sink: &mut dyn Sink| -> Result<(), SondaError> {
         let now = SystemTime::now();
 
-        // gated_loop flushes on the WhileClose commit and on the single tail exit;
-        // drain ensures the tail sees an empty buffer when nothing accrued since
-        // the prior commit.
-        let recent: Vec<MetricEvent> = match stats.write() {
-            Ok(mut st) => st.recent_metrics.drain(..).collect(),
-            Err(p) => p.into_inner().recent_metrics.drain(..).collect(),
+        let (series, watermark) = match stats.write() {
+            Ok(mut st) => st.drain_close_emit_series(),
+            Err(p) => p.into_inner().drain_close_emit_series(),
         };
 
         // Strictly greater than the most recent active-emission ts so receivers
         // that dedup on (series, ts) at ms precision do not drop the marker.
-        let close_ts = match recent.iter().map(|e| e.timestamp).max() {
+        let close_ts = match watermark {
             Some(max_recent) => match max_recent.checked_add(Duration::from_millis(1)) {
                 Some(bumped) => now.max(bumped),
                 None => now,
@@ -263,28 +264,10 @@ fn make_close_emitter(
             None => now,
         };
 
-        let mut seen: Vec<MetricEvent> = Vec::new();
-        'outer: for event in &recent {
-            for kept in &seen {
-                if *kept.name == *event.name
-                    && (Arc::ptr_eq(&kept.labels, &event.labels)
-                        || labels_eq(&kept.labels, &event.labels))
-                {
-                    continue 'outer;
-                }
-            }
-            seen.push(event.clone());
-        }
-
         let mut buf: Vec<u8> = Vec::with_capacity(256);
-        for event in seen {
+        for (name, labels) in series {
             buf.clear();
-            let marker = MetricEvent::from_parts(
-                event.name.clone(),
-                value,
-                Arc::clone(&event.labels),
-                close_ts,
-            );
+            let marker = MetricEvent::from_parts(name, value, labels, close_ts);
             encoder.encode_metric(&marker, &mut buf)?;
             sink.write(&buf)?;
         }
@@ -300,20 +283,6 @@ fn is_remote_write_sink(sink: &SinkConfig) -> bool {
 #[cfg(not(feature = "remote-write"))]
 fn is_remote_write_sink(_sink: &SinkConfig) -> bool {
     false
-}
-
-/// Equality on two `Labels` BTreeMaps via zipped iteration.
-///
-/// Correct because `Labels` wraps a `BTreeMap`, so equal label sets always
-/// iterate in the same sorted key order. If `Labels`'s backing store ever
-/// changes to an unordered map, switch to `a == b` or sort first.
-fn labels_eq(a: &crate::model::metric::Labels, b: &crate::model::metric::Labels) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b.iter())
-        .all(|((ak, av), (bk, bv))| ak == bk && av == bv)
 }
 
 #[cfg(test)]
@@ -1284,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn close_emitter_is_idempotent_on_recent_metrics_buffer() {
+    fn close_emitter_is_idempotent_after_draining_series() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
@@ -1296,6 +1265,7 @@ mod tests {
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         {
             let mut st = stats.write().unwrap();
+            st.enable_close_series_tracking();
             let name = ValidatedMetricName::new("up").unwrap();
             let labels = Arc::new(Labels::from_pairs(&[("host", "a")]).unwrap());
             st.push_metric(MetricEvent::from_parts(
@@ -1313,18 +1283,25 @@ mod tests {
         emit(&mut first).expect("first call ok");
         assert!(
             !first.buffer.is_empty(),
-            "first invocation must emit the recent tuple"
+            "first invocation must emit the tracked series"
         );
-        assert!(
-            stats.read().unwrap().recent_metrics.is_empty(),
-            "buffer must be drained after the first invocation"
-        );
+        {
+            let st = stats.read().unwrap();
+            assert!(
+                st.close_emit_series.is_empty(),
+                "series set must be drained after the first invocation"
+            );
+            assert!(
+                st.last_emit_ts.is_none(),
+                "watermark must reset after the first invocation"
+            );
+        }
 
         let mut second = MemorySink::new();
         emit(&mut second).expect("second call ok");
         assert!(
             second.buffer.is_empty(),
-            "second invocation with no new tuples must emit nothing"
+            "second invocation with no new series must emit nothing"
         );
     }
 
@@ -1336,14 +1313,14 @@ mod tests {
         use crate::schedule::stats::ScenarioStats;
         use crate::sink::memory::MemorySink;
         use std::sync::{Arc, RwLock};
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        use std::time::{Duration, UNIX_EPOCH};
 
-        let past_ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
-        let future_ts = SystemTime::now() + Duration::from_secs(60);
+        let watermark_ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
 
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         {
             let mut st = stats.write().unwrap();
+            st.enable_close_series_tracking();
             let name = ValidatedMetricName::new("up").unwrap();
             let labels_a = Arc::new(Labels::from_pairs(&[("host", "a")]).unwrap());
             let labels_b = Arc::new(Labels::from_pairs(&[("host", "b")]).unwrap());
@@ -1351,9 +1328,9 @@ mod tests {
                 name.clone(),
                 1.0,
                 labels_a,
-                past_ts,
+                watermark_ts,
             ));
-            st.push_metric(MetricEvent::from_parts(name, 1.0, labels_b, future_ts));
+            st.push_metric(MetricEvent::from_parts(name, 1.0, labels_b, watermark_ts));
         }
 
         let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
@@ -1367,11 +1344,10 @@ mod tests {
         assert_eq!(
             lines.len(),
             2,
-            "expected one marker line per distinct (name, labels) tuple, got: {output}"
+            "expected one marker line per distinct (name, labels) series, got: {output}"
         );
 
-        let past_ms = past_ts.duration_since(UNIX_EPOCH).unwrap().as_millis() as i128;
-        let future_ms = future_ts.duration_since(UNIX_EPOCH).unwrap().as_millis() as i128;
+        let watermark_ms = watermark_ts.duration_since(UNIX_EPOCH).unwrap().as_millis() as i128;
 
         for line in &lines {
             let ts_str = line
@@ -1383,13 +1359,118 @@ mod tests {
                 .unwrap_or_else(|_| panic!("close ts must parse as i128, line: {line}"));
 
             assert!(
-                close_ms > past_ms,
-                "close ts {close_ms} must be strictly greater than past active ts {past_ms}; line: {line}"
-            );
-            assert!(
-                close_ms > future_ms,
-                "close ts {close_ms} must be strictly greater than future active ts {future_ms}; line: {line}"
+                close_ms > watermark_ms,
+                "close ts {close_ms} must be strictly greater than watermark ts {watermark_ms}; line: {line}"
             );
         }
+    }
+
+    #[test]
+    fn close_emit_emits_every_series_above_recent_metrics_cap() {
+        use crate::encoder::create_encoder;
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::CloseSignal;
+        use crate::schedule::stats::{ScenarioStats, MAX_RECENT_METRICS};
+        use crate::sink::memory::MemorySink;
+        use std::sync::{Arc, RwLock};
+        use std::time::SystemTime;
+
+        let series_count = MAX_RECENT_METRICS * 3;
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            st.enable_close_series_tracking();
+            let name = ValidatedMetricName::new("up").unwrap();
+            for i in 0..series_count {
+                let labels =
+                    Arc::new(Labels::from_pairs(&[("host", format!("h{i}").as_str())]).unwrap());
+                st.push_metric(MetricEvent::from_parts(
+                    name.clone(),
+                    1.0,
+                    labels,
+                    SystemTime::now(),
+                ));
+            }
+        }
+
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
+
+        let mut sink = MemorySink::new();
+        emit(&mut sink).expect("close-emit must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let lines = output.lines().filter(|l| !l.is_empty()).count();
+        assert_eq!(
+            lines, series_count,
+            "every distinct series must get a marker, even past the {MAX_RECENT_METRICS}-event scrape cap"
+        );
+        assert!(
+            lines > MAX_RECENT_METRICS,
+            "regression guard: marker count {lines} must exceed the scrape buffer cap"
+        );
+    }
+
+    #[test]
+    fn close_emit_dedups_repeated_series_to_one_marker() {
+        use crate::encoder::create_encoder;
+        use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+        use crate::schedule::core_loop::CloseSignal;
+        use crate::schedule::stats::ScenarioStats;
+        use crate::sink::memory::MemorySink;
+        use std::sync::{Arc, RwLock};
+        use std::time::SystemTime;
+
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            st.enable_close_series_tracking();
+            let name = ValidatedMetricName::new("up").unwrap();
+            for _ in 0..50 {
+                let labels = Arc::new(Labels::from_pairs(&[("host", "a")]).unwrap());
+                st.push_metric(MetricEvent::from_parts(
+                    name.clone(),
+                    1.0,
+                    labels,
+                    SystemTime::now(),
+                ));
+            }
+        }
+
+        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
+
+        let mut sink = MemorySink::new();
+        emit(&mut sink).expect("close-emit must succeed");
+
+        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let lines = output.lines().filter(|l| !l.is_empty()).count();
+        assert_eq!(
+            lines, 1,
+            "the same (name, labels) series pushed many times must emit exactly one marker"
+        );
+    }
+
+    #[test]
+    fn build_close_emit_enables_series_tracking_on_stats() {
+        use crate::schedule::stats::ScenarioStats;
+        use std::sync::{Arc, RwLock};
+
+        let mut config = make_config(10.0, "100ms", None);
+        config.encoder = EncoderConfig::PrometheusText { precision: None };
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+
+        let delay = crate::compiler::DelayClause {
+            open: None,
+            close: None,
+            close_stale_marker: None,
+            close_snap_to: Some(0.0),
+        };
+        let emitter = super::build_close_emit(&config, Some(&stats), Some(&delay));
+        assert!(emitter.is_some(), "snap_to must yield a close-emitter");
+        assert!(
+            stats.read().unwrap().track_close_series,
+            "build_close_emit must enable series tracking when it returns Some"
+        );
     }
 }

@@ -104,7 +104,7 @@ impl fmt::Display for ValidatedMetricName {
 /// An ordered, deduplicated set of string label key-value pairs.
 ///
 /// Keys are stored in sorted order (BTreeMap guarantee) and validated at construction time.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Labels {
     inner: BTreeMap<String, String>,
 }
