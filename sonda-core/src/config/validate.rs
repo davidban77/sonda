@@ -3,6 +3,8 @@
 use std::time::Duration;
 
 use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
+use crate::sink::retry::RetryConfig;
+use crate::sink::SinkConfig;
 use crate::{ConfigError, SondaError};
 
 use super::{
@@ -305,6 +307,8 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
 
+    validate_sink_config(&config.base.sink)?;
+
     Ok(())
 }
 
@@ -400,6 +404,8 @@ pub fn validate_log_config(config: &LogScenarioConfig) -> Result<(), SondaError>
 
     // Encoder precision must not exceed 17 (f64 has ~15-17 significant digits).
     validate_encoder_precision(&config.encoder)?;
+
+    validate_sink_config(&config.base.sink)?;
 
     Ok(())
 }
@@ -659,6 +665,8 @@ pub fn validate_histogram_config(config: &HistogramScenarioConfig) -> Result<(),
     validate_jitter(config.base.jitter)?;
     validate_encoder_precision(&config.encoder)?;
 
+    validate_sink_config(&config.base.sink)?;
+
     Ok(())
 }
 
@@ -739,6 +747,93 @@ pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), Son
     validate_jitter(config.base.jitter)?;
     validate_encoder_precision(&config.encoder)?;
 
+    validate_sink_config(&config.base.sink)?;
+
+    Ok(())
+}
+
+/// Pre-parse every duration-string field on the sink so typos surface at
+/// validation time, not at factory time.
+pub fn validate_sink_config(sink: &SinkConfig) -> Result<(), SondaError> {
+    match sink {
+        SinkConfig::Stdout | SinkConfig::File { .. } | SinkConfig::Udp { .. } => Ok(()),
+        SinkConfig::Tcp { retry, .. } => validate_retry_config_opt(retry.as_ref()),
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush {
+            max_buffer_age,
+            retry,
+            ..
+        } => {
+            validate_max_buffer_age(max_buffer_age.as_deref())?;
+            validate_retry_config_opt(retry.as_ref())
+        }
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite {
+            max_buffer_age,
+            retry,
+            ..
+        } => {
+            validate_max_buffer_age(max_buffer_age.as_deref())?;
+            validate_retry_config_opt(retry.as_ref())
+        }
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka {
+            max_buffer_age,
+            retry,
+            ..
+        } => {
+            validate_max_buffer_age(max_buffer_age.as_deref())?;
+            validate_retry_config_opt(retry.as_ref())
+        }
+        #[cfg(feature = "http")]
+        SinkConfig::Loki {
+            max_buffer_age,
+            retry,
+            ..
+        } => {
+            validate_max_buffer_age(max_buffer_age.as_deref())?;
+            validate_retry_config_opt(retry.as_ref())
+        }
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc {
+            max_buffer_age,
+            retry,
+            ..
+        } => {
+            validate_max_buffer_age(max_buffer_age.as_deref())?;
+            validate_retry_config_opt(retry.as_ref())
+        }
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled { .. } => Ok(()),
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled { .. } => Ok(()),
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled { .. } => Ok(()),
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled { .. } => Ok(()),
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled { .. } => Ok(()),
+    }
+}
+
+#[cfg(any(
+    feature = "http",
+    feature = "remote-write",
+    feature = "kafka",
+    feature = "otlp"
+))]
+fn validate_max_buffer_age(s: Option<&str>) -> Result<(), SondaError> {
+    if let Some(s) = s {
+        parse_optional_duration(s)?;
+    }
+    Ok(())
+}
+
+fn validate_retry_config_opt(retry: Option<&RetryConfig>) -> Result<(), SondaError> {
+    if let Some(r) = retry {
+        parse_duration(&r.initial_backoff)?;
+        parse_duration(&r.max_backoff)?;
+    }
     Ok(())
 }
 
@@ -2757,5 +2852,437 @@ generator:
         let mut config = make_summary_config();
         config.base.name = "123-invalid".to_string();
         assert!(validate_summary_config(&config).is_err());
+    }
+
+    // ---- validate_sink_config ------------------------------------------------
+
+    use crate::sink::retry::RetryConfig;
+
+    fn good_retry() -> RetryConfig {
+        RetryConfig {
+            max_attempts: 3,
+            initial_backoff: "100ms".to_string(),
+            max_backoff: "5s".to_string(),
+        }
+    }
+
+    #[test]
+    fn validate_sink_config_stdout_is_ok() {
+        assert!(validate_sink_config(&SinkConfig::Stdout).is_ok());
+    }
+
+    #[test]
+    fn validate_sink_config_file_is_ok() {
+        let sink = SinkConfig::File {
+            path: "/tmp/x".to_string(),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[test]
+    fn validate_sink_config_udp_is_ok() {
+        let sink = SinkConfig::Udp {
+            address: "127.0.0.1:9999".to_string(),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[test]
+    fn validate_sink_config_tcp_with_no_retry_is_ok() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: None,
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[test]
+    fn validate_sink_config_tcp_with_good_retry_is_ok() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(good_retry()),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[test]
+    fn validate_sink_config_tcp_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        let result = validate_sink_config(&sink);
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("garbage"),
+            "error must mention the offending value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_sink_config_tcp_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::Tcp {
+            address: "127.0.0.1:9999".to_string(),
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+        };
+        let result = validate_sink_config(&sink);
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("garbage"),
+            "error must mention the offending value, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_http_push_with_good_durations_is_ok() {
+        let sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: Some("5s".to_string()),
+            headers: None,
+            retry: Some(good_retry()),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_http_push_with_zero_buffer_age_is_ok() {
+        let sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: Some("0s".to_string()),
+            headers: None,
+            retry: None,
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_http_push_with_garbage_max_buffer_age_returns_err() {
+        let sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            headers: None,
+            retry: None,
+        };
+        let result = validate_sink_config(&sink);
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("garbage"),
+            "error must mention the offending value, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_http_push_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: None,
+            headers: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_http_push_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: None,
+            headers: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_loki_with_good_durations_is_ok() {
+        let sink = SinkConfig::Loki {
+            url: "http://localhost:3100".to_string(),
+            batch_size: None,
+            max_streams_per_push: None,
+            max_buffer_age: Some("5s".to_string()),
+            retry: Some(good_retry()),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_loki_with_garbage_max_buffer_age_returns_err() {
+        let sink = SinkConfig::Loki {
+            url: "http://localhost:3100".to_string(),
+            batch_size: None,
+            max_streams_per_push: None,
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+        };
+        let result = validate_sink_config(&sink);
+        let msg = err_msg(result);
+        assert!(
+            msg.contains("garbage"),
+            "error must mention the offending value, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_loki_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::Loki {
+            url: "http://localhost:3100".to_string(),
+            batch_size: None,
+            max_streams_per_push: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_sink_config_loki_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::Loki {
+            url: "http://localhost:3100".to_string(),
+            batch_size: None,
+            max_streams_per_push: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn validate_sink_config_remote_write_with_good_durations_is_ok() {
+        let sink = SinkConfig::RemoteWrite {
+            url: "http://localhost:8428/api/v1/write".to_string(),
+            batch_size: None,
+            max_buffer_age: Some("5s".to_string()),
+            retry: Some(good_retry()),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn validate_sink_config_remote_write_with_garbage_max_buffer_age_returns_err() {
+        let sink = SinkConfig::RemoteWrite {
+            url: "http://localhost:8428/api/v1/write".to_string(),
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn validate_sink_config_remote_write_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::RemoteWrite {
+            url: "http://localhost:8428/api/v1/write".to_string(),
+            batch_size: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "remote-write")]
+    #[test]
+    fn validate_sink_config_remote_write_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::RemoteWrite {
+            url: "http://localhost:8428/api/v1/write".to_string(),
+            batch_size: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn validate_sink_config_kafka_with_good_durations_is_ok() {
+        let sink = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: Some("5s".to_string()),
+            retry: Some(good_retry()),
+            tls: None,
+            sasl: None,
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn validate_sink_config_kafka_with_garbage_max_buffer_age_returns_err() {
+        let sink = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+            tls: None,
+            sasl: None,
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn validate_sink_config_kafka_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+            tls: None,
+            sasl: None,
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "kafka")]
+    #[test]
+    fn validate_sink_config_kafka_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::Kafka {
+            brokers: "127.0.0.1:9092".to_string(),
+            topic: "sonda-test".to_string(),
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+            tls: None,
+            sasl: None,
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn validate_sink_config_otlp_grpc_with_good_durations_is_ok() {
+        let sink = SinkConfig::OtlpGrpc {
+            endpoint: "http://localhost:4317".to_string(),
+            signal_type: crate::sink::otlp_grpc::OtlpSignalType::Metrics,
+            batch_size: None,
+            max_buffer_age: Some("5s".to_string()),
+            retry: Some(good_retry()),
+        };
+        assert!(validate_sink_config(&sink).is_ok());
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn validate_sink_config_otlp_grpc_with_garbage_max_buffer_age_returns_err() {
+        let sink = SinkConfig::OtlpGrpc {
+            endpoint: "http://localhost:4317".to_string(),
+            signal_type: crate::sink::otlp_grpc::OtlpSignalType::Metrics,
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            retry: None,
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn validate_sink_config_otlp_grpc_with_garbage_initial_backoff_returns_err() {
+        let sink = SinkConfig::OtlpGrpc {
+            endpoint: "http://localhost:4317".to_string(),
+            signal_type: crate::sink::otlp_grpc::OtlpSignalType::Metrics,
+            batch_size: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "garbage".to_string(),
+                max_backoff: "5s".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    #[cfg(feature = "otlp")]
+    #[test]
+    fn validate_sink_config_otlp_grpc_with_garbage_max_backoff_returns_err() {
+        let sink = SinkConfig::OtlpGrpc {
+            endpoint: "http://localhost:4317".to_string(),
+            signal_type: crate::sink::otlp_grpc::OtlpSignalType::Metrics,
+            batch_size: None,
+            max_buffer_age: None,
+            retry: Some(RetryConfig {
+                max_attempts: 3,
+                initial_backoff: "100ms".to_string(),
+                max_backoff: "garbage".to_string(),
+            }),
+        };
+        assert!(validate_sink_config(&sink).is_err());
+    }
+
+    // ---- end-to-end: validate_config rejects bad sink durations -------------
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn validate_config_rejects_bad_sink_max_buffer_age() {
+        let mut config = minimal_config_with_rate(10.0);
+        config.base.sink = SinkConfig::HttpPush {
+            url: "http://localhost:9090/push".to_string(),
+            content_type: None,
+            batch_size: None,
+            max_buffer_age: Some("garbage".to_string()),
+            headers: None,
+            retry: None,
+        };
+        assert!(validate_config(&config).is_err());
     }
 }
