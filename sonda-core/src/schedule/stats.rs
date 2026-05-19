@@ -1,10 +1,15 @@
 //! Live statistics for a running scenario.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use serde::Serialize;
 
-use crate::model::metric::MetricEvent;
+use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
+
+/// Dedup key for the close-emit series set: a distinct `(name, labels)` pair.
+pub type CloseEmitKey = (ValidatedMetricName, Arc<Labels>);
 
 /// Maximum number of recent metric events buffered for scrape endpoints.
 ///
@@ -77,18 +82,57 @@ pub struct ScenarioStats {
     pub recent_metrics: VecDeque<MetricEvent>,
     /// Lifecycle state of the scenario.
     pub state: ScenarioState,
+    /// Distinct `(name, labels)` series active since the last gate-close.
+    ///
+    /// Populated only when `track_close_series` is true; drained on every
+    /// `running → paused` close-emit so one recovery marker is emitted per
+    /// series. Uncapped — every distinct series must receive a marker.
+    #[serde(skip)]
+    pub close_emit_series: HashSet<CloseEmitKey>,
+    /// Timestamp of the most recent tracked push, used to bump the close
+    /// marker timestamp strictly past the last active emission.
+    #[serde(skip)]
+    pub last_emit_ts: Option<SystemTime>,
+    /// Whether the push path should track distinct series for close-emit.
+    #[serde(skip)]
+    pub track_close_series: bool,
 }
 
 impl ScenarioStats {
     /// Push a metric event into the recent-metrics buffer.
     ///
     /// If the buffer is at capacity ([`MAX_RECENT_METRICS`]), the oldest
-    /// event is evicted before the new one is inserted.
+    /// event is evicted before the new one is inserted. When
+    /// `track_close_series` is set, the event's `(name, labels)` series is
+    /// also recorded for close-emit.
     pub fn push_metric(&mut self, event: MetricEvent) {
+        // Only gated scenarios drain the series set on close; populating it
+        // unconditionally would let a non-gated scenario's set grow unbounded.
+        if self.track_close_series {
+            self.close_emit_series
+                .insert((event.name.clone(), Arc::clone(&event.labels)));
+            self.last_emit_ts = Some(event.timestamp);
+        }
         if self.recent_metrics.len() >= MAX_RECENT_METRICS {
             self.recent_metrics.pop_front();
         }
         self.recent_metrics.push_back(event);
+    }
+
+    /// Enable close-emit series tracking. Called once when a close-emitter is
+    /// built for the scenario.
+    pub fn enable_close_series_tracking(&mut self) {
+        self.track_close_series = true;
+    }
+
+    /// Drain the close-emit series set and reset the emit-timestamp watermark.
+    ///
+    /// Returns the distinct `(name, labels)` series accumulated since the last
+    /// close, paired with the watermark of the most recent tracked push.
+    pub fn drain_close_emit_series(&mut self) -> (HashSet<CloseEmitKey>, Option<SystemTime>) {
+        let series = std::mem::take(&mut self.close_emit_series);
+        let ts = self.last_emit_ts.take();
+        (series, ts)
     }
 
     /// Drain and return all buffered metric events.
@@ -495,6 +539,147 @@ mod tests {
     }
 
     // ---- is_degraded --------------------------------------------------------
+
+    // ---- close_emit_series: conditional population ---------------------------
+
+    fn make_series_event(name: &str, host: &str) -> MetricEvent {
+        crate::model::metric::MetricEvent::new(
+            name.to_string(),
+            1.0,
+            crate::model::metric::Labels::from_pairs(&[("host", host)]).unwrap(),
+        )
+        .expect("test metric name must be valid")
+    }
+
+    #[test]
+    fn push_metric_does_not_track_series_when_flag_off() {
+        let mut s = ScenarioStats::default();
+        for i in 0..10 {
+            s.push_metric(make_series_event("up", &format!("h{i}")));
+        }
+        assert!(
+            s.close_emit_series.is_empty(),
+            "non-gated scenario must not accumulate the series set"
+        );
+        assert!(s.last_emit_ts.is_none(), "watermark must stay unset");
+        assert_eq!(s.recent_metrics.len(), 10, "scrape buffer must still fill");
+    }
+
+    #[test]
+    fn push_metric_tracks_series_when_flag_on() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        s.push_metric(make_series_event("up", "a"));
+        s.push_metric(make_series_event("up", "b"));
+        assert_eq!(
+            s.close_emit_series.len(),
+            2,
+            "two distinct series must be tracked"
+        );
+        assert!(s.last_emit_ts.is_some(), "watermark must be set");
+    }
+
+    #[test]
+    fn push_metric_dedups_repeated_series_in_set() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        for _ in 0..25 {
+            s.push_metric(make_series_event("up", "a"));
+        }
+        assert_eq!(
+            s.close_emit_series.len(),
+            1,
+            "the same (name, labels) series must dedup to one entry"
+        );
+    }
+
+    #[test]
+    fn series_set_is_uncapped_past_recent_metrics_cap() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        let count = MAX_RECENT_METRICS * 4;
+        for i in 0..count {
+            s.push_metric(make_series_event("up", &format!("h{i}")));
+        }
+        assert_eq!(
+            s.close_emit_series.len(),
+            count,
+            "series set must hold every distinct series, ignoring the scrape cap"
+        );
+        assert_eq!(
+            s.recent_metrics.len(),
+            MAX_RECENT_METRICS,
+            "scrape buffer stays capped"
+        );
+    }
+
+    #[test]
+    fn drain_close_emit_series_empties_set_and_resets_watermark() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        s.push_metric(make_series_event("up", "a"));
+        s.push_metric(make_series_event("up", "b"));
+
+        let (series, ts) = s.drain_close_emit_series();
+        assert_eq!(series.len(), 2);
+        assert!(ts.is_some(), "drain must return the watermark");
+        assert!(
+            s.close_emit_series.is_empty(),
+            "set must be empty after drain"
+        );
+        assert!(s.last_emit_ts.is_none(), "watermark must reset after drain");
+    }
+
+    #[test]
+    fn drain_then_push_starts_a_fresh_window() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        s.push_metric(make_series_event("up", "a"));
+        let (first, _) = s.drain_close_emit_series();
+        assert_eq!(first.len(), 1);
+
+        s.push_metric(make_series_event("up", "b"));
+        let (second, _) = s.drain_close_emit_series();
+        assert_eq!(second.len(), 1, "next window starts fresh after drain");
+    }
+
+    #[test]
+    fn last_emit_ts_tracks_the_most_recent_push() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        let name = ValidatedMetricName::new("up").unwrap();
+        let early = UNIX_EPOCH + Duration::from_secs(1_000);
+        let late = UNIX_EPOCH + Duration::from_secs(2_000);
+        s.push_metric(MetricEvent::from_parts(
+            name.clone(),
+            1.0,
+            Arc::new(Labels::default()),
+            early,
+        ));
+        s.push_metric(MetricEvent::from_parts(
+            name,
+            1.0,
+            Arc::new(Labels::from_pairs(&[("host", "z")]).unwrap()),
+            late,
+        ));
+        assert_eq!(
+            s.last_emit_ts,
+            Some(late),
+            "watermark must equal the most recent push timestamp"
+        );
+    }
+
+    #[test]
+    fn close_emit_fields_are_not_serialized_to_json() {
+        let mut s = ScenarioStats::default();
+        s.enable_close_series_tracking();
+        s.push_metric(make_series_event("up", "a"));
+        let json = serde_json::to_string(&s).expect("must serialize");
+        assert!(!json.contains("close_emit_series"));
+        assert!(!json.contains("last_emit_ts"));
+        assert!(!json.contains("track_close_series"));
+    }
 
     #[test]
     fn is_degraded_false_when_no_sink_failures() {
