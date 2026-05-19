@@ -278,6 +278,9 @@ request_count{hostname="web-0",region="eu-west-1",...} 3
     collides with a static label key, the dynamic value wins. Dynamic labels work identically
     for both metric and log scenarios.
 
+!!! info "Loki sinks turn dynamic labels into separate streams"
+    A Loki **stream** is the unit Loki indexes by — identified by its label set. When a `logs` scenario uses a `loki` sink, each unique `dynamic_labels` combination becomes its own stream. A rotation through `peer_address: [10.1.2.2, 10.1.7.2]` produces two streams (`{peer_address="10.1.2.2"}` and `{peer_address="10.1.7.2"}`) — both queryable in Grafana by label. The Loki sink caps unique streams per push at [`max_streams_per_push`](sinks.md#loki) (default 128); raise the cap if a rotation needs more. See [Dynamic Labels — Loki sinks](../guides/dynamic-labels.md#dynamic-labels-with-the-loki-sink) for a worked BGP-peers example.
+
 ### Temporal fields
 
 These fields control when and how entries coordinate inside a multi-entry v2 file (including

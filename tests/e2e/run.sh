@@ -189,6 +189,27 @@ print(total)
 " 2>/dev/null || echo "0"
 }
 
+# Query Loki for the number of distinct streams matching a label selector.
+# Uses /loki/api/v1/series, which returns one entry per unique label set.
+# Usage: query_loki_stream_count <label_selector>
+query_loki_stream_count() {
+    local selector="$1"
+    local now_ns
+    now_ns=$(python3 -c "import time; print(int(time.time() * 1_000_000_000))")
+    local start_ns=$((now_ns - 3600000000000))
+    local result
+    result=$(curl -s --max-time 10 -G "http://localhost:3100/loki/api/v1/series" \
+        --data-urlencode "match[]=${selector}" \
+        --data-urlencode "start=${start_ns}" \
+        --data-urlencode "end=${now_ns}" \
+        2>/dev/null || echo '{}')
+    echo "${result}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(len(data.get('data', [])))
+" 2>/dev/null || echo "0"
+}
+
 # Run a single Loki scenario: execute `sonda run`, then verify log entries
 # arrived in Loki by querying its API with the given label selector.
 # Usage: run_loki_scenario <scenario_file> <label_selector> <description>
@@ -240,6 +261,63 @@ run_loki_scenario() {
         pass "${description}"
     else
         fail "${description}: no log entries found in Loki for selector '${label_selector}' (count=${count})"
+    fi
+}
+
+# Run a Loki scenario whose `dynamic_labels` rotation should produce N
+# distinct Loki streams, and verify the exact stream count by querying the
+# series endpoint.
+# Usage: run_loki_multi_stream_scenario <scenario_file> <label_selector> <expected_stream_count> <description>
+run_loki_multi_stream_scenario() {
+    local scenario_file="$1"
+    local label_selector="$2"
+    local expected_count="$3"
+    local description="$4"
+
+    info "Running Loki multi-stream scenario: ${description}"
+    info "  File:           ${scenario_file}"
+    info "  Selector:       ${label_selector}"
+    info "  Expect streams: ${expected_count}"
+
+    local timeout_secs=$((SCENARIO_DURATION + 10))
+    "${SONDA_BIN}" run "${scenario_file}" \
+            --duration "${SCENARIO_DURATION}s" \
+            >/dev/null 2>/tmp/sonda-e2e-stderr.log &
+    local sonda_pid=$!
+
+    local waited=0
+    while kill -0 "${sonda_pid}" 2>/dev/null && [ "${waited}" -lt "${timeout_secs}" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if kill -0 "${sonda_pid}" 2>/dev/null; then
+        kill "${sonda_pid}" 2>/dev/null
+        wait "${sonda_pid}" 2>/dev/null
+        fail "${description}: sonda timed out after ${timeout_secs}s"
+        return
+    fi
+
+    wait "${sonda_pid}" 2>/dev/null
+    local exit_code=$?
+
+    if [ "${exit_code}" -ne 0 ]; then
+        fail "${description}: sonda exited with code ${exit_code}"
+        return
+    fi
+
+    info "  sonda exited cleanly."
+    info "  Waiting ${INGEST_SETTLE_SECS}s for Loki ingestion to settle..."
+    sleep "${INGEST_SETTLE_SECS}"
+
+    local actual
+    actual=$(query_loki_stream_count "${label_selector}")
+    info "  Loki distinct-stream count: ${actual}"
+
+    if [ "${actual}" = "${expected_count}" ]; then
+        pass "${description}"
+    else
+        fail "${description}: expected ${expected_count} Loki streams matching '${label_selector}', got ${actual}"
     fi
 }
 
@@ -442,6 +520,12 @@ run_loki_scenario \
     "${SCENARIO_DIR}/loki-json-lines.yaml" \
     '{job="sonda-e2e"}' \
     "Loki via JSON Lines"
+
+run_loki_multi_stream_scenario \
+    "${SCENARIO_DIR}/loki-multi-stream.yaml" \
+    '{scenario="loki-multi-stream"}' \
+    3 \
+    "Loki multi-stream — dynamic_labels promotes to per-stream labels"
 
 # NOTE: vmagent scenario is disabled. vmagent's /api/v1/import/prometheus
 # endpoint accepts data (204) but does not relay plain text — it only forwards

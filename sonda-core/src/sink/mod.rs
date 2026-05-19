@@ -23,6 +23,7 @@ pub mod udp;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::model::log::LogEvent;
 use crate::SondaError;
 
 /// A sink consumes encoded bytes and delivers them to a destination.
@@ -39,6 +40,17 @@ pub trait Sink: Send + Sync {
     /// when the most recent `write()` triggered a successful flush.
     fn last_write_delivered(&self) -> bool {
         true
+    }
+
+    /// Write an encoded log event to the sink, with the originating
+    /// [`LogEvent`] alongside for sinks that build their own delivery
+    /// envelope from per-event context (e.g. labels).
+    ///
+    /// The default impl ignores the event reference and forwards to
+    /// [`Sink::write`], preserving the bytes-only contract every existing
+    /// sink relies on. Sinks that need per-event labels override this.
+    fn write_log_event(&mut self, _event: &LogEvent, encoded: &[u8]) -> Result<(), SondaError> {
+        self.write(encoded)
     }
 }
 
@@ -278,26 +290,23 @@ pub enum SinkConfig {
     KafkaDisabled {},
 
     /// Batch encoded log lines and deliver them to Grafana Loki via HTTP POST.
-    ///
-    /// Each call to `write()` appends one log line to the batch. When the batch
-    /// reaches `batch_size` entries, it is automatically flushed as a single POST
-    /// to `{url}/loki/api/v1/push`. Call `flush()` at shutdown to send any
-    /// remaining buffered entries.
-    ///
-    /// Stream labels are sourced from the scenario-level `labels` configuration
-    /// and passed to [`create_sink()`] via the `labels` parameter, keeping label
-    /// config consistent with all other signal types.
-    ///
-    /// Requires the `http` Cargo feature to be enabled.
+    /// Entries are grouped by combined label set (constructor labels + per-event
+    /// overlay from `dynamic_labels`) into one stream per unique combination.
+    /// Requires the `http` Cargo feature.
     #[cfg(feature = "http")]
     #[cfg_attr(feature = "config", serde(rename = "loki"))]
     Loki {
         /// Base URL of the Loki instance, e.g. `"http://localhost:3100"`.
         url: String,
 
-        /// Flush threshold in log entries. Defaults to `100` if not specified.
+        /// Flush threshold in log entries.
         #[cfg_attr(feature = "config", serde(default))]
         batch_size: Option<usize>,
+
+        /// Hard cap on unique streams per push. Defaults to
+        /// [`DEFAULT_MAX_STREAMS_PER_PUSH`](loki::DEFAULT_MAX_STREAMS_PER_PUSH).
+        #[cfg_attr(feature = "config", serde(default))]
+        max_streams_per_push: Option<u32>,
 
         /// Maximum batch age before a time-based flush, e.g. `"5s"`. Defaults
         /// to `"5s"`; a zero value (e.g. `"0s"`) disables time-based flushing.
@@ -466,10 +475,12 @@ pub fn create_sink(
         SinkConfig::Loki {
             url,
             batch_size,
+            max_streams_per_push,
             max_buffer_age,
             retry: retry_cfg,
         } => {
             let bs = batch_size.unwrap_or(loki::DEFAULT_BATCH_SIZE);
+            let cap = max_streams_per_push.unwrap_or(loki::DEFAULT_MAX_STREAMS_PER_PUSH);
             let loki_labels = labels.cloned().unwrap_or_default();
             let rp = retry_cfg
                 .as_ref()
@@ -484,6 +495,7 @@ pub fn create_sink(
                 url.clone(),
                 loki_labels,
                 bs,
+                cap,
                 rp,
                 buffer_age,
             )?))
@@ -1122,6 +1134,7 @@ headers: {}
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
+            max_streams_per_push: None,
             max_buffer_age: None,
             retry: None,
         };
@@ -1348,6 +1361,36 @@ retry:
         assert!(
             msg.contains("cargo build -F remote-write"),
             "error must tell the user how to enable the feature, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn default_write_log_event_forwards_encoded_bytes_to_write() {
+        use crate::model::log::{LogEvent, Severity};
+        use crate::model::metric::Labels;
+        use memory::MemorySink;
+        use std::collections::BTreeMap;
+        use std::time::SystemTime;
+
+        let mut sink = MemorySink::new();
+        let event = LogEvent::with_timestamp(
+            SystemTime::UNIX_EPOCH,
+            Severity::Info,
+            "hello".to_string(),
+            Labels::default(),
+            BTreeMap::new(),
+        );
+        let encoded = b"<encoded payload>";
+
+        // MemorySink does not override `write_log_event`, so the call must
+        // route through the default impl and end up appended to `buffer`
+        // exactly as `write(encoded)` would.
+        sink.write_log_event(&event, encoded)
+            .expect("default write_log_event must succeed");
+
+        assert_eq!(
+            sink.buffer, encoded,
+            "default impl must forward the encoded bytes to write() unchanged"
         );
     }
 

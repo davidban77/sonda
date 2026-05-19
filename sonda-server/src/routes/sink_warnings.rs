@@ -1,6 +1,6 @@
 //! Sink loopback pre-flight warnings shared by `POST /scenarios` and `POST /events`.
 
-use sonda_core::config::ScenarioEntry;
+use sonda_core::config::{DynamicLabelConfig, DynamicLabelStrategy, ScenarioEntry};
 use sonda_core::sink::SinkConfig;
 use tracing::warn;
 
@@ -148,6 +148,96 @@ pub(crate) fn collect_warnings_for_sink(
 pub(crate) fn log_warnings(route: &str, warnings: &[String]) {
     for message in warnings {
         warn!(message = %message, route = %route, "{}: sink pre-flight warning", route);
+    }
+}
+
+pub(crate) fn loki_cardinality_warnings(entries: &[ScenarioEntry]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for entry in entries {
+        if !matches!(entry, ScenarioEntry::Logs(_)) {
+            continue;
+        }
+        let base = entry.base();
+        let Some(dyn_labels) = base.dynamic_labels.as_deref() else {
+            continue;
+        };
+        if dyn_labels.is_empty() {
+            continue;
+        }
+        if let Some(msg) = preview_loki_cardinality(&base.sink, &base.name, dyn_labels) {
+            warnings.push(msg);
+        }
+    }
+    warnings
+}
+
+const PREVIEW_OVERFLOW_THRESHOLD: u64 = 1_000_000;
+
+fn preview_loki_cardinality(
+    sink: &SinkConfig,
+    entry_name: &str,
+    dyn_labels: &[DynamicLabelConfig],
+) -> Option<String> {
+    match sink {
+        #[cfg(feature = "http")]
+        SinkConfig::Loki {
+            max_streams_per_push,
+            ..
+        } => {
+            let cap = max_streams_per_push
+                .unwrap_or(sonda_core::sink::loki::DEFAULT_MAX_STREAMS_PER_PUSH);
+            let predicted = predicted_loki_stream_count(dyn_labels);
+            let over_cap = match predicted {
+                None => true,
+                Some(n) => n > u64::from(cap),
+            };
+            if !over_cap {
+                return None;
+            }
+            let keys: Vec<&str> = dyn_labels.iter().map(|dl| dl.key.as_str()).collect();
+            let count_phrase = match predicted {
+                Some(n) => format!("up to {n} distinct"),
+                None => format!("more than {PREVIEW_OVERFLOW_THRESHOLD} distinct"),
+            };
+            Some(format!(
+                "scenario entry '{entry_name}' will produce {count_phrase} \
+                 Loki streams (dynamic_labels: {keys}), exceeding max_streams_per_push ({cap}). \
+                 Either raise max_streams_per_push, reduce dynamic_labels cardinality, \
+                 or reduce batch_size so each flush stays under the cap.",
+                keys = keys.join(", ")
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn predicted_loki_stream_count(dyn_labels: &[DynamicLabelConfig]) -> Option<u64> {
+    let mut acc: u64 = 1;
+    for dl in dyn_labels {
+        let n = match &dl.strategy {
+            DynamicLabelStrategy::Counter { cardinality, .. } => *cardinality,
+            DynamicLabelStrategy::ValuesList { values } => values.len() as u64,
+        };
+        acc = checked_lcm(acc, n)?;
+        if acc > PREVIEW_OVERFLOW_THRESHOLD {
+            return None;
+        }
+    }
+    Some(acc)
+}
+
+fn checked_lcm(a: u64, b: u64) -> Option<u64> {
+    if a == 0 || b == 0 {
+        return Some(0);
+    }
+    a.checked_div(gcd(a, b))?.checked_mul(b)
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
     }
 }
 
@@ -384,6 +474,208 @@ mod tests {
         let sink = SinkConfig::Stdout;
         let mut out = Vec::new();
         collect_warnings_for_sink(&sink, "events", &mut out);
+        assert!(out.is_empty());
+    }
+
+    fn compile_logs_entry(body_yaml: &str) -> ScenarioEntry {
+        let yaml = format!(
+            "version: 2\nkind: runnable\n\
+             defaults:\n  rate: 10\n  duration: 500ms\n  encoder:\n    type: json_lines\n\
+             scenarios:\n  - id: card_test\n    signal_type: logs\n    name: card_test\n\
+{body_yaml}",
+        );
+        let resolver = InMemoryPackResolver::new();
+        let mut entries = compile_scenario_file(&yaml, &resolver).expect("compile must succeed");
+        assert_eq!(entries.len(), 1, "fixture must compile to one entry");
+        entries.pop().unwrap()
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_fires_when_predicted_exceeds_cap() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20\x20\x20max_streams_per_push: 1\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer_address\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"10.1.2.2\", \"10.1.7.2\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("card_test"));
+        assert!(out[0].contains("peer_address"));
+        assert!(out[0].contains("up to 2 distinct"));
+        assert!(out[0].contains("max_streams_per_push (1)"));
+        assert!(out[0].contains("exceeding"));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_silent_when_default_cap_dominates() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer_address\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"10.1.2.2\", \"10.1.7.2\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert!(
+            out.is_empty(),
+            "predicted (2) ≤ default cap (128) must not fire: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_silent_when_explicit_cap_dominates() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20\x20\x20max_streams_per_push: 32\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer_address\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"a\", \"b\", \"c\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert!(
+            out.is_empty(),
+            "predicted (3) ≤ explicit cap (32) must not fire: {out:?}"
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_fires_when_explicit_cap_undershoots() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20\x20\x20max_streams_per_push: 2\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer_address\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"a\", \"b\", \"c\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("max_streams_per_push (2)"));
+        assert!(out[0].contains("up to 3 distinct"));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_uses_lcm_for_multiple_dynamic_labels() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20\x20\x20max_streams_per_push: 5\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"a\", \"b\", \"c\"]\n\
+             \x20\x20\x20\x20\x20\x20- key: pod\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"x\", \"y\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("up to 6 distinct"), "got: {}", out[0]);
+        assert!(out[0].contains("max_streams_per_push (5)"));
+    }
+
+    #[test]
+    fn predicted_loki_stream_count_saturates_on_overflow() {
+        let dyn_labels = vec![
+            DynamicLabelConfig {
+                key: "a".to_string(),
+                strategy: DynamicLabelStrategy::Counter {
+                    prefix: None,
+                    cardinality: u64::MAX,
+                },
+            },
+            DynamicLabelConfig {
+                key: "b".to_string(),
+                strategy: DynamicLabelStrategy::Counter {
+                    prefix: None,
+                    cardinality: 7,
+                },
+            },
+        ];
+        assert_eq!(predicted_loki_stream_count(&dyn_labels), None);
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_reports_saturation_phrase_on_overflow() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20\x20\x20max_streams_per_push: 1\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: a\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20cardinality: 18446744073709551615\n\
+             \x20\x20\x20\x20\x20\x20- key: b\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20cardinality: 7\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].contains(&format!("more than {PREVIEW_OVERFLOW_THRESHOLD}")),
+            "saturation phrase missing: {}",
+            out[0]
+        );
+    }
+
+    #[test]
+    fn predicted_loki_stream_count_handles_large_but_safe_count() {
+        let dyn_labels = vec![DynamicLabelConfig {
+            key: "a".to_string(),
+            strategy: DynamicLabelStrategy::Counter {
+                prefix: None,
+                cardinality: 5000,
+            },
+        }];
+        assert_eq!(predicted_loki_stream_count(&dyn_labels), Some(5000));
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_does_not_fire_without_dynamic_labels() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: loki\n      url: http://loki:3100\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert!(out.is_empty());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn loki_cardinality_warning_does_not_fire_for_non_loki_sink() {
+        let entry = compile_logs_entry(
+            "    sink:\n      type: stdout\n\
+             \x20\x20\x20\x20dynamic_labels:\n      - key: peer\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20values: [\"a\", \"b\"]\n\
+             \x20\x20\x20\x20log_generator:\n      type: template\n      templates:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20- message: \"hi\"\n",
+        );
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn loki_cardinality_warning_does_not_fire_for_metrics_entry() {
+        let yaml = "version: 2\nkind: runnable\n\
+                    defaults:\n  rate: 10\n  duration: 500ms\n\
+                    \x20\x20encoder:\n    type: prometheus_text\n\
+                    scenarios:\n  - id: m\n    signal_type: metrics\n    name: m\n\
+                    \x20\x20\x20\x20sink:\n      type: stdout\n\
+                    \x20\x20\x20\x20generator:\n      type: constant\n      value: 1.0\n\
+                    \x20\x20\x20\x20dynamic_labels:\n      - key: peer\n\
+                    \x20\x20\x20\x20\x20\x20\x20\x20values: [\"a\", \"b\"]\n";
+        let resolver = InMemoryPackResolver::new();
+        let mut entries = compile_scenario_file(yaml, &resolver).expect("compile");
+        let entry = entries.pop().unwrap();
+        let out = loki_cardinality_warnings(std::slice::from_ref(&entry));
         assert!(out.is_empty());
     }
 }

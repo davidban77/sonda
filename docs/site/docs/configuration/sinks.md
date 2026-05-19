@@ -359,17 +359,15 @@ sink:
     This sink requires the `http` Cargo feature flag. Pre-built release binaries include this
     feature. If building from source: `cargo build --features http -p sonda`.
 
-Batches log lines and delivers them to Grafana Loki via HTTP POST. Each call to write appends one
-log line, and the batch is flushed when it reaches the configured size.
+Batches log lines and delivers them to Grafana Loki via HTTP POST. A Loki **stream** is the unit Loki indexes by, identified by its label set. At each flush, entries are grouped by their combined label set (scenario-level `labels` merged with any per-event `dynamic_labels`) and sent as a single push containing one stream per unique combination.
 
-Stream labels are configured at the **top-level** `labels` field of the scenario, not inside the
-sink block. This is consistent with how labels work for all other signal types. The scenario-level
-labels are used as Loki stream labels in the push API envelope.
+Scenario-level `labels:` form the base stream labels. Per-event `dynamic_labels` (when used) join the stream label set, so a rotation through N values produces N distinct streams — each queryable in Grafana by label. See [Dynamic Labels — Loki sinks](../guides/dynamic-labels.md#dynamic-labels-with-the-loki-sink) for the worked pattern.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Base URL of the Loki instance. |
 | `batch_size` | integer | no | `5` | Size flush threshold in number of log entries. Raise for high-rate scenarios. |
+| `max_streams_per_push` | integer | no | `128` | Hard cap on unique streams per flush. A flush that would emit more streams than the cap fails with a message naming the offending count and the cap, so high-cardinality `dynamic_labels` configurations surface as a config error instead of overloading the Loki ingester. Raise this if your ingester is sized for higher cardinality. |
 | `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="Loki sink with top-level labels"
