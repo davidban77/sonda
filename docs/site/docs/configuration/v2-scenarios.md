@@ -342,6 +342,8 @@ backup ramp crosses 70% a little over two minutes later, which is when `latency_
 degrade. Scenarios linked by `after:` get an auto-assigned `clock_group` so their timers share a
 start reference.
 
+An `after:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one. `after:` holds the scenario in `pending` until its upstream crosses the threshold; if that crossing never happens, a scenario with no `duration:` would have no terminal point and sit `pending` for the lifetime of the run.
+
 Use `--dry-run` to see the resolved timing:
 
 ```bash
@@ -421,7 +423,7 @@ For continuous gating that pauses and resumes a downstream as the upstream's val
 
 ## Continuous coupling with `while:`
 
-`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately.
+`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. A `while:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one, because the `paused` state needs a terminal point to bound the scenario's lifetime. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately.
 
 ```yaml title="link-traffic.yaml"
 version: 2

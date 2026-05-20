@@ -1341,7 +1341,7 @@ scenarios:
         let yaml = r#"
 version: 2
 kind: runnable
-defaults: { rate: 1 }
+defaults: { rate: 1, duration: 5m }
 scenarios:
   - id: tail
     signal_type: metrics
@@ -1450,7 +1450,7 @@ scenarios:
         let yaml = r#"
 version: 2
 kind: runnable
-defaults: { rate: 1 }
+defaults: { rate: 1, duration: 5m }
 scenarios:
   - id: tail
     signal_type: metrics

@@ -1430,6 +1430,7 @@ scenarios:
     name: errors
     rate: 1
     log_generator: { type: template, templates: [{ message: "hi" }] }
+    duration: 5m
     after: { ref: nonexistent, op: ">", value: 50 }
 "#;
         let err = compile(yaml).expect_err("should fail");
@@ -1448,6 +1449,7 @@ scenarios:
     name: util
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: loop, op: ">", value: 50 }
 "#;
         let err = compile(yaml).expect_err("self-ref is rejected");
@@ -1474,6 +1476,7 @@ scenarios:
     name: latency
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: util, op: ">", value: 70 }
 "#;
         let compiled = compile(yaml).expect("should compile");
@@ -1503,6 +1506,7 @@ scenarios:
     name: util
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: link, op: "<", value: 1 }
 "#, "1m")]
     // spike_event `<` crosses at the spike_duration boundary (10s).
@@ -1520,6 +1524,7 @@ scenarios:
     name: recovery
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: burst, op: "<", value: 50 }
 "#, "10s")]
     // Step `>`: ceil((55-0)/10) = 6 ticks, rate=2 -> 3.0s.
@@ -1537,6 +1542,7 @@ scenarios:
     name: alert
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: counter, op: ">", value: 55 }
 "#, "3s")]
     // Sequence `<`: index 2 (value 2) is the first < 3; rate=2 -> 1.0s.
@@ -1554,6 +1560,7 @@ scenarios:
     name: alert
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: seq, op: "<", value: 3 }
 "#, "1s")]
     fn follower_phase_offset_matches_expected_crossing(
@@ -1583,6 +1590,7 @@ scenarios:
     name: y
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: counter, op: "<", value: 5 }
 "#;
         let err = compile(yaml).expect_err("step < is unsupported");
@@ -1615,6 +1623,7 @@ scenarios:
     name: y
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: k, op: ">", value: 100 }
 "#, "constant")]
     #[case::sine(r#"
@@ -1631,6 +1640,7 @@ scenarios:
     name: f
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: wave, op: ">", value: 55 }
 "#, "sine")]
     #[case::steady(r#"
@@ -1647,6 +1657,7 @@ scenarios:
     name: f
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: base, op: ">", value: 55 }
 "#, "steady")]
     #[case::uniform(r#"
@@ -1663,6 +1674,7 @@ scenarios:
     name: f
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: u, op: ">", value: 5 }
 "#, "uniform")]
     fn unresolvable_target_generator_is_rejected(
@@ -1696,12 +1708,14 @@ scenarios:
     name: b
     rate: 1
     generator: { type: saturation, baseline: 20, ceiling: 85, time_to_saturate: 120s }
+    duration: 5m
     after: { ref: a, op: "<", value: 1 }
   - id: c
     signal_type: metrics
     name: c
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: b, op: ">", value: 70 }
 "#;
         let compiled = compile(yaml).expect("chain compiles");
@@ -1733,6 +1747,7 @@ scenarios:
     name: b
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: link, op: "<", value: 1, delay: 15s }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1756,6 +1771,7 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     phase_offset: 10s
+    duration: 5m
     after: { ref: link, op: "<", value: 1 }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1779,6 +1795,7 @@ scenarios:
     rate: 1
     generator: { type: constant, value: 1 }
     phase_offset: 10s
+    duration: 5m
     after: { ref: link, op: "<", value: 1, delay: 5s }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1801,12 +1818,14 @@ scenarios:
     name: a
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: b, op: ">", value: 1 }
   - id: b
     signal_type: metrics
     name: b
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: a, op: ">", value: 1 }
 "#;
         let err = compile(yaml).expect_err("cycle should fail");
@@ -1825,18 +1844,21 @@ scenarios:
     name: a
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: c, op: ">", value: 1 }
   - id: b
     signal_type: metrics
     name: b
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: a, op: ">", value: 1 }
   - id: c
     signal_type: metrics
     name: c
     rate: 1
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: b, op: ">", value: 1 }
 "#;
         let err = compile(yaml).expect_err("cycle should fail");
@@ -1867,6 +1889,7 @@ scenarios:
     name: b
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: alpha, op: "<", value: 1 }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1897,6 +1920,7 @@ scenarios:
     name: b
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: alpha, op: "<", value: 1 }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1922,6 +1946,7 @@ scenarios:
     rate: 1
     clock_group: group_b
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: alpha, op: "<", value: 1 }
 "#;
         let err = compile(yaml).expect_err("conflicting groups fail");
@@ -1968,6 +1993,7 @@ scenarios:
     rate: 1
     clock_group: x
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: alpha, op: "<", value: 1 }
 "#;
         let compiled = compile(yaml).expect("compile");
@@ -1995,6 +2021,7 @@ scenarios:
     rate: 1
     clock_group: x
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: alpha, op: "<", value: 1 }
 "#;
         let err = compile(yaml).expect_err("trailing whitespace must conflict");
@@ -2021,6 +2048,7 @@ scenarios:
     name: app_logs
     rate: 1
     log_generator: { type: template, templates: [{ message: "upstream timeout" }] }
+    duration: 5m
     after: { ref: err_rate, op: ">", value: 10 }
 "#;
         let compiled = compile(yaml).expect("cross-signal after compiles");
@@ -2043,6 +2071,7 @@ scenarios:
     name: f
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: log_src, op: ">", value: 0 }
 "#;
         let err = compile(yaml).expect_err("logs target rejected");
@@ -2070,6 +2099,7 @@ scenarios:
     name: f
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: link, op: "<", value: 1 }
 "#;
         let compiled = compile(yaml_alias).expect("compile");
@@ -2114,6 +2144,7 @@ scenarios:
     name: alert
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: dev.state_flap, op: "<", value: 1 }
 "#;
         let compiled = compile_with_resolver(yaml, &resolver_with_test_pack()).expect("compile");
@@ -2159,6 +2190,7 @@ scenarios:
     name: alert
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: host.cpu_util, op: ">", value: 50 }
 "#;
         let err = compile_with_resolver(yaml, &r).expect_err("bare ref is ambiguous");
@@ -2199,6 +2231,7 @@ scenarios:
     name: b
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: src, op: "<", value: 1, delay: "10seconds" }
 "#, "follower", "after.delay", "10seconds")]
     // `phase_offset: "0s"` is a well-known `parse_duration` rejection
@@ -2220,6 +2253,7 @@ scenarios:
     rate: 1
     phase_offset: "0s"
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: src, op: "<", value: 1 }
 "#, "follower", "phase_offset", "0s")]
     // Invalid alias duration params (e.g. `flap.up_duration: "oops"`) must
@@ -2241,6 +2275,7 @@ scenarios:
     name: b
     rate: 1
     generator: { type: constant, value: 1 }
+    duration: 5m
     after: { ref: src, op: "<", value: 1 }
 "#, "follower", "flap.up_duration", "oops")]
     fn invalid_duration_surfaces_invalid_duration(
@@ -2438,6 +2473,7 @@ scenarios:
     signal_type: metrics
     name: a
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: b, op: ">", value: 1 }
   - id: b
     signal_type: metrics
@@ -2475,11 +2511,13 @@ scenarios:
     signal_type: metrics
     name: a
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: b, op: ">", value: 1 }
   - id: b
     signal_type: metrics
     name: b
     generator: { type: saturation, baseline: 0, ceiling: 100, time_to_saturate: 60s }
+    duration: 5m
     after: { ref: a, op: ">", value: 1 }
 "#;
         let err = compile_after_from_yaml(yaml).expect_err("pure-after cycle must fail");
