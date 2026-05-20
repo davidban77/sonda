@@ -19,6 +19,8 @@
 //! without a semver-major bump.
 
 pub mod analysis;
+#[cfg(feature = "config")]
+pub mod catalog;
 pub mod compiler;
 pub mod config;
 pub mod emit;

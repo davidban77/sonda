@@ -3,11 +3,56 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
-use sonda_core::compiler::expand::{
+use crate::compiler::expand::{
     classify_pack_reference, PackResolveError, PackResolveOrigin, PackResolver,
 };
-use sonda_core::packs::MetricPackDef;
+use crate::packs::MetricPackDef;
+
+/// Errors from catalog directory enumeration and `@name` resolution.
+#[derive(Debug, thiserror::Error)]
+pub enum CatalogError {
+    #[error("catalog dir {dir} does not exist or is not a directory")]
+    NotADirectory { dir: String },
+
+    #[error("failed to read catalog dir {dir}")]
+    ReadDir {
+        dir: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to read entry in {dir}")]
+    ReadEntry {
+        dir: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to read {path}")]
+    ReadFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("cannot derive name from filename {path}")]
+    InvalidName { path: String },
+
+    #[error("catalog {dir} contains duplicate entry name {name:?}: {first} and {second}")]
+    DuplicateName {
+        dir: String,
+        name: String,
+        first: String,
+        second: String,
+    },
+
+    #[error("unknown catalog entry {name:?} in {dir}; available: {available}")]
+    UnknownEntry {
+        dir: String,
+        name: String,
+        available: String,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -49,19 +94,23 @@ struct CatalogEntryHeader {
 
 /// Walk `dir` and return one [`CatalogEntry`] per YAML file with a
 /// recognized `kind:` header. Files without `kind:` are silently skipped.
-pub fn enumerate(dir: &Path) -> Result<Vec<CatalogEntry>> {
+pub fn enumerate(dir: &Path) -> Result<Vec<CatalogEntry>, CatalogError> {
     if !dir.is_dir() {
-        return Err(anyhow!(
-            "catalog dir {} does not exist or is not a directory",
-            dir.display()
-        ));
+        return Err(CatalogError::NotADirectory {
+            dir: dir.display().to_string(),
+        });
     }
 
     let mut entries: Vec<CatalogEntry> = Vec::new();
-    let read_dir = fs::read_dir(dir)
-        .with_context(|| format!("failed to read catalog dir {}", dir.display()))?;
+    let read_dir = fs::read_dir(dir).map_err(|source| CatalogError::ReadDir {
+        dir: dir.display().to_string(),
+        source,
+    })?;
     for entry in read_dir {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let entry = entry.map_err(|source| CatalogError::ReadEntry {
+            dir: dir.display().to_string(),
+            source,
+        })?;
         let path = entry.path();
         if !is_yaml_file(&path) {
             continue;
@@ -75,13 +124,12 @@ pub fn enumerate(dir: &Path) -> Result<Vec<CatalogEntry>> {
 
     for pair in entries.windows(2) {
         if pair[0].name == pair[1].name {
-            return Err(anyhow!(
-                "catalog {} contains duplicate entry name {:?}: {} and {}",
-                dir.display(),
-                pair[0].name,
-                pair[0].source_path.display(),
-                pair[1].source_path.display(),
-            ));
+            return Err(CatalogError::DuplicateName {
+                dir: dir.display().to_string(),
+                name: pair[0].name.clone(),
+                first: pair[0].source_path.display().to_string(),
+                second: pair[1].source_path.display().to_string(),
+            });
         }
     }
 
@@ -89,7 +137,7 @@ pub fn enumerate(dir: &Path) -> Result<Vec<CatalogEntry>> {
 }
 
 /// Resolve `@name` against `dir` and return the source YAML path.
-pub fn resolve(dir: &Path, name: &str) -> Result<PathBuf> {
+pub fn resolve(dir: &Path, name: &str) -> Result<PathBuf, CatalogError> {
     let all = enumerate(dir)?;
     if let Some(entry) = all.iter().find(|e| e.name == name) {
         return Ok(entry.source_path.clone());
@@ -100,12 +148,11 @@ pub fn resolve(dir: &Path, name: &str) -> Result<PathBuf> {
     } else {
         names.join(", ")
     };
-    Err(anyhow!(
-        "unknown catalog entry {:?} in {}; available: {}",
-        name,
-        dir.display(),
-        available
-    ))
+    Err(CatalogError::UnknownEntry {
+        dir: dir.display().to_string(),
+        name: name.to_string(),
+        available,
+    })
 }
 
 fn is_yaml_file(path: &Path) -> bool {
@@ -118,9 +165,11 @@ fn is_yaml_file(path: &Path) -> bool {
     )
 }
 
-fn peek_entry(path: &Path) -> Result<Option<CatalogEntry>> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+fn peek_entry(path: &Path) -> Result<Option<CatalogEntry>, CatalogError> {
+    let content = fs::read_to_string(path).map_err(|source| CatalogError::ReadFile {
+        path: path.display().to_string(),
+        source,
+    })?;
     let header: CatalogEntryHeader = match serde_yaml_ng::from_str(&content) {
         Ok(h) => h,
         Err(e) => {
@@ -142,7 +191,9 @@ fn peek_entry(path: &Path) -> Result<Option<CatalogEntry>> {
     let filename_stem = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| anyhow!("cannot derive name from filename {}", path.display()))?
+        .ok_or_else(|| CatalogError::InvalidName {
+            path: path.display().to_string(),
+        })?
         .to_string();
     let name = header
         .scenario_name

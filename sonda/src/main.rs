@@ -1,6 +1,5 @@
 //! sonda CLI entrypoint.
 
-mod catalog_dir;
 mod cli;
 mod config;
 mod dry_run;
@@ -114,14 +113,14 @@ fn list_catalog(args: &cli::ListArgs, catalog: Option<&std::path::Path>) -> anyh
         catalog.ok_or_else(|| anyhow::anyhow!("--catalog <dir> is required for `sonda list`"))?;
     let kind_filter = match args.kind.as_deref() {
         None => None,
-        Some("runnable") => Some(catalog_dir::EntryKind::Runnable),
-        Some("composable") => Some(catalog_dir::EntryKind::Composable),
+        Some("runnable") => Some(sonda_core::catalog::EntryKind::Runnable),
+        Some("composable") => Some(sonda_core::catalog::EntryKind::Composable),
         Some(other) => {
             anyhow::bail!("unknown --kind {other:?}: expected 'runnable' or 'composable'")
         }
     };
 
-    let mut entries = catalog_dir::enumerate(dir)?;
+    let mut entries = sonda_core::catalog::enumerate(dir)?;
     if let Some(k) = kind_filter {
         entries.retain(|e| e.kind == k);
     }
@@ -165,7 +164,7 @@ fn show_entry(args: &cli::ShowArgs, catalog: Option<&std::path::Path>) -> anyhow
     let name = args.name.strip_prefix('@').unwrap_or(args.name.as_str());
     let dir =
         catalog.ok_or_else(|| anyhow::anyhow!("--catalog <dir> is required for `sonda show`"))?;
-    let entries = catalog_dir::enumerate(dir)?;
+    let entries = sonda_core::catalog::enumerate(dir)?;
     let entry = entries
         .iter()
         .find(|e| e.name == name)
