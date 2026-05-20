@@ -356,7 +356,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     let phase1 = handle.recent_metrics();
     let phase1_count = phase1.len();
     assert!(
-        phase1_count >= 2 && phase1_count <= 4,
+        (2..=4).contains(&phase1_count),
         "phase 1 expected ~3 events, got {phase1_count}"
     );
     let last_phase1_value = phase1

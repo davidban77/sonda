@@ -23,18 +23,16 @@ use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::encoder::remote_write::{TimeSeries, WriteRequest, PROMETHEUS_STALE_NAN};
 use sonda_core::schedule::multi_runner::launch_multi_compiled;
 
+type CapturedSeries = Arc<Mutex<Vec<(Instant, TimeSeries)>>>;
+
 /// Spawn an HTTP listener that accepts POSTs, snappy-decodes the body, parses
 /// the protobuf `WriteRequest`, and pushes every `TimeSeries` (with arrival
 /// timestamp) into a shared vector.
-fn spawn_capture_listener() -> (
-    String,
-    Arc<Mutex<Vec<(Instant, TimeSeries)>>>,
-    Arc<AtomicBool>,
-) {
+fn spawn_capture_listener() -> (String, CapturedSeries, Arc<AtomicBool>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{port}/api/v1/write");
-    let captured: Arc<Mutex<Vec<(Instant, TimeSeries)>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured: CapturedSeries = Arc::new(Mutex::new(Vec::new()));
     let stop = Arc::new(AtomicBool::new(false));
 
     let captured_for_thread = Arc::clone(&captured);
@@ -854,7 +852,6 @@ scenarios:
     stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
 
     // Drop the server.
-    drop(&mut guard);
     guard.0.kill().ok();
     guard.0.wait().ok();
 
@@ -1312,7 +1309,6 @@ scenarios:
     thread::sleep(Duration::from_millis(2500));
     stop_listener.store(true, std::sync::atomic::Ordering::SeqCst);
 
-    drop(&mut guard);
     guard.0.kill().ok();
     guard.0.wait().ok();
 

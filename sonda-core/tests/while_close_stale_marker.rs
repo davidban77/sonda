@@ -59,6 +59,8 @@ fn while_gt_zero() -> SubscriptionSpec {
 /// Run a metric scenario directly against the capture sink, bypassing
 /// `launch_scenario_with_gates` (which constructs its own sink from
 /// `SinkConfig`). Returns the captured buffer and the joined thread result.
+// test helper: positional scenario knobs, grouping would churn every caller
+#[allow(clippy::too_many_arguments)]
 fn run_with_capture(
     name: &str,
     rate: f64,

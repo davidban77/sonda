@@ -686,6 +686,7 @@ sink:
     // ---------------------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14159 is a sample display value, not the PI constant
     fn write_value_none_uses_default_display() {
         let mut buf = Vec::new();
         write_value(&mut buf, 1.0, None);
@@ -715,6 +716,7 @@ sink:
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // -3.14159 is a sample display value, not the PI constant
     fn write_value_precision_with_negative() {
         let mut buf = Vec::new();
         write_value(&mut buf, -3.14159, Some(2));

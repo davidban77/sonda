@@ -54,7 +54,7 @@ jobs:
         run: cargo test --workspace --doc
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -191,7 +191,7 @@ jobs:
         run: cargo test --workspace --all-features --doc
 
       - name: Clippy (all features)
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   docs-commands:
     name: Validate sonda commands in user-facing docs

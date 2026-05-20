@@ -307,7 +307,7 @@ pub fn normalize_timestamps(bytes: &[u8]) -> Vec<u8> {
             while digit_end < after_space.len() && after_space[digit_end].is_ascii_digit() {
                 digit_end += 1;
             }
-            if digit_end >= 11 && digit_end <= 19 && after_space.get(digit_end) == Some(&b'\n') {
+            if (11..=19).contains(&digit_end) && after_space.get(digit_end) == Some(&b'\n') {
                 out.extend_from_slice(b" ___TS___\n");
                 i += 1 + digit_end + 1;
                 continue;

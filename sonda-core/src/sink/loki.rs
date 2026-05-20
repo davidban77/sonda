@@ -312,6 +312,29 @@ impl LokiSink {
     }
 }
 
+/// Escape a string for use inside a JSON string value.
+///
+/// Handles the minimal set of characters that must be escaped in JSON:
+/// backslash, double quote, and the ASCII control characters.
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 32 => {
+                // Other ASCII control characters as \uXXXX.
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -359,9 +382,8 @@ mod tests {
                 break;
             }
             let lower = line.to_lowercase();
-            if lower.starts_with("content-length:") {
-                let val = lower["content-length:".len()..].trim().to_string();
-                content_length = val.parse().unwrap_or(0);
+            if let Some(rest) = lower.strip_prefix("content-length:") {
+                content_length = rest.trim().parse().unwrap_or(0);
             }
         }
         let mut body = vec![0u8; content_length];
@@ -1500,27 +1522,4 @@ sink:
             "both direct writes group into the single stream"
         );
     }
-}
-
-/// Escape a string for use inside a JSON string value.
-///
-/// Handles the minimal set of characters that must be escaped in JSON:
-/// backslash, double quote, and the ASCII control characters.
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 32 => {
-                // Other ASCII control characters as \uXXXX.
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }

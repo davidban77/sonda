@@ -125,7 +125,7 @@ fn round_trip_json_lines_encoder_produces_parseable_output() {
     let gen = create_log_generator(&child.generator).expect("create_log_generator must succeed");
     let encoder = create_encoder(&child.encoder).expect("create_encoder must succeed");
 
-    for tick in 0..rows.len() {
+    for (tick, row) in rows.iter().enumerate() {
         let event = gen.generate(tick as u64);
         let mut buf: Vec<u8> = Vec::with_capacity(256);
         encoder
@@ -138,17 +138,14 @@ fn round_trip_json_lines_encoder_produces_parseable_output() {
         let obj = parsed.as_object().expect("JSON must be an object");
         assert_eq!(
             obj.get("message").and_then(|v| v.as_str()),
-            Some(rows[tick].1),
+            Some(row.1),
             "tick {tick}: encoded message mismatch"
         );
         let fields = obj
             .get("fields")
             .and_then(|v| v.as_object())
             .expect("encoded output must include fields");
-        assert_eq!(
-            fields.get("user_id").and_then(|v| v.as_str()),
-            Some(rows[tick].3)
-        );
+        assert_eq!(fields.get("user_id").and_then(|v| v.as_str()), Some(row.3));
     }
 }
 

@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn spawn_failed_is_runtime_not_config() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "resource limit");
+        let io_err = std::io::Error::other("resource limit");
         let rt_err = RuntimeError::SpawnFailed(io_err);
         let sonda_err: SondaError = rt_err.into();
         assert!(
@@ -460,10 +460,7 @@ mod tests {
 
     #[test]
     fn runtime_error_display_is_descriptive() {
-        let spawn_err = RuntimeError::SpawnFailed(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "too many threads",
-        ));
+        let spawn_err = RuntimeError::SpawnFailed(std::io::Error::other("too many threads"));
         let msg = format!("{spawn_err}");
         assert!(
             msg.contains("failed to spawn scenario thread"),

@@ -205,7 +205,7 @@ mod tests {
         for tick in 0..20 {
             let v = gen.value(tick);
             assert!(
-                v >= 0.0 && v < 3.0,
+                (0.0..3.0).contains(&v),
                 "value {v} at tick {tick} must be in [0.0, 3.0)"
             );
         }
