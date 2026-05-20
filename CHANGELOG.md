@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.1](https://github.com/davidban77/sonda/compare/v1.10.0...v1.10.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **core:** emit a close marker for every distinct series, not just the most recent 100 ([#387](https://github.com/davidban77/sonda/issues/387)) ([703ad60](https://github.com/davidban77/sonda/commit/703ad60eba91e9a37b805555c680bb16210be327))
+
 ## [1.10.0](https://github.com/davidban77/sonda/compare/v1.9.3...v1.10.0) (2026-05-19)
 
 
