@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.10.2](https://github.com/davidban77/sonda/compare/v1.10.1...v1.10.2) (2026-05-20)
+
+
+### Bug Fixes
+
+* **core:** require duration on after:-gated scenarios ([#393](https://github.com/davidban77/sonda/issues/393)) ([3517db4](https://github.com/davidban77/sonda/commit/3517db4d2c2c95932c2bccfceec851140b45cda4))
+
+
+### Miscellaneous
+
+* clear clippy --all-targets lint debt and gate it in CI ([#390](https://github.com/davidban77/sonda/issues/390)) ([e15f4c0](https://github.com/davidban77/sonda/commit/e15f4c0937714972fb6a77c92eca8c2fd79e3b73))
+
+
+### Refactoring
+
+* **core:** build the scenario encoder once and share it with close-emit ([#392](https://github.com/davidban77/sonda/issues/392)) ([ee16a08](https://github.com/davidban77/sonda/commit/ee16a08fb8988320e7d07577a578ca72e4e10f14))
+
 ## [1.10.1](https://github.com/davidban77/sonda/compare/v1.10.0...v1.10.1) (2026-05-19)
 
 
