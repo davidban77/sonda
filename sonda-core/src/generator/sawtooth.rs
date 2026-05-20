@@ -83,7 +83,7 @@ mod tests {
         let v = gen.value(last_tick);
         // fraction = 99/100 = 0.99 → value = 99.0
         assert!(
-            v >= 98.0 && v < 100.0,
+            (98.0..100.0).contains(&v),
             "value near period end should approach max, got {v}"
         );
     }

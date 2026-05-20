@@ -328,9 +328,8 @@ mod tests {
                 break;
             }
             let lower = line.to_lowercase();
-            if lower.starts_with("content-length:") {
-                let val = lower["content-length:".len()..].trim().to_string();
-                content_length = val.parse().unwrap_or(0);
+            if let Some(rest) = lower.strip_prefix("content-length:") {
+                content_length = rest.trim().parse().unwrap_or(0);
             }
         }
 

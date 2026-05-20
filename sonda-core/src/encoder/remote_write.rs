@@ -390,6 +390,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn sample_has_correct_value_and_timestamp() {
         let encoder = RemoteWriteEncoder::new();
         let event = make_event("gauge_metric", 3.14, &[], 1_700_000_000_500);
@@ -491,7 +492,7 @@ mod tests {
 
     #[test]
     fn default_creates_valid_encoder() {
-        let encoder = RemoteWriteEncoder::default();
+        let encoder = RemoteWriteEncoder;
         let event = make_event("test", 1.0, &[], 1_700_000_000_000);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");

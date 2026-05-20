@@ -338,6 +338,7 @@ mod tests {
     // ---- Floating point edge cases -------------------------------------------
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample sequence value, not the PI constant
     fn handles_negative_values() {
         let gen = SequenceGenerator::new(vec![-1.0, -2.5, 0.0, 3.14], true).unwrap();
         assert_eq!(gen.value(0), -1.0);

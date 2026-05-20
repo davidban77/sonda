@@ -390,6 +390,7 @@ mod tests {
     // --- Output ends with newline ---
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn output_ends_with_newline() {
         let labels = Labels::from_pairs(&[("k", "v")]).unwrap();
         let event = make_event("metric", 3.14, labels, 999);

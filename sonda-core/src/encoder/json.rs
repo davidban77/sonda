@@ -246,6 +246,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn roundtrip_value_matches_original_event() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
         let event = make_event("latency", 3.14, &[], ts);

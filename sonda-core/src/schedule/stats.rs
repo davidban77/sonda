@@ -252,6 +252,7 @@ mod tests {
 
     /// Verifying Serialize works by round-tripping through serde_json.
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample rate value, not the PI constant
     fn serializes_to_json_with_all_fields_present() {
         let s = ScenarioStats {
             total_events: 7,

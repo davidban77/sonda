@@ -2698,16 +2698,8 @@ scenarios:
             "running",
             "state must be 'running' for a live scenario"
         );
-        assert_eq!(
-            body["in_gap"].as_bool().unwrap(),
-            false,
-            "in_gap must be false"
-        );
-        assert_eq!(
-            body["in_burst"].as_bool().unwrap(),
-            true,
-            "in_burst must be true"
-        );
+        assert!(!body["in_gap"].as_bool().unwrap(), "in_gap must be false");
+        assert!(body["in_burst"].as_bool().unwrap(), "in_burst must be true");
     }
 
     // ---- /stats endpoint: degraded field --------------------------------------
@@ -2831,14 +2823,12 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_json(resp).await;
-        assert_eq!(
+        assert!(
             body["in_gap"].as_bool().unwrap(),
-            true,
             "in_gap must be true when the scenario is in a gap window"
         );
-        assert_eq!(
-            body["in_burst"].as_bool().unwrap(),
-            false,
+        assert!(
+            !body["in_burst"].as_bool().unwrap(),
             "in_burst must be false when only in_gap is set"
         );
     }
@@ -2989,6 +2979,7 @@ scenarios:
 
     /// DetailedStatsResponse serializes all fields to JSON correctly.
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample stat value, not the PI constant
     fn detailed_stats_response_serializes_all_fields() {
         let resp = DetailedStatsResponse {
             total_events: 42,

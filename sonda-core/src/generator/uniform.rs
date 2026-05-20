@@ -77,7 +77,7 @@ mod tests {
         for tick in 0..10_000 {
             let v = gen.value(tick);
             assert!(
-                v >= 5.0 && v <= 10.0,
+                (5.0..=10.0).contains(&v),
                 "value {v} at tick {tick} is outside [5.0, 10.0]"
             );
         }

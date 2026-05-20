@@ -1017,7 +1017,7 @@ generator:
             result.is_err(),
             "leak with time_to_ceiling < duration must fail"
         );
-        let msg = format!("{}", result.err().expect("checked"));
+        let msg = format!("{}", result.expect_err("checked"));
         assert!(
             msg.contains("saturation"),
             "error must suggest using saturation, got: {msg}"

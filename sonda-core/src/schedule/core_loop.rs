@@ -1340,10 +1340,7 @@ mod tests {
 
         let mut tick_fn =
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-                Err(SondaError::Sink(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "test error",
-                )))
+                Err(SondaError::Sink(std::io::Error::other("test error")))
             };
 
         let result = run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn);
@@ -1413,10 +1410,7 @@ mod tests {
 
         let mut tick_fn =
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-                Err(SondaError::Sink(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "transient",
-                )))
+                Err(SondaError::Sink(std::io::Error::other("transient")))
             };
 
         let result = run_schedule_loop(&schedule, 50.0, None, None, &mut NullSink, &mut tick_fn);
@@ -1476,17 +1470,14 @@ mod tests {
         let mut tick_fn =
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
                 counter += 1;
-                if counter % 2 == 0 {
+                if counter.is_multiple_of(2) {
                     Ok(TickResult {
                         bytes_written: 8,
                         metric_event: None,
                         delivered: true,
                     })
                 } else {
-                    Err(SondaError::Sink(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "alt",
-                    )))
+                    Err(SondaError::Sink(std::io::Error::other("alt")))
                 }
             };
 
@@ -1595,7 +1586,7 @@ mod tests {
     #[test]
     fn rate_limiter_emits_first_error_immediately() {
         let mut limiter = SinkErrorRateLimiter::new();
-        let err = std::io::Error::new(std::io::ErrorKind::Other, "first");
+        let err = std::io::Error::other("first");
         limiter.observe("scenario_a", &err);
         assert!(
             limiter.last_emit.is_some(),
@@ -1606,7 +1597,7 @@ mod tests {
     #[test]
     fn rate_limiter_suppresses_subsequent_errors_within_interval() {
         let mut limiter = SinkErrorRateLimiter::new();
-        let err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let err = std::io::Error::other("boom");
         for _ in 0..1000 {
             limiter.observe("scenario_b", &err);
         }
@@ -1638,8 +1629,7 @@ mod tests {
 
         let mut tick_fn = |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
             match err_kind {
-                ErrKind::Sink => Err(SondaError::Sink(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                ErrKind::Sink => Err(SondaError::Sink(std::io::Error::other(
                     "matrix",
                 ))),
                 ErrKind::Encoder => Err(SondaError::Encoder(crate::EncoderError::NotSupported(
@@ -1688,10 +1678,7 @@ mod tests {
     fn apply_flush_policy_warn_swallows_sink_error() {
         let mut schedule = minimal_schedule(None);
         schedule.on_sink_error = OnSinkError::Warn;
-        let flush_err = Err(SondaError::Sink(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "flush",
-        )));
+        let flush_err = Err(SondaError::Sink(std::io::Error::other("flush")));
         let out = apply_flush_policy(&schedule, None, flush_err);
         assert!(out.is_ok(), "warn policy must swallow flush sink errors");
     }
@@ -1700,10 +1687,7 @@ mod tests {
     fn apply_flush_policy_fail_propagates_sink_error() {
         let mut schedule = minimal_schedule(None);
         schedule.on_sink_error = OnSinkError::Fail;
-        let flush_err = Err(SondaError::Sink(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "flush",
-        )));
+        let flush_err = Err(SondaError::Sink(std::io::Error::other("flush")));
         let out = apply_flush_policy(&schedule, None, flush_err);
         assert!(matches!(out, Err(SondaError::Sink(_))));
     }

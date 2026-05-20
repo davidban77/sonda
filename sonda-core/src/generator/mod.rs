@@ -863,7 +863,7 @@ mod tests {
         for tick in 0..1000 {
             let v = gen.value(tick);
             assert!(
-                v >= 0.0 && v <= 1.0,
+                (0.0..=1.0).contains(&v),
                 "uniform value {v} out of [0,1] at tick {tick}"
             );
         }

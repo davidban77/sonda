@@ -267,8 +267,8 @@ fn accept_http_ok(listener: &TcpListener) -> Vec<u8> {
             break;
         }
         let low = line.to_lowercase();
-        if low.starts_with("content-length:") {
-            cl = low["content-length:".len()..].trim().parse().unwrap_or(0);
+        if let Some(rest) = low.strip_prefix("content-length:") {
+            cl = rest.trim().parse().unwrap_or(0);
         }
     }
     let mut body = vec![0u8; cl];

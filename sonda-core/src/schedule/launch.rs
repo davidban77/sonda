@@ -1459,8 +1459,7 @@ mod tests {
                 let _guard = AliveGuard {
                     flag: alive_for_thread,
                 };
-                let always_none: Option<u32> = None;
-                always_none.expect("intentional panic for AliveGuard test");
+                panic!("intentional panic for AliveGuard test");
             })
             .expect("spawn must succeed");
 
@@ -1501,8 +1500,7 @@ mod tests {
                 let _g = StateGuard {
                     stats: stats_for_thread,
                 };
-                let always_none: Option<u32> = None;
-                always_none.expect("intentional panic for StateGuard test");
+                panic!("intentional panic for StateGuard test");
             })
             .expect("spawn must succeed");
 

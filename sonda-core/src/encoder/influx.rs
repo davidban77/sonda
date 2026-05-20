@@ -418,6 +418,7 @@ mod tests {
     // --- Output format ---
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn output_ends_with_newline() {
         let enc = InfluxLineProtocol::new(None, None);
         let labels = Labels::from_pairs(&[("k", "v")]).unwrap();

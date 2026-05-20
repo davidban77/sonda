@@ -4245,9 +4245,7 @@ generator:
                    1700000005,info,c\n";
         let (_tmp, path) = write_temp_log_csv(csv);
         let config = build_log_scenario(path, None);
-        let err = expand_log_scenario(config)
-            .err()
-            .expect("non-monotonic timestamps must error");
+        let err = expand_log_scenario(config).expect_err("non-monotonic timestamps must error");
         let msg = format!("{err}");
         assert!(
             msg.contains("non-monotonic"),

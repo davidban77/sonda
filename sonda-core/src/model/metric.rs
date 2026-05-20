@@ -512,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn with_timestamp_stores_name_and_value_correctly() {
         let ts = UNIX_EPOCH + Duration::from_millis(500);
         let labels = Labels::from_pairs(&[("env", "test")]).unwrap();

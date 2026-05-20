@@ -869,6 +869,7 @@ timestamp,cpu_percent
     // ---- Negative and special float values ------------------------------------
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample CSV value, not the PI constant
     fn handles_negative_values() {
         let content = "-1.5\n-2.5\n0.0\n3.14\n";
         let gen = CsvReplayGenerator::from_str(content, 0, true).unwrap();

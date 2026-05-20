@@ -643,6 +643,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a sample metric value, not the PI constant
     fn metric_value_is_stored_as_double() {
         let encoder = OtlpEncoder::new();
         let event = make_metric("gauge", 3.14, &[], 1_700_000_000_500);
@@ -1090,7 +1091,7 @@ mod tests {
 
     #[test]
     fn default_creates_valid_encoder() {
-        let encoder = OtlpEncoder::default();
+        let encoder = OtlpEncoder;
         let event = make_metric("test", 1.0, &[], 1_700_000_000_000);
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).expect("encode ok");
