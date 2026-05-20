@@ -125,6 +125,13 @@ pub enum NormalizeError {
     WhileWithoutDuration { source_id: String },
 
     #[error(
+        "entry '{source_id}': scenarios with `after:` must have `duration:` set \
+         (either on the entry or via `defaults.duration`).\n\
+         Bounds the scenario's lifetime so pending state has a terminal point."
+    )]
+    AfterWithoutDuration { source_id: String },
+
+    #[error(
         "entry '{source_id}': `delay:` requires `while:` on the same entry. \
          `delay:` debounces `while:` transitions and has no meaning without it."
     )]
@@ -417,6 +424,11 @@ fn normalize_entry(
     }
     if while_clause.is_some() && duration.is_none() {
         return Err(NormalizeError::WhileWithoutDuration {
+            source_id: diagnostic_label,
+        });
+    }
+    if entry.after.is_some() && duration.is_none() {
+        return Err(NormalizeError::AfterWithoutDuration {
             source_id: diagnostic_label,
         });
     }
@@ -1308,6 +1320,7 @@ version: 2
 kind: runnable
 defaults:
   rate: 1
+  duration: 5m
 scenarios:
   - id: src
     signal_type: metrics
@@ -1523,6 +1536,101 @@ scenarios:
         let file = normalize_yaml(yaml).expect("defaults.duration satisfies the gate");
         assert!(file.entries[1].while_clause.is_some());
         assert_eq!(file.entries[1].duration.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn after_without_duration_is_rejected() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    duration: 5m
+    generator: { type: constant, value: 1 }
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator: { type: constant, value: 1 }
+    after: { ref: upstream, op: "<", value: 1 }
+"#;
+        let err = normalize_yaml(yaml).expect_err("missing duration must fail");
+        match err {
+            NormalizeError::AfterWithoutDuration { source_id } => {
+                assert_eq!(source_id, "downstream");
+            }
+            other => panic!("expected AfterWithoutDuration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn after_with_entry_duration_is_accepted() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    duration: 5m
+    generator: { type: constant, value: 1 }
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    duration: 5m
+    generator: { type: constant, value: 1 }
+    after: { ref: upstream, op: "<", value: 1 }
+"#;
+        let file = normalize_yaml(yaml).expect("entry duration satisfies the gate");
+        assert!(file.entries[1].after.is_some());
+        assert_eq!(file.entries[1].duration.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn defaults_duration_satisfies_after_without_duration() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 5m
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator: { type: constant, value: 1 }
+  - id: downstream
+    signal_type: metrics
+    name: downstream
+    generator: { type: constant, value: 1 }
+    after: { ref: upstream, op: "<", value: 1 }
+"#;
+        let file = normalize_yaml(yaml).expect("defaults.duration satisfies the gate");
+        assert!(file.entries[1].after.is_some());
+        assert_eq!(file.entries[1].duration.as_deref(), Some("5m"));
+    }
+
+    #[test]
+    fn non_after_entry_without_duration_is_accepted() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 1
+scenarios:
+  - id: indefinite
+    signal_type: metrics
+    name: indefinite
+    generator: { type: constant, value: 1 }
+"#;
+        let file = normalize_yaml(yaml).expect("indefinite-run scenario is still valid");
+        assert!(file.entries[0].after.is_none());
+        assert!(file.entries[0].duration.is_none());
     }
 
     #[test]

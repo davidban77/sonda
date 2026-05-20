@@ -386,6 +386,7 @@ kind: runnable
 
 defaults:
   rate: 1
+  duration: 5m
 
 scenarios:
   - id: loopy

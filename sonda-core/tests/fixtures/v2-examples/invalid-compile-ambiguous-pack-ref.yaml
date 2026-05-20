@@ -3,6 +3,7 @@ kind: runnable
 
 defaults:
   rate: 1
+  duration: 5m
 
 scenarios:
   # node_exporter_cpu ships 8 `node_cpu_seconds_total` specs differentiated
