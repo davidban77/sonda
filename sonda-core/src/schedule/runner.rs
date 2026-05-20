@@ -96,7 +96,7 @@ pub fn run_with_sink_gated(
     let generator = create_generator(&config.generator, config.rate)?;
     let generator =
         crate::generator::wrap_with_jitter(generator, config.base.jitter, config.base.jitter_seed);
-    let encoder = create_encoder(&config.encoder)?;
+    let encoder: Arc<dyn crate::encoder::Encoder> = Arc::from(create_encoder(&config.encoder)?);
 
     let labels: Arc<Labels> = {
         let inner = if let Some(ref label_map) = config.labels {
@@ -174,7 +174,12 @@ pub fn run_with_sink_gated(
             &mut tick_fn,
         ),
         Some(mut ctx) => {
-            ctx.close_emit = build_close_emit(config, stats.as_ref(), ctx.delay.as_ref());
+            ctx.close_emit = build_close_emit(
+                config,
+                stats.as_ref(),
+                ctx.delay.as_ref(),
+                Arc::clone(&encoder),
+            );
             core_loop::gated_loop(
                 &schedule,
                 config.rate,
@@ -197,13 +202,13 @@ pub fn run_with_sink_gated(
 /// `RemoteWrite` sinks default to a stale-NaN marker; other sinks emit only
 /// when the user sets `delay.close.snap_to`.
 ///
-/// Resolves the close-emit policy (StaleMarker vs SnapTo) and builds the
-/// encoder up front — failures are surfaced at scenario start, not on the
-/// first gate-close transition. Returns `None` when no emission is wanted.
+/// Resolves the close-emit policy (StaleMarker vs SnapTo) using the shared
+/// scenario encoder. Returns `None` when no emission is wanted.
 fn build_close_emit(
     config: &ScenarioConfig,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     delay: Option<&crate::compiler::DelayClause>,
+    encoder: Arc<dyn crate::encoder::Encoder>,
 ) -> Option<CloseEmitFn> {
     let stats = stats?.clone();
 
@@ -225,7 +230,6 @@ fn build_close_emit(
         None => CloseSignal::StaleMarker,
     };
 
-    let encoder = create_encoder(&config.encoder).ok()?;
     match stats.write() {
         Ok(mut st) => st.enable_close_series_tracking(),
         Err(p) => p.into_inner().enable_close_series_tracking(),
@@ -235,7 +239,7 @@ fn build_close_emit(
 
 fn make_close_emitter(
     stats: Arc<RwLock<ScenarioStats>>,
-    encoder: Box<dyn crate::encoder::Encoder>,
+    encoder: Arc<dyn crate::encoder::Encoder>,
     signal: CloseSignal,
 ) -> CloseEmitFn {
     let value = match signal {
@@ -1276,7 +1280,8 @@ mod tests {
             ));
         }
 
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap());
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut first = MemorySink::new();
@@ -1333,7 +1338,8 @@ mod tests {
             st.push_metric(MetricEvent::from_parts(name, 1.0, labels_b, watermark_ts));
         }
 
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap());
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
@@ -1393,7 +1399,8 @@ mod tests {
             }
         }
 
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap());
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
@@ -1437,7 +1444,8 @@ mod tests {
             }
         }
 
-        let encoder = create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap();
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(create_encoder(&EncoderConfig::PrometheusText { precision: None }).unwrap());
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
@@ -1466,7 +1474,9 @@ mod tests {
             close_stale_marker: None,
             close_snap_to: Some(0.0),
         };
-        let emitter = super::build_close_emit(&config, Some(&stats), Some(&delay));
+        let encoder: Arc<dyn crate::encoder::Encoder> =
+            Arc::from(crate::encoder::create_encoder(&config.encoder).unwrap());
+        let emitter = super::build_close_emit(&config, Some(&stats), Some(&delay), encoder);
         assert!(emitter.is_some(), "snap_to must yield a close-emitter");
         assert!(
             stats.read().unwrap().track_close_series,
