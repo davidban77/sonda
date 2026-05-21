@@ -8,7 +8,7 @@ use sonda_core::compiler::compile_after::CompiledFile;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::{compile_scenario_file_compiled, CompileError};
 
-use crate::catalog_dir::CatalogPackResolver;
+use sonda_core::catalog::CatalogPackResolver;
 
 pub fn has_while_clause(file: &CompiledFile) -> bool {
     file.entries.iter().any(|e| e.while_clause.is_some())

@@ -16,7 +16,7 @@ pub fn resolve_scenario_source(scenario_ref: &str, catalog_dir: Option<&Path>) -
     if let Some(name) = scenario_ref.strip_prefix('@') {
         let dir = catalog_dir
             .ok_or_else(|| anyhow!("--catalog <dir> is required to resolve @name references"))?;
-        let path = crate::catalog_dir::resolve(dir, name)?;
+        let path = sonda_core::catalog::resolve(dir, name)?;
         fs::read_to_string(&path)
             .map_err(|e| anyhow!("failed to read catalog entry {}: {e}", path.display()))
     } else {

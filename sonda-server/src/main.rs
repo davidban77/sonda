@@ -11,7 +11,9 @@ use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{exit, Command};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -48,6 +50,13 @@ struct Args {
     /// Can also be set via the `SONDA_API_KEY` environment variable.
     #[arg(long, env = "SONDA_API_KEY")]
     api_key: Option<String>,
+
+    /// Directory of scenario and pack YAML files for resolving `pack: <name>`
+    /// references in posted scenario bodies.
+    ///
+    /// Can also be set via the `SONDA_CATALOG` environment variable.
+    #[arg(long, env = "SONDA_CATALOG")]
+    catalog: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Args {
@@ -56,6 +65,7 @@ impl std::fmt::Debug for Args {
             .field("port", &self.port)
             .field("bind", &self.bind)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("catalog", &self.catalog)
             .finish()
     }
 }
@@ -95,7 +105,18 @@ async fn main() -> anyhow::Result<()> {
         info!("API key authentication disabled — all endpoints are public");
     }
 
-    let state = AppState::with_api_key(api_key);
+    if let Some(dir) = &args.catalog {
+        if !dir.is_dir() {
+            anyhow::bail!(
+                "--catalog {}: does not exist or is not a directory",
+                dir.display()
+            );
+        }
+        info!(catalog = %dir.display(), "pack catalog enabled for POST /scenarios");
+    }
+
+    let mut state = AppState::with_api_key(api_key);
+    state.catalog_dir = args.catalog.map(Arc::new);
     let app = routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind_addr)

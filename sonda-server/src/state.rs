@@ -1,6 +1,7 @@
 //! Shared application state for the HTTP server.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use sonda_core::ScenarioHandle;
@@ -20,6 +21,8 @@ pub struct AppState {
     pub scenarios: Arc<RwLock<HashMap<String, ScenarioHandle>>>,
     /// Optional API key for bearer-token authentication on protected routes.
     pub api_key: Option<Arc<String>>,
+    /// Optional catalog directory for resolving `pack:` references in posted bodies.
+    pub catalog_dir: Option<Arc<PathBuf>>,
 }
 
 impl AppState {
@@ -28,6 +31,7 @@ impl AppState {
         Self {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: None,
+            catalog_dir: None,
         }
     }
 
@@ -36,6 +40,7 @@ impl AppState {
         Self {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: api_key.map(Arc::new),
+            catalog_dir: None,
         }
     }
 }
@@ -138,6 +143,32 @@ mod tests {
                 state2.api_key.as_ref().unwrap()
             ),
             "cloned AppState must share the same api_key Arc"
+        );
+    }
+
+    /// AppState::new and with_api_key default catalog_dir to None.
+    #[test]
+    fn constructors_default_catalog_dir_to_none() {
+        assert!(AppState::new().catalog_dir.is_none());
+        assert!(AppState::with_api_key(None).catalog_dir.is_none());
+        assert!(AppState::with_api_key(Some("k".to_string()))
+            .catalog_dir
+            .is_none());
+    }
+
+    /// A catalog dir set on AppState is carried and survives cloning.
+    #[test]
+    fn catalog_dir_is_carried_and_shared_on_clone() {
+        let mut state = AppState::new();
+        state.catalog_dir = Some(Arc::new(PathBuf::from("/scenarios")));
+        let clone = state.clone();
+        assert!(Arc::ptr_eq(
+            state.catalog_dir.as_ref().unwrap(),
+            clone.catalog_dir.as_ref().unwrap()
+        ));
+        assert_eq!(
+            clone.catalog_dir.as_ref().unwrap().as_path(),
+            std::path::Path::new("/scenarios")
         );
     }
 

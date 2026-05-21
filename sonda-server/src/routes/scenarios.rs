@@ -17,6 +17,7 @@
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
 //! plumbing: deserialize → compile → launch → store → respond.
 
+use std::path::Path as FsPath;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,7 +27,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
 use sonda_core::encoder::Encoder;
@@ -349,7 +349,11 @@ fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, ParseFailure> {
+fn parse_body(
+    body: &[u8],
+    headers: &HeaderMap,
+    catalog_dir: Option<&FsPath>,
+) -> Result<ParsedBody, ParseFailure> {
     let text = yaml_body_text(body, headers).map_err(ParseFailure::Syntactic)?;
 
     let version = detect_version(&text);
@@ -359,7 +363,7 @@ fn parse_body(body: &[u8], headers: &HeaderMap) -> Result<ParsedBody, ParseFailu
         )));
     }
 
-    let resolver = InMemoryPackResolver::new();
+    let resolver = sonda_core::catalog::CatalogPackResolver::new(catalog_dir);
     let compiled = compile_scenario_file_compiled(&text, &resolver).map_err(|e| {
         let detail = format!(
             "v2 scenario body failed to compile: {}",
@@ -452,7 +456,8 @@ pub async fn post_scenario(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let parsed = parse_body(&body, &headers).map_err(|fail| {
+    let catalog_dir = state.catalog_dir.as_deref().map(|p| p.as_path());
+    let parsed = parse_body(&body, &headers, catalog_dir).map_err(|fail| {
         warn!(error = %fail.message(), "POST /scenarios: invalid request body");
         match fail {
             ParseFailure::Syntactic(m) => bad_request(m),
@@ -2001,7 +2006,7 @@ scenarios:
     fn parse_body_accepts_v2_metrics_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(VALID_METRICS_YAML.as_bytes(), &headers)
+        let parsed = parse_body(VALID_METRICS_YAML.as_bytes(), &headers, None)
             .expect("v2 metrics body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
@@ -2014,8 +2019,8 @@ scenarios:
     fn parse_body_accepts_v2_logs_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed =
-            parse_body(VALID_LOGS_YAML.as_bytes(), &headers).expect("v2 logs body must parse");
+        let parsed = parse_body(VALID_LOGS_YAML.as_bytes(), &headers, None)
+            .expect("v2 logs body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
         assert_eq!(compiled.entries[0].signal_type, "logs");
@@ -2034,8 +2039,8 @@ generator:
   type: constant
   value: 1.0
 ";
-        let err =
-            parse_body(v1_yaml.as_bytes(), &headers).expect_err("v1 flat YAML must be rejected");
+        let err = parse_body(v1_yaml.as_bytes(), &headers, None)
+            .expect_err("v1 flat YAML must be rejected");
         let msg = err.message();
         assert!(
             msg.contains("v2"),
@@ -2061,7 +2066,7 @@ scenarios:
       type: constant
       value: 1.0
 ";
-        let err = parse_body(v1_multi.as_bytes(), &headers)
+        let err = parse_body(v1_multi.as_bytes(), &headers, None)
             .expect_err("v1 multi-scenario YAML must be rejected");
         let msg = err.message();
         assert!(
@@ -2075,7 +2080,7 @@ scenarios:
     fn parse_body_rejects_garbage_yaml() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let err = parse_body(b"not valid: [}{", &headers).expect_err("garbage must fail");
+        let err = parse_body(b"not valid: [}{", &headers, None).expect_err("garbage must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
     }
 
@@ -2102,8 +2107,8 @@ scenarios:
                 }
             ]
         });
-        let parsed =
-            parse_body(json.to_string().as_bytes(), &headers).expect("v2 JSON body must parse");
+        let parsed = parse_body(json.to_string().as_bytes(), &headers, None)
+            .expect("v2 JSON body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(compiled.entries.len(), 1);
     }
@@ -2113,8 +2118,119 @@ scenarios:
     fn parse_body_rejects_invalid_json() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
-        let err = parse_body(b"not json", &headers).expect_err("invalid JSON must fail");
+        let err = parse_body(b"not json", &headers, None).expect_err("invalid JSON must fail");
         assert!(!err.message().is_empty(), "error message must not be empty");
+    }
+
+    // ---- Test: pack catalog resolution -----------------------------------------
+
+    const PACK_YAML: &str = "\
+version: 2
+kind: composable
+name: tiny-pack
+description: A small test pack
+category: network
+metrics:
+  - name: pack_metric_a
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    const PACK_REF_BODY: &str = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 200ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - signal_type: metrics
+    pack: tiny-pack
+";
+
+    fn write_catalog_pack(dir: &std::path::Path) {
+        std::fs::write(dir.join("tiny-pack.yaml"), PACK_YAML).expect("write pack file");
+    }
+
+    #[test]
+    fn parse_body_resolves_pack_reference_from_catalog_dir() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        write_catalog_pack(tmp.path());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/x-yaml".parse().unwrap());
+        let parsed = parse_body(PACK_REF_BODY.as_bytes(), &headers, Some(tmp.path()))
+            .expect("pack reference must resolve against the catalog dir");
+        let ParsedBody::Compiled(compiled) = parsed;
+        assert!(
+            compiled.entries.iter().any(|e| e.name == "pack_metric_a"),
+            "expanded pack metric must be present"
+        );
+    }
+
+    #[test]
+    fn parse_body_pack_reference_without_catalog_fails_cleanly() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/x-yaml".parse().unwrap());
+        let err = parse_body(PACK_REF_BODY.as_bytes(), &headers, None)
+            .expect_err("pack reference must fail without a catalog dir");
+        let msg = err.message();
+        assert!(msg.contains("tiny-pack"), "error must name the pack: {msg}");
+        assert!(
+            msg.contains("catalog") || msg.contains("--catalog"),
+            "error must explain the missing catalog: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_scenario_resolves_pack_reference_when_catalog_set() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        write_catalog_pack(tmp.path());
+
+        let mut state = AppState::new();
+        state.catalog_dir = Some(Arc::new(tmp.path().to_path_buf()));
+        let app = router(state.clone());
+
+        let resp = post_scenarios(app, "application/x-yaml", PACK_REF_BODY).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "pack-referencing body must launch when catalog is configured"
+        );
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn post_scenario_pack_reference_without_catalog_returns_4xx() {
+        let (app, _state) = test_router();
+        let resp = post_scenarios(app, "application/x-yaml", PACK_REF_BODY).await;
+        assert!(
+            resp.status().is_client_error(),
+            "pack-referencing body must return 4xx without a catalog, got {}",
+            resp.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn post_scenario_plain_body_works_with_catalog_set() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        write_catalog_pack(tmp.path());
+
+        let mut state = AppState::new();
+        state.catalog_dir = Some(Arc::new(tmp.path().to_path_buf()));
+        let app = router(state.clone());
+
+        let resp = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "ordinary body must still launch with a catalog configured"
+        );
+        cleanup_scenarios(&state);
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
@@ -4147,7 +4263,7 @@ scenarios:
     fn parse_body_returns_multi_entry_compiled_for_v2_scenarios_array() {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", "application/x-yaml".parse().unwrap());
-        let parsed = parse_body(VALID_MULTI_YAML.as_bytes(), &headers)
+        let parsed = parse_body(VALID_MULTI_YAML.as_bytes(), &headers, None)
             .expect("v2 multi YAML body must parse");
         let ParsedBody::Compiled(compiled) = parsed;
         assert_eq!(

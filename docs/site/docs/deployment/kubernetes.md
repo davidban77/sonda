@@ -205,6 +205,8 @@ helm install sonda ./helm/sonda -f my-values.yaml
 The Deployment template includes a `checksum/scenarios` annotation, so changing scenario
 content in your values file triggers an automatic pod rollout on `helm upgrade`.
 
+You can place `kind: composable` [metric pack](../guides/metric-packs.md) YAMLs in the same `scenarios` map alongside your runnable scenarios. Whenever `scenarios` is populated, the chart points the server's `--catalog` flag at the mounted `/scenarios` directory, so `POST /scenarios` bodies that reference a pack by name (`pack: <name>`) resolve automatically -- no extra configuration. See [Pack references over HTTP](sonda-server.md#pack-references-over-http) for how that resolution works.
+
 See [Scenario Fields](../configuration/scenario-fields.md) for the full YAML schema.
 
 ### API (runtime)
