@@ -14,12 +14,22 @@ cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
 ```
 
 `sonda-server` accepts `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`),
-and `--api-key <KEY>` (or `SONDA_API_KEY` env var). Control log verbosity with the `RUST_LOG`
-environment variable (default `info`):
+`--api-key <KEY>` (or `SONDA_API_KEY` env var), and `--catalog <DIR>` (or `SONDA_CATALOG` env
+var). Control log verbosity with the `RUST_LOG` environment variable (default `info`):
 
 ```bash
 RUST_LOG=debug cargo run -p sonda-server -- --port 8080
 ```
+
+| Flag | Env var | Default | Purpose |
+|------|---------|---------|---------|
+| `--port <PORT>` | -- | `8080` | Port the server listens on |
+| `--bind <ADDR>` | -- | `0.0.0.0` | Bind address |
+| `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*` and `/events`. See [Authentication](#authentication). |
+| `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](#pack-references-over-http). |
+
+When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML
+files. The path must exist -- a missing directory fails the server at startup with a clear error.
 
 Press Ctrl+C for graceful shutdown -- the server signals all running scenarios to stop before
 exiting.
@@ -322,11 +332,15 @@ carries the compiler's error message instead. See
 [Migrating from v1](../configuration/v2-scenarios.md#migrating-from-v1) for side-by-side
 shape conversions.
 
-!!! info "Pack references over HTTP"
-    The server compiles posted bodies against an empty pack resolver. Bodies that reference a
-    named pack (`pack: telegraf_snmp_interface`) fail with a pack-not-found error. Inline the
-    pack's metrics into the posted body, or run the scenario via the CLI with
-    `--catalog <dir>` where the pack file lives.
+### Pack references over HTTP
+
+Start the server with `--catalog <DIR>` (or the `SONDA_CATALOG` env var) and `POST /scenarios` resolves `pack: <name>` references against the `kind: composable` pack YAML files in that directory. Post a body that names a pack -- `pack: telegraf_snmp_interface` -- and the server expands it the same way `sonda run --catalog <dir>` does. You no longer have to inline the pack's metrics into the posted body client-side.
+
+```bash
+sonda-server --port 8080 --catalog /scenarios
+```
+
+Without `--catalog`, a body that references a pack by name is rejected with `400 Bad Request`, and the `detail` field names the unresolved pack. Inlining the pack's metrics directly into the posted body still works as an alternative -- bodies that carry no `pack:` reference are unaffected either way.
 
 ### Error response reference
 

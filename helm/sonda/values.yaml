@@ -63,6 +63,9 @@ securityContext: {}
 
 # Scenario YAML files to mount as a ConfigMap.
 # Each key becomes a file under /scenarios in the container.
+# Composable pack files (kind: composable) can be placed in the same map; they
+# are resolved automatically for `pack: <name>` references in posted scenario
+# bodies.
 # Example:
 #   scenarios:
 #     basic-metrics.yaml: |

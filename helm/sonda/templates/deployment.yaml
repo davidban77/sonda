@@ -49,6 +49,10 @@ spec:
             - {{ .Values.server.port | quote }}
             - "--bind"
             - {{ .Values.server.bind | quote }}
+            {{- if .Values.scenarios }}
+            - "--catalog"
+            - "/scenarios"
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}
