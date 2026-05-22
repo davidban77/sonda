@@ -424,6 +424,8 @@ pub struct CompiledEntry {
     pub rate: f64,
     /// Total run duration (e.g. `"30s"`, `"5m"`).
     pub duration: Option<String>,
+    /// Emission-time anchor (absolute RFC 3339, signed offset, or `now`).
+    pub start_time: Option<String>,
     /// Value generator configuration (metrics signals only).
     pub generator: Option<GeneratorConfig>,
     /// Log generator configuration (logs signals only).
@@ -686,6 +688,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             name: entry.name,
             rate: entry.rate,
             duration: entry.duration,
+            start_time: entry.start_time,
             generator: entry.generator,
             log_generator: entry.log_generator,
             labels: entry.labels,
@@ -2351,6 +2354,7 @@ scenarios:
             name: "x".to_string(),
             rate: 1.0,
             duration: None,
+            start_time: None,
             generator: None,
             log_generator: None,
             labels: None,

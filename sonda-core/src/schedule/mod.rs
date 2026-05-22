@@ -220,6 +220,8 @@ pub(crate) struct ParsedSchedule {
     pub on_sink_error: OnSinkError,
     /// Scenario name surfaced in rate-limited sink-error warnings.
     pub name: String,
+    /// Resolved emission-time anchor for per-tick timestamps.
+    pub start_time: crate::config::validate::StartTime,
 }
 
 impl ParsedSchedule {
@@ -311,6 +313,11 @@ impl ParsedSchedule {
             })
             .unwrap_or_default();
 
+        let start_time = match config.start_time.as_deref() {
+            Some(s) => crate::config::validate::parse_start_time(s)?,
+            None => crate::config::validate::StartTime::Now,
+        };
+
         Ok(Self {
             total_duration,
             gap_window,
@@ -319,6 +326,7 @@ impl ParsedSchedule {
             dynamic_labels,
             on_sink_error: config.on_sink_error,
             name: config.name.clone(),
+            start_time,
         })
     }
 }
@@ -993,6 +1001,7 @@ mod tests {
             phase_offset: None,
             clock_group: None,
             clock_group_is_auto: None,
+            start_time: None,
             jitter: None,
             jitter_seed: None,
             on_sink_error: crate::OnSinkError::Warn,

@@ -10,7 +10,7 @@ use sonda_core::compiler::timing::{
     uniform_crossing_secs, Operator, TimingError,
 };
 use sonda_core::compiler::{DelayClause, WhileClause, WhileOp};
-use sonda_core::config::validate::{parse_duration, validate_sink_config};
+use sonda_core::config::validate::{parse_duration, parse_start_time, validate_sink_config};
 use sonda_core::generator::GeneratorConfig;
 
 use crate::sink_format::sink_display;
@@ -80,6 +80,12 @@ fn validate_alias_invariants(compiled: &CompiledFile) -> anyhow::Result<()> {
                     "scenario '{id}': flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one"
                 ));
             }
+        }
+        if let Some(ref start_time) = entry.start_time {
+            parse_start_time(start_time).map_err(|e| {
+                let id = entry.id.as_deref().unwrap_or("<anonymous>");
+                anyhow::anyhow!("scenario '{id}': {e}")
+            })?;
         }
         validate_sink_config(&entry.sink).map_err(|e| {
             let id = entry.id.as_deref().unwrap_or("<anonymous>");
@@ -1288,5 +1294,31 @@ scenarios:
 "#,
         );
         assert!(validate_alias_invariants(&compiled).is_ok());
+    }
+
+    #[test]
+    fn dry_run_rejects_garbage_start_time() {
+        let compiled = compile(
+            r#"version: 2
+kind: runnable
+defaults:
+  rate: 1
+  duration: 100ms
+scenarios:
+  - id: bad
+    signal_type: metrics
+    name: metric_a
+    start_time: "garbage"
+    generator:
+      type: constant
+      value: 1.0
+"#,
+        );
+        let err = validate_alias_invariants(&compiled).expect_err("must reject garbage start_time");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("garbage"),
+            "error must mention offending value, got: {msg}"
+        );
     }
 }

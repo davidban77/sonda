@@ -318,6 +318,7 @@ pub fn expand_pack(
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,

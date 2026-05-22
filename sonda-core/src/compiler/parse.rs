@@ -173,6 +173,8 @@ struct FlatFile {
     #[serde(default)]
     duration: Option<String>,
     #[serde(default)]
+    start_time: Option<String>,
+    #[serde(default)]
     encoder: Option<crate::encoder::EncoderConfig>,
     #[serde(default)]
     sink: Option<crate::sink::SinkConfig>,
@@ -259,6 +261,7 @@ impl FlatFile {
             name: self.name,
             rate: self.rate,
             duration: self.duration,
+            start_time: self.start_time,
             generator: self.generator,
             log_generator: self.log_generator,
             labels: self.labels,

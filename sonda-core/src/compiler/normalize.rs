@@ -253,6 +253,8 @@ pub struct NormalizedEntry {
     /// Total run duration (e.g. `"30s"`, `"5m"`). `None` means "run until
     /// stopped" and is preserved through normalization.
     pub duration: Option<String>,
+    /// Emission-time anchor (absolute RFC 3339, signed offset, or `now`).
+    pub start_time: Option<String>,
     /// Value generator configuration (metrics signals only).
     pub generator: Option<GeneratorConfig>,
     /// Log generator configuration (logs signals only).
@@ -389,6 +391,9 @@ fn normalize_entry(
     let duration = entry
         .duration
         .or_else(|| defaults.and_then(|d| d.duration.clone()));
+    let start_time = entry
+        .start_time
+        .or_else(|| defaults.and_then(|d| d.start_time.clone()));
     let encoder = entry
         .encoder
         .or_else(|| defaults.and_then(|d| d.encoder.clone()))
@@ -469,6 +474,7 @@ fn normalize_entry(
         name: entry.name,
         rate,
         duration,
+        start_time,
         generator: entry.generator,
         log_generator: entry.log_generator,
         labels,
