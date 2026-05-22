@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.11.0](https://github.com/davidban77/sonda/compare/v1.10.2...v1.11.0) (2026-05-22)
+
+
+### Features
+
+* **core:** add start_time for time-shifted emission ([#396](https://github.com/davidban77/sonda/issues/396)) ([5900c63](https://github.com/davidban77/sonda/commit/5900c639ca91a4cf60b8fc0361e26c064f706aa4))
+* **server:** resolve pack: references in posted scenarios via --catalog ([#394](https://github.com/davidban77/sonda/issues/394)) ([8ae856b](https://github.com/davidban77/sonda/commit/8ae856bda29f881707f695276e1dcb6b14ac7cd6))
+
+
+### Documentation
+
+* add newcomer on-ramps to the deployment pages ([#397](https://github.com/davidban77/sonda/issues/397)) ([488085d](https://github.com/davidban77/sonda/commit/488085d640efe3e19ade7fed69ffbc5eaa1c56fe))
+
 ## [1.10.2](https://github.com/davidban77/sonda/compare/v1.10.1...v1.10.2) (2026-05-20)
 
 
