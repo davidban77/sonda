@@ -144,6 +144,9 @@ pub struct Defaults {
     /// total wall-clock is `max(phase_offset + duration)`, not `duration`.
     #[cfg_attr(feature = "config", serde(default))]
     pub duration: Option<String>,
+    /// Default emission-time anchor (absolute RFC 3339, signed offset, or `now`).
+    #[cfg_attr(feature = "config", serde(default))]
+    pub start_time: Option<String>,
     /// Default encoder configuration.
     #[cfg_attr(feature = "config", serde(default))]
     pub encoder: Option<EncoderConfig>,
@@ -200,6 +203,9 @@ pub struct Entry {
     /// Total run duration (e.g. `"30s"`, `"5m"`).
     #[cfg_attr(feature = "config", serde(default))]
     pub duration: Option<String>,
+    /// Emission-time anchor (absolute RFC 3339, signed offset, or `now`).
+    #[cfg_attr(feature = "config", serde(default))]
+    pub start_time: Option<String>,
     /// Value generator configuration (for metrics).
     #[cfg_attr(feature = "config", serde(default))]
     pub generator: Option<GeneratorConfig>,

@@ -83,6 +83,7 @@ sonda run full-example.yaml
 | `name` | string | yes | -- | Metric name. Must match `[a-zA-Z_:][a-zA-Z0-9_:]*`. |
 | `rate` | float | yes | -- | Events per second. Must be positive. Fractional values allowed (e.g. `0.5`). |
 | `duration` | string | no | runs forever | Total run time. Supports `ms`, `s`, `m`, `h` units. |
+| `start_time` | string | no | `now` | Timestamp anchor written on every emitted event. Accepts an absolute RFC 3339 timestamp, a signed relative offset (`+24h`, `-7d`), or `now`. See [Timestamp anchor](#timestamp-anchor). |
 | `generator` | object | yes | -- | Value generator configuration. Core types and [operational aliases](generators.md#operational-aliases). See [Generators](generators.md). |
 | `encoder` | object | no | `prometheus_text` | Output format. See [Encoders](encoders.md). |
 | `sink` | object | no | `stdout` | Output destination. See [Sinks](sinks.md). |
@@ -309,6 +310,44 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 
 Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds
 and `0.5m` means 30 seconds.
+
+### Timestamp anchor
+
+`start_time` sets the timestamp anchor written on every emitted event. It shifts only the *timestamp* on each event — the scenario still runs for its real wall-clock `duration`, emitting the same events, with the same values, at the same spacing. Only the anchor moves. It applies to all four signal types (metrics, logs, histograms, summaries) and every exposition format. Set it on `defaults:` to anchor the whole file, or on an individual entry to anchor just that scenario.
+
+It accepts three forms:
+
+=== "Absolute (RFC 3339)"
+
+    An exact instant. Every event is timestamped relative to it.
+
+    ```yaml
+    start_time: 2026-05-08T14:00:00Z
+    ```
+
+=== "Relative offset"
+
+    A signed offset from scenario start — `+` shifts forward, `-` shifts backward. The grammar matches `duration:` (`ms`, `s`, `m`, `h`) plus `d` for days.
+
+    ```yaml
+    start_time: -7d
+    ```
+
+=== "now"
+
+    Wall-clock now. This is the default — identical to omitting the field.
+
+    ```yaml
+    start_time: now
+    ```
+
+Two use cases motivate it:
+
+- **Replaying a historical incident into its real dashboard window.** Anchor the run to a past time so the emitted samples land in the time range where the incident actually happened — useful for postmortems and for tuning alert rules against the data as it looked on the day.
+- **Projecting load into a future window.** Anchor the run forward to rehearse capacity headroom or forecast-driven alerts against a window that has not arrived yet.
+
+!!! warning "Future timestamps are backend-dependent"
+    Anchoring into the *past* works universally. Anchoring into the *future* does not: stock Prometheus enforces a future-sample tolerance and **drops samples timestamped too far ahead**. VictoriaMetrics is lenient and accepts them. If you need the forecasting use case, send to VictoriaMetrics or a Prometheus tuned for far-future samples — plain Prometheus will reject them.
 
 ## Log entries
 

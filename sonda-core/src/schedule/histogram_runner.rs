@@ -150,7 +150,7 @@ pub fn run_with_sink_gated(
 
     let mut tick_fn =
         |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-            let wall_now = std::time::SystemTime::now();
+            let wall_now = ctx.wall_clock;
 
             // Advance the histogram generator.
             let sample = histogram_gen.observe(ctx.tick);
@@ -333,6 +333,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,

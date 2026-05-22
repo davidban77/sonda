@@ -41,6 +41,7 @@ fn build_log_scenario(file: String, timescale: Option<f64>) -> LogScenarioConfig
             phase_offset: None,
             clock_group: None,
             clock_group_is_auto: None,
+            start_time: None,
             jitter: None,
             jitter_seed: None,
             on_sink_error: OnSinkError::Warn,

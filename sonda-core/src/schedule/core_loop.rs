@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::compiler::DelayClause;
+use crate::config::validate::StartTime;
 use crate::config::OnSinkError;
 use crate::model::metric::MetricEvent;
 use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
@@ -98,6 +99,11 @@ pub(crate) struct TickContext<'a> {
     ///
     /// Used by the callback to evaluate spike window state via [`is_in_spike`].
     pub elapsed: Duration,
+    /// Wall-clock timestamp to stamp on this tick's events.
+    ///
+    /// Derived from the schedule's resolved `start_time` anchor plus `elapsed`,
+    /// so a `start_time`-shifted scenario emits into a past or future window.
+    pub wall_clock: SystemTime,
 }
 
 /// A per-tick callback that performs signal-specific work.
@@ -107,6 +113,43 @@ pub(crate) struct TickContext<'a> {
 /// the same sink without a borrow split.
 pub(crate) type TickFn<'a> =
     dyn FnMut(&TickContext<'_>, &mut dyn Sink) -> Result<TickResult, SondaError> + 'a;
+
+/// Scenario-level wall-clock anchor: the resolved emission-time base plus the
+/// monotonic instant the scenario began.
+///
+/// `wall_at(elapsed) = base + elapsed`. Captured once per scenario so a gated
+/// scenario's clock advances continuously across pause/resume segments rather
+/// than re-anchoring on each `Running` segment.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WallClock {
+    base: SystemTime,
+    scenario_start: Instant,
+}
+
+impl WallClock {
+    /// Resolve the anchor from a schedule's `start_time` and a scenario-start instant.
+    pub(crate) fn resolve(schedule: &ParsedSchedule, scenario_start: Instant) -> Self {
+        let start_wall = SystemTime::now();
+        let base = match schedule.start_time {
+            StartTime::Now => start_wall,
+            StartTime::Absolute(t) => t,
+            StartTime::Offset { forward: true, by } => start_wall + by,
+            StartTime::Offset { forward: false, by } => start_wall - by,
+        };
+        Self {
+            base,
+            scenario_start,
+        }
+    }
+
+    /// The wall-clock timestamp for the tick happening `tick_elapsed` after the
+    /// loop segment began. `tick_elapsed` is added to the scenario-level
+    /// elapsed so the clock stays continuous across segments.
+    fn wall_at(&self, segment_start: Instant, tick_elapsed: Duration) -> SystemTime {
+        let scenario_elapsed = segment_start.duration_since(self.scenario_start) + tick_elapsed;
+        self.base + scenario_elapsed
+    }
+}
 
 /// Reason a [`CloseEmitFn`] is being invoked at gate-close commit time.
 ///
@@ -157,7 +200,9 @@ pub(crate) fn run_schedule_loop(
     sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
-    run_schedule_loop_with_initial_tick(schedule, rate, shutdown, stats, 0, None, sink, tick_fn)
+    run_schedule_loop_with_initial_tick(
+        schedule, rate, shutdown, stats, 0, None, None, sink, tick_fn,
+    )
 }
 
 /// Run the schedule loop starting from `initial_tick`, optionally reporting the
@@ -171,12 +216,17 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     initial_tick: u64,
     last_tick_out: Option<&AtomicU64>,
+    wall: Option<WallClock>,
     sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let base_interval = Duration::from_secs_f64(1.0 / rate);
 
     let start = Instant::now();
+    // A non-gated run has no scenario-level anchor: resolve one from this
+    // loop's own start. A gated run threads its scenario-level anchor so the
+    // emission clock stays continuous across pause/resume segments.
+    let wall = wall.unwrap_or_else(|| WallClock::resolve(schedule, start));
     let mut next_deadline = start;
     let mut tick: u64 = initial_tick;
 
@@ -261,6 +311,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
             spike_windows: &schedule.spike_windows,
             dynamic_labels: &schedule.dynamic_labels,
             elapsed,
+            wall_clock: wall.wall_at(start, elapsed),
         };
         let tick_outcome = tick_fn(&ctx, sink);
 
@@ -541,6 +592,7 @@ fn gated_loop_body(
     tick_fn: &mut TickFn<'_>,
 ) -> Result<LoopExit, SondaError> {
     let started_at = Instant::now();
+    let wall = WallClock::resolve(schedule, started_at);
 
     let mut state = ScenarioState::Pending;
     let mut after_satisfied = if gate_ctx.has_after {
@@ -616,6 +668,7 @@ fn gated_loop_body(
                     &segment_running,
                     next_tick,
                     Arc::clone(&last_tick),
+                    wall,
                     sink,
                     tick_fn,
                 )?;
@@ -835,6 +888,7 @@ fn run_running_segment(
     segment_running: &Arc<AtomicBool>,
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
+    wall: WallClock,
     sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<SegmentExit, SondaError> {
@@ -888,6 +942,7 @@ fn run_running_segment(
         stats,
         initial_tick,
         Some(last_tick.as_ref()),
+        Some(wall),
         sink,
         wrapped.as_mut(),
     )?;
@@ -1020,6 +1075,7 @@ mod tests {
             dynamic_labels: Vec::new(),
             on_sink_error: OnSinkError::Warn,
             name: "test".to_string(),
+            start_time: crate::config::validate::StartTime::Now,
         }
     }
 
@@ -1123,6 +1179,7 @@ mod tests {
             dynamic_labels: Vec::new(),
             on_sink_error: OnSinkError::Warn,
             name: "test".to_string(),
+            start_time: crate::config::validate::StartTime::Now,
         };
 
         let mut event_count: u64 = 0;
@@ -1163,6 +1220,7 @@ mod tests {
             dynamic_labels: Vec::new(),
             on_sink_error: OnSinkError::Warn,
             name: "test".to_string(),
+            start_time: crate::config::validate::StartTime::Now,
         };
 
         let mut event_count: u64 = 0;
@@ -1288,6 +1346,7 @@ mod tests {
             dynamic_labels: Vec::new(),
             on_sink_error: OnSinkError::Warn,
             name: "test".to_string(),
+            start_time: crate::config::validate::StartTime::Now,
         };
 
         let mut saw_spike_windows = false;
@@ -1729,6 +1788,7 @@ mod tests {
             None,
             30,
             None,
+            None,
             &mut NullSink,
             &mut tick_fn,
         )
@@ -1762,6 +1822,7 @@ mod tests {
             None,
             10,
             Some(&last_tick),
+            None,
             &mut NullSink,
             &mut tick_fn,
         )

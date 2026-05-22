@@ -34,6 +34,7 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
             phase_offset: None,
             clock_group: None,
             clock_group_is_auto: None,
+            start_time: None,
             jitter: None,
             jitter_seed: None,
             on_sink_error: sonda_core::OnSinkError::Warn,

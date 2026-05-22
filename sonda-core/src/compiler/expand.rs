@@ -413,6 +413,8 @@ pub struct ExpandedEntry {
     pub rate: f64,
     /// Total run duration (e.g. `"30s"`, `"5m"`).
     pub duration: Option<String>,
+    /// Emission-time anchor (absolute RFC 3339, signed offset, or `now`).
+    pub start_time: Option<String>,
     /// Value generator configuration (metrics signals only).
     pub generator: Option<GeneratorConfig>,
     /// Log generator configuration (logs signals only).
@@ -585,6 +587,7 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
         name: entry.name.unwrap_or_default(),
         rate: entry.rate,
         duration: entry.duration,
+        start_time: entry.start_time,
         generator: entry.generator,
         log_generator: entry.log_generator,
         labels: entry.labels,
@@ -728,6 +731,7 @@ fn expand_pack_entry<R: PackResolver>(
             name: metric.name.clone(),
             rate: entry.rate,
             duration: entry.duration.clone(),
+            start_time: entry.start_time.clone(),
             generator: Some(generator),
             log_generator: None,
             labels,

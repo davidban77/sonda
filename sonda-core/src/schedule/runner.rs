@@ -118,7 +118,7 @@ pub fn run_with_sink_gated(
     let upstream_bus_for_tick = upstream_bus.clone();
     let mut tick_fn =
         |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-            let wall_now = SystemTime::now();
+            let wall_now = ctx.wall_clock;
 
             let value = generator.value(ctx.tick);
             if let Some(ref bus) = upstream_bus_for_tick {
@@ -251,21 +251,19 @@ fn make_close_emitter(
     };
 
     Box::new(move |sink: &mut dyn Sink| -> Result<(), SondaError> {
-        let now = SystemTime::now();
-
         let (series, watermark) = match stats.write() {
             Ok(mut st) => st.drain_close_emit_series(),
             Err(p) => p.into_inner().drain_close_emit_series(),
         };
 
-        // Strictly greater than the most recent active-emission ts so receivers
-        // that dedup on (series, ts) at ms precision do not drop the marker.
+        // Derived from the last active emission, not real `now`: a
+        // `start_time`-shifted scenario's watermark sits in the shifted
+        // window, and the +1ms keeps the marker strictly after it.
         let close_ts = match watermark {
-            Some(max_recent) => match max_recent.checked_add(Duration::from_millis(1)) {
-                Some(bumped) => now.max(bumped),
-                None => now,
-            },
-            None => now,
+            Some(max_recent) => max_recent
+                .checked_add(Duration::from_millis(1))
+                .unwrap_or(max_recent),
+            None => SystemTime::now(),
         };
 
         let mut buf: Vec<u8> = Vec::with_capacity(256);
@@ -313,6 +311,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -479,6 +478,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -832,6 +832,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -1037,6 +1038,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -1074,6 +1076,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,

@@ -107,6 +107,7 @@ pub fn run_logs_with_sink_gated(
     let mut tick_fn =
         |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
             let mut event = generator.generate(ctx.tick);
+            event.timestamp = ctx.wall_clock;
 
             let needs_dynamic = !ctx.dynamic_labels.is_empty();
             if ctx.spike_windows.is_empty() && !needs_dynamic {
@@ -196,6 +197,7 @@ mod tests {
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,

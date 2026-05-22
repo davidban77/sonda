@@ -1,6 +1,6 @@
 //! Config validation helpers: duration parsing and semantic checks.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::model::metric::{is_valid_label_key, is_valid_metric_name};
 use crate::sink::retry::RetryConfig;
@@ -258,6 +258,11 @@ pub fn validate_config(config: &ScenarioConfig) -> Result<(), SondaError> {
     // Duration must be parseable if provided.
     if let Some(ref dur_str) = config.duration {
         parse_duration(dur_str).map_err(|e| prepend_context("invalid duration", dur_str, e))?;
+    }
+
+    // start_time must be parseable if provided.
+    if let Some(ref start_str) = config.start_time {
+        parse_start_time(start_str)?;
     }
 
     // Gap consistency: gap_for < gap_every.
@@ -835,6 +840,91 @@ fn validate_retry_config_opt(retry: Option<&RetryConfig>) -> Result<(), SondaErr
         parse_duration(&r.max_backoff)?;
     }
     Ok(())
+}
+
+/// Emission-time anchor parsed from a `start_time:` config string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartTime {
+    /// Anchor at wall-clock now — the default, behaviour-identical to omitting the field.
+    Now,
+    /// Anchor at an absolute instant parsed from an RFC 3339 string.
+    Absolute(SystemTime),
+    /// Anchor at a signed offset from scenario start, resolved when the loop begins.
+    Offset { forward: bool, by: Duration },
+}
+
+/// Parse a `start_time:` string into a [`StartTime`].
+///
+/// Accepts three forms: the literal `now`, an absolute RFC 3339 timestamp, or a
+/// signed relative offset (`+`/`-` followed by a duration; `d` for days is
+/// accepted in addition to the `ms`/`s`/`m`/`h` units of `parse_duration`).
+pub fn parse_start_time(s: &str) -> Result<StartTime, SondaError> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(SondaError::Config(ConfigError::invalid(
+            "start_time must not be empty",
+        )));
+    }
+    if trimmed == "now" {
+        return Ok(StartTime::Now);
+    }
+    if let Some(magnitude) = trimmed.strip_prefix('+') {
+        return Ok(StartTime::Offset {
+            forward: true,
+            by: parse_offset_magnitude(magnitude)?,
+        });
+    }
+    if let Some(magnitude) = trimmed.strip_prefix('-') {
+        return Ok(StartTime::Offset {
+            forward: false,
+            by: parse_offset_magnitude(magnitude)?,
+        });
+    }
+    parse_absolute_start_time(trimmed)
+}
+
+fn parse_offset_magnitude(s: &str) -> Result<Duration, SondaError> {
+    if let Some(days) = s.strip_suffix('d') {
+        let value: f64 = days.parse().map_err(|_| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "start_time offset {:?} has an invalid numeric part",
+                s
+            )))
+        })?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err(SondaError::Config(ConfigError::invalid(format!(
+                "start_time offset {:?} must be greater than zero",
+                s
+            ))));
+        }
+        return Duration::try_from_secs_f64(value * 86_400.0).map_err(|_| {
+            SondaError::Config(ConfigError::invalid(format!(
+                "start_time offset {:?} is too large",
+                s
+            )))
+        });
+    }
+    parse_duration(s).map_err(|e| prepend_context("invalid start_time offset", s, e))
+}
+
+#[cfg(feature = "config")]
+fn parse_absolute_start_time(s: &str) -> Result<StartTime, SondaError> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(s).map_err(|e| {
+        SondaError::Config(ConfigError::invalid(format!(
+            "start_time {:?} is not a valid RFC 3339 timestamp, signed offset, or \"now\": {}",
+            s, e
+        )))
+    })?;
+    Ok(StartTime::Absolute(SystemTime::from(parsed)))
+}
+
+#[cfg(not(feature = "config"))]
+fn parse_absolute_start_time(s: &str) -> Result<StartTime, SondaError> {
+    Err(SondaError::Config(ConfigError::invalid(format!(
+        "start_time {:?} requires an RFC 3339 timestamp, signed offset, or \"now\"; \
+         absolute timestamp parsing needs the `config` feature",
+        s
+    ))))
 }
 
 /// Wrap a `SondaError::Config` from `parse_duration` with additional field context.
@@ -1916,6 +2006,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2276,6 +2367,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: Some(f64::NAN),
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2318,6 +2410,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: Some(-0.5),
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2492,6 +2585,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2531,6 +2625,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2741,6 +2836,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -2805,6 +2901,7 @@ generator:
                 phase_offset: None,
                 clock_group: None,
                 clock_group_is_auto: None,
+                start_time: None,
                 jitter: None,
                 jitter_seed: None,
                 on_sink_error: crate::OnSinkError::Warn,
@@ -3284,5 +3381,111 @@ generator:
             retry: None,
         };
         assert!(validate_config(&config).is_err());
+    }
+
+    // ---- parse_start_time ----------------------------------------------------
+
+    #[test]
+    fn parse_start_time_now_returns_now_variant() {
+        assert_eq!(parse_start_time("now").unwrap(), StartTime::Now);
+    }
+
+    #[test]
+    fn parse_start_time_now_tolerates_surrounding_whitespace() {
+        assert_eq!(parse_start_time("  now  ").unwrap(), StartTime::Now);
+    }
+
+    #[test]
+    fn parse_start_time_positive_hours_offset_is_forward() {
+        assert_eq!(
+            parse_start_time("+24h").unwrap(),
+            StartTime::Offset {
+                forward: true,
+                by: Duration::from_secs(24 * 3600),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_start_time_negative_days_offset_is_backward() {
+        assert_eq!(
+            parse_start_time("-7d").unwrap(),
+            StartTime::Offset {
+                forward: false,
+                by: Duration::from_secs(7 * 86_400),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_start_time_positive_days_offset_is_forward() {
+        assert_eq!(
+            parse_start_time("+3d").unwrap(),
+            StartTime::Offset {
+                forward: true,
+                by: Duration::from_secs(3 * 86_400),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_start_time_offset_accepts_minutes_and_seconds() {
+        assert_eq!(
+            parse_start_time("-90m").unwrap(),
+            StartTime::Offset {
+                forward: false,
+                by: Duration::from_secs(90 * 60),
+            }
+        );
+        assert_eq!(
+            parse_start_time("+30s").unwrap(),
+            StartTime::Offset {
+                forward: true,
+                by: Duration::from_secs(30),
+            }
+        );
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn parse_start_time_rfc3339_returns_exact_instant() {
+        let parsed = parse_start_time("2026-05-08T14:00:00Z").unwrap();
+        let expected = std::time::UNIX_EPOCH + Duration::from_secs(1_778_248_800);
+        assert_eq!(parsed, StartTime::Absolute(expected));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn parse_start_time_rfc3339_with_offset_normalizes_to_utc_instant() {
+        // 14:00:00+02:00 is the same instant as 12:00:00Z.
+        let with_offset = parse_start_time("2026-05-08T14:00:00+02:00").unwrap();
+        let utc = parse_start_time("2026-05-08T12:00:00Z").unwrap();
+        assert_eq!(with_offset, utc);
+    }
+
+    #[test]
+    fn parse_start_time_empty_string_is_err() {
+        assert!(parse_start_time("").is_err());
+        assert!(parse_start_time("   ").is_err());
+    }
+
+    #[test]
+    fn parse_start_time_garbage_is_err() {
+        assert!(parse_start_time("garbage").is_err());
+    }
+
+    #[test]
+    fn parse_start_time_offset_without_unit_is_err() {
+        assert!(parse_start_time("+abc").is_err());
+    }
+
+    #[test]
+    fn parse_start_time_zero_offset_is_err() {
+        assert!(parse_start_time("+0d").is_err());
+    }
+
+    #[test]
+    fn parse_start_time_overflowing_day_offset_is_err() {
+        assert!(parse_start_time("+1e15d").is_err());
     }
 }
