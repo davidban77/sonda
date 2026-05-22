@@ -175,40 +175,39 @@ Labels are merged in this order, with later sources winning on key conflicts:
 
 ## Author a pack
 
-A pack is a v2 YAML file with `kind: composable` and a top-level `pack:` block describing the
-metric set:
+A pack is a v2 YAML file with `kind: composable`. The pack identity (`name`, `description`, `category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
 
 ```yaml title="~/sonda-catalog/my-app-pack.yaml"
 version: 2
 kind: composable
 
 name: my_app_metrics
-tags: [application]
 description: "Core application metrics"
+category: application
+tags: [application]
 
-pack:
-  shared_labels:
-    service: ""
-    env: ""
+shared_labels:
+  service: ""
+  env: ""
 
-  metrics:
-    - name: http_requests_total
-      generator:
-        type: step
-        start: 0.0
-        step_size: 10.0
+metrics:
+  - name: http_requests_total
+    generator:
+      type: step
+      start: 0.0
+      step_size: 10.0
 
-    - name: http_request_duration_seconds
-      generator:
-        type: sine
-        amplitude: 0.05
-        period_secs: 60
-        offset: 0.1
+  - name: http_request_duration_seconds
+    generator:
+      type: sine
+      amplitude: 0.05
+      period_secs: 60
+      offset: 0.1
 
-    - name: http_errors_total
-      generator:
-        type: constant
-        value: 0.0
+  - name: http_errors_total
+    generator:
+      type: constant
+      value: 0.0
 ```
 
 Drop the file in your catalog directory and it shows up immediately:
@@ -245,10 +244,13 @@ sonda --catalog ~/sonda-catalog run run-my-pack.yaml
 
 ### Pack definition fields
 
-The fields under `pack:`:
+All pack fields are top-level keys in the file:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `name` | string | yes | Snake_case identifier for the pack. This is the name a runnable scenario references with `pack: <name>`. |
+| `description` | string | yes | One-line human-readable description, shown in `sonda list`. |
+| `category` | string | yes | Broad grouping for the pack (e.g. `network`, `infrastructure`, `application`). |
 | `shared_labels` | map | no | Labels applied to every metric in the pack. Empty values are placeholders for the user to fill. |
 | `metrics` | list | yes | One or more metric specifications. |
 | `metrics[].name` | string | yes | The metric name. |
