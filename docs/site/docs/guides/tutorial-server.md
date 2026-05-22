@@ -9,7 +9,7 @@ format you have been using throughout the tour.
 === "Docker (recommended)"
 
     ```bash
-    docker run -p 8080:8080 ghcr.io/davidban77/sonda-server:latest
+    docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
     ```
 
 === "From source"

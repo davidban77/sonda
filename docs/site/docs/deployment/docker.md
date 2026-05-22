@@ -1,29 +1,29 @@
 # Docker
 
-Sonda ships as a minimal Docker image built from scratch with statically linked musl binaries.
-The image contains both the `sonda` CLI and the `sonda-server` HTTP API.
+Reach for the Docker image when you want Sonda without a local Rust toolchain — on a CI runner, on a colleague's laptop, or alongside the bundled observability stacks (Prometheus, VictoriaMetrics, Grafana) that this page sets up further down. The image is a single artifact that carries both the `sonda` CLI and the `sonda-server` HTTP API, so the same `docker run` works whether you want a one-shot scenario or a long-running server.
 
-## Building the Image
+## Run a scenario in three commands
 
-The multi-stage Dockerfile compiles static musl binaries and copies them into a `scratch` base.
-The final image is typically under 20 MB.
+Pre-built multi-arch images are published to GitHub Container Registry on each release. Pull the image, point it at a scenario file on your machine, and watch the output:
 
 ```bash
-docker build -t sonda .
-```
-
-For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
-
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
-```
-
-Pre-built multi-arch images are published to GitHub Container Registry on each release.
-Docker automatically pulls the correct architecture for your host.
-
-```bash
+# 1. Pull the published image (Docker picks the right architecture for your host)
 docker pull ghcr.io/davidban77/sonda:latest
+
+# 2. Scaffold a starter scenario into the current directory
+docker run --rm -v "$PWD":/work -w /work \
+  ghcr.io/davidban77/sonda:latest \
+  new --template -o hello.yaml
+
+# 3. Run it — synthetic metrics stream to your terminal
+docker run --rm -v "$PWD":/work -w /work \
+  ghcr.io/davidban77/sonda:latest \
+  run hello.yaml --duration 5s
 ```
+
+That last command prints five Prometheus-format metric lines and a completion banner — the same output you would get from a locally installed `sonda`. The `-v "$PWD":/work -w /work` flags mount your current directory into the container so `sonda` can read the YAML file and write the scaffold back out.
+
+From here you can run your own scenarios, start the HTTP server (see [Running with Docker](#running-with-docker) below), or bring up one of the bundled [Docker Compose stacks](#docker-compose-stack). Most readers consume the published image and never need to build it — the [build instructions](#building-the-image) are at the end of the page for when you do.
 
 ## Running with Docker
 
@@ -305,3 +305,25 @@ sonda run examples/alertmanager/alerting-scenario.yaml
 ```
 
 See the [Alerting Pipeline](../guides/alerting-pipeline.md) guide for the full walkthrough.
+
+## Building the Image
+
+Most readers use the published `ghcr.io/davidban77/sonda` image and never need this section. Build your own only when you want a local image from a working tree — for example, to test an unreleased change.
+
+The multi-stage Dockerfile compiles static musl binaries and copies them into a `scratch` base. The final image is typically under 20 MB.
+
+```bash
+docker build -t sonda .
+```
+
+For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
+```
+
+The pre-built multi-arch images on GitHub Container Registry are produced by this same Dockerfile on each release, and Docker automatically pulls the correct architecture for your host:
+
+```bash
+docker pull ghcr.io/davidban77/sonda:latest
+```

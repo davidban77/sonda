@@ -1,24 +1,85 @@
 # Server API
 
-`sonda-server` exposes a REST API for starting, inspecting, and stopping scenarios over HTTP.
-Use it to integrate Sonda into CI pipelines, test harnesses, or dashboards without shell access.
+`sonda-server` is the HTTP control plane for Sonda: a long-running process you POST scenarios to, then inspect or stop them over a REST API. Reach for it when you want Sonda running as a service rather than a one-shot CLI command — integrating into CI pipelines, test harnesses, or dashboards, or keeping a synthetic-telemetry baseline alive for hours or days.
+
+The `sonda-server` binary ships alongside the `sonda` CLI: the [install script](../getting-started.md#installation) and release tarballs place both on your PATH, and the [Docker image](docker.md) runs `sonda-server` as its default entrypoint.
 
 ## Starting the Server
 
-```bash
-# Default port (8080)
-cargo run -p sonda-server
+Start the server with the installed `sonda-server` binary. It listens on port `8080` by default:
 
-# Custom port and bind address
-cargo run -p sonda-server -- --port 9090 --bind 127.0.0.1
+=== "Installed binary"
+
+    ```bash
+    # Default port (8080), bind 0.0.0.0
+    sonda-server
+
+    # Custom port and bind address
+    sonda-server --port 9090 --bind 127.0.0.1
+    ```
+
+=== "Docker"
+
+    ```bash
+    # The image's default entrypoint is sonda-server
+    docker run -p 8080:8080 ghcr.io/davidban77/sonda:latest
+    ```
+
+=== "From source"
+
+    ```bash
+    # For contributors working from a checkout of the repo
+    cargo run -p sonda-server
+    ```
+
+## Your first request loop
+
+With the server running, you can drive its full lifecycle from `curl` in three steps — start it, POST a scenario, and confirm it is running:
+
+```bash
+# 1. Confirm the server is up
+curl http://localhost:8080/health
+# {"status":"ok"}
+
+# 2. POST a scenario — the server compiles it and starts emitting
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @- http://localhost:8080/scenarios <<'EOF'
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 60s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: up
+    signal_type: metrics
+    name: up
+    generator:
+      type: constant
+      value: 1.0
+EOF
+# {"id":"a1b2c3d4-...","name":"up","state":"running"}
+
+# 3. List running scenarios — your scenario appears with its live state
+curl http://localhost:8080/scenarios
 ```
+
+The scenario runs in a background thread inside the server until its `duration` expires, or until you stop it with `DELETE /scenarios/{id}`. Everything else on this page is the detail underneath that loop: the full flag table, every endpoint, batch submission, authentication, and the stats surface.
+
+!!! tip "Two ways into the server"
+    `POST /scenarios` runs a *sustained stream* of events over time — the loop above. To fire a **single** log or metric and block until the sink confirms delivery, use the [Single-Event API (`POST /events`)](events.md) instead. The [tutorial Server API page](../guides/tutorial-server.md) walks the same start-submit-stop loop step by step with more scenario shapes.
+
+### Server flags
 
 `sonda-server` accepts `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`),
 `--api-key <KEY>` (or `SONDA_API_KEY` env var), and `--catalog <DIR>` (or `SONDA_CATALOG` env
 var). Control log verbosity with the `RUST_LOG` environment variable (default `info`):
 
 ```bash
-RUST_LOG=debug cargo run -p sonda-server -- --port 8080
+RUST_LOG=debug sonda-server --port 8080
 ```
 
 | Flag | Env var | Default | Purpose |

@@ -1,8 +1,11 @@
 # Kubernetes
 
-Sonda includes a Helm chart for deploying `sonda-server` to any Kubernetes cluster. The chart
-creates a Deployment with health probes, a ClusterIP Service with a named `http` port, and
-optional scenario injection via ConfigMap.
+Run `sonda-server` in Kubernetes when you want an always-on synthetic-telemetry baseline living *inside* the cluster — a service that emits known metrics through your stack continuously, so a Grafana panel going flat means "the data stopped" and not "the scrape config broke." It is the difference between guessing whether a quiet dashboard is a real outage and knowing it at a glance.
+
+When you finish the install below, you have a `sonda-server` pod running in the cluster, reachable at a stable Service DNS name (`sonda.<namespace>.svc.cluster.local:8080`), ready to accept scenarios POSTed over HTTP and expose their metrics for Prometheus to scrape. Sonda ships a Helm chart that produces exactly that: a Deployment with health probes, a ClusterIP Service with a named `http` port, and optional scenario injection via ConfigMap.
+
+!!! tip "Looking for the full walkthrough?"
+    The [Synthetic Monitoring](../guides/synthetic-monitoring.md) guide is the end-to-end worked example for this use case — spin up a local cluster, deploy the chart, submit long-running scenarios, scrape them with Prometheus, and build Grafana dashboards. This page is the chart *reference*: every value, probe setting, and auth option the guide draws on.
 
 ## Prerequisites
 
