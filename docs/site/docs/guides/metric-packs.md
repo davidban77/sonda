@@ -175,8 +175,7 @@ Labels are merged in this order, with later sources winning on key conflicts:
 
 ## Author a pack
 
-A pack is a v2 YAML file with `kind: composable`. The pack identity (`name`, `description`,
-`category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
+A pack is a v2 YAML file with `kind: composable`. The pack identity (`name`, `description`, `category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
 
 ```yaml title="~/sonda-catalog/my-app-pack.yaml"
 version: 2
