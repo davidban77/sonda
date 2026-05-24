@@ -152,18 +152,19 @@ instructions.
 
 ### ServiceMonitor
 
-Sonda emits Prometheus metrics **per scenario** at `GET /scenarios/<scenario-id>/metrics`, not at a fixed top-level `/metrics` endpoint. A ServiceMonitor endpoint scrapes a single path, so you must point `serviceMonitor.path` at the specific scenario you want scraped — typically a long-running synthetic monitoring scenario whose ID is known ahead of time (for example, one loaded from the `scenarios` ConfigMap and reachable at a stable route).
+A ServiceMonitor endpoint scrapes a single `path`. Two paths work for Sonda:
 
-`serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error telling you to set the path to a Prometheus-text endpoint such as `/scenarios/<scenario-id>/metrics`. This avoids silently producing a ServiceMonitor that scrapes a non-metrics route.
+- `/metrics` — aggregate scrape across every running scenario, with optional `?label=k:v` filtering. This is the right choice for most installs: one ServiceMonitor covers every scenario the server runs, regardless of how they were launched.
+- `/scenarios/<scenario-id>/metrics` — per-scenario drain. Use it when each scenario is its own logical target and you know its ID ahead of time (for example, one loaded from the `scenarios` ConfigMap at a stable route).
 
-For scraping more than one scenario, apply a custom ServiceMonitor with one `endpoints` entry per scenario ID — see [ServiceMonitor](#servicemonitor_1) below the values reference.
+`serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error telling you to set the path to a Prometheus-text endpoint such as `/metrics` or `/scenarios/<scenario-id>/metrics`. This avoids silently producing a ServiceMonitor that scrapes a non-metrics route.
 
 | Value | Default | Description |
 |-------|---------|-------------|
 | `serviceMonitor.enabled` | `false` | Enable Prometheus Operator ServiceMonitor |
 | `serviceMonitor.interval` | `30s` | Scrape interval |
 | `serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout |
-| `serviceMonitor.path` | `""` (required when enabled) | Metrics endpoint path, e.g. `/scenarios/<scenario-id>/metrics` |
+| `serviceMonitor.path` | `""` (required when enabled) | Metrics endpoint path, e.g. `/metrics` or `/scenarios/<scenario-id>/metrics` |
 | `serviceMonitor.additionalLabels` | `{}` | Extra labels on the ServiceMonitor resource |
 
 ### Scenarios (ConfigMap)
@@ -276,14 +277,28 @@ For example, a Prometheus instance in the same namespace can scrape
 
 ## Prometheus scraping
 
-Each running scenario exposes metrics at `GET /scenarios/{id}/metrics` in Prometheus text
-exposition format. You can configure Prometheus (or vmagent) to scrape this endpoint.
+`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one response, with `?label=k:v` to slice by the labels you attached to each scenario. `GET /scenarios/{id}/metrics` is the per-scenario drain — one consumer pulls from one scenario's buffer. For most Prometheus setups, the aggregate endpoint is the right call: one job covers every scenario, multiple scrapers can read it, and you do not need to know scenario IDs ahead of time. See [Aggregate Prometheus scrape](sonda-server.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` AND-filter syntax.
 
-### Static scrape config
+### Aggregate scrape config
 
 ```yaml title="prometheus-scrape.yaml"
 scrape_configs:
   - job_name: sonda
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["sonda.default.svc:8080"]
+```
+
+Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics; repeat the `label` value to AND-combine selectors.
+
+### Per-scenario scrape config
+
+When you want one scrape job per scenario, point `metrics_path` at the scenario ID. The endpoint drains its buffer on every scrape, so only one consumer should pull from a given ID at a time:
+
+```yaml title="prometheus-scrape.yaml"
+scrape_configs:
+  - job_name: sonda-id
     scrape_interval: 15s
     metrics_path: /scenarios/<SCENARIO_ID>/metrics
     static_configs:
@@ -331,15 +346,13 @@ kubectl apply -f sonda-servicemonitor.yaml
 The `port: http` field matches the named port on the Sonda Service.
 
 !!! warning "One path per endpoint"
-    Each ServiceMonitor endpoint scrapes a single `path`. If you run multiple scenarios, add
-    one `endpoints` entry per scenario ID. For dynamic discovery, consider a script that
-    queries `GET /scenarios` and regenerates the ServiceMonitor.
+    Each ServiceMonitor endpoint scrapes a single `path`. For per-scenario scrapes, add one `endpoints` entry per scenario ID. To cover every scenario in one entry, point the endpoint at `/metrics` instead and use `?label=k:v` to slice the view.
 
 ## API key authentication
 
-Sonda-server supports optional bearer token authentication on all `/scenarios/*` endpoints.
-When enabled, clients must include an `Authorization: Bearer <key>` header. The `/health`
-endpoint stays public so liveness and readiness probes work without credentials.
+Sonda-server supports optional bearer token authentication on `/scenarios/*`, `/metrics`, and
+`/events`. When enabled, clients must include an `Authorization: Bearer <key>` header. The
+`/health` endpoint stays public so liveness and readiness probes work without credentials.
 
 For the full authentication behavior (error responses, protected vs. public endpoints), see the
 [Server API Authentication](sonda-server.md#authentication) section.
@@ -392,12 +405,12 @@ The chart sets `SONDA_API_KEY` in the container environment from the Secret. On 
 will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/* and /events endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and /metrics endpoints
 ```
 
 ### Authenticated API calls
 
-Once auth is enabled, include the bearer token in all `/scenarios/*` requests:
+Once auth is enabled, include the bearer token in all `/scenarios/*`, `/metrics`, and `/events` requests:
 
 ```bash
 # Port-forward to reach the server
@@ -416,7 +429,7 @@ curl http://localhost:8080/health
 
 ### Prometheus scraping with auth
 
-When authentication is enabled, the `/scenarios/{id}/metrics` endpoint also requires a
+When authentication is enabled, both `/metrics` and `/scenarios/{id}/metrics` require a
 bearer token. Add the token to your Prometheus scrape config:
 
 === "Static scrape config"

@@ -41,9 +41,9 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
 
-    /// API key for bearer-token authentication on `/scenarios/*` endpoints.
+    /// API key for bearer-token authentication on `/scenarios/*`, `/events`, and `/metrics` endpoints.
     ///
-    /// When set, all requests to `/scenarios/*` must include an
+    /// When set, requests to these endpoints must include an
     /// `Authorization: Bearer <key>` header. The `/health` endpoint remains
     /// public regardless of this setting.
     ///
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     if api_key.is_some() {
-        info!("API key authentication enabled for /scenarios/* and /events endpoints");
+        info!("API key authentication enabled for /scenarios/*, /events, and /metrics endpoints");
     } else {
         info!("API key authentication disabled — all endpoints are public");
     }

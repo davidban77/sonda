@@ -239,25 +239,35 @@ For the full API reference, see [Server API](../deployment/sonda-server.md).
 
 ## Scrape metrics with Prometheus
 
-Each running scenario exposes its metrics at `GET /scenarios/{id}/metrics` in Prometheus text
-exposition format. You can point Prometheus (or any compatible scraper like vmagent) at this
-endpoint.
+`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one Prometheus text response, with `?label=k:v` to slice by the labels you set on each scenario. `GET /scenarios/{id}/metrics` is the per-scenario drain — one consumer pulls from one scenario's buffer. For Prometheus / vmagent / VictoriaMetrics jobs, use the aggregate endpoint: it survives multiple scrapers, covers every scenario without knowing IDs ahead of time, and behaves like a normal exporter. See [Aggregate Prometheus scrape](../deployment/sonda-server.md#aggregate-prometheus-scrape) for the full reference.
 
-### Static scrape config
-
-If you know the scenario ID ahead of time, configure a static scrape job:
+### Aggregate scrape config
 
 ```yaml title="prometheus-scrape.yaml"
 scrape_configs:
   - job_name: sonda
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["sonda.default.svc:8080"]
+```
+
+The target address uses the Kubernetes Service DNS name (`sonda.<namespace>.svc`). Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics; repeat the `label` value to AND-combine selectors.
+
+### Per-scenario scrape config
+
+If you want one scrape job per scenario — typically when each scenario is its own logical target — point `metrics_path` at the scenario ID. The endpoint drains its buffer on every scrape, so only one consumer should pull from a given ID at a time:
+
+```yaml title="prometheus-scrape.yaml"
+scrape_configs:
+  - job_name: sonda-id
     scrape_interval: 15s
     metrics_path: /scenarios/<SCENARIO_ID>/metrics
     static_configs:
       - targets: ["sonda.default.svc:8080"]
 ```
 
-Replace `<SCENARIO_ID>` with the UUID returned by `POST /scenarios`. The target address uses
-the Kubernetes Service DNS name (`sonda.<namespace>.svc`).
+Replace `<SCENARIO_ID>` with the UUID returned by `POST /scenarios`.
 
 ### Prometheus ServiceMonitor
 

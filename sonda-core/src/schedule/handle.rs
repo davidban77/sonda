@@ -1,5 +1,6 @@
 //! Lifecycle handle for a running scenario.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
@@ -54,6 +55,8 @@ pub struct ScenarioHandle {
     /// panic. External observers (e.g. the CLI progress display) read this
     /// without acquiring `JoinHandle::is_finished()`.
     pub alive: Arc<AtomicBool>,
+    /// Scenario-level labels captured at launch time from `entry.base().labels`.
+    pub labels: Arc<HashMap<String, String>>,
 }
 
 impl ScenarioHandle {
@@ -217,6 +220,18 @@ impl ScenarioHandle {
             Err(poisoned) => poisoned.into_inner().drain_recent_metrics(),
         }
     }
+
+    pub fn recent_metrics_snapshot(&self) -> Vec<crate::model::metric::MetricEvent> {
+        match self.stats.read() {
+            Ok(guard) => guard.recent_metrics.iter().cloned().collect(),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .recent_metrics
+                .iter()
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +285,7 @@ mod tests {
             stats,
             target_rate: 100.0,
             alive: Arc::new(AtomicBool::new(true)),
+            labels: Arc::new(HashMap::new()),
         }
     }
 
@@ -547,6 +563,7 @@ mod tests {
             stats,
             target_rate: 10.0,
             alive: Arc::new(AtomicBool::new(true)),
+            labels: Arc::new(HashMap::new()),
         };
 
         // stats_snapshot must not panic — it recovers from the poisoned lock.
@@ -595,6 +612,7 @@ mod tests {
             stats,
             target_rate: 10.0,
             alive: Arc::new(AtomicBool::new(true)),
+            labels: Arc::new(HashMap::new()),
         };
 
         // recent_metrics must not panic — it recovers from the poisoned lock.

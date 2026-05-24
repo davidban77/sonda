@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
@@ -841,6 +841,111 @@ pub async fn get_scenario_metrics(
         .into_response())
 }
 
+// ---- Aggregate scrape endpoint ----------------------------------------------
+
+fn parse_label_filters(raw: Option<&str>) -> Result<Vec<(String, String)>, String> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut filters = Vec::new();
+    for pair in raw.split('&').filter(|s| !s.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key != "label" {
+            continue;
+        }
+        let decoded = percent_decode(value);
+        let (k, v) = decoded.split_once(':').ok_or_else(|| {
+            format!("label filter '{decoded}' is malformed: expected 'key:value'")
+        })?;
+        if k.is_empty() {
+            return Err(format!("label filter '{decoded}' has an empty key"));
+        }
+        if v.is_empty() {
+            return Err(format!("label filter '{decoded}' has an empty value"));
+        }
+        filters.push((k.to_string(), v.to_string()));
+    }
+    Ok(filters)
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+pub async fn get_aggregate_metrics(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, Response> {
+    let filters = parse_label_filters(raw_query.as_deref()).map_err(bad_request)?;
+
+    let scenarios = state
+        .scenarios
+        .read()
+        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+
+    let mut ids: Vec<&String> = scenarios.keys().collect();
+    ids.sort();
+
+    let encoder = PrometheusText::new(None);
+    let mut buf = Vec::new();
+    for id in ids {
+        let handle = match scenarios.get(id) {
+            Some(h) => h,
+            None => continue,
+        };
+        if !filters.iter().all(|(k, v)| {
+            handle
+                .labels
+                .get(k.as_str())
+                .map(|hv| hv == v)
+                .unwrap_or(false)
+        }) {
+            continue;
+        }
+        for event in handle.recent_metrics_snapshot() {
+            if let Err(e) = encoder.encode_metric(&event, &mut buf) {
+                warn!(id = %id, error = %e, "GET /metrics: failed to encode metric event");
+            }
+        }
+    }
+
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, PROMETHEUS_CONTENT_TYPE)],
+        buf,
+    )
+        .into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +1000,7 @@ mod tests {
             stats,
             target_rate: 100.0,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -926,6 +1032,7 @@ mod tests {
             stats,
             target_rate: 100.0,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -2752,6 +2859,7 @@ scenarios:
             stats,
             target_rate,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -3203,6 +3311,7 @@ scenarios:
             stats,
             target_rate: 10.0,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -3501,6 +3610,402 @@ scenarios:
         );
     }
 
+    // ========================================================================
+    // GET /metrics aggregate scrape tests
+    // ========================================================================
+
+    fn make_handle_with_labels_and_metrics(
+        id: &str,
+        name: &str,
+        labels: Vec<(&str, &str)>,
+        events: Vec<sonda_core::model::metric::MetricEvent>,
+    ) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let mut stats = ScenarioStats::default();
+        for event in events {
+            stats.push_metric(event);
+        }
+        let stats = Arc::new(RwLock::new(stats));
+        let shutdown_clone = Arc::clone(&shutdown);
+
+        let thread = thread::Builder::new()
+            .name(format!("test-agg-{name}"))
+            .spawn(move || -> Result<(), sonda_core::SondaError> {
+                while shutdown_clone.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(())
+            })
+            .expect("thread must spawn");
+
+        let mut label_map = std::collections::HashMap::new();
+        for (k, v) in labels {
+            label_map.insert(k.to_string(), v.to_string());
+        }
+
+        ScenarioHandle {
+            id: id.to_string(),
+            name: name.to_string(),
+            scenario_name: None,
+            shutdown,
+            thread: Some(thread),
+            started_at: Instant::now(),
+            stats,
+            target_rate: 10.0,
+            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(label_map),
+        }
+    }
+
+    async fn get_aggregate_req(
+        app: axum::Router,
+        query: &str,
+    ) -> hyper::Response<axum::body::Body> {
+        let uri = if query.is_empty() {
+            "/metrics".to_string()
+        } else {
+            format!("/metrics?{query}")
+        };
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_empty_state_returns_200_empty_body() {
+        let app = router_with_handles(vec![]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("Content-Type must be present")
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "text/plain; version=0.0.4; charset=utf-8");
+
+        let body = body_string(resp).await;
+        assert!(
+            body.trim().is_empty(),
+            "empty state must render as empty body, got: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_single_scenario_no_filter_returns_events() {
+        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
+        let h = make_handle_with_labels_and_metrics("agg-1", "single", vec![], events);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2, "must encode 2 events, got: {body:?}");
+        for line in &lines {
+            assert!(
+                line.starts_with("up"),
+                "each line must start with metric name 'up', got: {line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_snapshot_is_non_destructive() {
+        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
+        let h = make_handle_with_labels_and_metrics("agg-snap", "snap", vec![], events);
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let app1 = router(state.clone());
+        let body_1 = body_string(get_aggregate_req(app1, "").await).await;
+
+        let app2 = router(state.clone());
+        let body_2 = body_string(get_aggregate_req(app2, "").await).await;
+
+        assert_eq!(
+            body_1, body_2,
+            "two snapshot calls must return identical bodies"
+        );
+        assert!(
+            !body_1.trim().is_empty(),
+            "snapshot must include the pushed events"
+        );
+
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_still_drains_after_aggregate_snapshot() {
+        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
+        let h = make_handle_with_labels_and_metrics("agg-drain", "drain", vec![], events);
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
+        }
+
+        let agg_app = router(state.clone());
+        let agg_body = body_string(get_aggregate_req(agg_app, "").await).await;
+        assert!(!agg_body.trim().is_empty(), "aggregate must see the events");
+
+        let per_app = router(state.clone());
+        let per_body = body_string(get_metrics_req(per_app, "agg-drain").await).await;
+        assert!(
+            !per_body.trim().is_empty(),
+            "per-scenario scrape must still drain the buffer"
+        );
+
+        let per_app_2 = router(state.clone());
+        let per_body_2 = body_string(get_metrics_req(per_app_2, "agg-drain").await).await;
+        assert!(
+            per_body_2.trim().is_empty(),
+            "second per-scenario scrape must return empty after drain"
+        );
+
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_filter_single_label_match_included() {
+        let h1 = make_handle_with_labels_and_metrics(
+            "agg-srl1",
+            "srl1",
+            vec![("device", "srl1")],
+            vec![make_metric_event("up", 1.0)],
+        );
+        let h2 = make_handle_with_labels_and_metrics(
+            "agg-srl2",
+            "srl2",
+            vec![("device", "srl2")],
+            vec![make_metric_event("up", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+
+        let resp = get_aggregate_req(app, "label=device:srl1").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "filter must include only one event, got: {body:?}"
+        );
+        assert!(
+            lines[0].contains(" 1"),
+            "matching event must have value 1, got: {}",
+            lines[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_filter_single_label_no_match_excluded() {
+        let h1 = make_handle_with_labels_and_metrics(
+            "agg-nm-1",
+            "nm1",
+            vec![("device", "srl1")],
+            vec![make_metric_event("up", 1.0)],
+        );
+        let h2 = make_handle_with_labels_and_metrics(
+            "agg-nm-2",
+            "nm2",
+            vec![("device", "srl2")],
+            vec![make_metric_event("up", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+
+        let resp = get_aggregate_req(app, "label=device:srl3").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        assert!(
+            body.trim().is_empty(),
+            "no-match filter must return empty body, got: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_filter_multi_label_and_semantics() {
+        let h1 = make_handle_with_labels_and_metrics(
+            "agg-ml-1",
+            "ml1",
+            vec![("device", "srl1"), ("if", "eth0")],
+            vec![make_metric_event("up", 10.0)],
+        );
+        let h2 = make_handle_with_labels_and_metrics(
+            "agg-ml-2",
+            "ml2",
+            vec![("device", "srl1"), ("if", "eth1")],
+            vec![make_metric_event("up", 11.0)],
+        );
+        let h3 = make_handle_with_labels_and_metrics(
+            "agg-ml-3",
+            "ml3",
+            vec![("device", "srl2"), ("if", "eth0")],
+            vec![make_metric_event("up", 12.0)],
+        );
+        let app = router_with_handles(vec![h1, h2, h3]);
+
+        let resp = get_aggregate_req(app, "label=device:srl1&label=if:eth0").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "multi-label AND must match exactly one handle, got: {body:?}"
+        );
+        assert!(
+            lines[0].contains(" 10"),
+            "matching event must have value 10, got: {}",
+            lines[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_handle_with_no_labels_never_matches_filter() {
+        let h = make_handle_with_labels_and_metrics(
+            "agg-nolabels",
+            "nolabels",
+            vec![],
+            vec![make_metric_event("up", 42.0)],
+        );
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_aggregate_req(app, "label=device:srl1").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        assert!(
+            body.trim().is_empty(),
+            "unlabelled handle must be excluded by any filter, got: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_malformed_filter_returns_400() {
+        let h = make_handle_with_labels_and_metrics(
+            "agg-bad",
+            "bad",
+            vec![("device", "srl1")],
+            vec![make_metric_event("up", 1.0)],
+        );
+
+        let app = router_with_handles(vec![h]);
+        let resp = get_aggregate_req(app, "label=invalid").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(resp).await;
+        assert_eq!(body["error"].as_str().unwrap(), "bad_request");
+        assert!(
+            body["detail"].as_str().unwrap().contains("invalid"),
+            "detail must reference the bad input, got: {body:?}"
+        );
+
+        let h2 = make_handle_with_labels_and_metrics(
+            "agg-bad2",
+            "bad2",
+            vec![("device", "srl1")],
+            vec![],
+        );
+        let app2 = router_with_handles(vec![h2]);
+        let resp2 = get_aggregate_req(app2, "label=:value").await;
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+        let body2 = body_json(resp2).await;
+        assert_eq!(body2["error"].as_str().unwrap(), "bad_request");
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_auth_gate_enforced() {
+        let state = AppState::with_api_key(Some("the-key".to_string()));
+        let app = router(state);
+
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "missing bearer must return 401"
+        );
+
+        let req_ok = Request::builder()
+            .uri("/metrics")
+            .header("authorization", "Bearer the-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp_ok = app.oneshot(req_ok).await.unwrap();
+        assert_eq!(
+            resp_ok.status(),
+            StatusCode::OK,
+            "correct bearer must return 200"
+        );
+    }
+
+    #[test]
+    fn parse_label_filters_accepts_repeated_pairs() {
+        let filters =
+            parse_label_filters(Some("label=device:srl1&label=if:eth0")).expect("must parse");
+        assert_eq!(
+            filters,
+            vec![
+                ("device".to_string(), "srl1".to_string()),
+                ("if".to_string(), "eth0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_label_filters_value_may_contain_colon() {
+        let filters = parse_label_filters(Some("label=addr:::1")).expect("must parse");
+        assert_eq!(filters, vec![("addr".to_string(), "::1".to_string())]);
+    }
+
+    #[test]
+    fn parse_label_filters_rejects_missing_colon() {
+        let err = parse_label_filters(Some("label=novalue")).unwrap_err();
+        assert!(err.contains("novalue"), "error must reference input: {err}");
+    }
+
+    #[test]
+    fn parse_label_filters_rejects_empty_key() {
+        let err = parse_label_filters(Some("label=:value")).unwrap_err();
+        assert!(
+            err.contains("empty key"),
+            "error must mention empty key: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_label_filters_rejects_empty_value() {
+        let err = parse_label_filters(Some("label=key:")).unwrap_err();
+        assert!(
+            err.contains("empty value"),
+            "error must mention empty value: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_label_filters_ignores_non_label_keys() {
+        let filters = parse_label_filters(Some("foo=bar&label=device:srl1")).expect("must parse");
+        assert_eq!(filters, vec![("device".to_string(), "srl1".to_string())]);
+    }
+
+    #[test]
+    fn parse_label_filters_empty_query_returns_empty() {
+        let filters = parse_label_filters(None).expect("must parse");
+        assert!(filters.is_empty());
+        let filters2 = parse_label_filters(Some("")).expect("must parse");
+        assert!(filters2.is_empty());
+    }
+
     // ---- MetricsQuery deserialization ----------------------------------------
 
     /// MetricsQuery with no fields deserializes with limit=None.
@@ -3563,6 +4068,7 @@ scenarios:
             stats,
             target_rate: 50.0,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -3591,6 +4097,7 @@ scenarios:
             stats,
             target_rate: 10.0,
             alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            labels: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 

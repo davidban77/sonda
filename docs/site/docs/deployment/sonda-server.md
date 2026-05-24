@@ -86,7 +86,7 @@ RUST_LOG=debug sonda-server --port 8080
 |------|---------|---------|---------|
 | `--port <PORT>` | -- | `8080` | Port the server listens on |
 | `--bind <ADDR>` | -- | `0.0.0.0` | Bind address |
-| `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*` and `/events`. See [Authentication](#authentication). |
+| `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/metrics`, and `/events`. See [Authentication](#authentication). |
 | `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](#pack-references-over-http). |
 
 When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML
@@ -423,12 +423,13 @@ Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELET
 | GET | `/scenarios/{id}` | Inspect a scenario: config, stats, elapsed |
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state, sink-failure counters. See [Self-observability via /stats](#self-observability-via-stats). |
-| GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format |
+| GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format. DRAIN semantics — one consumer. |
+| GET | `/metrics` | Aggregate Prometheus scrape across all running scenarios. SNAPSHOT semantics — multi-consumer. Supports `?label=k:v` filtering. See [Aggregate Prometheus scrape](#aggregate-prometheus-scrape). |
 | POST | `/events` | Emit one log or metric event synchronously. See [Single-Event API](events.md). |
 
 ## Authentication
 
-You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
+You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /metrics`, and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
 
 ### Enabling authentication
 
@@ -449,7 +450,7 @@ Pass an API key via the `--api-key` flag or the `SONDA_API_KEY` environment vari
 When the server starts with a key configured, you will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/* and /events endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and /metrics endpoints
 ```
 
 !!! info "No key = no auth"
@@ -498,13 +499,11 @@ JSON error body:
 | `DELETE /scenarios/{id}` | Yes |
 | `GET /scenarios/{id}/stats` | Yes |
 | `GET /scenarios/{id}/metrics` | Yes |
+| `GET /metrics` | Yes |
 | `POST /events` | Yes |
 
 !!! warning "Prometheus scraping with auth"
-    If you enable authentication, your Prometheus scrape config must include the bearer
-    token for `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file`
-    field to your `scrape_configs` entry. See [Scrape Integration](#scrape-integration)
-    below.
+    If you enable authentication, your Prometheus scrape config must include the bearer token for both `/metrics` and `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file` field to your `scrape_configs` entry. See [Aggregate Prometheus scrape](#aggregate-prometheus-scrape) for the scrape-config shape.
 
 ??? tip "Kubernetes Secrets"
     In Kubernetes deployments, store the API key in a Secret and reference it as an
@@ -719,11 +718,94 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
     Wire that into a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel. If you need a different staleness window than the built-in 30 seconds, threshold `total_sink_failures` and the staleness of `last_successful_write_at` from this endpoint yourself.
 
-## Scrape Integration
+## Aggregate Prometheus scrape
 
-The `GET /scenarios/{id}/metrics` endpoint returns recent metric events in Prometheus text
-exposition format. This enables pull-based integration: start a scenario via `POST /scenarios`,
-then configure Prometheus or vmagent to scrape the endpoint directly.
+To a scraper, `sonda-server` presents itself the same way a Prometheus exporter on a real device does — one URL (`GET /metrics`), idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns a snapshot of every running scenario's recent metric events fused into a single Prometheus text-format response, and `?label=k:v` filters that view by the labels the user attached when starting each scenario.
+
+Why labels are the durable identity at scrape time: scenarios, multi-scenarios, and metric packs are three ways to *configure* Sonda, but only individual scenarios exist at runtime — packs and multi-scenarios fan out into independent scenarios at compile time. The labels you set on each scenario (`device: srl1`, `interface: eth0`, `region: us-east`) are the only cross-scenario grouping that survives, so `?label=k:v` is how you ask "give me one device's metrics" regardless of how the underlying scenarios got launched.
+
+### Happy path
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+```text title="Response (text/plain; version=0.0.4; charset=utf-8)"
+if_in_octets{device="srl1",interface="eth0"} 12345 1779622362660
+if_in_octets{device="srl1",interface="eth0"} 12345 1779622362870
+if_in_octets{device="srl1",interface="eth0"} 12345 1779622363070
+if_out_octets{device="srl2",interface="eth0"} 678 1779622363271
+if_out_octets{device="srl2",interface="eth0"} 681 1779622363470
+```
+
+Each line is `metric_name{labels} value timestamp_ms`. Timestamps are per-sample wall-clock milliseconds, so Prometheus and VictoriaMetrics dedupe naturally on `(name, labels, timestamp_ms, value)` across overlapping scrape windows. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+
+### Filter by label
+
+`?label=k:v` narrows the response to scenarios whose configured `labels` contain that exact `k: v` pair. Repeat the parameter to AND-combine selectors — a scenario is included only when every filter matches:
+
+```bash
+# One device, all interfaces
+curl 'http://localhost:8080/metrics?label=device:srl1'
+
+# One device AND one interface — both must match
+curl 'http://localhost:8080/metrics?label=device:srl1&label=interface:eth0'
+```
+
+A scenario started with no `labels:` block never matches any filter — there is nothing to match against. Drop the filter to see those events.
+
+A malformed filter (missing `:`, empty key, empty value) returns `400 Bad Request`:
+
+```json title="Response (400 Bad Request)"
+{
+  "error": "bad_request",
+  "detail": "label filter 'invalid' is malformed: expected 'key:value'"
+}
+```
+
+### `GET /metrics` vs `GET /scenarios/{id}/metrics`
+
+Both endpoints emit Prometheus text. They serve different scrape models:
+
+| Endpoint | Semantics | Use it for |
+|---|---|---|
+| `GET /metrics` | **Snapshot** — non-destructive. Two back-to-back calls return identical bytes. | Production scraping. Multiple scrapers can read it (Prometheus + vmagent + an ops dashboard) without stealing events from each other. |
+| `GET /scenarios/{id}/metrics` | **Drain** — each call empties the per-scenario buffer. | Debugging a single scenario. Drives the per-event consumer pattern (one consumer pulls, observes, discards). |
+
+Pick `GET /metrics` for any Prometheus / VictoriaMetrics / vmagent job — it is the endpoint that behaves like a normal exporter. Reach for the per-scenario drain when you are inspecting one scenario in isolation or wiring a one-off pull-based consumer.
+
+### Scrape config
+
+A Prometheus or vmagent scrape job targeting one device's metrics:
+
+```yaml title="prometheus.yml"
+scrape_configs:
+  - job_name: sonda-srl1
+    scrape_interval: 15s
+    metrics_path: /metrics
+    params:
+      label: ["device:srl1"]
+    static_configs:
+      - targets: ["localhost:8080"]
+```
+
+Use one job per slice you want to scrape — different devices, different regions, different tenants — and add a `label` param to each. With no `params`, the job scrapes everything the server is running.
+
+When [API key authentication](#authentication) is enabled, add the bearer token to the job:
+
+```yaml title="prometheus.yml (with auth)"
+scrape_configs:
+  - job_name: sonda
+    scrape_interval: 15s
+    metrics_path: /metrics
+    bearer_token: my-secret-key
+    static_configs:
+      - targets: ["localhost:8080"]
+```
+
+## Per-scenario scrape
+
+The `GET /scenarios/{id}/metrics` endpoint returns recent metric events for one scenario in Prometheus text exposition format. Each scrape **drains** the buffer — events appear once per cycle. Use it when you want a one-to-one consumer pulling from a single scenario; reach for [`GET /metrics`](#aggregate-prometheus-scrape) when more than one scraper needs the data or when you want a single job that covers every running scenario.
 
 ```yaml title="prometheus.yml"
 scrape_configs:
@@ -736,10 +818,7 @@ scrape_configs:
 
 Replace `<SCENARIO_ID>` with the ID returned by `POST /scenarios`.
 
-The endpoint accepts an optional `?limit=N` query parameter (default 100, max 1000)
-to control how many recent events are returned per scrape. Each scrape drains the buffer,
-so events appear once per cycle. If no metrics are available yet, you get `204 No Content`.
-Unknown scenario IDs return `404 Not Found`.
+The endpoint accepts an optional `?limit=N` query parameter (default 100, max 1000) to control how many recent events are returned per scrape. If no metrics are available yet, you get `204 No Content`. Unknown scenario IDs return `404 Not Found`.
 
 !!! note
     The server is also available as a [Docker image](docker.md) and

@@ -230,6 +230,7 @@ pub fn launch_scenario_with_gates(
         ScenarioEntry::Histogram(c) => (c.name.clone(), c.rate),
         ScenarioEntry::Summary(c) => (c.name.clone(), c.rate),
     };
+    let labels = Arc::new(entry.base().labels.clone().unwrap_or_default());
 
     let started_at = Instant::now();
 
@@ -339,6 +340,7 @@ pub fn launch_scenario_with_gates(
         stats,
         target_rate,
         alive,
+        labels,
     })
 }
 
