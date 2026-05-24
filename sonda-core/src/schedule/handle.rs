@@ -1,5 +1,6 @@
 //! Lifecycle handle for a running scenario.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
@@ -30,6 +31,7 @@ impl std::error::Error for JoinTimeout {}
 /// The handle is `Send`: the `JoinHandle` is behind an `Option` and the other
 /// fields are all `Send`, so the handle can be stored in server state and
 /// moved across await points.
+#[non_exhaustive]
 pub struct ScenarioHandle {
     /// Unique identifier for this scenario instance.
     pub id: String,
@@ -54,9 +56,39 @@ pub struct ScenarioHandle {
     /// panic. External observers (e.g. the CLI progress display) read this
     /// without acquiring `JoinHandle::is_finished()`.
     pub alive: Arc<AtomicBool>,
+    /// Scenario-level labels.
+    pub labels: Arc<HashMap<String, String>>,
 }
 
 impl ScenarioHandle {
+    /// Construct a `ScenarioHandle` from its raw parts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        name: String,
+        scenario_name: Option<String>,
+        shutdown: Arc<AtomicBool>,
+        thread: Option<JoinHandle<Result<(), SondaError>>>,
+        started_at: Instant,
+        stats: Arc<RwLock<ScenarioStats>>,
+        target_rate: f64,
+        alive: Arc<AtomicBool>,
+        labels: Arc<HashMap<String, String>>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            scenario_name,
+            shutdown,
+            thread,
+            started_at,
+            stats,
+            target_rate,
+            alive,
+            labels,
+        }
+    }
+
     /// Signal the scenario to stop.
     ///
     /// Sets the shutdown flag to `false` with `SeqCst` ordering. The runner
@@ -217,6 +249,19 @@ impl ScenarioHandle {
             Err(poisoned) => poisoned.into_inner().drain_recent_metrics(),
         }
     }
+
+    /// Clone the recent-metrics buffer without draining it.
+    pub fn recent_metrics_snapshot(&self) -> Vec<crate::model::metric::MetricEvent> {
+        match self.stats.read() {
+            Ok(guard) => guard.recent_metrics.iter().cloned().collect(),
+            Err(poisoned) => poisoned
+                .into_inner()
+                .recent_metrics
+                .iter()
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -260,17 +305,18 @@ mod tests {
             })
             .expect("thread must spawn");
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 100.0,
-            alive: Arc::new(AtomicBool::new(true)),
-        }
+            100.0,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(HashMap::new()),
+        )
     }
 
     // ---- is_running: true before stop, false after join ---------------------
@@ -537,17 +583,18 @@ mod tests {
             .spawn(|| -> Result<(), SondaError> { Ok(()) })
             .expect("thread must spawn");
 
-        let handle = ScenarioHandle {
-            id: "test-poisoned".to_string(),
-            name: "poisoned".to_string(),
-            scenario_name: None,
+        let handle = ScenarioHandle::new(
+            "test-poisoned".to_string(),
+            "poisoned".to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 10.0,
-            alive: Arc::new(AtomicBool::new(true)),
-        };
+            10.0,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(HashMap::new()),
+        );
 
         // stats_snapshot must not panic — it recovers from the poisoned lock.
         let snap = handle.stats_snapshot();
@@ -585,17 +632,18 @@ mod tests {
             .spawn(|| -> Result<(), SondaError> { Ok(()) })
             .expect("thread must spawn");
 
-        let handle = ScenarioHandle {
-            id: "test-poisoned-m".to_string(),
-            name: "poisoned_metrics".to_string(),
-            scenario_name: None,
+        let handle = ScenarioHandle::new(
+            "test-poisoned-m".to_string(),
+            "poisoned_metrics".to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 10.0,
-            alive: Arc::new(AtomicBool::new(true)),
-        };
+            10.0,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(HashMap::new()),
+        );
 
         // recent_metrics must not panic — it recovers from the poisoned lock.
         let events = handle.recent_metrics();

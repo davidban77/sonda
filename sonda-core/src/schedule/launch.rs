@@ -230,6 +230,7 @@ pub fn launch_scenario_with_gates(
         ScenarioEntry::Histogram(c) => (c.name.clone(), c.rate),
         ScenarioEntry::Summary(c) => (c.name.clone(), c.rate),
     };
+    let labels = Arc::new(entry.base().labels.clone().unwrap_or_default());
 
     let started_at = Instant::now();
 
@@ -329,17 +330,18 @@ pub fn launch_scenario_with_gates(
         })
         .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
 
-    Ok(ScenarioHandle {
+    Ok(ScenarioHandle::new(
         id,
         name,
         scenario_name,
         shutdown,
-        thread: Some(thread),
+        Some(thread),
         started_at,
         stats,
         target_rate,
         alive,
-    })
+        labels,
+    ))
 }
 
 struct AliveGuard {
