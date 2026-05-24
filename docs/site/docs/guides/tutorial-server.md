@@ -1,8 +1,6 @@
 # The Server API
 
-For long-running or programmatic use, Sonda includes an HTTP API that lets you submit,
-monitor, and stop scenarios without touching the CLI. The API speaks the same v2 YAML
-format you have been using throughout the tour.
+For long-running or programmatic use, Sonda includes an HTTP API that lets you submit, monitor, and stop scenarios without touching the CLI. The API speaks the same scenario YAML format you have been using throughout the tour.
 
 ## Start the server
 
@@ -26,7 +24,7 @@ curl http://localhost:8080/health
 
 ## Submit a scenario
 
-POST a v2 YAML body to `/scenarios`:
+POST a scenario YAML body to `/scenarios`:
 
 ```bash
 curl -X POST \
@@ -52,8 +50,7 @@ curl -X POST \
 
 ## Submit a multi-scenario batch
 
-POST a v2 file with two or more `scenarios:` entries and the server launches them
-atomically -- either every entry compiles and starts, or nothing does:
+POST a scenario file with two or more `scenarios:` entries and the server launches them atomically -- either every entry compiles and starts, or nothing does:
 
 ```bash
 curl -X POST \
@@ -77,7 +74,7 @@ error handling, `phase_offset`, and `after:` chains.
 !!! tip "One file, host CLI and container"
     A sink URL like `${VICTORIAMETRICS_URL:-http://localhost:8428/...}` runs from your
     host CLI on the default and from a containerized `sonda-server` on the override. See
-    [Environment variable interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation).
+    [Environment variable interpolation](../configuration/scenario-files.md#environment-variable-interpolation).
 
 ## Monitor a running scenario
 

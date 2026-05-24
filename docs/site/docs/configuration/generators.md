@@ -706,11 +706,7 @@ Think of it this way: a counter tells you *how many* requests happened. A histog
     distribution, updates cumulative bucket counters, and emits the result in Prometheus format.
     The output is indistinguishable from a real instrumented service.
 
-Histograms and summaries are v2 scenario entries with `signal_type: histogram` or
-`signal_type: summary` and a `distribution:` block in place of the metric `generator:` block.
-Run them with `sonda run` just like any other scenario. For a hands-on walkthrough of testing
-latency alerts, see the
-[Histograms, Summaries, and Latency Alerts](../guides/histogram-alerts.md) guide.
+Histograms and summaries are scenario entries with `signal_type: histogram` or `signal_type: summary` and a `distribution:` block in place of the metric `generator:` block. Run them with `sonda run` just like any other scenario. For a hands-on walkthrough of testing latency alerts, see the [Histograms, Summaries, and Latency Alerts](../guides/histogram-alerts.md) guide.
 
 ### histogram
 
@@ -948,8 +944,7 @@ real metrics rarely distribute evenly.
 
 ## Log generators
 
-Log generators produce structured log events instead of numeric values. They live on a v2
-`signal_type: logs` entry under the `log_generator:` key (not `generator:`).
+Log generators produce structured log events instead of numeric values. They live on a `signal_type: logs` entry under the `log_generator:` key (not `generator:`).
 
 ### template
 

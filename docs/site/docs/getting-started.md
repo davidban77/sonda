@@ -152,7 +152,7 @@ The wave oscillates between 0 and 100 with a 10-second period. The
 
 ## A larger scenario
 
-The same v2 shape lets you share defaults across many entries and add scheduling like
+The same shape lets you share defaults across many entries and add scheduling like
 gaps and bursts:
 
 ```yaml title="basic-metrics.yaml"
@@ -265,7 +265,7 @@ sonda show @cpu-spike --catalog ./my-catalog
 sonda run @cpu-spike --catalog ./my-catalog
 ```
 
-The catalog is just a directory of v2 YAML files with `kind: runnable` (scenarios you
+The catalog is just a directory of scenario YAML files with `kind: runnable` (scenarios you
 can run) or `kind: composable` (packs you reference from other scenarios with
 `pack: <name>`). See [Author your own catalog](guides/scenarios.md) for the layout.
 
@@ -285,7 +285,7 @@ advanced feature step by step. Skip the YAML grind:
 
 Reference pages:
 
-- [**v2 Scenario Files**](configuration/v2-scenarios.md) -- file shape, defaults, `after:` chains
+- [**Scenario Files**](configuration/scenario-files.md) -- file shape, defaults, `after:` chains
 - [**Scenario Fields**](configuration/scenario-fields.md) -- per-entry field reference
 - [**CLI Reference**](configuration/cli-reference.md) -- every flag for `run`, `list`, `show`, `new`
 - [**Docker**](deployment/docker.md) -- containers and Compose

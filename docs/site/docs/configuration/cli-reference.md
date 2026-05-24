@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `sonda` binary has four verbs: `run`, `list`, `show`, and `new`. `run` executes a [v2 scenario YAML file](v2-scenarios.md), `list` and `show` browse a catalog directory of scenarios and composable packs, and `new` scaffolds a starter file. Anything that used to live behind a per-signal subcommand (`metrics`, `logs`, `histogram`, `summary`) is now a v2 scenario YAML — pick a generator in the file, point `sonda run` at it.
+The `sonda` binary has four verbs: `run`, `list`, `show`, and `new`. `run` executes a [scenario YAML file](scenario-files.md), `list` and `show` browse a catalog directory of scenarios and composable packs, and `new` scaffolds a starter file. Anything that used to live behind a per-signal subcommand (`metrics`, `logs`, `histogram`, `summary`) is now a scenario YAML — pick a generator in the file, point `sonda run` at it.
 
 ## Global options
 
@@ -37,7 +37,7 @@ sonda [--catalog <DIR>] [--dry-run] [--format text|json] run <SCENARIO> [OVERRID
 
 | Argument / Flag | Description |
 |------|-------------|
-| `<SCENARIO>` | Filesystem path to a v2 YAML file (`./my.yaml`, `examples/cpu.yaml`) **or** `@name` for a catalog entry (requires `--catalog`). |
+| `<SCENARIO>` | Filesystem path to a scenario YAML file (`./my.yaml`, `examples/cpu.yaml`) **or** `@name` for a catalog entry (requires `--catalog`). |
 | `--catalog <DIR>` | Required when `<SCENARIO>` starts with `@`. Also used to resolve `pack: <name>` references inside the file. |
 | `--dry-run` | Compile and validate the scenario, print the resolved config, exit. |
 | `--format text\|json` | Dry-run output format. Default `text`. |
@@ -192,7 +192,7 @@ sonda --dry-run run /tmp/snap.yaml
 
 ## `sonda new`
 
-Scaffold a new v2 scenario YAML. Three modes — pick the one that matches how much you already know about the scenario you want.
+Scaffold a new scenario YAML. Three modes — pick the one that matches how much you already know about the scenario you want.
 
 ```
 sonda new [--template] [--from <CSV>] [-o <PATH>]

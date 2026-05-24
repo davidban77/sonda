@@ -69,7 +69,7 @@ docker run --rm \
       --catalog /catalog list
     ```
 
-The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML files (typically `kind: runnable` and `kind: composable` v2 files) at any path inside the container and pass `--catalog <path>` to point `sonda` at it. See [Catalogs](../guides/scenarios.md) for the directory layout.
+The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML files (typically `kind: runnable` and `kind: composable` files) at any path inside the container and pass `--catalog <path>` to point `sonda` at it. See [Catalogs](../guides/scenarios.md) for the directory layout.
 
 !!! warning "Pre-1.9 env vars are gone"
     Earlier releases let the image discover scenarios from `SONDA_PACK_PATH=/packs` and `SONDA_SCENARIO_PATH=/scenarios` env vars (with companion `/packs` and `/scenarios` directories baked into the image). Both were dropped in 1.9. Discovery is explicit via `--catalog <dir>` — no env-var fallback, no implicit search path. Old recipes built around `docker run … run @scenario` (expecting `SONDA_PACK_PATH` to do the lookup) will fail with "catalog dir does not exist or is not a directory" or a `@name` resolution error — add `--catalog /catalog` and mount your catalog volume there.

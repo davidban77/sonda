@@ -9,7 +9,7 @@ What you actually want is the *shape* of that incident as a reusable scenario:
 "a CPU spike like the one from the May 14 outage" parameterized on rate and duration,
 checked into the repo next to the alert rules. `sonda new --from <csv>` does that
 conversion in one step. It scans each column, classifies the pattern (steady, spike,
-leak, sawtooth, flap, step), and emits a v2 scenario YAML wired to a generator with
+leak, sawtooth, flap, step), and emits a scenario YAML wired to a generator with
 the right knobs.
 
 ---
@@ -35,7 +35,7 @@ need the *shape* of the data as a reusable scenario that does not depend on the 
 
 ## The workflow
 
-`sonda new --from <csv>` writes a v2 scenario YAML to stdout (or to a file with `-o`). Run the
+`sonda new --from <csv>` writes a scenario YAML to stdout (or to a file with `-o`). Run the
 result with `sonda run` once you are happy with it:
 
 ```text
@@ -53,7 +53,7 @@ sonda new --from examples/sample-multi-column.csv -o scenario.yaml
 wrote scenario to scenario.yaml
 ```
 
-The generated file is a valid [v2 scenario YAML](../configuration/v2-scenarios.md), ready for
+The generated file is a valid [scenario YAML](../configuration/scenario-files.md), ready for
 `sonda run`:
 
 ```yaml title="scenario.yaml"
@@ -94,10 +94,8 @@ Each numeric column in the CSV gets its own `scenarios:` entry. The generator al
 by pattern detection, so you can edit the output and tune the parameters rather than starting
 from a blank file.
 
-!!! info "Output is always v2"
-    `sonda new --from <csv>` emits v2 YAML regardless of column count. Single-column CSVs
-    produce a one-entry `scenarios:` list; multi-column CSVs produce one entry per column.
-    Shared `rate`, `duration`, `encoder`, and `sink` live in `defaults:`.
+!!! info "One column, one entry"
+    `sonda new --from <csv>` emits a scenario YAML regardless of column count. Single-column CSVs produce a one-entry `scenarios:` list; multi-column CSVs produce one entry per column. Shared `rate`, `duration`, `encoder`, and `sink` live in `defaults:`.
 
 ### Preview to stdout
 

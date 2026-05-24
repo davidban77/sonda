@@ -1,6 +1,6 @@
 # Catalogs
 
-A **catalog** is a directory of v2 YAML files that Sonda discovers via `--catalog <dir>`. Each file declares a `kind:` — `runnable` for scenarios you can run, `composable` for [metric packs](metric-packs.md) other scenarios reference. Sonda doesn't ship a built-in catalog: yours lives in your own repo, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become first-class artifacts of the system they model instead of being pinned to a Sonda release.
+A **catalog** is a directory of scenario YAML files that Sonda discovers via `--catalog <dir>`. Each file declares a `kind:` — `runnable` for scenarios you can run, `composable` for [metric packs](metric-packs.md) other scenarios reference. Sonda doesn't ship a built-in catalog: yours lives in your own repo, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become first-class artifacts of the system they model instead of being pinned to a Sonda release.
 
 ## The minimum
 
@@ -132,7 +132,7 @@ sonda run my-cpu-spike.yaml
 
 ## Author your own entries
 
-A catalog entry is a v2 scenario YAML with a top-level `kind:` field. For runnable entries:
+A catalog entry is a scenario YAML with a top-level `kind:` field. For runnable entries:
 
 ```yaml title="~/sonda-catalog/my-scenario.yaml"
 version: 2
@@ -187,5 +187,4 @@ sonda --catalog ~/sonda-catalog list --tag application
   `sonda list`, `sonda show`, and `sonda new`.
 - [**Scenario Fields**](../configuration/scenario-fields.md) -- YAML reference for writing your
   own scenarios from scratch.
-- [**v2 Scenario Files**](../configuration/v2-scenarios.md) -- the canonical file format with
-  defaults, `after:`, and inline packs.
+- [**Scenario Files**](../configuration/scenario-files.md) -- the canonical file format with defaults, `after:`, and inline packs.

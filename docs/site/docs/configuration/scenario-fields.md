@@ -1,18 +1,13 @@
 # Scenario Fields
 
-This page is the per-entry field reference. It describes every field you can set on a
-`scenarios:` entry inside a [v2 scenario file](v2-scenarios.md) -- generators, schedules,
-labels, encoders, sinks, and multi-scenario timing controls.
+This page is the per-entry field reference. It describes every field you can set on a `scenarios:` entry inside a [scenario file](scenario-files.md) -- generators, schedules, labels, encoders, sinks, and multi-scenario timing controls.
 
-!!! info "Start with the v2 guide"
-    For the file shape (`version: 2`, `defaults:`, `scenarios:`), catalog metadata,
-    pack-backed entries, and `after:` temporal chains, see
-    [**v2 Scenario Files**](v2-scenarios.md). Every field below sits inside a v2
-    `scenarios:` entry -- Sonda only accepts `version: 2` YAML.
+!!! info "Start with the file guide"
+    For the file shape (`version: 2`, `defaults:`, `scenarios:`), catalog metadata, pack-backed entries, and `after:` temporal chains, see [**Scenario Files**](scenario-files.md). Every field below sits inside a `scenarios:` entry.
 
 ## Complete example
 
-A single v2 entry touching every available field:
+A single entry touching every available field:
 
 ```yaml title="full-example.yaml"
 version: 2
@@ -91,7 +86,7 @@ sonda run full-example.yaml
 | `labels` | map | no | none | Static key-value labels attached to every event. |
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
-| `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run: `warn` (log + drop batch + keep running) or `fail` (propagate and exit the runner). Overrides `defaults.on_sink_error`. See [Sink-error policy](v2-scenarios.md#sink-error-policy). |
+| `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run: `warn` (log + drop batch + keep running) or `fail` (propagate and exit the runner). Overrides `defaults.on_sink_error`. See [Sink-error policy](scenario-files.md#sink-error-policy). |
 
 ### Gap window
 
@@ -284,15 +279,14 @@ request_count{hostname="web-0",region="eu-west-1",...} 3
 
 ### Temporal fields
 
-These fields control when and how entries coordinate inside a multi-entry v2 file (including
-bodies POSTed to [`POST /scenarios`](../deployment/sonda-server.md#start-a-scenario)).
+These fields control when and how entries coordinate inside a multi-entry scenario file (including bodies POSTed to [`POST /scenarios`](../deployment/sonda-server.md#start-a-scenario)).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `id` | string | no | auto | Entry identifier. `after:` and explicit `clock_group:` references target other entries by `id`. Defaults to the entry's `name` when omitted. |
 | `phase_offset` | string | no | none | Explicit delay before starting this scenario. Supports `ms`, `s`, `m`, `h`. Mutually exclusive with `after:` (the compiler computes `phase_offset` from `after:`). |
 | `clock_group` | string | no | none | Entries with the same clock group share a start-time reference. Auto-assigned when you use `after:`. |
-| `after` | object | no | none | Start this entry when another entry's generator crosses a threshold. See [Temporal chains](v2-scenarios.md#temporal-chains-with-after). |
+| `after` | object | no | none | Start this entry when another entry's generator crosses a threshold. See [Temporal chains](scenario-files.md#temporal-chains-with-after). |
 
 See [Multi-signal files](#multi-signal-files) below for a working example.
 
@@ -398,8 +392,7 @@ JSON Lines output and become Loki stream labels when the sink is `loki`.
 
 ## Multi-signal files
 
-Each entry in a v2 `scenarios:` list declares its own `signal_type`. The compiler routes the
-entry to the matching generator family at compile time.
+Each entry in a `scenarios:` list declares its own `signal_type`. The compiler routes the entry to the matching generator family at compile time.
 
 | `signal_type` | Description | Body shape |
 |---------------|-------------|------------|
@@ -451,10 +444,7 @@ scenarios:
 sonda run multi-scenario.yaml
 ```
 
-The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU spikes first and memory
-follows. Both entries share the `alert-test` clock group for synchronized timing. For
-declarative chains, use [`after:`](v2-scenarios.md#temporal-chains-with-after) instead of
-hand-tuned offsets.
+The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU spikes first and memory follows. Both entries share the `alert-test` clock group for synchronized timing. For declarative chains, use [`after:`](scenario-files.md#temporal-chains-with-after) instead of hand-tuned offsets.
 
 ### Mixing all four signal types
 
@@ -580,9 +570,6 @@ see [CLI Reference: sonda run](cli-reference.md#sonda-run) for the full override
 
 ## What next
 
-- [**v2 Scenario Files**](v2-scenarios.md) -- file shape, `defaults:`, `after:` chains, catalog
-  metadata, and migration notes.
-- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- the unified entry point for
-  v2 scenario files.
-- [**Metric Packs**](../guides/metric-packs.md) -- reusable metric name + label schemas you can
-  reference via `pack:`.
+- [**Scenario Files**](scenario-files.md) -- file shape, `defaults:`, `after:` chains, and catalog metadata.
+- [**CLI Reference -- sonda run**](cli-reference.md#sonda-run) -- the unified entry point for scenario files.
+- [**Metric Packs**](../guides/metric-packs.md) -- reusable metric name + label schemas you can reference via `pack:`.

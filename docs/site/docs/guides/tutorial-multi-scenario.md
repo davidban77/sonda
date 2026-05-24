@@ -53,9 +53,7 @@ Each scenario runs on its own thread. Use different sinks per scenario to keep o
 separate -- here, metrics go to stdout while logs land in `/tmp/sonda-logs.json`.
 
 !!! tip "Shared defaults shrink the file"
-    Common fields belong under `defaults:` so each scenario only declares what differs.
-    See [v2 Scenario Files](../configuration/v2-scenarios.md) for the full inheritance
-    rules.
+    Common fields belong under `defaults:` so each scenario only declares what differs. See [Scenario Files](../configuration/scenario-files.md) for the full inheritance rules.
 
 ## Correlated metrics with phase_offset
 

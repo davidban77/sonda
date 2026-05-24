@@ -15,14 +15,19 @@ this field do" and "what are the valid values."
 
 !!! tip "Read this first"
     If you only open one page in this section, make it
-    [**v2 Scenario Files**](v2-scenarios.md). Every other reference here -- generators,
+    [**Scenario Files**](scenario-files.md). Every other reference here -- generators,
     encoders, sinks -- plugs into that shape.
 
 ## Scenario file shape
 
 <div class="grid cards" markdown>
 
--   :material-file-document-outline: __[v2 Scenario Files](v2-scenarios.md)__
+-   :material-lightbulb-outline: __[Concepts](concepts.md)__
+
+    The vocabulary: scenario, entry, pack, catalog, defaults inheritance, and
+    multi-scenario runs. Start here if you are new.
+
+-   :material-file-document-outline: __[Scenario Files](scenario-files.md)__
 
     The canonical file format: `version: 2`, `defaults:`, `scenarios:`, packs, and
     `after:` temporal chains.

@@ -143,7 +143,7 @@ silently fails.
 Two ways to make one scenario file work from both paths:
 
 - Use `${VAR:-default}` in the URL — the bundled examples already do this. See
-  [Environment variable interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation).
+  [Environment variable interpolation](../configuration/scenario-files.md#environment-variable-interpolation).
 - Rewrite the URL with `sed` before POSTing — see
   [Endpoints & networking](../deployment/endpoints.md#rewriting-urls-before-posting).
 
