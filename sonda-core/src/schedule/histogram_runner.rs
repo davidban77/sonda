@@ -148,80 +148,26 @@ pub fn run_with_sink_gated(
     // Pre-allocate encode buffer.
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
-    let mut tick_fn =
-        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-            let wall_now = ctx.wall_clock;
+    let mut tick_fn = |ctx: &TickContext<'_>,
+                       sink: &mut dyn Sink,
+                       events_buf: &mut Vec<MetricEvent>|
+     -> Result<TickResult, SondaError> {
+        let wall_now = ctx.wall_clock;
 
-            let sample = histogram_gen.observe(ctx.tick);
+        let sample = histogram_gen.observe(ctx.tick);
 
-            let needs_dynamic = !ctx.dynamic_labels.is_empty();
-            let has_active_spike = ctx
-                .spike_windows
-                .iter()
-                .any(|sw| is_in_spike(ctx.elapsed, sw));
-            let needs_clone = needs_dynamic || has_active_spike;
+        let needs_dynamic = !ctx.dynamic_labels.is_empty();
+        let has_active_spike = ctx
+            .spike_windows
+            .iter()
+            .any(|sw| is_in_spike(ctx.elapsed, sw));
+        let needs_clone = needs_dynamic || has_active_spike;
 
-            let mut total_bytes: u64 = 0;
-            let mut events: Vec<MetricEvent> = Vec::with_capacity(sample.bucket_counts.len() + 3);
+        let mut total_bytes: u64 = 0;
 
-            for (i, &bucket_count) in sample.bucket_counts.iter().enumerate() {
-                let bucket_labels = if needs_clone {
-                    let mut bl = (*prebuilt_bucket_labels[i]).clone();
-                    for dl in ctx.dynamic_labels {
-                        bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                    }
-                    for sw in ctx.spike_windows {
-                        if is_in_spike(ctx.elapsed, sw) {
-                            bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                        }
-                    }
-                    Arc::new(bl)
-                } else {
-                    Arc::clone(&prebuilt_bucket_labels[i])
-                };
-                let event = MetricEvent::from_parts(
-                    bucket_name.clone(),
-                    bucket_count as f64,
-                    bucket_labels,
-                    wall_now,
-                );
-                buf.clear();
-                encoder.encode_metric(&event, &mut buf)?;
-                total_bytes += buf.len() as u64;
-                sink.write(&buf)?;
-                events.push(event);
-            }
-
-            {
-                let inf_labels = if needs_clone {
-                    let mut bl = (*prebuilt_inf_labels).clone();
-                    for dl in ctx.dynamic_labels {
-                        bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                    }
-                    for sw in ctx.spike_windows {
-                        if is_in_spike(ctx.elapsed, sw) {
-                            bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                        }
-                    }
-                    Arc::new(bl)
-                } else {
-                    Arc::clone(&prebuilt_inf_labels)
-                };
-                let event = MetricEvent::from_parts(
-                    bucket_name.clone(),
-                    sample.count as f64,
-                    inf_labels,
-                    wall_now,
-                );
-                buf.clear();
-                encoder.encode_metric(&event, &mut buf)?;
-                total_bytes += buf.len() as u64;
-                sink.write(&buf)?;
-                events.push(event);
-            }
-
-            let count_sum_labels = if needs_clone {
-                let mut bl = (*prebuilt_count_sum_labels).clone();
+        for (i, &bucket_count) in sample.bucket_counts.iter().enumerate() {
+            let bucket_labels = if needs_clone {
+                let mut bl = (*prebuilt_bucket_labels[i]).clone();
                 for dl in ctx.dynamic_labels {
                     bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
                 }
@@ -232,41 +178,95 @@ pub fn run_with_sink_gated(
                 }
                 Arc::new(bl)
             } else {
-                Arc::clone(&prebuilt_count_sum_labels)
+                Arc::clone(&prebuilt_bucket_labels[i])
             };
-
-            let sum_event = MetricEvent::from_parts(
-                sum_name.clone(),
-                sample.sum,
-                Arc::clone(&count_sum_labels),
+            let event = MetricEvent::from_parts(
+                bucket_name.clone(),
+                bucket_count as f64,
+                bucket_labels,
                 wall_now,
             );
             buf.clear();
-            encoder.encode_metric(&sum_event, &mut buf)?;
+            encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
             sink.write(&buf)?;
-            events.push(sum_event);
+            events_buf.push(event);
+        }
 
-            let count_event = MetricEvent::from_parts(
-                count_name.clone(),
+        {
+            let inf_labels = if needs_clone {
+                let mut bl = (*prebuilt_inf_labels).clone();
+                for dl in ctx.dynamic_labels {
+                    bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                }
+                for sw in ctx.spike_windows {
+                    if is_in_spike(ctx.elapsed, sw) {
+                        bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                    }
+                }
+                Arc::new(bl)
+            } else {
+                Arc::clone(&prebuilt_inf_labels)
+            };
+            let event = MetricEvent::from_parts(
+                bucket_name.clone(),
                 sample.count as f64,
-                count_sum_labels,
+                inf_labels,
                 wall_now,
             );
             buf.clear();
-            encoder.encode_metric(&count_event, &mut buf)?;
+            encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
             sink.write(&buf)?;
-            events.push(count_event);
+            events_buf.push(event);
+        }
 
-            let delivered = sink.last_write_delivered();
-
-            Ok(TickResult {
-                bytes_written: total_bytes,
-                metric_events: events,
-                delivered,
-            })
+        let count_sum_labels = if needs_clone {
+            let mut bl = (*prebuilt_count_sum_labels).clone();
+            for dl in ctx.dynamic_labels {
+                bl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+            }
+            for sw in ctx.spike_windows {
+                if is_in_spike(ctx.elapsed, sw) {
+                    bl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                }
+            }
+            Arc::new(bl)
+        } else {
+            Arc::clone(&prebuilt_count_sum_labels)
         };
+
+        let sum_event = MetricEvent::from_parts(
+            sum_name.clone(),
+            sample.sum,
+            Arc::clone(&count_sum_labels),
+            wall_now,
+        );
+        buf.clear();
+        encoder.encode_metric(&sum_event, &mut buf)?;
+        total_bytes += buf.len() as u64;
+        sink.write(&buf)?;
+        events_buf.push(sum_event);
+
+        let count_event = MetricEvent::from_parts(
+            count_name.clone(),
+            sample.count as f64,
+            count_sum_labels,
+            wall_now,
+        );
+        buf.clear();
+        encoder.encode_metric(&count_event, &mut buf)?;
+        total_bytes += buf.len() as u64;
+        sink.write(&buf)?;
+        events_buf.push(count_event);
+
+        let delivered = sink.last_write_delivered();
+
+        Ok(TickResult {
+            bytes_written: total_bytes,
+            delivered,
+        })
+    };
 
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {

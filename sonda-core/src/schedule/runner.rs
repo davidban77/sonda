@@ -116,52 +116,55 @@ pub fn run_with_sink_gated(
     let mut buf: Vec<u8> = Vec::with_capacity(256);
 
     let upstream_bus_for_tick = upstream_bus.clone();
-    let mut tick_fn =
-        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-            let wall_now = ctx.wall_clock;
+    let mut tick_fn = |ctx: &TickContext<'_>,
+                       sink: &mut dyn Sink,
+                       events_buf: &mut Vec<MetricEvent>|
+     -> Result<TickResult, SondaError> {
+        let wall_now = ctx.wall_clock;
 
-            let value = generator.value(ctx.tick);
-            if let Some(ref bus) = upstream_bus_for_tick {
-                bus.tick(value);
+        let value = generator.value(ctx.tick);
+        if let Some(ref bus) = upstream_bus_for_tick {
+            bus.tick(value);
+        }
+
+        let needs_dynamic = !ctx.dynamic_labels.is_empty();
+        let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
+            Arc::clone(&labels)
+        } else {
+            let mut mutated: Option<Labels> = None;
+            if needs_dynamic {
+                let tl = mutated.get_or_insert_with(|| (*labels).clone());
+                for dl in ctx.dynamic_labels {
+                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
+                }
             }
-
-            let needs_dynamic = !ctx.dynamic_labels.is_empty();
-            let tick_labels: Arc<Labels> = if ctx.spike_windows.is_empty() && !needs_dynamic {
-                Arc::clone(&labels)
-            } else {
-                let mut mutated: Option<Labels> = None;
-                if needs_dynamic {
+            for sw in ctx.spike_windows {
+                if is_in_spike(ctx.elapsed, sw) {
                     let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                    for dl in ctx.dynamic_labels {
-                        tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                    }
+                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
                 }
-                for sw in ctx.spike_windows {
-                    if is_in_spike(ctx.elapsed, sw) {
-                        let tl = mutated.get_or_insert_with(|| (*labels).clone());
-                        tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                    }
-                }
-                match mutated {
-                    Some(tl) => Arc::new(tl),
-                    None => Arc::clone(&labels),
-                }
-            };
-
-            let event = MetricEvent::from_parts(name.clone(), value, tick_labels, wall_now);
-
-            buf.clear();
-            encoder.encode_metric(&event, &mut buf)?;
-            let bytes_written = buf.len() as u64;
-            sink.write(&buf)?;
-            let delivered = sink.last_write_delivered();
-
-            Ok(TickResult {
-                bytes_written,
-                metric_events: vec![event],
-                delivered,
-            })
+            }
+            match mutated {
+                Some(tl) => Arc::new(tl),
+                None => Arc::clone(&labels),
+            }
         };
+
+        let event = MetricEvent::from_parts(name.clone(), value, tick_labels, wall_now);
+
+        buf.clear();
+        encoder.encode_metric(&event, &mut buf)?;
+        let bytes_written = buf.len() as u64;
+        sink.write(&buf)?;
+        let delivered = sink.last_write_delivered();
+
+        events_buf.push(event);
+
+        Ok(TickResult {
+            bytes_written,
+            delivered,
+        })
+    };
 
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {
