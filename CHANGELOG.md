@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.0](https://github.com/davidban77/sonda/compare/v1.11.0...v1.12.0) (2026-05-24)
+
+
+### Features
+
+* **server:** aggregate /metrics endpoint with label filter ([#401](https://github.com/davidban77/sonda/issues/401)) ([7e7ef77](https://github.com/davidban77/sonda/commit/7e7ef77b189fe51167491374ee58c917544a7cc9))
+
+
+### Documentation
+
+* correct the metric-pack file shape to flat top-level fields ([#398](https://github.com/davidban77/sonda/issues/398)) ([fc315e6](https://github.com/davidban77/sonda/commit/fc315e64651c20600ee5b5c7b40c5a32231f20f9))
+* introduce concepts page and drop v2 framing from scenario docs ([#400](https://github.com/davidban77/sonda/issues/400)) ([ea67f3a](https://github.com/davidban77/sonda/commit/ea67f3a01c6daf2e9f7ded4da2856efdaf059555))
+
 ## [1.11.0](https://github.com/davidban77/sonda/compare/v1.10.2...v1.11.0) (2026-05-22)
 
 
