@@ -2013,6 +2013,8 @@ generator:
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -2847,6 +2849,8 @@ generator:
             mean_shift_per_sec: None,
             seed: Some(42),
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -2915,6 +2919,8 @@ generator:
             mean_shift_per_sec: None,
             seed: Some(42),
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 

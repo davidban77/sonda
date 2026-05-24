@@ -60,6 +60,8 @@ fn build_scenario(file: String, timescale: Option<f64>) -> ScenarioConfig {
             default_metric_name: None,
         },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     }
 }
 

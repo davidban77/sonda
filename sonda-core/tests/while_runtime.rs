@@ -45,6 +45,8 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     })
 }
 
@@ -316,6 +318,8 @@ fn metrics_entry_with_generator(
         },
         generator,
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     })
 }
 

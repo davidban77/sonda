@@ -53,6 +53,8 @@ fn metric_config(
         base: base(name, rate, duration, start_time),
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     }
 }
 
@@ -275,6 +277,8 @@ fn histogram_signal_honours_absolute_past_shift() {
         mean_shift_per_sec: None,
         seed: Some(42),
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     };
 
     let mut sink = MemorySink::new();
@@ -295,6 +299,8 @@ fn summary_signal_honours_absolute_past_shift() {
         mean_shift_per_sec: None,
         seed: Some(42),
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     };
 
     let mut sink = MemorySink::new();

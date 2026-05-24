@@ -6,6 +6,7 @@
 use std::io::Write as _;
 use std::time::UNIX_EPOCH;
 
+use crate::config::PromMetricType;
 use crate::model::metric::MetricEvent;
 use crate::{EncoderError, SondaError};
 
@@ -64,6 +65,16 @@ fn escape_label_value(value: &str, buf: &mut Vec<u8>) {
     }
 }
 
+fn escape_help_text(value: &str, buf: &mut Vec<u8>) {
+    for byte in value.bytes() {
+        match byte {
+            b'\\' => buf.extend_from_slice(b"\\\\"),
+            b'\n' => buf.extend_from_slice(b"\\n"),
+            other => buf.push(other),
+        }
+    }
+}
+
 impl Encoder for PrometheusText {
     /// Encode a metric event into Prometheus text exposition format.
     ///
@@ -109,6 +120,28 @@ impl Encoder for PrometheusText {
 
         buf.push(b'\n');
 
+        Ok(())
+    }
+
+    fn encode_metadata(
+        &self,
+        name: &str,
+        metric_type: PromMetricType,
+        help: Option<&str>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), SondaError> {
+        if let Some(h) = help {
+            buf.extend_from_slice(b"# HELP ");
+            buf.extend_from_slice(name.as_bytes());
+            buf.push(b' ');
+            escape_help_text(h, buf);
+            buf.push(b'\n');
+        }
+        buf.extend_from_slice(b"# TYPE ");
+        buf.extend_from_slice(name.as_bytes());
+        buf.push(b' ');
+        buf.extend_from_slice(metric_type.as_str().as_bytes());
+        buf.push(b'\n');
         Ok(())
     }
 }
@@ -480,5 +513,68 @@ mod tests {
         enc.encode_metric(&event, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
         assert_eq!(output, "up 1.00 0\n");
+    }
+
+    // ---- encode_metadata: TYPE and HELP line emission ----------------------
+
+    #[test]
+    fn encode_metadata_emits_type_line_only_when_help_is_none() {
+        let enc = PrometheusText::new(None);
+        let mut buf = Vec::new();
+        enc.encode_metadata("foo", PromMetricType::Gauge, None, &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "# TYPE foo gauge\n");
+    }
+
+    #[test]
+    fn encode_metadata_emits_help_before_type() {
+        let enc = PrometheusText::new(None);
+        let mut buf = Vec::new();
+        enc.encode_metadata("foo", PromMetricType::Gauge, Some("desc"), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "# HELP foo desc\n# TYPE foo gauge\n");
+    }
+
+    #[test]
+    fn encode_metadata_help_text_escapes_backslash_and_newline() {
+        let enc = PrometheusText::new(None);
+        let mut buf = Vec::new();
+        enc.encode_metadata(
+            "foo",
+            PromMetricType::Gauge,
+            Some("line1\nline2 \\"),
+            &mut buf,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "# HELP foo line1\\nline2 \\\\\n# TYPE foo gauge\n");
+    }
+
+    #[test]
+    fn encode_metadata_all_metric_types_render_canonical_string() {
+        let enc = PrometheusText::new(None);
+        for (mt, expected) in [
+            (PromMetricType::Gauge, "gauge"),
+            (PromMetricType::Counter, "counter"),
+            (PromMetricType::Histogram, "histogram"),
+            (PromMetricType::Summary, "summary"),
+            (PromMetricType::Untyped, "untyped"),
+        ] {
+            let mut buf = Vec::new();
+            enc.encode_metadata("m", mt, None, &mut buf).unwrap();
+            let out = String::from_utf8(buf).unwrap();
+            assert_eq!(out, format!("# TYPE m {expected}\n"));
+        }
+    }
+
+    #[test]
+    fn prom_metric_type_as_str_returns_lowercase() {
+        assert_eq!(PromMetricType::Gauge.as_str(), "gauge");
+        assert_eq!(PromMetricType::Counter.as_str(), "counter");
+        assert_eq!(PromMetricType::Histogram.as_str(), "histogram");
+        assert_eq!(PromMetricType::Summary.as_str(), "summary");
+        assert_eq!(PromMetricType::Untyped.as_str(), "untyped");
     }
 }

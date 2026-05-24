@@ -483,6 +483,11 @@ pub struct ExpandedEntry {
     pub seed: Option<u64>,
     /// Resolved sink-error policy.
     pub on_sink_error: OnSinkError,
+
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub metric_type: Option<crate::config::PromMetricType>,
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub help: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +616,8 @@ fn expand_inline_entry(entry: NormalizedEntry) -> ExpandedEntry {
         mean_shift_per_sec: entry.mean_shift_per_sec,
         on_sink_error: entry.on_sink_error,
         seed: entry.seed,
+        metric_type: entry.metric_type,
+        help: entry.help,
     }
 }
 
@@ -755,6 +762,8 @@ fn expand_pack_entry<R: PackResolver>(
             mean_shift_per_sec: None,
             seed: None,
             on_sink_error: entry.on_sink_error,
+            metric_type: entry.metric_type,
+            help: entry.help.clone(),
         });
     }
 

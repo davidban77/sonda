@@ -313,7 +313,15 @@ request_count{instance="web-01",job="app"} 4 1775192672943
 !!! tip "Simulating counter resets"
     Set `max` to a low value to see wrap-around behavior. For example, `start: 0`, `step_size: 1`,
     `max: 5` produces `0, 1, 2, 3, 4, 0, 1, 2, ...` -- useful for verifying that your `rate()`
-    queries handle counter resets correctly.
+    queries handle counter resets correctly. Prometheus treats the drop from `max-1` back to
+    `start` as a counter reset, so `rate()` and `increase()` stitch across the wrap transparently
+    — no data is lost or double-counted.
+
+!!! info "`step` defaults to `metric_type: counter`"
+    When scraped through [`sonda-server`](../deployment/sonda-server.md#aggregate-prometheus-scrape),
+    a `step` scenario surfaces as a `# TYPE <name> counter` metric by default. Every other metric
+    generator defaults to `gauge`. Override either default by setting [`metric_type:`](scenario-fields.md#prometheus-exposition-fields)
+    on the scenario.
 
 ### spike
 

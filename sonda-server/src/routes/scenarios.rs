@@ -826,7 +826,19 @@ pub async fn get_scenario_metrics(
 
     // Encode each event into Prometheus text format.
     let encoder = PrometheusText::new(None);
-    let mut buf = Vec::with_capacity(events_to_encode.len() * 128);
+    let mut buf = Vec::with_capacity(events_to_encode.len() * 128 + 256);
+    if !events_to_encode.is_empty() {
+        if let Some(meta) = handle.prometheus_meta.as_ref() {
+            if let Err(e) = encoder.encode_metadata(
+                &handle.name,
+                meta.metric_type,
+                meta.help.as_deref(),
+                &mut buf,
+            ) {
+                warn!(id = %id, error = %e, "GET /scenarios/{id}/metrics: failed to encode metadata");
+            }
+        }
+    }
     for event in events_to_encode {
         if let Err(e) = encoder.encode_metric(event, &mut buf) {
             warn!(id = %id, error = %e, "GET /scenarios/{id}/metrics: failed to encode metric event");
@@ -917,6 +929,7 @@ pub async fn get_aggregate_metrics(
 
     let encoder = PrometheusText::new(None);
     let mut buf = Vec::new();
+    let mut groups: Vec<AggregateGroup> = Vec::new();
     for id in ids {
         let handle = match scenarios.get(id) {
             Some(h) => h,
@@ -931,9 +944,60 @@ pub async fn get_aggregate_metrics(
         }) {
             continue;
         }
-        for event in handle.recent_metrics_snapshot() {
-            if let Err(e) = encoder.encode_metric(&event, &mut buf) {
-                warn!(id = %id, error = %e, "GET /metrics: failed to encode metric event");
+        let events = handle.recent_metrics_snapshot();
+        if events.is_empty() && handle.prometheus_meta.is_none() {
+            continue;
+        }
+        let name = handle.name.clone();
+        let meta = handle.prometheus_meta.as_ref().map(|m| m.as_ref().clone());
+        match groups.iter_mut().find(|g| g.name == name) {
+            Some(group) => {
+                if let Some(incoming) = meta {
+                    match group.meta.as_mut() {
+                        Some(existing) => {
+                            if existing.metric_type != incoming.metric_type
+                                && existing.metric_type != sonda_core::PromMetricType::Untyped
+                            {
+                                let declared = [existing.metric_type, incoming.metric_type];
+                                warn!(
+                                    metric_name = %name,
+                                    declared_types = ?declared,
+                                    "GET /metrics: mixed metric_type declarations for same name; \
+                                     emitting as untyped",
+                                );
+                                existing.metric_type = sonda_core::PromMetricType::Untyped;
+                            }
+                            if existing.help.is_none() && incoming.help.is_some() {
+                                existing.help = incoming.help;
+                            }
+                        }
+                        None => {
+                            group.meta = Some(incoming);
+                        }
+                    }
+                }
+                group.events.extend(events);
+            }
+            None => {
+                groups.push(AggregateGroup { name, meta, events });
+            }
+        }
+    }
+
+    for group in &groups {
+        if let Some(meta) = group.meta.as_ref() {
+            if let Err(e) = encoder.encode_metadata(
+                &group.name,
+                meta.metric_type,
+                meta.help.as_deref(),
+                &mut buf,
+            ) {
+                warn!(name = %group.name, error = %e, "GET /metrics: failed to encode metadata");
+            }
+        }
+        for event in &group.events {
+            if let Err(e) = encoder.encode_metric(event, &mut buf) {
+                warn!(name = %group.name, error = %e, "GET /metrics: failed to encode metric event");
             }
         }
     }
@@ -944,6 +1008,12 @@ pub async fn get_aggregate_metrics(
         buf,
     )
         .into_response())
+}
+
+struct AggregateGroup {
+    name: String,
+    meta: Option<sonda_core::PromMeta>,
+    events: Vec<sonda_core::model::metric::MetricEvent>,
 }
 
 #[cfg(test)]
@@ -1001,6 +1071,10 @@ mod tests {
             100.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -1033,6 +1107,10 @@ mod tests {
             100.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -2860,6 +2938,10 @@ scenarios:
             target_rate,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -3312,6 +3394,10 @@ scenarios:
             10.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -3398,18 +3484,19 @@ scenarios:
 
         let body = body_string(resp).await;
 
-        // Each event should produce a line starting with "up".
-        let lines: Vec<&str> = body.lines().collect();
+        // Each event should produce a line starting with "up". TYPE/HELP lines (starting with '#')
+        // appear once per metric name and are filtered out here.
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert!(
-            lines.len() >= 2,
-            "must have at least 2 lines of Prometheus text, got {}",
-            lines.len()
+            sample_lines.len() >= 2,
+            "must have at least 2 sample lines of Prometheus text, got {}",
+            sample_lines.len()
         );
 
-        for line in &lines {
+        for line in &sample_lines {
             assert!(
                 line.starts_with("up"),
-                "each Prometheus line must start with the metric name 'up', got: {line}"
+                "each sample line must start with the metric name 'up', got: {line}"
             );
         }
     }
@@ -3451,12 +3538,12 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
-            lines.len(),
+            sample_lines.len(),
             2,
-            "limit=2 must produce exactly 2 lines of output, got {}",
-            lines.len()
+            "limit=2 must produce exactly 2 sample lines of output, got {}",
+            sample_lines.len()
         );
     }
 
@@ -3562,9 +3649,9 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
-            lines.len(),
+            sample_lines.len(),
             5,
             "all 5 buffered events must be returned when no limit is specified"
         );
@@ -3583,9 +3670,9 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
-            lines.len(),
+            sample_lines.len(),
             2,
             "when limit > buffer size, all buffered events must be returned"
         );
@@ -3654,6 +3741,10 @@ scenarios:
             10.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(label_map),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -3701,12 +3792,12 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines.len(), 2, "must encode 2 events, got: {body:?}");
-        for line in &lines {
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
+        assert_eq!(sample_lines.len(), 2, "must encode 2 events, got: {body:?}");
+        for line in &sample_lines {
             assert!(
                 line.starts_with("up"),
-                "each line must start with metric name 'up', got: {line}"
+                "each sample line must start with metric name 'up', got: {line}"
             );
         }
     }
@@ -3790,16 +3881,16 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
-            lines.len(),
+            sample_lines.len(),
             1,
             "filter must include only one event, got: {body:?}"
         );
         assert!(
-            lines[0].contains(" 1"),
+            sample_lines[0].contains(" 1"),
             "matching event must have value 1, got: {}",
-            lines[0]
+            sample_lines[0]
         );
     }
 
@@ -3855,16 +3946,16 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-        let lines: Vec<&str> = body.lines().collect();
+        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
-            lines.len(),
+            sample_lines.len(),
             1,
             "multi-label AND must match exactly one handle, got: {body:?}"
         );
         assert!(
-            lines[0].contains(" 10"),
+            sample_lines[0].contains(" 10"),
             "matching event must have value 10, got: {}",
-            lines[0]
+            sample_lines[0]
         );
     }
 
@@ -4069,6 +4160,10 @@ scenarios:
             50.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -4098,6 +4193,10 @@ scenarios:
             10.0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
+            Some(std::sync::Arc::new(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -4971,4 +5070,413 @@ scenarios:
 
     // Sink loopback pre-flight tests (helpers + cases) live in the
     // sibling `sink_warnings` module.
+
+    // =====================================================================
+    // TYPE / HELP exposition tests (per-scenario and aggregate handlers)
+    // =====================================================================
+
+    fn handle_with_meta(
+        id: &str,
+        name: &str,
+        meta: Option<sonda_core::PromMeta>,
+        events: Vec<sonda_core::model::metric::MetricEvent>,
+    ) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let mut stats = ScenarioStats::default();
+        for event in events {
+            stats.push_metric(event);
+        }
+        let stats = Arc::new(RwLock::new(stats));
+        let shutdown_clone = Arc::clone(&shutdown);
+        let thread = thread::Builder::new()
+            .name(format!("test-meta-{name}"))
+            .spawn(move || -> Result<(), sonda_core::SondaError> {
+                while shutdown_clone.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(())
+            })
+            .expect("thread must spawn");
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
+            shutdown,
+            Some(thread),
+            Instant::now(),
+            stats,
+            10.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+            meta.map(std::sync::Arc::new),
+        )
+    }
+
+    fn metric_event(name: &str, value: f64) -> sonda_core::model::metric::MetricEvent {
+        sonda_core::model::metric::MetricEvent::new(
+            name.to_string(),
+            value,
+            sonda_core::model::metric::Labels::default(),
+        )
+        .expect("metric name must be valid")
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_emits_type_line() {
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
+        let h = handle_with_meta(
+            "id-type",
+            "memory_utilization",
+            Some(meta),
+            vec![metric_event("memory_utilization", 41.5)],
+        );
+        let app = router_with_handles(vec![h]);
+        let resp = get_metrics_req(app, "id-type").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.starts_with("# TYPE memory_utilization gauge\n"),
+            "body must begin with TYPE line, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_emits_help_line_when_set() {
+        let meta = sonda_core::PromMeta::new(
+            sonda_core::PromMetricType::Gauge,
+            Some("memory util".to_string()),
+        );
+        let h = handle_with_meta(
+            "id-help",
+            "memory_utilization",
+            Some(meta),
+            vec![metric_event("memory_utilization", 41.5)],
+        );
+        let app = router_with_handles(vec![h]);
+        let resp = get_metrics_req(app, "id-help").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.starts_with(
+                "# HELP memory_utilization memory util\n# TYPE memory_utilization gauge\n"
+            ),
+            "body must begin with HELP and TYPE lines in order, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_omits_help_when_unset() {
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
+        let h = handle_with_meta(
+            "id-no-help",
+            "memory_utilization",
+            Some(meta),
+            vec![metric_event("memory_utilization", 1.0)],
+        );
+        let app = router_with_handles(vec![h]);
+        let resp = get_metrics_req(app, "id-no-help").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains("# HELP"),
+            "body must not contain a HELP line, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_log_scenario_returns_empty() {
+        let h = handle_with_meta("id-log", "log_scenario", None, vec![]);
+        let app = router_with_handles(vec![h]);
+        let resp = get_metrics_req(app, "id-log").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.is_empty(),
+            "log scenario (no prometheus_meta) must return empty body, got:\n{body}"
+        );
+    }
+
+    fn handle_with_meta_and_labels(
+        id: &str,
+        name: &str,
+        meta: Option<sonda_core::PromMeta>,
+        labels: Vec<(&str, &str)>,
+        events: Vec<sonda_core::model::metric::MetricEvent>,
+    ) -> ScenarioHandle {
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let mut stats = ScenarioStats::default();
+        for event in events {
+            stats.push_metric(event);
+        }
+        let stats = Arc::new(RwLock::new(stats));
+        let shutdown_clone = Arc::clone(&shutdown);
+        let thread = thread::Builder::new()
+            .name(format!("test-agg-meta-{name}"))
+            .spawn(move || -> Result<(), sonda_core::SondaError> {
+                while shutdown_clone.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(())
+            })
+            .expect("thread must spawn");
+        let mut label_map = std::collections::HashMap::new();
+        for (k, v) in labels {
+            label_map.insert(k.to_string(), v.to_string());
+        }
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
+            shutdown,
+            Some(thread),
+            Instant::now(),
+            stats,
+            10.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(label_map),
+            meta.map(std::sync::Arc::new),
+        )
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_emits_one_type_block_per_name() {
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
+        let h1 = handle_with_meta_and_labels(
+            "a-1",
+            "shared_metric",
+            Some(meta.clone()),
+            vec![("device", "srl1")],
+            vec![metric_event("shared_metric", 1.0)],
+        );
+        let h2 = handle_with_meta_and_labels(
+            "a-2",
+            "shared_metric",
+            Some(meta),
+            vec![("device", "srl2")],
+            vec![metric_event("shared_metric", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let type_lines: Vec<&str> = body
+            .lines()
+            .filter(|l| l.starts_with("# TYPE shared_metric"))
+            .collect();
+        assert_eq!(
+            type_lines.len(),
+            1,
+            "aggregate body must have exactly one TYPE line for shared_metric, got:\n{body}"
+        );
+        let sample_lines: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            sample_lines.len(),
+            2,
+            "aggregate body must contain both samples, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_groups_samples_by_name() {
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
+        let h1 = handle_with_meta_and_labels(
+            "g-1",
+            "m1",
+            Some(meta.clone()),
+            vec![],
+            vec![metric_event("m1", 1.0)],
+        );
+        let h2 = handle_with_meta_and_labels(
+            "g-2",
+            "m1",
+            Some(meta.clone()),
+            vec![],
+            vec![metric_event("m1", 2.0)],
+        );
+        let h3 = handle_with_meta_and_labels(
+            "g-3",
+            "m2",
+            Some(meta),
+            vec![],
+            vec![metric_event("m2", 3.0)],
+        );
+        let app = router_with_handles(vec![h1, h2, h3]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let m1_type_pos = body
+            .find("# TYPE m1 gauge")
+            .expect("TYPE m1 line must be present");
+        let m2_type_pos = body
+            .find("# TYPE m2 gauge")
+            .expect("TYPE m2 line must be present");
+        assert!(
+            m1_type_pos < m2_type_pos,
+            "m1 group must precede m2 group, got:\n{body}"
+        );
+        let between = &body[m1_type_pos..m2_type_pos];
+        assert!(
+            between.contains("m1 1") && between.contains("m1 2"),
+            "samples for m1 must appear between m1 and m2 TYPE lines, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_mixed_type_collision_emits_untyped_and_warns() {
+        let h1 = handle_with_meta_and_labels(
+            "mix-1",
+            "collision",
+            Some(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Gauge,
+                None,
+            )),
+            vec![],
+            vec![metric_event("collision", 1.0)],
+        );
+        let h2 = handle_with_meta_and_labels(
+            "mix-2",
+            "collision",
+            Some(sonda_core::PromMeta::new(
+                sonda_core::PromMetricType::Counter,
+                None,
+            )),
+            vec![],
+            vec![metric_event("collision", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("# TYPE collision untyped"),
+            "mixed-type collision must emit untyped, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_label_filter_still_works_with_type_lines() {
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
+        let h1 = handle_with_meta_and_labels(
+            "lf-1",
+            "srl_metric",
+            Some(meta.clone()),
+            vec![("device", "srl1")],
+            vec![metric_event("srl_metric", 1.0)],
+        );
+        let h2 = handle_with_meta_and_labels(
+            "lf-2",
+            "srl_metric",
+            Some(meta),
+            vec![("device", "srl2")],
+            vec![metric_event("srl_metric", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+        let resp = get_aggregate_req(app, "label=device:srl1").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("# TYPE srl_metric gauge"),
+            "filter result must still emit TYPE line, got:\n{body}"
+        );
+        let sample_lines: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            sample_lines.len(),
+            1,
+            "filter must include only one sample, got:\n{body}"
+        );
+        assert!(
+            sample_lines[0].contains(" 1"),
+            "matching sample must have value 1, got: {}",
+            sample_lines[0]
+        );
+    }
+
+    fn labeled_metric_event(
+        name: &str,
+        value: f64,
+        pairs: &[(&str, &str)],
+    ) -> sonda_core::model::metric::MetricEvent {
+        let labels =
+            sonda_core::model::metric::Labels::from_pairs(pairs).expect("labels must build");
+        sonda_core::model::metric::MetricEvent::new(name.to_string(), value, labels)
+            .expect("metric name must be valid")
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_histogram_scenario_exposes_buckets_sum_and_count() {
+        let events = vec![
+            labeled_metric_event("req_latency_bucket", 12.0, &[("le", "0.1")]),
+            labeled_metric_event("req_latency_bucket", 24.0, &[("le", "1")]),
+            labeled_metric_event("req_latency_bucket", 50.0, &[("le", "+Inf")]),
+            labeled_metric_event("req_latency_sum", 7.5, &[]),
+            labeled_metric_event("req_latency_count", 50.0, &[]),
+        ];
+
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Histogram, None);
+        let h = handle_with_meta("hist", "req_latency", Some(meta), events);
+        let app = router_with_handles(vec![h]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("# TYPE req_latency histogram"),
+            "expected single histogram TYPE on base name, got:\n{body}"
+        );
+        assert_eq!(
+            body.matches("# TYPE req_latency ").count(),
+            1,
+            "expected exactly one TYPE line for the base name, got:\n{body}"
+        );
+        assert!(
+            body.contains("req_latency_bucket{le=\"0.1\"}") && body.contains("le=\"+Inf\""),
+            "expected bucket samples including +Inf, got:\n{body}"
+        );
+        assert!(
+            body.contains("req_latency_sum"),
+            "expected _sum series, got:\n{body}"
+        );
+        assert!(
+            body.contains("req_latency_count"),
+            "expected _count series, got:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_summary_scenario_exposes_quantiles_sum_and_count() {
+        let events = vec![
+            labeled_metric_event("rpc_duration", 0.05, &[("quantile", "0.5")]),
+            labeled_metric_event("rpc_duration", 0.09, &[("quantile", "0.9")]),
+            labeled_metric_event("rpc_duration", 0.18, &[("quantile", "0.99")]),
+            labeled_metric_event("rpc_duration_sum", 6.0, &[]),
+            labeled_metric_event("rpc_duration_count", 50.0, &[]),
+        ];
+
+        let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Summary, None);
+        let h = handle_with_meta("summ", "rpc_duration", Some(meta), events);
+        let app = router_with_handles(vec![h]);
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("# TYPE rpc_duration summary"),
+            "expected single summary TYPE on base name, got:\n{body}"
+        );
+        assert_eq!(
+            body.matches("# TYPE rpc_duration ").count(),
+            1,
+            "expected exactly one TYPE line for the base name, got:\n{body}"
+        );
+        assert!(
+            body.contains("quantile=\"0.5\"") && body.contains("quantile=\"0.99\""),
+            "expected quantile samples, got:\n{body}"
+        );
+        assert!(
+            body.contains("rpc_duration_sum"),
+            "expected _sum series, got:\n{body}"
+        );
+        assert!(
+            body.contains("rpc_duration_count"),
+            "expected _count series, got:\n{body}"
+        );
+    }
 }

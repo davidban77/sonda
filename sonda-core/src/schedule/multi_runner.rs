@@ -316,6 +316,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -448,6 +450,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
             ScenarioEntry::Logs(LogScenarioConfig {
                 base: BaseScheduleConfig {
@@ -542,6 +546,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })];
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(entries, shutdown);
@@ -583,6 +589,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
@@ -607,6 +615,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
         ];
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -647,6 +657,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })];
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(entries, shutdown);
@@ -689,6 +701,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })];
         let shutdown = Arc::new(AtomicBool::new(true));
         let start = Instant::now();
@@ -728,6 +742,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })];
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(entries, shutdown);
@@ -777,6 +793,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
@@ -799,6 +817,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 2.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
         ];
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -842,6 +862,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
             // Second scenario has a long delay — we'll shut down before it starts.
             ScenarioEntry::Metrics(ScenarioConfig {
@@ -865,6 +887,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 2.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
         ];
 
@@ -917,6 +941,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })];
         let shutdown = Arc::new(AtomicBool::new(true));
         let result = run_multi(entries, shutdown);
@@ -956,6 +982,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 1.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
@@ -978,6 +1006,8 @@ mod tests {
                 },
                 generator: GeneratorConfig::Constant { value: 2.0 },
                 encoder: EncoderConfig::PrometheusText { precision: None },
+                metric_type: None,
+                help: None,
             }),
         ];
         let shutdown = Arc::new(AtomicBool::new(true));

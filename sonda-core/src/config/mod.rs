@@ -184,6 +184,46 @@ pub struct BurstConfig {
     pub multiplier: f64,
 }
 
+/// Prometheus exposition metric kind for `# TYPE` annotations.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "config", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+pub enum PromMetricType {
+    Gauge,
+    Counter,
+    Histogram,
+    Summary,
+    Untyped,
+}
+
+impl PromMetricType {
+    /// Canonical lowercase string used on the Prometheus `# TYPE` line.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PromMetricType::Gauge => "gauge",
+            PromMetricType::Counter => "counter",
+            PromMetricType::Histogram => "histogram",
+            PromMetricType::Summary => "summary",
+            PromMetricType::Untyped => "untyped",
+        }
+    }
+}
+
+/// Prometheus metadata attached to a launched scenario handle.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromMeta {
+    pub metric_type: PromMetricType,
+    pub help: Option<String>,
+}
+
+impl PromMeta {
+    pub fn new(metric_type: PromMetricType, help: Option<String>) -> Self {
+        Self { metric_type, help }
+    }
+}
+
 #[cfg(feature = "config")]
 fn default_encoder() -> EncoderConfig {
     EncoderConfig::PrometheusText { precision: None }
@@ -354,6 +394,16 @@ pub struct ScenarioConfig {
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub metric_type: Option<PromMetricType>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub help: Option<String>,
 }
 
 impl std::ops::Deref for ScenarioConfig {
@@ -463,6 +513,16 @@ pub struct HistogramScenarioConfig {
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub metric_type: Option<PromMetricType>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub help: Option<String>,
 }
 
 impl std::ops::Deref for HistogramScenarioConfig {
@@ -524,6 +584,16 @@ pub struct SummaryScenarioConfig {
     /// Output encoder. Defaults to `prometheus_text`.
     #[cfg_attr(feature = "config", serde(default = "default_encoder"))]
     pub encoder: EncoderConfig,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub metric_type: Option<PromMetricType>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub help: Option<String>,
 }
 
 impl std::ops::Deref for SummaryScenarioConfig {
@@ -1592,6 +1662,8 @@ clock_group: compound-alert
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         assert_eq!(entry.phase_offset(), Some("5s"));
     }
@@ -1620,6 +1692,8 @@ clock_group: compound-alert
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         assert_eq!(entry.phase_offset(), None);
     }
@@ -1687,6 +1761,8 @@ clock_group: compound-alert
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         assert_eq!(entry.clock_group(), Some("my-group"));
     }
@@ -1715,6 +1791,8 @@ clock_group: compound-alert
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         assert_eq!(entry.clock_group(), None);
     }
@@ -1747,6 +1825,8 @@ clock_group: compound-alert
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         assert_eq!(entry.base().name, "base_test");
         assert_eq!(entry.base().rate, 42.0);
@@ -1998,6 +2078,8 @@ gaps:
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         // All these access via Deref — no explicit `.base.` needed.
         assert_eq!(config.name, "deref_test");
@@ -2073,6 +2155,8 @@ gaps:
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         config.name = "mutated".to_string();
         config.rate = 999.0;
@@ -2555,6 +2639,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -2657,6 +2743,8 @@ mod expand_tests {
             },
             generator: GeneratorConfig::Constant { value: 42.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let result = expand_scenario(config).expect("must succeed");
         assert_eq!(result.len(), 1);
@@ -3179,6 +3267,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let result = expand_scenario(config).expect("must succeed");
 
@@ -3257,6 +3347,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let result = expand_scenario(config).expect("must succeed");
 
@@ -3323,6 +3415,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
@@ -3374,6 +3468,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
@@ -3416,6 +3512,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let err = expand_scenario(config).expect_err("must fail");
         assert!(
@@ -3462,6 +3560,8 @@ mod expand_tests {
                 default_metric_name: None,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let err = expand_scenario(config).expect_err("must fail");
         let msg = err.to_string();
@@ -3718,6 +3818,8 @@ distribution:
             mean_shift_per_sec: None,
             seed: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         let result = expand_entry(entry).expect("must succeed");
         assert_eq!(result.len(), 1);
@@ -3755,6 +3857,8 @@ distribution:
             mean_shift_per_sec: None,
             seed: None,
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         let result = expand_entry(entry).expect("must succeed");
         assert_eq!(result.len(), 1);
@@ -3810,6 +3914,8 @@ distribution:
                 default_metric_name,
             },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 

@@ -320,6 +320,9 @@ pub struct NormalizedEntry {
     pub seed: Option<u64>,
     /// Resolved sink-error policy.
     pub on_sink_error: OnSinkError,
+
+    pub metric_type: Option<crate::config::PromMetricType>,
+    pub help: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +503,8 @@ fn normalize_entry(
         mean_shift_per_sec: entry.mean_shift_per_sec,
         seed: entry.seed,
         on_sink_error,
+        metric_type: entry.metric_type,
+        help: entry.help,
     })
 }
 

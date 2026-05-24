@@ -1340,6 +1340,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -1437,6 +1439,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 0.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         print_start(&entry, Verbosity::Normal, None);
     }
@@ -1599,6 +1603,8 @@ mod tests {
                 offset: 50.0,
             },
             encoder: EncoderConfig::PrometheusText { precision: Some(2) },
+            metric_type: None,
+            help: None,
         });
         print_config(&entry, 1, 1);
     }
@@ -1794,6 +1800,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         print_config(&entry, 1, 1);
     }
@@ -1953,6 +1961,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         print_config(&entry, 1, 1);
     }

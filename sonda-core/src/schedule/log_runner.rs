@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
-use crate::model::metric::Labels;
+use crate::model::metric::{Labels, MetricEvent};
 use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
@@ -104,39 +104,40 @@ pub fn run_logs_with_sink_gated(
 
     let mut buf: Vec<u8> = Vec::with_capacity(512);
 
-    let mut tick_fn =
-        |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
-            let mut event = generator.generate(ctx.tick);
-            event.timestamp = ctx.wall_clock;
+    let mut tick_fn = |ctx: &TickContext<'_>,
+                       sink: &mut dyn Sink,
+                       _events_buf: &mut Vec<MetricEvent>|
+     -> Result<TickResult, SondaError> {
+        let mut event = generator.generate(ctx.tick);
+        event.timestamp = ctx.wall_clock;
 
-            let needs_dynamic = !ctx.dynamic_labels.is_empty();
-            if ctx.spike_windows.is_empty() && !needs_dynamic {
-                event.labels = labels.clone();
-            } else {
-                let mut tl = labels.clone();
-                for dl in ctx.dynamic_labels {
-                    tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
-                }
-                for sw in ctx.spike_windows {
-                    if is_in_spike(ctx.elapsed, sw) {
-                        tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
-                    }
-                }
-                event.labels = tl;
+        let needs_dynamic = !ctx.dynamic_labels.is_empty();
+        if ctx.spike_windows.is_empty() && !needs_dynamic {
+            event.labels = labels.clone();
+        } else {
+            let mut tl = labels.clone();
+            for dl in ctx.dynamic_labels {
+                tl.insert(dl.key.clone(), dl.label_value_for_tick(ctx.tick));
             }
+            for sw in ctx.spike_windows {
+                if is_in_spike(ctx.elapsed, sw) {
+                    tl.insert(sw.label.clone(), sw.label_value_for_tick(ctx.tick));
+                }
+            }
+            event.labels = tl;
+        }
 
-            buf.clear();
-            encoder.encode_log(&event, &mut buf)?;
-            let bytes_written = buf.len() as u64;
-            sink.write_log_event(&event, &buf)?;
-            let delivered = sink.last_write_delivered();
+        buf.clear();
+        encoder.encode_log(&event, &mut buf)?;
+        let bytes_written = buf.len() as u64;
+        sink.write_log_event(&event, &buf)?;
+        let delivered = sink.last_write_delivered();
 
-            Ok(TickResult {
-                bytes_written,
-                metric_event: None,
-                delivered,
-            })
-        };
+        Ok(TickResult {
+            bytes_written,
+            delivered,
+        })
+    };
 
     let stats_for_flush = stats.clone();
     let loop_result = match gate_ctx {

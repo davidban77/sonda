@@ -497,6 +497,10 @@ pub struct CompiledEntry {
     /// a different upstream.
     #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
     pub after_ref: Option<String>,
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub metric_type: Option<crate::config::PromMetricType>,
+    #[cfg_attr(feature = "config", serde(skip_serializing_if = "Option::is_none"))]
+    pub help: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -713,6 +717,8 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
             while_clause: entry.while_clause,
             delay_clause: entry.delay_clause,
             after_ref,
+            metric_type: entry.metric_type,
+            help: entry.help,
         });
     }
 
@@ -2387,6 +2393,8 @@ scenarios:
             mean_shift_per_sec: None,
             seed: None,
             on_sink_error: crate::OnSinkError::Warn,
+            metric_type: None,
+            help: None,
         };
         let edges: Vec<_> = outgoing_edges(&e).collect();
         assert_eq!(

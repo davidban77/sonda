@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::config::PromMeta;
 use crate::schedule::stats::ScenarioStats;
 use crate::{RuntimeError, SondaError};
 
@@ -58,6 +59,10 @@ pub struct ScenarioHandle {
     pub alive: Arc<AtomicBool>,
     /// Scenario-level labels.
     pub labels: Arc<HashMap<String, String>>,
+    /// Prometheus `# TYPE` / `# HELP` metadata derived at launch.
+    ///
+    /// `Some` for metrics, histogram, and summary scenarios; `None` for logs.
+    pub prometheus_meta: Option<Arc<PromMeta>>,
 }
 
 impl ScenarioHandle {
@@ -74,6 +79,7 @@ impl ScenarioHandle {
         target_rate: f64,
         alive: Arc<AtomicBool>,
         labels: Arc<HashMap<String, String>>,
+        prometheus_meta: Option<Arc<PromMeta>>,
     ) -> Self {
         Self {
             id,
@@ -86,6 +92,7 @@ impl ScenarioHandle {
             target_rate,
             alive,
             labels,
+            prometheus_meta,
         }
     }
 
@@ -316,6 +323,10 @@ mod tests {
             100.0,
             Arc::new(AtomicBool::new(true)),
             Arc::new(HashMap::new()),
+            Some(Arc::new(PromMeta::new(
+                crate::config::PromMetricType::Gauge,
+                None,
+            ))),
         )
     }
 
@@ -594,6 +605,10 @@ mod tests {
             10.0,
             Arc::new(AtomicBool::new(true)),
             Arc::new(HashMap::new()),
+            Some(Arc::new(PromMeta::new(
+                crate::config::PromMetricType::Gauge,
+                None,
+            ))),
         );
 
         // stats_snapshot must not panic — it recovers from the poisoned lock.
@@ -643,6 +658,10 @@ mod tests {
             10.0,
             Arc::new(AtomicBool::new(true)),
             Arc::new(HashMap::new()),
+            Some(Arc::new(PromMeta::new(
+                crate::config::PromMetricType::Gauge,
+                None,
+            ))),
         );
 
         // recent_metrics must not panic — it recovers from the poisoned lock.

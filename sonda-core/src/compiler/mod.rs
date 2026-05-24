@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 
 use crate::config::{
     BurstConfig, CardinalitySpikeConfig, DistributionConfig, DynamicLabelConfig, GapConfig,
-    OnSinkError,
+    OnSinkError, PromMetricType,
 };
 use crate::encoder::EncoderConfig;
 use crate::generator::{GeneratorConfig, LogGeneratorConfig};
@@ -294,6 +294,17 @@ pub struct Entry {
     /// Per-entry sink-error policy (overrides defaults).
     #[cfg_attr(feature = "config", serde(default))]
     pub on_sink_error: Option<OnSinkError>,
+
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub metric_type: Option<PromMetricType>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub help: Option<String>,
 }
 
 /// Comparison operator for an [`AfterClause`] threshold check.

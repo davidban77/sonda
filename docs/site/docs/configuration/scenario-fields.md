@@ -27,6 +27,9 @@ scenarios:
     signal_type: metrics
     name: cpu_usage
 
+    metric_type: gauge
+    help: "CPU usage percent on the device."
+
     generator:
       type: sine
       amplitude: 50.0
@@ -87,6 +90,54 @@ sonda run full-example.yaml
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
 | `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run: `warn` (log + drop batch + keep running) or `fail` (propagate and exit the runner). Overrides `defaults.on_sink_error`. See [Sink-error policy](scenario-files.md#sink-error-policy). |
+| `metric_type` | string | no | derived | Prometheus exposition type: `gauge`, `counter`, `histogram`, `summary`, or `untyped`. Surfaces on the `sonda-server` [`/metrics` endpoints](../deployment/sonda-server.md#aggregate-prometheus-scrape) as the `# TYPE` line. See [Prometheus exposition fields](#prometheus-exposition-fields). |
+| `help` | string | no | none | Free-text description emitted as the `# HELP` line on the `sonda-server` [`/metrics` endpoints](../deployment/sonda-server.md#aggregate-prometheus-scrape). Omitted when unset. See [Prometheus exposition fields](#prometheus-exposition-fields). |
+
+### Prometheus exposition fields
+
+`metric_type` and `help` annotate a scenario's metric so the `sonda-server` `/metrics` endpoints emit Prometheus `# TYPE` and `# HELP` lines. Both fields apply to `metrics`, `histogram`, and `summary` entries. Log entries ignore them. They are also a no-op for the per-event sinks that the `sonda run` CLI uses (`stdout`, `file`, `tcp`, etc.) — these annotations exist for scrape-based delivery via [`sonda-server`](../deployment/sonda-server.md).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `metric_type` | string | no | derived (see below) | One of `gauge`, `counter`, `histogram`, `summary`, `untyped`. |
+| `help` | string | no | none | Free-text description. When omitted, no `# HELP` line is emitted. |
+
+**Defaults**, applied when `metric_type` is omitted:
+
+| Signal | Generator | Default `metric_type` |
+|--------|-----------|----------------------|
+| `metrics` | `step` | `counter` |
+| `metrics` | any other generator | `gauge` |
+| `histogram` | -- | `histogram` |
+| `summary` | -- | `summary` |
+
+```yaml title="Metrics entry with explicit exposition"
+scenarios:
+  - id: memory_utilization
+    signal_type: metrics
+    name: memory_utilization
+    metric_type: gauge
+    help: "Memory usage percent on the device."
+    generator:
+      type: constant
+      value: 41.5
+    labels:
+      device: srl1
+```
+
+Scrape the server and the response carries both annotations:
+
+```text title="GET /metrics"
+# HELP memory_utilization Memory usage percent on the device.
+# TYPE memory_utilization gauge
+memory_utilization{device="srl1"} 41.5 1779645380851
+```
+
+!!! info "Why declare `metric_type`?"
+    Prometheus-text consumers (Prometheus, VictoriaMetrics, Telegraf, vmagent) treat unannotated metrics as `untyped`. Downstream tooling can rename or special-case untyped samples — for example, an untyped metric named `bgp_oper_state` may surface as `bgp_oper_state_value` after a hop through a Telegraf-style relay. Declaring `metric_type:` keeps the metric name stable across every scraping consumer in the chain.
+
+!!! warning "Mixed-type collisions become `untyped`"
+    Prometheus permits only one `# TYPE` line per metric name. When two scenarios share a `name:` but declare different `metric_type` values (one `gauge`, one `counter`), the aggregate [`GET /metrics`](../deployment/sonda-server.md#aggregate-prometheus-scrape) emits a single `# TYPE <name> untyped` block containing samples from both, and logs a server-side warning. Pick a consistent `metric_type` per metric name to avoid the demotion.
 
 ### Gap window
 
