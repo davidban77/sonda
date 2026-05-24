@@ -44,6 +44,8 @@ pub use config::DynamicLabelStrategy;
 pub use config::HistogramScenarioConfig;
 pub use config::LogScenarioConfig;
 pub use config::OnSinkError;
+pub use config::PromMeta;
+pub use config::PromMetricType;
 pub use config::ScenarioEntry;
 pub use config::SpikeStrategy;
 pub use config::SummaryScenarioConfig;
@@ -587,6 +589,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
     }
 

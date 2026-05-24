@@ -147,10 +147,8 @@ pub fn run_with_sink_gated(
         |ctx: &TickContext<'_>, sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
             let wall_now = ctx.wall_clock;
 
-            // Advance the summary generator.
             let sample = summary_gen.observe(ctx.tick);
 
-            // Determine whether dynamic labels or spikes are active this tick.
             let needs_dynamic = !ctx.dynamic_labels.is_empty();
             let has_active_spike = ctx
                 .spike_windows
@@ -159,8 +157,8 @@ pub fn run_with_sink_gated(
             let needs_clone = needs_dynamic || has_active_spike;
 
             let mut total_bytes: u64 = 0;
+            let mut events: Vec<MetricEvent> = Vec::with_capacity(sample.quantiles.len() + 2);
 
-            // Emit one event per quantile.
             for (i, &(_q_target, q_value)) in sample.quantiles.iter().enumerate() {
                 let quantile_labels = if needs_clone {
                     let mut ql = (*prebuilt_quantile_labels[i]).clone();
@@ -182,9 +180,9 @@ pub fn run_with_sink_gated(
                 encoder.encode_metric(&event, &mut buf)?;
                 total_bytes += buf.len() as u64;
                 sink.write(&buf)?;
+                events.push(event);
             }
 
-            // Build labels for _count and _sum (no `quantile` label).
             let count_sum_labels = if needs_clone {
                 let mut bl = (*prebuilt_count_sum_labels).clone();
                 for dl in ctx.dynamic_labels {
@@ -200,30 +198,35 @@ pub fn run_with_sink_gated(
                 Arc::clone(&prebuilt_count_sum_labels)
             };
 
-            // Emit _count event.
+            let sum_event = MetricEvent::from_parts(
+                sum_name.clone(),
+                sample.sum,
+                Arc::clone(&count_sum_labels),
+                wall_now,
+            );
+            buf.clear();
+            encoder.encode_metric(&sum_event, &mut buf)?;
+            total_bytes += buf.len() as u64;
+            sink.write(&buf)?;
+            events.push(sum_event);
+
             let count_event = MetricEvent::from_parts(
                 count_name.clone(),
                 sample.count as f64,
-                Arc::clone(&count_sum_labels),
+                count_sum_labels,
                 wall_now,
             );
             buf.clear();
             encoder.encode_metric(&count_event, &mut buf)?;
             total_bytes += buf.len() as u64;
             sink.write(&buf)?;
+            events.push(count_event);
 
-            // Emit _sum event.
-            let sum_event =
-                MetricEvent::from_parts(sum_name.clone(), sample.sum, count_sum_labels, wall_now);
-            buf.clear();
-            encoder.encode_metric(&sum_event, &mut buf)?;
-            total_bytes += buf.len() as u64;
-            sink.write(&buf)?;
             let delivered = sink.last_write_delivered();
 
             Ok(TickResult {
                 bytes_written: total_bytes,
-                metric_event: Some(count_event),
+                metric_events: events,
                 delivered,
             })
         };
@@ -297,6 +300,8 @@ mod tests {
             mean_shift_per_sec: None,
             seed: Some(42),
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 

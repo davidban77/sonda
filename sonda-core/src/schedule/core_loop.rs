@@ -69,10 +69,12 @@ impl SinkErrorRateLimiter {
 pub(crate) struct TickResult {
     /// Number of bytes written to the sink on this tick.
     pub bytes_written: u64,
-    /// An optional metric event to push into the stats recent-metrics buffer.
+    /// Metric events emitted during this tick.
     ///
-    /// Only the metrics runner provides this; the log runner returns `None`.
-    pub metric_event: Option<MetricEvent>,
+    /// All events are pushed into the stats recent-metrics buffer under a
+    /// single lock acquisition so a scrape snapshot never interleaves with
+    /// a partial tick. Logs return an empty vec.
+    pub metric_events: Vec<MetricEvent>,
     /// Whether this tick's write() delivered to the destination, or only
     /// buffered it (batching sinks). Drives delivery-health stat updates.
     pub delivered: bool,
@@ -349,7 +351,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
                                 .map(|d| d.as_nanos() as u64)
                                 .ok();
                         }
-                        if let Some(event) = result.metric_event {
+                        for event in result.metric_events {
                             st.push_metric(event);
                         }
                     }
@@ -1092,7 +1094,7 @@ mod tests {
                 event_count += 1;
                 Ok(TickResult {
                     bytes_written: 6,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1140,7 +1142,7 @@ mod tests {
                 event_count += 1;
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1188,7 +1190,7 @@ mod tests {
                 event_count += 1;
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1229,7 +1231,7 @@ mod tests {
                 event_count += 1;
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1256,7 +1258,7 @@ mod tests {
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
                 Ok(TickResult {
                     bytes_written: 42,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1300,7 +1302,7 @@ mod tests {
                     .expect("valid metric name");
                 Ok(TickResult {
                     bytes_written: 10,
-                    metric_event: Some(event),
+                    metric_events: vec![event],
                     delivered: true,
                 })
             };
@@ -1357,7 +1359,7 @@ mod tests {
                 }
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1532,7 +1534,7 @@ mod tests {
                 if counter.is_multiple_of(2) {
                     Ok(TickResult {
                         bytes_written: 8,
-                        metric_event: None,
+                        metric_events: Vec::new(),
                         delivered: true,
                     })
                 } else {
@@ -1570,7 +1572,7 @@ mod tests {
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
                 Ok(TickResult {
                     bytes_written: 12,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: false,
                 })
             };
@@ -1613,7 +1615,7 @@ mod tests {
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
                 Ok(TickResult {
                     bytes_written: 12,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1776,7 +1778,7 @@ mod tests {
                 }
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1810,7 +1812,7 @@ mod tests {
             |_ctx: &TickContext<'_>, _sink: &mut dyn Sink| -> Result<TickResult, SondaError> {
                 Ok(TickResult {
                     bytes_written: 0,
-                    metric_event: None,
+                    metric_events: Vec::new(),
                     delivered: true,
                 })
             };
@@ -1835,7 +1837,6 @@ mod tests {
         );
     }
 
-    /// TickResult correctly carries bytes_written and metric_event.
     #[test]
     fn tick_result_carries_all_fields() {
         use crate::model::metric::{Labels, MetricEvent};
@@ -1844,11 +1845,11 @@ mod tests {
             MetricEvent::new("test".to_string(), 42.0, Labels::default()).expect("valid name");
         let result = TickResult {
             bytes_written: 100,
-            metric_event: Some(event),
+            metric_events: vec![event],
             delivered: true,
         };
 
         assert_eq!(result.bytes_written, 100);
-        assert!(result.metric_event.is_some());
+        assert_eq!(result.metric_events.len(), 1);
     }
 }

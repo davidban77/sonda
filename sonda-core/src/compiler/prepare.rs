@@ -260,17 +260,19 @@ fn metrics_entry(mut entry: CompiledEntry) -> Result<ScenarioConfig, PrepareErro
         .ok_or_else(|| PrepareError::MissingGenerator {
             entry_label: describe(&entry),
         })?;
-    // `encoder` is non-`Option` on CompiledEntry (Phase 2 normalize filled it
-    // in), so a mem::replace with a cheap placeholder is sufficient.
     let encoder = std::mem::replace(
         &mut entry.encoder,
         crate::encoder::EncoderConfig::PrometheusText { precision: None },
     );
+    let metric_type = entry.metric_type.take();
+    let help = entry.help.take();
     let base = build_base(&mut entry);
     Ok(ScenarioConfig {
         base,
         generator,
         encoder,
+        metric_type,
+        help,
     })
 }
 
@@ -313,6 +315,8 @@ fn histogram_entry(mut entry: CompiledEntry) -> Result<HistogramScenarioConfig, 
         &mut entry.encoder,
         crate::encoder::EncoderConfig::PrometheusText { precision: None },
     );
+    let metric_type = entry.metric_type.take();
+    let help = entry.help.take();
     let base = build_base(&mut entry);
     Ok(HistogramScenarioConfig {
         base,
@@ -322,6 +326,8 @@ fn histogram_entry(mut entry: CompiledEntry) -> Result<HistogramScenarioConfig, 
         mean_shift_per_sec,
         seed,
         encoder,
+        metric_type,
+        help,
     })
 }
 
@@ -343,6 +349,8 @@ fn summary_entry(mut entry: CompiledEntry) -> Result<SummaryScenarioConfig, Prep
         &mut entry.encoder,
         crate::encoder::EncoderConfig::PrometheusText { precision: None },
     );
+    let metric_type = entry.metric_type.take();
+    let help = entry.help.take();
     let base = build_base(&mut entry);
     Ok(SummaryScenarioConfig {
         base,
@@ -352,6 +360,8 @@ fn summary_entry(mut entry: CompiledEntry) -> Result<SummaryScenarioConfig, Prep
         mean_shift_per_sec,
         seed,
         encoder,
+        metric_type,
+        help,
     })
 }
 
@@ -407,6 +417,8 @@ mod tests {
             while_clause: None,
             delay_clause: None,
             after_ref: None,
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -887,5 +899,130 @@ mod tests {
             matches!(err, PrepareError::UnsupportedVersion { version: 0 }),
             "expected UnsupportedVersion {{ version: 0 }}, got {err:?}"
         );
+    }
+
+    // -- metric_type / help propagation through the compiler chain ----------
+
+    fn compile_yaml(yaml: &str) -> Vec<ScenarioEntry> {
+        use crate::compiler::expand::InMemoryPackResolver;
+        let resolver = InMemoryPackResolver::new();
+        crate::compile_scenario_file(yaml, &resolver).expect("yaml must compile")
+    }
+
+    #[test]
+    fn entry_with_metric_type_and_help_propagates_through_compiler() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 500ms
+scenarios:
+  - id: mem
+    signal_type: metrics
+    name: memory_utilization
+    metric_type: counter
+    help: "Memory usage percent on the device."
+    generator:
+      type: constant
+      value: 42
+"#;
+        let entries = compile_yaml(yaml);
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            ScenarioEntry::Metrics(c) => {
+                assert_eq!(c.metric_type, Some(crate::config::PromMetricType::Counter));
+                assert_eq!(
+                    c.help.as_deref(),
+                    Some("Memory usage percent on the device.")
+                );
+            }
+            other => panic!("expected Metrics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entry_without_metric_type_and_help_propagates_as_none() {
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 500ms
+scenarios:
+  - id: mem
+    signal_type: metrics
+    name: memory_utilization
+    generator:
+      type: constant
+      value: 42
+"#;
+        let entries = compile_yaml(yaml);
+        match &entries[0] {
+            ScenarioEntry::Metrics(c) => {
+                assert!(c.metric_type.is_none());
+                assert!(c.help.is_none());
+            }
+            other => panic!("expected Metrics, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pack_expansion_propagates_entry_level_metric_type_to_all_expanded_metrics() {
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::generator::GeneratorConfig;
+        use crate::packs::{MetricPackDef, MetricSpec};
+
+        let pack = MetricPackDef {
+            name: "test_pack".to_string(),
+            description: "test".to_string(),
+            category: "test".to_string(),
+            shared_labels: None,
+            metrics: vec![
+                MetricSpec {
+                    name: "m1".to_string(),
+                    labels: None,
+                    generator: Some(GeneratorConfig::Constant { value: 1.0 }),
+                },
+                MetricSpec {
+                    name: "m2".to_string(),
+                    labels: None,
+                    generator: Some(GeneratorConfig::Constant { value: 2.0 }),
+                },
+                MetricSpec {
+                    name: "m3".to_string(),
+                    labels: None,
+                    generator: Some(GeneratorConfig::Constant { value: 3.0 }),
+                },
+            ],
+        };
+        let mut resolver = InMemoryPackResolver::new();
+        resolver.insert("test_pack", pack);
+
+        let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 500ms
+scenarios:
+  - id: bundle
+    signal_type: metrics
+    pack: test_pack
+    metric_type: gauge
+    help: "Pack-level help"
+"#;
+        let entries =
+            crate::compile_scenario_file(yaml, &resolver).expect("pack yaml must compile");
+        assert_eq!(entries.len(), 3);
+        for entry in &entries {
+            match entry {
+                ScenarioEntry::Metrics(c) => {
+                    assert_eq!(c.metric_type, Some(crate::config::PromMetricType::Gauge));
+                    assert_eq!(c.help.as_deref(), Some("Pack-level help"));
+                }
+                other => panic!("expected Metrics, got {other:?}"),
+            }
+        }
     }
 }

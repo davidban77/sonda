@@ -13,7 +13,8 @@ use crate::config::aliases::desugar_entry;
 use crate::config::validate::{
     validate_config, validate_histogram_config, validate_log_config, validate_summary_config,
 };
-use crate::config::{expand_entry, ScenarioEntry};
+use crate::config::{expand_entry, PromMeta, PromMetricType, ScenarioEntry};
+use crate::generator::GeneratorConfig;
 use crate::schedule::core_loop::GateContext;
 use crate::schedule::gate_bus::GateBus;
 use crate::schedule::handle::ScenarioHandle;
@@ -231,6 +232,7 @@ pub fn launch_scenario_with_gates(
         ScenarioEntry::Summary(c) => (c.name.clone(), c.rate),
     };
     let labels = Arc::new(entry.base().labels.clone().unwrap_or_default());
+    let prometheus_meta = derive_prometheus_meta(&entry);
 
     let started_at = Instant::now();
 
@@ -341,7 +343,29 @@ pub fn launch_scenario_with_gates(
         target_rate,
         alive,
         labels,
+        prometheus_meta,
     ))
+}
+
+fn derive_prometheus_meta(entry: &ScenarioEntry) -> Option<Arc<PromMeta>> {
+    match entry {
+        ScenarioEntry::Metrics(c) => {
+            let metric_type = c.metric_type.unwrap_or(match c.generator {
+                GeneratorConfig::Step { .. } => PromMetricType::Counter,
+                _ => PromMetricType::Gauge,
+            });
+            Some(Arc::new(PromMeta::new(metric_type, c.help.clone())))
+        }
+        ScenarioEntry::Histogram(c) => Some(Arc::new(PromMeta::new(
+            c.metric_type.unwrap_or(PromMetricType::Histogram),
+            c.help.clone(),
+        ))),
+        ScenarioEntry::Summary(c) => Some(Arc::new(PromMeta::new(
+            c.metric_type.unwrap_or(PromMetricType::Summary),
+            c.help.clone(),
+        ))),
+        ScenarioEntry::Logs(_) => None,
+    }
 }
 
 struct AliveGuard {
@@ -407,6 +431,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -466,6 +492,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -550,6 +578,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -582,6 +612,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -653,6 +685,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
         let result = validate_entry(&entry);
         assert!(
@@ -796,6 +830,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let mut handle =
@@ -949,6 +985,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let mut handle =
@@ -998,6 +1036,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let delay = Duration::from_millis(500);
@@ -1179,6 +1219,8 @@ mod tests {
             mean_shift_per_sec: None,
             seed: Some(42),
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -1212,6 +1254,8 @@ mod tests {
             mean_shift_per_sec: None,
             seed: Some(42),
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         })
     }
 
@@ -1342,6 +1386,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let entries = vec![metrics_entry("good"), invalid];
@@ -1378,6 +1424,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let result = prepare_entries(vec![entry]);
@@ -1414,6 +1462,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let result = prepare_entries(vec![entry]);
@@ -1449,6 +1499,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let result = prepare_entries(vec![entry]);
@@ -1641,6 +1693,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         // Entry 0 is valid, entry 1 is invalid. Even though entry 0 does not
@@ -1682,6 +1736,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         });
 
         let entries = vec![valid, bad_offset];
@@ -1696,5 +1752,157 @@ mod tests {
             err_msg.contains("phase_offset"),
             "error must mention phase_offset, got: {err_msg}"
         );
+    }
+
+    // ---- prometheus_meta derivation ----------------------------------------
+
+    fn entry_with_metric_type(metric_type: Option<PromMetricType>) -> ScenarioEntry {
+        let mut entry = metrics_entry("meta_metrics");
+        if let ScenarioEntry::Metrics(c) = &mut entry {
+            c.metric_type = metric_type;
+        }
+        entry
+    }
+
+    fn step_entry(name: &str) -> ScenarioEntry {
+        ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: name.to_string(),
+                rate: 50.0,
+                duration: Some("200ms".to_string()),
+                gaps: None,
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::Step {
+                start: None,
+                step_size: 1.0,
+                max: None,
+            },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
+        })
+    }
+
+    #[test]
+    fn launch_metrics_scenario_with_no_type_defaults_to_gauge() {
+        let entry = entry_with_metric_type(None);
+        let mut handle = launch_scenario(
+            "id-meta-gauge".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        let meta = handle
+            .prometheus_meta
+            .as_ref()
+            .expect("metrics entry must have prometheus_meta");
+        assert_eq!(meta.metric_type, PromMetricType::Gauge);
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_metrics_scenario_with_step_generator_defaults_to_counter() {
+        let entry = step_entry("step_counter");
+        let mut handle = launch_scenario(
+            "id-meta-step".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        let meta = handle
+            .prometheus_meta
+            .as_ref()
+            .expect("metrics entry must have prometheus_meta");
+        assert_eq!(meta.metric_type, PromMetricType::Counter);
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_histogram_scenario_defaults_to_histogram() {
+        let entry = histogram_entry("hist_default");
+        let mut handle = launch_scenario(
+            "id-meta-hist".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        let meta = handle
+            .prometheus_meta
+            .as_ref()
+            .expect("histogram entry must have prometheus_meta");
+        assert_eq!(meta.metric_type, PromMetricType::Histogram);
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_summary_scenario_defaults_to_summary() {
+        let entry = summary_entry("summary_default");
+        let mut handle = launch_scenario(
+            "id-meta-sum".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        let meta = handle
+            .prometheus_meta
+            .as_ref()
+            .expect("summary entry must have prometheus_meta");
+        assert_eq!(meta.metric_type, PromMetricType::Summary);
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_scenario_explicit_metric_type_overrides_default() {
+        let entry = entry_with_metric_type(Some(PromMetricType::Counter));
+        let mut handle = launch_scenario(
+            "id-meta-explicit".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        let meta = handle
+            .prometheus_meta
+            .as_ref()
+            .expect("metrics entry must have prometheus_meta");
+        assert_eq!(meta.metric_type, PromMetricType::Counter);
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[test]
+    fn launch_log_scenario_has_no_prometheus_meta() {
+        let entry = logs_entry("log_no_meta");
+        let mut handle = launch_scenario(
+            "id-meta-logs".to_string(),
+            entry,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .expect("launch must succeed");
+        assert!(
+            handle.prometheus_meta.is_none(),
+            "log scenario must not have prometheus_meta"
+        );
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
     }
 }

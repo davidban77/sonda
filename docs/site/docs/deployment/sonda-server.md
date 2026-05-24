@@ -722,23 +722,73 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
 To a scraper, `sonda-server` presents itself the same way a Prometheus exporter on a real device does — one URL (`GET /metrics`), idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns a snapshot of every running scenario's recent metric events fused into a single Prometheus text-format response, and `?label=k:v` filters that view by the labels the user attached when starting each scenario.
 
+It is a **typed** exporter: each metric is fronted by `# TYPE` and (when configured) `# HELP` lines, so Prometheus, VictoriaMetrics, vmagent, and Telegraf consumers see the same exposition shape they would see scraping any real device. Set [`metric_type:` and `help:`](../configuration/scenario-fields.md#prometheus-exposition-fields) on a scenario to declare the type and description explicitly; omit them and the server picks a sensible default (`gauge` for most metric generators, `counter` for [`step`](../configuration/generators.md#step), `histogram` / `summary` for those signal types).
+
 Why labels are the durable identity at scrape time: scenarios, multi-scenarios, and metric packs are three ways to *configure* Sonda, but only individual scenarios exist at runtime — packs and multi-scenarios fan out into independent scenarios at compile time. The labels you set on each scenario (`device: srl1`, `interface: eth0`, `region: us-east`) are the only cross-scenario grouping that survives, so `?label=k:v` is how you ask "give me one device's metrics" regardless of how the underlying scenarios got launched.
 
 ### Happy path
+
+Post a scenario that declares `metric_type:` and `help:`, then scrape:
+
+```yaml title="memory-utilization.yaml"
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: mem_srl1
+    signal_type: metrics
+    name: memory_utilization
+    metric_type: gauge
+    help: "Memory usage percent on the device."
+    generator:
+      type: constant
+      value: 41.528
+    labels:
+      device: srl1
+  - id: mem_srl2
+    signal_type: metrics
+    name: memory_utilization
+    generator:
+      type: constant
+      value: 67.812
+    labels:
+      device: srl2
+```
 
 ```bash
 curl http://localhost:8080/metrics
 ```
 
 ```text title="Response (text/plain; version=0.0.4; charset=utf-8)"
-if_in_octets{device="srl1",interface="eth0"} 12345 1779622362660
-if_in_octets{device="srl1",interface="eth0"} 12345 1779622362870
-if_in_octets{device="srl1",interface="eth0"} 12345 1779622363070
-if_out_octets{device="srl2",interface="eth0"} 678 1779622363271
-if_out_octets{device="srl2",interface="eth0"} 681 1779622363470
+# HELP memory_utilization Memory usage percent on the device.
+# TYPE memory_utilization gauge
+memory_utilization{device="srl1"} 41.528 1779645380851
+memory_utilization{device="srl2"} 67.812 1779645380851
 ```
 
-Each line is `metric_name{labels} value timestamp_ms`. Timestamps are per-sample wall-clock milliseconds, so Prometheus and VictoriaMetrics dedupe naturally on `(name, labels, timestamp_ms, value)` across overlapping scrape windows. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+Each sample line is `metric_name{labels} value timestamp_ms`. Per-sample wall-clock millisecond timestamps let Prometheus and VictoriaMetrics dedupe naturally on `(name, labels, timestamp_ms, value)` across overlapping scrape windows. The `# TYPE` line appears once per metric name, and `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+
+Histogram and summary scenarios surface the same way — one `# TYPE` block per base name covering every `_bucket{le="..."}`, `_sum`, `_count`, and quantile line:
+
+```text title="Response (histogram entry)"
+# HELP http_request_duration_seconds Request latency in seconds.
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{le="0.005",method="GET"} 3 1779645380851
+http_request_duration_seconds_bucket{le="0.01",method="GET"} 11 1779645380851
+http_request_duration_seconds_bucket{le="+Inf",method="GET"} 100 1779645380851
+http_request_duration_seconds_sum{method="GET"} 9.505 1779645380851
+http_request_duration_seconds_count{method="GET"} 100 1779645380851
+```
+
+This is the exposition shape `histogram_quantile()` expects, so PromQL percentile queries work end-to-end against the server.
+
+!!! warning "Mixed-type collisions become `untyped`"
+    Two scenarios that share a `name:` but declare different `metric_type` values (one `gauge`, one `counter`) collapse to a single `# TYPE <name> untyped` block in the aggregate response — Prometheus permits only one TYPE per metric name. The server logs a warning identifying both contributors. See [Prometheus exposition fields](../configuration/scenario-fields.md#prometheus-exposition-fields) for the full rule.
 
 ### Filter by label
 
@@ -806,6 +856,16 @@ scrape_configs:
 ## Per-scenario scrape
 
 The `GET /scenarios/{id}/metrics` endpoint returns recent metric events for one scenario in Prometheus text exposition format. Each scrape **drains** the buffer — events appear once per cycle. Use it when you want a one-to-one consumer pulling from a single scenario; reach for [`GET /metrics`](#aggregate-prometheus-scrape) when more than one scraper needs the data or when you want a single job that covers every running scenario.
+
+The response carries the same `# TYPE` and `# HELP` annotations as the aggregate endpoint, scoped to the single scenario:
+
+```text title="GET /scenarios/<SCENARIO_ID>/metrics"
+# HELP memory_utilization Memory usage percent on the device.
+# TYPE memory_utilization gauge
+memory_utilization{device="srl1"} 41.528 1779645380851
+```
+
+See [Prometheus exposition fields](../configuration/scenario-fields.md#prometheus-exposition-fields) for how `metric_type:` and `help:` control these lines and how defaults are derived.
 
 ```yaml title="prometheus.yml"
 scrape_configs:

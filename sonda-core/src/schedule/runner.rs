@@ -158,7 +158,7 @@ pub fn run_with_sink_gated(
 
             Ok(TickResult {
                 bytes_written,
-                metric_event: Some(event),
+                metric_events: vec![event],
                 delivered,
             })
         };
@@ -318,6 +318,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -485,6 +487,8 @@ mod tests {
             },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -839,6 +843,8 @@ mod tests {
             },
             generator: crate::generator::GeneratorConfig::Constant { value: 1.0 },
             encoder: crate::encoder::EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 
@@ -1045,6 +1051,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         };
         let mut sink = MemorySink::new();
         let result = super::run_with_sink(&config, &mut sink, None, None);
@@ -1083,6 +1091,8 @@ mod tests {
             },
             generator: GeneratorConfig::Constant { value: 1.0 },
             encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
         }
     }
 

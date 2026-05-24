@@ -133,7 +133,7 @@ pub fn run_logs_with_sink_gated(
 
             Ok(TickResult {
                 bytes_written,
-                metric_event: None,
+                metric_events: Vec::new(),
                 delivered,
             })
         };

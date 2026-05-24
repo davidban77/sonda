@@ -92,6 +92,8 @@ fn run_with_capture(
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder,
+        metric_type: None,
+        help: None,
     };
     let _ = config.base.name.clone();
 
@@ -322,6 +324,8 @@ fn non_remote_write_sink_no_close_marker_by_default() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     };
 
     let mut sink = MemorySink::new();
@@ -417,6 +421,8 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     };
 
     let mut sink = MemorySink::new();
@@ -520,6 +526,8 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);
@@ -620,6 +628,8 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);
@@ -702,6 +712,8 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     };
 
     let mut sink = MemorySink::new();
@@ -801,6 +813,8 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);
@@ -894,6 +908,8 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);
@@ -981,6 +997,8 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);
@@ -1079,6 +1097,8 @@ fn shutdown_while_gate_open_emits_stale_marker() {
         },
         generator: GeneratorConfig::Constant { value: 1.0 },
         encoder: EncoderConfig::RemoteWrite,
+        metric_type: None,
+        help: None,
     };
 
     let stats_for_thread = Arc::clone(&stats);

@@ -12,6 +12,7 @@ pub mod prometheus;
 pub mod remote_write;
 pub mod syslog;
 
+use crate::config::PromMetricType;
 use crate::model::log::LogEvent;
 use crate::model::metric::MetricEvent;
 
@@ -35,6 +36,17 @@ pub trait Encoder: Send + Sync {
         Err(crate::SondaError::Encoder(
             crate::EncoderError::NotSupported("log encoding not supported by this encoder".into()),
         ))
+    }
+
+    /// Emit Prometheus exposition `# HELP` and `# TYPE` lines for a metric name.
+    fn encode_metadata(
+        &self,
+        _name: &str,
+        _metric_type: PromMetricType,
+        _help: Option<&str>,
+        _buf: &mut Vec<u8>,
+    ) -> Result<(), crate::SondaError> {
+        Ok(())
     }
 }
 

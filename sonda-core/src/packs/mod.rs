@@ -325,6 +325,8 @@ pub fn expand_pack(
             },
             generator,
             encoder: config.encoder.clone(),
+            metric_type: None,
+            help: None,
         };
 
         entries.push(ScenarioEntry::Metrics(scenario));

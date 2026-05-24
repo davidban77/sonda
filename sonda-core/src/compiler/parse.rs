@@ -236,6 +236,11 @@ struct FlatFile {
     seed: Option<u64>,
     #[serde(default)]
     on_sink_error: Option<crate::config::OnSinkError>,
+
+    #[serde(default)]
+    metric_type: Option<crate::config::PromMetricType>,
+    #[serde(default)]
+    help: Option<String>,
 }
 
 impl FlatFile {
@@ -287,6 +292,8 @@ impl FlatFile {
             mean_shift_per_sec: self.mean_shift_per_sec,
             seed: self.seed,
             on_sink_error: self.on_sink_error,
+            metric_type: self.metric_type,
+            help: self.help,
         };
 
         // Flat-form files deliberately do NOT expose the top-level metadata
