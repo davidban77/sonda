@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.1](https://github.com/davidban77/sonda/compare/v1.12.0...v1.12.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **server:** emit # HELP and # TYPE annotations on /metrics endpoints ([#411](https://github.com/davidban77/sonda/issues/411)) ([7605d69](https://github.com/davidban77/sonda/commit/7605d693964976ef3785a70e7820696ecdee8a2e))
+
+
+### CI/CD
+
+* bump grafana/loki from 3.7.1 to 3.7.2 in /examples ([#402](https://github.com/davidban77/sonda/issues/402)) ([70f94a8](https://github.com/davidban77/sonda/commit/70f94a886a3ea66dfc2989c4de24ca8e078b8c41))
+* bump otel/opentelemetry-collector-contrib in /examples ([#406](https://github.com/davidban77/sonda/issues/406)) ([50a846a](https://github.com/davidban77/sonda/commit/50a846a2cac2f0b409f4cabdc16add26eae2edd7))
+* bump victoriametrics/victoria-metrics in /examples ([#407](https://github.com/davidban77/sonda/issues/407)) ([0f6d9e8](https://github.com/davidban77/sonda/commit/0f6d9e8da3077b58ed0cee418ddde9d2ba0ce1a9))
+* bump victoriametrics/vmagent from v1.142.0 to v1.143.0 in /examples ([#409](https://github.com/davidban77/sonda/issues/409)) ([d098643](https://github.com/davidban77/sonda/commit/d098643f3f5286b1693c720f97f62147476207f2))
+* bump victoriametrics/vmalert from v1.142.0 to v1.143.0 in /examples ([#408](https://github.com/davidban77/sonda/issues/408)) ([2f1e4bb](https://github.com/davidban77/sonda/commit/2f1e4bb9e212d0fbc9f6b916af0ccfd7f0d6564d))
+
 ## [1.12.0](https://github.com/davidban77/sonda/compare/v1.11.0...v1.12.0) (2026-05-24)
 
 
