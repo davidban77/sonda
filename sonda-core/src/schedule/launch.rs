@@ -330,18 +330,18 @@ pub fn launch_scenario_with_gates(
         })
         .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
 
-    Ok(ScenarioHandle {
+    Ok(ScenarioHandle::new(
         id,
         name,
         scenario_name,
         shutdown,
-        thread: Some(thread),
+        Some(thread),
         started_at,
         stats,
         target_rate,
         alive,
         labels,
-    })
+    ))
 }
 
 struct AliveGuard {

@@ -11,12 +11,14 @@
 //! [`RuntimeError`]), the config enums ([`GeneratorConfig`](generator::GeneratorConfig),
 //! [`EncoderConfig`](encoder::EncoderConfig), [`SinkConfig`](sink::SinkConfig),
 //! [`DistributionConfig`], [`ScenarioEntry`]), the compile-phase error enums
-//! under [`compiler`], and [`ScenarioStats`] — are marked
-//! `#[non_exhaustive]`. Downstream consumers that `match` on these types must
-//! include a wildcard `_ =>` arm, and [`ScenarioStats`] must be constructed
-//! via `Default::default()` plus field updates rather than a struct literal.
-//! This lets sonda-core add new variants and fields in a minor release
-//! without a semver-major bump.
+//! under [`compiler`], [`ScenarioStats`], and [`ScenarioHandle`] — are
+//! marked `#[non_exhaustive]`. Downstream consumers that `match` on these
+//! types must include a wildcard `_ =>` arm, [`ScenarioStats`] must be
+//! constructed via `Default::default()` plus field updates rather than a
+//! struct literal, and [`ScenarioHandle`] must be constructed via
+//! [`ScenarioHandle::new`] rather than a struct literal. This lets
+//! sonda-core add new variants and fields in a minor release without a
+//! semver-major bump.
 
 pub mod analysis;
 #[cfg(feature = "config")]

@@ -990,18 +990,18 @@ mod tests {
             })
             .expect("thread must spawn");
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 100.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            100.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     /// Build a ScenarioHandle that has already finished (thread exits immediately).
@@ -1022,18 +1022,18 @@ mod tests {
         // Give thread time to finish.
         thread::sleep(Duration::from_millis(50));
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 100.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            100.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     /// Build a router with the given handles pre-inserted.
@@ -2849,18 +2849,18 @@ scenarios:
             thread::sleep(Duration::from_millis(50));
         }
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
             target_rate,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     /// Helper: send a GET /scenarios/{id}/stats request.
@@ -3301,18 +3301,18 @@ scenarios:
             })
             .expect("thread must spawn");
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 10.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            10.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     /// Helper: send a GET /scenarios/{id}/metrics request.
@@ -3643,18 +3643,18 @@ scenarios:
             label_map.insert(k.to_string(), v.to_string());
         }
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 10.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(label_map),
-        }
+            10.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(label_map),
+        )
     }
 
     async fn get_aggregate_req(
@@ -4058,18 +4058,18 @@ scenarios:
             })
             .expect("thread must spawn");
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 50.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            50.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     /// Build a ScenarioHandle whose thread panics immediately.
@@ -4087,18 +4087,18 @@ scenarios:
         // Give the thread time to panic.
         thread::sleep(Duration::from_millis(50));
 
-        ScenarioHandle {
-            id: id.to_string(),
-            name: name.to_string(),
-            scenario_name: None,
+        ScenarioHandle::new(
+            id.to_string(),
+            name.to_string(),
+            None,
             shutdown,
-            thread: Some(thread),
-            started_at: Instant::now(),
+            Some(thread),
+            Instant::now(),
             stats,
-            target_rate: 10.0,
-            alive: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            labels: std::sync::Arc::new(std::collections::HashMap::new()),
-        }
+            10.0,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::collections::HashMap::new()),
+        )
     }
 
     // ---- L1: DELETE on unjoinable thread returns force_stopped --------------
