@@ -2,7 +2,7 @@
 
 `POST /events` emits **one** log or metric event synchronously. The request blocks until the sink ACKs delivery, then returns the latency it took. Use it when you want a single signal to land *now* and you want to know it landed before continuing.
 
-The flat JSON body is the easy alternative to the v2 scenario shape — paste the encoder and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
+The flat JSON body is the easy alternative to the scenario file shape — paste the encoder and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
 
 ## When to use `/events` vs `/scenarios`
 
@@ -17,7 +17,7 @@ Both share the same encoders, sinks, auth, and loopback-warning behavior. They d
 - **`/scenarios`** is asynchronous. The server returns a scenario ID immediately and the scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
 
 !!! tip "Two real-world drivers"
-    - **Workshop CLI** — fire teaching events without learning the v2 YAML shape.
+    - **Teaching and demos** — fire individual events without authoring a full scenario YAML.
     - **Live demos** — a single `curl` on stage produces a Loki log line that Grafana picks up as a panel annotation within ~5–15 ms.
 
 ## Request body

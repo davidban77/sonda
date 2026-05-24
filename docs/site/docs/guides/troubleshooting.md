@@ -49,7 +49,7 @@ sonda --verbose run my-scenario.yaml \
 
 ### A scenario stopped emitting silently
 
-A scenario looks alive (the process is running, no error in the foreground) but no data is reaching the backend. This typically means the sink is failing on every write. Sonda's default [`on_sink_error: warn`](../configuration/v2-scenarios.md#sink-error-policy) policy keeps the runner alive through transient sink errors, so the symptom is degradation rather than a crash. Confirm the diagnosis from three places:
+A scenario looks alive (the process is running, no error in the foreground) but no data is reaching the backend. This typically means the sink is failing on every write. Sonda's default [`on_sink_error: warn`](../configuration/scenario-files.md#sink-error-policy) policy keeps the runner alive through transient sink errors, so the symptom is degradation rather than a crash. Confirm the diagnosis from three places:
 
 - **Stderr `[progress]` banner** -- when a runner exits, the progress reporter prints a one-shot `STOPPED` line that includes the last sink error:
 
@@ -78,7 +78,7 @@ A scenario looks alive (the process is running, no error in the foreground) but 
 
     A non-empty result means at least one scenario has stopped delivering. The same expression works as a Kubernetes readiness probe or a Prometheus alert input. If you need a different staleness window than 30 seconds, you can still threshold the raw fields from the per-scenario `/stats` endpoint -- combine `total_sink_failures > 0` with your own staleness check on `last_successful_write_at`.
 
-The recovery is the default behavior: under `on_sink_error: warn`, the runner keeps ticking while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances, so any threshold you set clears automatically. If you want a sink failure to hard-fail the run instead, set `on_sink_error: fail` -- see [Sink-error policy](../configuration/v2-scenarios.md#sink-error-policy).
+The recovery is the default behavior: under `on_sink_error: warn`, the runner keeps ticking while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances, so any threshold you set clears automatically. If you want a sink failure to hard-fail the run instead, set `on_sink_error: fail` -- see [Sink-error policy](../configuration/scenario-files.md#sink-error-policy).
 
 ---
 
@@ -110,7 +110,7 @@ Sonda runs without errors but you don't see data in your backend.
 | No data in Prometheus | Prometheus needs remote write receiver enabled | Start Prometheus with `--web.enable-remote-write-receiver` |
 | Encoder/sink mismatch | Using `prometheus_text` encoder with `remote_write` sink (or vice versa) | Match encoder to sink: `remote_write` encoder with `remote_write` sink, `otlp` encoder with `otlp_grpc` sink |
 | HTTP 400 Bad Request | Wrong `content_type` for the endpoint | Use `text/plain` for VictoriaMetrics import endpoint |
-| POST to `sonda-server` succeeds but no data in backend | Sink `url: http://localhost:<port>` resolves inside the server container | Use the in-network address (Compose service name `http://victoriametrics:8428`, or Kubernetes Service DNS), or write the URL with [`${VAR:-default}`](../configuration/v2-scenarios.md#environment-variable-interpolation) so one file works from both paths. See [Endpoints & networking](../deployment/endpoints.md) |
+| POST to `sonda-server` succeeds but no data in backend | Sink `url: http://localhost:<port>` resolves inside the server container | Use the in-network address (Compose service name `http://victoriametrics:8428`, or Kubernetes Service DNS), or write the URL with [`${VAR:-default}`](../configuration/scenario-files.md#environment-variable-interpolation) so one file works from both paths. See [Endpoints & networking](../deployment/endpoints.md) |
 
 ### Batching delays
 
@@ -197,7 +197,7 @@ Data arrives in chunks or only appears when the scenario ends.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `v2 scenario file requires a top-level 'kind:' field` | The file is missing the `kind:` declaration | Add `kind: runnable` (for files you run) or `kind: composable` (for [metric packs](metric-packs.md)) at the top of the file, alongside `version: 2`. See [v2 Scenario Files](../configuration/v2-scenarios.md). |
+| `v2 scenario file requires a top-level 'kind:' field` | The file is missing the `kind:` declaration | Add `kind: runnable` (for files you run) or `kind: composable` (for [metric packs](metric-packs.md)) at the top of the file, alongside `version: 2`. See [Scenario Files](../configuration/scenario-files.md). |
 | `unknown kind '<value>': must be 'runnable' or 'composable'` | `kind:` is set to a typo or unsupported value | Use exactly `runnable` or `composable`. |
 | `invalid type` error on a numeric field | Value is quoted as a string in YAML (e.g., `rate: "10"`) | Remove quotes from numeric fields: `rate: 10` |
 | `unknown field` error | Typo in a field name, or field placed at the wrong nesting level | Check indentation. `labels` goes at the scenario level, not inside `sink` |

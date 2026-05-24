@@ -84,7 +84,7 @@ sink:
 The bundled `examples/docker-compose-victoriametrics.yml` exports the in-network
 overrides on the `sonda-server` container, so every scenario under `examples/`
 already works untouched in both places. See the
-[full reference](../configuration/v2-scenarios.md#environment-variable-interpolation)
+[full reference](../configuration/scenario-files.md#environment-variable-interpolation)
 for syntax and the seven built-in variable names every example honours.
 
 ## Rewriting URLs before POSTing

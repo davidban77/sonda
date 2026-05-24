@@ -127,7 +127,7 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
     discover them with `sonda list --catalog <dir>` and run with
     `sonda run @name`.
 
--   :material-file-document-outline: __[v2 scenario files](configuration/v2-scenarios.md)__
+-   :material-file-document-outline: __[Scenario files](configuration/scenario-files.md)__
 
     The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`,
     inline packs, `after:` temporal chains, and env-var interpolation.

@@ -1,9 +1,6 @@
 # Metric Packs
 
-A metric pack is a reusable bundle of metric names and label schemas, expressed as a
-`kind: composable` v2 YAML file in your [catalog](scenarios.md). Reference a pack from any
-runnable scenario with `pack: <name>` and Sonda expands it into one entry per metric —
-exact names, correct shared labels, and sensible default generators per metric.
+A metric pack is a reusable bundle of metric names and label schemas, expressed as a `kind: composable` YAML file in your [catalog](scenarios.md). Reference a pack from any runnable scenario with `pack: <name>` and Sonda expands it into one entry per metric — exact names, correct shared labels, and sensible default generators per metric.
 
 Sonda no longer ships any built-in packs; you author your own and check them into a catalog
 directory alongside your scenarios.
@@ -175,7 +172,7 @@ Labels are merged in this order, with later sources winning on key conflicts:
 
 ## Author a pack
 
-A pack is a v2 YAML file with `kind: composable`. The pack identity (`name`, `description`, `category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
+A pack is a YAML file with `kind: composable`. The pack identity (`name`, `description`, `category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
 
 ```yaml title="~/sonda-catalog/my-app-pack.yaml"
 version: 2
@@ -276,6 +273,5 @@ This means every feature that works with multi-scenario runs — `--dry-run`, `-
   SNMP-shaped metrics for dashboard testing.
 - [**CLI Reference**](../configuration/cli-reference.md) -- full flag reference for `sonda list`,
   `sonda show`, `sonda run`.
-- [**v2 Scenario Files -- Pack-backed entries**](../configuration/v2-scenarios.md#pack-backed-entries)
-  -- reference a pack inline from a v2 `scenarios:` entry.
+- [**Scenario Files -- Pack-backed entries**](../configuration/scenario-files.md#pack-backed-entries) -- reference a pack inline from a `scenarios:` entry.
 - [**Generators**](../configuration/generators.md) -- all generator types and operational aliases.

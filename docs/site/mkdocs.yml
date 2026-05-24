@@ -91,6 +91,12 @@ markdown_extensions:
       permalink: true
       toc_depth: 3
 
+plugins:
+  - search
+  - redirects:
+      redirect_maps:
+        'configuration/v2-scenarios.md': 'configuration/scenario-files.md'
+
 extra:
   social:
     - icon: fontawesome/brands/github
@@ -109,8 +115,9 @@ nav:
   - Getting Started: getting-started.md
   - Configuration:
     - configuration/index.md
+    - Concepts: configuration/concepts.md
     - Scenario Fields: configuration/scenario-fields.md
-    - v2 Scenario Files: configuration/v2-scenarios.md
+    - Scenario Files: configuration/scenario-files.md
     - Generators: configuration/generators.md
     - Encoders: configuration/encoders.md
     - Sinks: configuration/sinks.md

@@ -67,7 +67,7 @@ See [Sinks](../configuration/sinks.md) for configuration details on each sink ty
 | `histogram.yaml` | histogram | prometheus_text | stdout | Exponential distribution, 100 observations/tick (latency-style histogram) |
 | `summary.yaml` | summary | prometheus_text | stdout | Normal distribution (mean 0.1, stddev 0.02), 100 observations/tick |
 
-Run them with `sonda run` — histograms and summaries are just `signal_type:` variants in the v2 YAML:
+Run them with `sonda run` — histograms and summaries are just `signal_type:` variants in the scenario YAML:
 
 ```bash
 sonda run examples/histogram.yaml
@@ -122,7 +122,7 @@ See the [Capacity Planning](capacity-planning.md) guide for measurement methodol
 | `loki-json-lines.yaml` | template | json_lines | loki | Push log events to a Loki instance |
 | `kafka-json-logs.yaml` | template | json_lines | kafka | Send log events to a Kafka topic |
 
-Run log scenarios with `sonda run` — log entries are just `signal_type: logs` in the v2 YAML:
+Run log scenarios with `sonda run` — log entries are just `signal_type: logs` in the scenario YAML:
 
 ```bash
 sonda run examples/log-template.yaml

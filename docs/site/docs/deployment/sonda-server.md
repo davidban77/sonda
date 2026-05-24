@@ -104,17 +104,10 @@ curl http://localhost:8080/health
 
 ## Start a Scenario
 
-Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
-`POST /scenarios`. The server accepts both `text/yaml` (or `application/x-yaml`) and
-`application/json` content types.
+Post a [scenario](../configuration/scenario-files.md) YAML or JSON body to `POST /scenarios`. The server accepts both `text/yaml` (or `application/x-yaml`) and `application/json` content types.
 
 !!! tip "Need just one event?"
     `POST /scenarios` is for sustained emission over time. To fire a single log or metric synchronously and block until the sink ACKs, use the [Single-Event API (`POST /events`)](events.md) instead.
-
-!!! warning "v2 scenarios only"
-    The server only accepts v2 bodies (`version: 2` at the top level). Legacy v1 bodies are
-    rejected with `400 Bad Request` and a migration hint. See
-    [Migrating v1 bodies](#migrating-v1-bodies) below.
 
 !!! warning "Sink URLs resolve inside the server's network"
     POSTed scenarios compile and run inside the `sonda-server` process. A sink with
@@ -148,7 +141,7 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     clients that do not know about the field continue to parse the response unchanged.
 
     See [Endpoints & networking](endpoints.md) for the full reference,
-    [`${VAR:-default}` interpolation](../configuration/v2-scenarios.md#environment-variable-interpolation)
+    [`${VAR:-default}` interpolation](../configuration/scenario-files.md#environment-variable-interpolation)
     so one file works from both paths, and a `sed` one-liner for the rewrite-before-POST fallback.
 
 ### Single-scenario body
@@ -211,15 +204,13 @@ Post a [v2 scenario](../configuration/v2-scenarios.md) YAML or JSON body to
     EOF
     ```
 
-    The JSON body is transcoded to YAML server-side and compiled through the same v2 pipeline
-    as the YAML path. Any valid v2 scenario file can be posted as JSON by converting the YAML
-    to its JSON equivalent.
+    The JSON body is transcoded to YAML server-side and compiled through the same pipeline as the YAML path. Any valid scenario file can be posted as JSON by converting the YAML to its JSON equivalent.
 
 The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body; anything that compiles to two or more entries (for example, a pack-backed entry that fans out) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time and takes one of `"pending"`, `"running"`, `"paused"`, or `"finished"` (see [`/scenarios/{id}/stats`](#scenariosidstats) for the full enum and the `pending -> paused` transition note).
 
 ### Multi-scenario body
 
-Post a v2 file with two or more `scenarios:` entries to launch them atomically:
+Post a scenario file with two or more `scenarios:` entries to launch them atomically:
 
 === "YAML"
 
@@ -319,7 +310,7 @@ validation, the entire request is rejected and nothing is launched:
 
 | Condition | Status | Behavior |
 |-----------|--------|----------|
-| Body is not v2 (`version: 2` missing) | **400** | Rejected with migration hint |
+| Body is missing `version: 2` at the top level | **400** | Rejected with a pointer to the scenario file reference |
 | Body parses but compile fails (unknown field, unresolved pack, etc.) | **400** | Rejected with compiler error detail |
 | Empty `scenarios: []` | **400** | At least one scenario required |
 | Any entry fails runtime validation | **422** | Nothing launched, detail identifies the failing entry |
@@ -375,23 +366,11 @@ validation, the entire request is rejected and nothing is launched:
     The `memory_usage` scenario starts 3 seconds after `cpu_usage`, simulating a cascading
     failure for compound alert testing.
 
-### Migrating v1 bodies
+### Bodies missing `version: 2`
 
-When you POST a pre-v2 body, the server responds with `400 Bad Request` and a migration
-hint in the detail field:
+A body that does not declare `version: 2` at the top level is rejected with `400 Bad Request`. The `detail` field carries the parser's message and points at [Scenario Files](../configuration/scenario-files.md) for the file shape.
 
-```json title="Response (400)"
-{
-  "error": "bad_request",
-  "detail": "body is not a v2 scenario. Sonda only accepts v2 scenario bodies (`version: 2` at the top level). Migrate this body to v2 — see docs/configuration/v2-scenarios.md for the migration guide."
-}
-```
-
-The same hint appears for bodies that do declare `version: 2` but fail to compile (unknown
-fields, unresolved pack references, malformed `after:` clauses). In that case the `detail`
-carries the compiler's error message instead. See
-[Migrating from v1](../configuration/v2-scenarios.md#migrating-from-v1) for side-by-side
-shape conversions.
+Bodies that do declare `version: 2` but fail to compile (unknown fields, unresolved pack references, malformed `after:` clauses) are also rejected with `400`; in that case the `detail` carries the compiler's error message instead.
 
 ### Pack references over HTTP
 
@@ -414,7 +393,7 @@ Without `--catalog`, a body that references a pack by name is rejected with `400
 
 ### Duplicate scenario_name returns 409
 
-When a posted v2 body sets a top-level `scenario_name`, the server scans the active scenario map for any handle that already carries the same `scenario_name` and is in `pending`, `running`, or `paused` state. If at least one match is found the POST is rejected with `409 Conflict`; nothing is launched. The contract is explicit: the operator must `DELETE` the conflicting scenarios first, then re-post. There is no `?force=true` override -- the explicit DELETE is the only way to free the name.
+When a posted body sets a top-level `scenario_name`, the server scans the active scenario map for any handle that already carries the same `scenario_name` and is in `pending`, `running`, or `paused` state. If at least one match is found the POST is rejected with `409 Conflict`; nothing is launched. The contract is explicit: the operator must `DELETE` the conflicting scenarios first, then re-post. There is no `?force=true` override -- the explicit DELETE is the only way to free the name.
 
 Anonymous bodies (no top-level `scenario_name`) bypass this check entirely — two consecutive POSTs of the same anonymous body both return 201. Finished handles are considered stale and never block a new POST — once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
 
@@ -673,7 +652,7 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 
 Five sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — pile events into an in-memory buffer and only deliver them in bursts ("flushes"). The other sinks (`stdout`, `file`, `tcp`, `udp`) deliver every event immediately. For the batching group, `total_events` climbs on every *buffered* write, but the delivery-health fields (`last_successful_write_at`, `consecutive_failures`, `total_sink_failures`) only move when a real flush succeeds or fails. That mismatch is the whole reason `/stats` exists: it tells you what's actually landing, not what's queued.
 
-Picture a scenario writing to a Loki backend that has gone unreachable, running under the default [`on_sink_error: warn`](../configuration/v2-scenarios.md#sink-error-policy) policy. Six writes in:
+Picture a scenario writing to a Loki backend that has gone unreachable, running under the default [`on_sink_error: warn`](../configuration/scenario-files.md#sink-error-policy) policy. Six writes in:
 
 ```text
  write #1   buffer       Ok  →  /stats untouched (only buffered)
@@ -709,7 +688,7 @@ This is the shape to look for: rising `total_events`, `last_successful_write_at`
 | `bytes_emitted` | integer | Total bytes written to the sink. |
 | `errors` | integer | Encode or sink-write errors observed. |
 | `uptime_secs` | float | Seconds since the scenario was launched. |
-| `state` | string | One of `pending`, `running`, `paused`, `finished`. See the [`while:` lifecycle diagram](../configuration/v2-scenarios.md#lifecycle-states). |
+| `state` | string | One of `pending`, `running`, `paused`, `finished`. See the [`while:` lifecycle diagram](../configuration/scenario-files.md#lifecycle-states). |
 | `in_gap` | bool | `true` while a [gap window](../configuration/scenario-fields.md#gap-window) is suppressing output. |
 | `in_burst` | bool | `true` while a [burst window](../configuration/scenario-fields.md#burst-window) is elevating the rate. |
 | `consecutive_failures` | integer | Sink errors observed since the most recent successful *delivery*. Resets to `0` on the next delivery. |
@@ -721,7 +700,7 @@ This is the shape to look for: rising `total_events`, `last_successful_write_at`
 !!! info "Delivery-accurate, not buffer-accurate, for batching sinks"
     The batching sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — buffer events and flush them to the backend in batches. `last_successful_write_at` and `consecutive_failures` track actual *delivery* to the destination, not buffering: `last_successful_write_at` advances only when a write triggers a successful flush, and a write that merely buffers neither advances it nor resets `consecutive_failures`. So a batching sink that is buffering but failing to reach its backend shows a *stale* `last_successful_write_at` and a *non-zero* `consecutive_failures` — the honest signal that nothing is landing. Non-batching sinks (`stdout`, `file`, `tcp`, `udp`) deliver synchronously on every write, so the two readings always reflect the latest write.
 
-The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/v2-scenarios.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
+The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../configuration/scenario-files.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
 
 !!! note "`pending -> paused` is a reachable direct transition"
     A scenario carrying both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly, skipping `running`. Clients building a state-machine assertion should not assume `pending` always precedes `running` -- watch for `paused` from the `pending` state too.

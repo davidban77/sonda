@@ -151,7 +151,7 @@ matches how you want to reason about time:
 | Scenario | Mechanic | Best for |
 |----------|----------|----------|
 | `examples/network-link-failure.yaml` | `sequence` generator + `repeat: true`, aligned tick-by-tick across multiple entries | Tight, repeating cycles where every tick's value matters and failures recur on a fixed drumbeat |
-| `scenarios/link-failover.yaml` | v2 `after:` chains -- each signal declares what it waits for, the compiler resolves phase offsets | Once-through causal chains where you care about ordering (primary drops -> backup saturates -> latency climbs) but not the exact tick |
+| `scenarios/link-failover.yaml` | `after:` chains -- each signal declares what it waits for, the compiler resolves phase offsets | Once-through causal chains where you care about ordering (primary drops -> backup saturates -> latency climbs) but not the exact tick |
 
 Use `sequence + repeat` when you need hand-authored values at specific ticks and the same
 pattern should loop indefinitely -- useful for soak testing and for dashboards that expect a
@@ -178,10 +178,7 @@ depends on crosses a threshold:
 | `backup_link_utilization` | `saturation` -- ramps 20% -> 85% over 2m | primary drops below 1 (first flap) |
 | `latency_ms` | `degradation` -- climbs 5ms -> 150ms over 3m | backup utilization exceeds 70% |
 
-Sonda resolves the chain at parse time: the v2 compiler computes a concrete `phase_offset` for
-each linked signal, so the signals still emit independently but start in the right order.
-See the [v2 `after:` chain reference](../configuration/v2-scenarios.md#temporal-chains-with-after)
-for the underlying mechanics.
+Sonda resolves the chain at parse time: the compiler computes a concrete `phase_offset` for each linked signal, so the signals still emit independently but start in the right order. See the [`after:` chain reference](../configuration/scenario-files.md#temporal-chains-with-after) for the underlying mechanics.
 
 ```yaml title="link-failover.yaml"
 version: 2
@@ -279,11 +276,7 @@ degrading ~152 seconds in (when the backup ramp crosses 70%). All three signals 
 auto-assigned `clock_group`, so their timers start from the same reference.
 
 !!! info "Why `after:` instead of aligned sequences?"
-    You can express a link failure with the `sequence` generator by hand-aligning values across
-    scenarios -- which is exactly what `examples/network-link-failure.yaml` does. `after:` is the
-    v2 equivalent: instead of counting ticks, you declare the causal relationship once and let
-    the compiler do the timing math. The [v2 scenarios guide](../configuration/v2-scenarios.md)
-    covers the full surface.
+    You can express a link failure with the `sequence` generator by hand-aligning values across scenarios -- which is exactly what `examples/network-link-failure.yaml` does. `after:` is the declarative alternative: instead of counting ticks, you declare the causal relationship once and let the compiler do the timing math. The [Scenario Files](../configuration/scenario-files.md) reference covers the full surface.
 
 ---
 
@@ -428,9 +421,7 @@ or Prometheus, change the sink in each scenario entry.
     ```
 
 !!! tip "Change the sink in one place"
-    In a v2 scenario file, the `defaults:` block holds the shared `sink` (and `encoder`,
-    `rate`, `duration`, `labels`). Swap the sink there once and every entry in
-    `scenarios:` picks it up. Per-entry overrides still win if you need a mixed setup.
+    In a scenario file, the `defaults:` block holds the shared `sink` (and `encoder`, `rate`, `duration`, `labels`). Swap the sink there once and every entry in `scenarios:` picks it up. Per-entry overrides still win if you need a mixed setup.
 
 ---
 
