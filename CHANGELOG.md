@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.12.2](https://github.com/davidban77/sonda/compare/v1.12.1...v1.12.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **server:** emit one Prometheus sample per series with no timestamp ([#414](https://github.com/davidban77/sonda/issues/414)) ([c41b290](https://github.com/davidban77/sonda/commit/c41b29041f8905e0612ef1bfe3ccd04aba606007))
+
+
+### Documentation
+
+* rewrite concepts guide for newcomer onramp ([#412](https://github.com/davidban77/sonda/issues/412)) ([f1c9dcd](https://github.com/davidban77/sonda/commit/f1c9dcdc81802921290d88fb627b9de9ce7a25b2))
+
 ## [1.12.1](https://github.com/davidban77/sonda/compare/v1.12.0...v1.12.1) (2026-05-24)
 
 
