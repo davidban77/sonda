@@ -131,3 +131,49 @@ fn run_at_name_with_overrides_applies_them() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+const CROSS_POST_WHILE_YAML: &str = "version: 2
+kind: runnable
+scenario_name: downstream
+defaults:
+  duration: 200ms
+scenarios:
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 5
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_metric
+      op: \">\"
+      value: 0
+      scenario_name: upstream
+";
+
+#[test]
+fn run_rejects_cross_post_while_scenario_name() {
+    let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+    f.write_all(CROSS_POST_WHILE_YAML.as_bytes())
+        .expect("write");
+    f.flush().expect("flush");
+    let output = Command::new(sonda_bin())
+        .args(["--quiet", "run"])
+        .arg(f.path())
+        .output()
+        .expect("spawn sonda");
+    assert!(
+        !output.status.success(),
+        "cross-POST while: in CLI must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("requires a running sonda-server"),
+        "error must point at sonda-server, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("cross-post-while-refs"),
+        "error must include docs link, got: {stderr}"
+    );
+}

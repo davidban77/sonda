@@ -11,9 +11,10 @@
 //! [`RuntimeError`]), the config enums ([`GeneratorConfig`](generator::GeneratorConfig),
 //! [`EncoderConfig`](encoder::EncoderConfig), [`SinkConfig`](sink::SinkConfig),
 //! [`DistributionConfig`], [`ScenarioEntry`]), the compile-phase error enums
-//! under [`compiler`], [`ScenarioStats`], and [`ScenarioHandle`] — are
-//! marked `#[non_exhaustive]`. Downstream consumers that `match` on these
-//! types must include a wildcard `_ =>` arm, [`ScenarioStats`] must be
+//! under [`compiler`], [`ScenarioStats`], [`ScenarioHandle`], and
+//! [`GateEdge`](schedule::gate_bus::GateEdge) — are marked
+//! `#[non_exhaustive]`. Downstream consumers that `match` on these types
+//! must include a wildcard `_ =>` arm, [`ScenarioStats`] must be
 //! constructed via `Default::default()` plus field updates rather than a
 //! struct literal, and [`ScenarioHandle`] must be constructed via
 //! [`ScenarioHandle::new`] rather than a struct literal. This lets
@@ -34,6 +35,7 @@ pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
 
+pub use compiler::UnresolvedBehavior;
 pub use config::aliases::{desugar_entry, desugar_scenario_config};
 pub use config::BaseScheduleConfig;
 pub use config::BurstConfig;
@@ -55,6 +57,9 @@ pub use model::log::Severity;
 pub use model::metric::Labels;
 pub use model::metric::MetricEvent;
 pub use model::metric::ValidatedMetricName;
+pub use schedule::gate_bus::{
+    GateBusResolver, GateEdgeSender, PendingRef, PendingResolution, RegistryError,
+};
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::{ScenarioState, ScenarioStats};

@@ -21,8 +21,10 @@ pub const DEGRADED_STALENESS_NANOS: u64 = 30 * 1_000_000_000;
 /// Lifecycle position of a scenario, surfaced for `while:`-gated runs.
 ///
 /// `Pending` covers the pre-`after:` window for chained scenarios; `Running`
-/// and `Paused` reflect the live `while:` gate state; `Finished` marks the
-/// scenario as having exited (duration expired or shutdown received).
+/// and `Paused` reflect the live `while:` gate state; `Unresolved` marks a
+/// cross-POST `while:` reference whose upstream has not yet registered;
+/// `Finished` marks the scenario as having exited (duration expired or
+/// shutdown received).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -31,6 +33,7 @@ pub enum ScenarioState {
     Pending,
     Running,
     Paused,
+    Unresolved,
     Finished,
 }
 

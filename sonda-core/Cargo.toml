@@ -13,7 +13,7 @@ readme = "../README.md"
 
 [features]
 default = ["config"]
-config = ["dep:serde_yaml_ng", "dep:chrono"]
+config = ["dep:serde_yaml_ng", "dep:chrono", "chrono/serde"]
 http = ["dep:ureq"]
 kafka = ["dep:rskafka", "dep:tokio", "dep:chrono", "chrono/clock", "dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
 remote-write = ["dep:prost", "dep:snap", "dep:ureq"]

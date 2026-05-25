@@ -2384,6 +2384,8 @@ scenarios:
                 ref_id: "w_target".to_string(),
                 op: WhileOp::LessThan,
                 value: 0.0,
+                scenario_name: None,
+                if_unresolved: None,
             }),
             delay_clause: None,
             distribution: None,

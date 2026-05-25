@@ -5,7 +5,8 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use sonda_core::compiler::compile_after::CompiledFile;
-use sonda_core::compiler::parse::detect_version;
+use sonda_core::compiler::env_interpolate::interpolate;
+use sonda_core::compiler::parse::{detect_version, parse};
 use sonda_core::{compile_scenario_file_compiled, CompileError};
 
 use sonda_core::catalog::CatalogPackResolver;
@@ -22,8 +23,12 @@ pub fn load_scenario_compiled(
     let yaml = crate::config::resolve_scenario_source(scenario_ref, catalog_dir)?;
     let version = detect_version(&yaml);
     match version {
-        Some(2) => compile_v2_yaml_compiled(&yaml, catalog_dir)
-            .with_context(|| format!("failed to compile v2 scenario {scenario_ref}")),
+        Some(2) => {
+            reject_cross_post_while_from_yaml(&yaml)
+                .with_context(|| format!("failed to parse v2 scenario {scenario_ref}"))?;
+            compile_v2_yaml_compiled(&yaml, catalog_dir)
+                .with_context(|| format!("failed to compile v2 scenario {scenario_ref}"))
+        }
         _ => bail!(
             "scenario {scenario_ref} is not a v2 scenario. \
              Sonda only accepts v2 YAML (`version: 2` at the top level). \
@@ -31,6 +36,23 @@ pub fn load_scenario_compiled(
              for the migration guide."
         ),
     }
+}
+
+fn reject_cross_post_while_from_yaml(yaml: &str) -> Result<()> {
+    let interpolated = interpolate(yaml).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let parsed = parse(&interpolated).map_err(|e| anyhow::anyhow!("{e}"))?;
+    for entry in &parsed.scenarios {
+        if let Some(clause) = entry.while_clause.as_ref() {
+            if clause.scenario_name.is_some() {
+                bail!(
+                    "`while.scenario_name` requires a running sonda-server (POST /scenarios); \
+                     the CLI runs in single-process mode with no cross-POST registry. \
+                     See https://davidban77.github.io/sonda/configuration/scenario-files.md#cross-post-while-refs"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn compile_v2_yaml_compiled(
