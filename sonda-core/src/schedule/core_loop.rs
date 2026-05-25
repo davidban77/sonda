@@ -643,6 +643,12 @@ fn gated_loop_body(
                         Some(GateEdge::WhileClose) => {
                             while_open = false;
                         }
+                        Some(GateEdge::UpstreamGone) => {
+                            unreachable!(
+                                "UpstreamGone has no sender in this build; \
+                                 cross-POST runtime is wired in a later slice"
+                            );
+                        }
                         None => {
                             continue;
                         }
@@ -732,6 +738,12 @@ fn gated_loop_body(
                     Some(GateEdge::AfterFired) => {
                         after_satisfied = true;
                     }
+                    Some(GateEdge::UpstreamGone) => {
+                        unreachable!(
+                            "UpstreamGone has no sender in this build; \
+                             cross-POST runtime is wired in a later slice"
+                        );
+                    }
                     None => {}
                 }
 
@@ -745,8 +757,15 @@ fn gated_loop_body(
                         }
                         GateEdge::WhileClose => {}
                         GateEdge::AfterFired => {}
+                        GateEdge::UpstreamGone => {}
                     }
                 }
+            }
+            ScenarioState::Unresolved => {
+                unreachable!(
+                    "Unresolved has no entry path in this build; \
+                     cross-POST runtime is wired in a later slice"
+                );
             }
             ScenarioState::Finished => {
                 // Structurally dead; kept so `match state` stays exhaustive.
@@ -871,6 +890,12 @@ fn debounce_close_to_paused(
             Some(GateEdge::WhileOpen) => return false,
             Some(GateEdge::WhileClose) => {}
             Some(GateEdge::AfterFired) => {}
+            Some(GateEdge::UpstreamGone) => {
+                unreachable!(
+                    "UpstreamGone has no sender in this build; \
+                     cross-POST runtime is wired in a later slice"
+                );
+            }
             None => {}
         }
     }
@@ -935,6 +960,12 @@ fn run_running_segment(
                     }
                     GateEdge::AfterFired => {
                         // Already past the after gate.
+                    }
+                    GateEdge::UpstreamGone => {
+                        unreachable!(
+                            "UpstreamGone has no sender in this build; \
+                             cross-POST runtime is wired in a later slice"
+                        );
                     }
                 }
             }
@@ -1013,6 +1044,7 @@ impl DebounceState {
                 }
             }
             GateEdge::AfterFired => {}
+            GateEdge::UpstreamGone => {}
         }
     }
 

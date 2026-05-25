@@ -117,6 +117,40 @@ pub enum ParseError {
     /// A `kind: composable` file failed to deserialize as a pack definition.
     #[error("kind: composable body is not a valid pack definition")]
     ComposablePackInvalid(#[source] serde_yaml_ng::Error),
+
+    /// A `while:` clause sets `if_unresolved:` without `scenario_name:`.
+    #[error(
+        "entry {index}: `while.if_unresolved` requires `while.scenario_name` to be set; \
+         `if_unresolved` only applies to cross-POST `while:` references"
+    )]
+    WhileUnresolvedWithoutScenarioName {
+        /// Zero-based index of the offending entry.
+        index: usize,
+    },
+
+    /// A `while:` clause carries `scenario_name:` but the file does not declare
+    /// a top-level `scenario_name:` of its own.
+    #[error(
+        "entry {index}: cross-POST `while:` refs require body-level `scenario_name` on the \
+         scenario file; add a top-level `scenario_name:` declaring this body's identity"
+    )]
+    CrossPostWhileMissingBodyScenarioName {
+        /// Zero-based index of the offending entry.
+        index: usize,
+    },
+
+    /// A cross-POST `while.ref` uses pack sub-signal `.` syntax, which is not
+    /// supported in v1 of the cross-POST surface.
+    #[error(
+        "entry {index}: cross-POST `while.ref` '{ref_id}' targets a pack sub-signal; \
+         cross-POST refs cannot target pack sub-signals in v1, use the top-level entry id"
+    )]
+    CrossPostWhileRefHasDot {
+        /// Zero-based index of the offending entry.
+        index: usize,
+        /// The offending `ref` value as written.
+        ref_id: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -368,8 +402,21 @@ pub fn parse(yaml: &str) -> Result<ScenarioFile, ParseError> {
         });
     }
     validate_entries(&file.scenarios)?;
+    validate_cross_post_while(&file)?;
 
     Ok(file)
+}
+
+fn validate_cross_post_while(file: &ScenarioFile) -> Result<(), ParseError> {
+    for (index, entry) in file.scenarios.iter().enumerate() {
+        let Some(clause) = entry.while_clause.as_ref() else {
+            continue;
+        };
+        if clause.scenario_name.is_some() && file.scenario_name.is_none() {
+            return Err(ParseError::CrossPostWhileMissingBodyScenarioName { index });
+        }
+    }
+    Ok(())
 }
 
 fn parse_composable(yaml: &str) -> Result<ScenarioFile, ParseError> {
@@ -553,8 +600,26 @@ fn validate_entries(entries: &[Entry]) -> Result<(), ParseError> {
         if !has_pack && entry.name.is_none() {
             return Err(ParseError::MissingName { index });
         }
+
+        validate_while_clause(entry, index)?;
     }
 
+    Ok(())
+}
+
+fn validate_while_clause(entry: &Entry, index: usize) -> Result<(), ParseError> {
+    let Some(clause) = entry.while_clause.as_ref() else {
+        return Ok(());
+    };
+    if clause.if_unresolved.is_some() && clause.scenario_name.is_none() {
+        return Err(ParseError::WhileUnresolvedWithoutScenarioName { index });
+    }
+    if clause.scenario_name.is_some() && clause.ref_id.contains('.') {
+        return Err(ParseError::CrossPostWhileRefHasDot {
+            index,
+            ref_id: clause.ref_id.clone(),
+        });
+    }
     Ok(())
 }
 
@@ -2178,5 +2243,208 @@ scenarios:
 
         let file = parse(yaml).expect("file with empty tags must parse");
         assert!(file.tags.is_empty());
+    }
+
+    // ======================================================================
+    // Cross-POST while: schema
+    // ======================================================================
+
+    #[test]
+    fn cross_post_while_clause_round_trips() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenario_name: downstream
+scenarios:
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: head
+      op: ">"
+      value: 0
+      scenario_name: upstream
+      if_unresolved: open
+"#;
+        let file = parse(yaml).expect("must parse cross-POST while clause");
+        let clause = file.scenarios[0]
+            .while_clause
+            .as_ref()
+            .expect("while present");
+        assert_eq!(clause.scenario_name.as_deref(), Some("upstream"));
+        assert_eq!(
+            clause.if_unresolved,
+            Some(super::super::UnresolvedBehavior::Open)
+        );
+
+        let serialized = serde_yaml_ng::to_string(&file).expect("must serialize");
+        let round_tripped: ScenarioFile =
+            serde_yaml_ng::from_str(&serialized).expect("must round-trip");
+        let round_clause = round_tripped.scenarios[0]
+            .while_clause
+            .as_ref()
+            .expect("while present after round-trip");
+        assert_eq!(round_clause.scenario_name.as_deref(), Some("upstream"));
+        assert_eq!(
+            round_clause.if_unresolved,
+            Some(super::super::UnresolvedBehavior::Open)
+        );
+    }
+
+    #[test]
+    fn if_unresolved_without_scenario_name_is_rejected() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: head
+      op: ">"
+      value: 0
+      if_unresolved: open
+"#;
+        let err = parse(yaml).expect_err("if_unresolved alone must fail");
+        assert!(
+            matches!(
+                err,
+                ParseError::WhileUnresolvedWithoutScenarioName { index: 0 }
+            ),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("requires"),
+            "message must mention requires, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("scenario_name"),
+            "message must mention scenario_name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cross_post_while_without_body_scenario_name_is_rejected() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: head
+      op: ">"
+      value: 0
+      scenario_name: upstream
+"#;
+        let err = parse(yaml).expect_err("missing body scenario_name must fail");
+        assert!(
+            matches!(
+                err,
+                ParseError::CrossPostWhileMissingBodyScenarioName { index: 0 }
+            ),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("body-level"),
+            "message must mention body-level, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("scenario_name"),
+            "message must mention scenario_name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cross_post_while_ref_with_dot_is_rejected() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenario_name: downstream
+scenarios:
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: head.metric
+      op: ">"
+      value: 0
+      scenario_name: upstream
+"#;
+        let err = parse(yaml).expect_err("dot in cross-POST ref must fail");
+        assert!(
+            matches!(
+                err,
+                ParseError::CrossPostWhileRefHasDot {
+                    index: 0,
+                    ref_id: ref s,
+                } if s == "head.metric"
+            ),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("entry id"),
+            "message must mention entry id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn local_only_while_clause_continues_to_parse() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenarios:
+  - id: head
+    signal_type: metrics
+    name: head_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: sine
+      amplitude: 1.0
+      period_secs: 60
+      offset: 0
+  - id: tail
+    signal_type: metrics
+    name: tail_metric
+    rate: 1
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: head
+      op: ">"
+      value: 0
+"#;
+        let file = parse(yaml).expect("local-only while: must still parse");
+        let clause = file.scenarios[1]
+            .while_clause
+            .as_ref()
+            .expect("while present");
+        assert!(clause.scenario_name.is_none());
+        assert!(clause.if_unresolved.is_none());
     }
 }

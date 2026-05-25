@@ -250,6 +250,7 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
         ScenarioState::Pending => "pending",
         ScenarioState::Running => "running",
         ScenarioState::Paused => "paused",
+        ScenarioState::Unresolved => "unresolved",
         ScenarioState::Finished => "finished",
         _ => "unknown",
     }
@@ -270,7 +271,10 @@ fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<Conflict
         }
         let snap = handle.stats_snapshot();
         let blocks = match snap.state {
-            ScenarioState::Pending | ScenarioState::Running | ScenarioState::Paused => true,
+            ScenarioState::Pending
+            | ScenarioState::Running
+            | ScenarioState::Paused
+            | ScenarioState::Unresolved => true,
             ScenarioState::Finished => false,
             _ => false,
         };
@@ -1695,6 +1699,8 @@ scenarios:
         assert_eq!(state_string(&s), "running");
         s.state = ScenarioState::Paused;
         assert_eq!(state_string(&s), "paused");
+        s.state = ScenarioState::Unresolved;
+        assert_eq!(state_string(&s), "unresolved");
         s.state = ScenarioState::Finished;
         assert_eq!(state_string(&s), "finished");
     }
