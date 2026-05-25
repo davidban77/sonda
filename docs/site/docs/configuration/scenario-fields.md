@@ -130,7 +130,7 @@ Scrape the server and the response carries both annotations:
 ```text title="GET /metrics"
 # HELP memory_utilization Memory usage percent on the device.
 # TYPE memory_utilization gauge
-memory_utilization{device="srl1"} 41.5 1779645380851
+memory_utilization{device="srl1"} 41.5
 ```
 
 !!! info "Why declare `metric_type`?"

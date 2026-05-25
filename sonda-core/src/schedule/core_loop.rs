@@ -1339,8 +1339,8 @@ mod tests {
 
         let st = stats.read().expect("lock must not be poisoned");
         assert!(
-            !st.recent_metrics.is_empty(),
-            "stats buffer must contain metric events"
+            !st.current_values.is_empty(),
+            "stats current_values must contain at least one series"
         );
     }
 

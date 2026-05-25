@@ -709,10 +709,8 @@ mod tests {
 
     // ---- Integration: stats buffer receives metric events ---------------------
 
-    /// When a stats arc is provided, the runner pushes metric events into the
-    /// recent_metrics buffer.
     #[test]
-    fn runner_pushes_metric_events_to_stats_buffer() {
+    fn runner_pushes_metric_events_to_stats_current_values() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(50.0, "200ms", None);
@@ -724,17 +722,8 @@ mod tests {
 
         let st = stats.read().expect("lock must not be poisoned");
         assert!(
-            !st.recent_metrics.is_empty(),
-            "runner must push events into the stats recent_metrics buffer, got {} events",
-            st.recent_metrics.len()
-        );
-        // The buffer is capped at MAX_RECENT_METRICS, so verify the count
-        // does not exceed that limit.
-        assert!(
-            st.recent_metrics.len() <= crate::schedule::stats::MAX_RECENT_METRICS,
-            "recent_metrics buffer must not exceed MAX_RECENT_METRICS ({}), got {}",
-            crate::schedule::stats::MAX_RECENT_METRICS,
-            st.recent_metrics.len()
+            !st.current_values.is_empty(),
+            "runner must push events into stats.current_values"
         );
     }
 
@@ -755,9 +744,8 @@ mod tests {
         );
     }
 
-    /// Stats buffer events have the correct metric name matching the config.
     #[test]
-    fn runner_stats_buffer_events_have_correct_metric_name() {
+    fn runner_stats_current_values_have_correct_metric_name() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(50.0, "100ms", None);
@@ -768,11 +756,8 @@ mod tests {
             .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
-        for event in st.recent_metrics.iter() {
-            assert_eq!(
-                &*event.name, "up",
-                "all buffered events must have the metric name from config"
-            );
+        for event in st.current_values.values() {
+            assert_eq!(&*event.name, "up");
         }
     }
 
@@ -967,10 +952,8 @@ mod tests {
     // ---- Arc sharing: name and labels are reference-counted, not deep-cloned ---
 
     /// All metric events buffered in stats must share the same Arc<str> name
-    /// allocation, proving that the runner uses Arc::clone (refcount bump)
-    /// instead of deep-cloning the name string on every tick.
     #[test]
-    fn buffered_events_share_name_arc_allocation() {
+    fn current_values_holds_one_entry_for_single_series_scenario() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(200.0, "100ms", None);
@@ -981,53 +964,17 @@ mod tests {
             .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
-        let events: Vec<_> = st.recent_metrics.iter().collect();
-        assert!(
-            events.len() >= 2,
-            "need at least 2 events to verify sharing, got {}",
-            events.len()
+        assert_eq!(
+            st.current_values.len(),
+            1,
+            "a single-series scenario must collapse to one current value"
         );
-
-        // All events should share the same Arc<str> allocation for the name.
-        let first_name = events[0].name.arc();
-        for (i, event) in events.iter().enumerate().skip(1) {
-            assert!(
-                Arc::ptr_eq(first_name, event.name.arc()),
-                "event[{i}].name should share Arc allocation with event[0].name"
-            );
-        }
-    }
-
-    /// When no cardinality spikes are configured, all buffered events must share
-    /// the same Arc<Labels> allocation, proving that the runner avoids
-    /// deep-cloning the BTreeMap on every tick.
-    #[test]
-    fn buffered_events_share_labels_arc_when_no_spikes() {
-        use std::sync::{Arc, RwLock};
-
-        let config = make_config(200.0, "100ms", None);
-        let mut sink = MemorySink::new();
-        let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
-
-        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
-            .expect("run must succeed");
-
-        let st = stats.read().expect("lock must not be poisoned");
-        let events: Vec<_> = st.recent_metrics.iter().collect();
-        assert!(
-            events.len() >= 2,
-            "need at least 2 events to verify sharing, got {}",
-            events.len()
-        );
-
-        // All events should share the same Arc<Labels> allocation.
-        let first_labels = &events[0].labels;
-        for (i, event) in events.iter().enumerate().skip(1) {
-            assert!(
-                Arc::ptr_eq(first_labels, &event.labels),
-                "event[{i}].labels should share Arc allocation with event[0].labels"
-            );
-        }
+        let persisted = st
+            .current_values
+            .values()
+            .next()
+            .expect("runner must push at least one event");
+        assert_eq!(&*persisted.name, "up");
     }
 
     /// Invalid metric name in config is caught before the hot loop, not during.
@@ -1388,16 +1335,16 @@ mod tests {
     }
 
     #[test]
-    fn close_emit_emits_every_series_above_recent_metrics_cap() {
+    fn close_emit_emits_every_distinct_series_regardless_of_count() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
-        use crate::schedule::stats::{ScenarioStats, MAX_RECENT_METRICS};
+        use crate::schedule::stats::ScenarioStats;
         use crate::sink::memory::MemorySink;
         use std::sync::{Arc, RwLock};
         use std::time::SystemTime;
 
-        let series_count = MAX_RECENT_METRICS * 3;
+        let series_count: usize = 300;
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         {
             let mut st = stats.write().unwrap();
@@ -1424,14 +1371,7 @@ mod tests {
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines = output.lines().filter(|l| !l.is_empty()).count();
-        assert_eq!(
-            lines, series_count,
-            "every distinct series must get a marker, even past the {MAX_RECENT_METRICS}-event scrape cap"
-        );
-        assert!(
-            lines > MAX_RECENT_METRICS,
-            "regression guard: marker count {lines} must exceed the scrape buffer cap"
-        );
+        assert_eq!(lines, series_count);
     }
 
     #[test]

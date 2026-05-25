@@ -155,7 +155,7 @@ instructions.
 A ServiceMonitor endpoint scrapes a single `path`. Two paths work for Sonda:
 
 - `/metrics` — aggregate scrape across every running scenario, with optional `?label=k:v` filtering. This is the right choice for most installs: one ServiceMonitor covers every scenario the server runs, regardless of how they were launched.
-- `/scenarios/<scenario-id>/metrics` — per-scenario drain. Use it when each scenario is its own logical target and you know its ID ahead of time (for example, one loaded from the `scenarios` ConfigMap at a stable route).
+- `/scenarios/<scenario-id>/metrics` — single-scenario snapshot. Use it when each scenario is its own logical target and you know its ID ahead of time (for example, one loaded from the `scenarios` ConfigMap at a stable route).
 
 `serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error telling you to set the path to a Prometheus-text endpoint such as `/metrics` or `/scenarios/<scenario-id>/metrics`. This avoids silently producing a ServiceMonitor that scrapes a non-metrics route.
 
@@ -277,7 +277,7 @@ For example, a Prometheus instance in the same namespace can scrape
 
 ## Prometheus scraping
 
-`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one response, with `?label=k:v` to slice by the labels you attached to each scenario. `GET /scenarios/{id}/metrics` is the per-scenario drain — one consumer pulls from one scenario's buffer. For most Prometheus setups, the aggregate endpoint is the right call: one job covers every scenario, multiple scrapers can read it, and you do not need to know scenario IDs ahead of time. See [Aggregate Prometheus scrape](sonda-server.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` AND-filter syntax.
+`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one response, with `?label=k:v` to slice by the labels you attached to each scenario. `GET /scenarios/{id}/metrics` is the per-scenario view — the current value of every series for one scenario. Both endpoints are idempotent snapshots: one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape. For most Prometheus setups, the aggregate endpoint is the right call — one job covers every scenario and you do not need to know scenario IDs ahead of time. See [Aggregate Prometheus scrape](sonda-server.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` AND-filter syntax.
 
 ### Aggregate scrape config
 
@@ -294,7 +294,7 @@ Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics; r
 
 ### Per-scenario scrape config
 
-When you want one scrape job per scenario, point `metrics_path` at the scenario ID. The endpoint drains its buffer on every scrape, so only one consumer should pull from a given ID at a time:
+When you want one scrape job per scenario, point `metrics_path` at the scenario ID:
 
 ```yaml title="prometheus-scrape.yaml"
 scrape_configs:

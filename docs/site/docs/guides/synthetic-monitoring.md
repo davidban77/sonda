@@ -239,7 +239,7 @@ For the full API reference, see [Server API](../deployment/sonda-server.md).
 
 ## Scrape metrics with Prometheus
 
-`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one Prometheus text response, with `?label=k:v` to slice by the labels you set on each scenario. `GET /scenarios/{id}/metrics` is the per-scenario drain — one consumer pulls from one scenario's buffer. For Prometheus / vmagent / VictoriaMetrics jobs, use the aggregate endpoint: it survives multiple scrapers, covers every scenario without knowing IDs ahead of time, and behaves like a normal exporter. See [Aggregate Prometheus scrape](../deployment/sonda-server.md#aggregate-prometheus-scrape) for the full reference.
+`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one Prometheus text response, with `?label=k:v` to slice by the labels you set on each scenario. `GET /scenarios/{id}/metrics` is the per-scenario view — the current value of every series for one scenario. Both endpoints are idempotent snapshots: one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape. For Prometheus / vmagent / VictoriaMetrics jobs, the aggregate endpoint is the right call: one job covers every scenario without knowing IDs ahead of time, and it behaves like a normal exporter. See [Aggregate Prometheus scrape](../deployment/sonda-server.md#aggregate-prometheus-scrape) for the full reference.
 
 ### Aggregate scrape config
 
@@ -256,7 +256,7 @@ The target address uses the Kubernetes Service DNS name (`sonda.<namespace>.svc`
 
 ### Per-scenario scrape config
 
-If you want one scrape job per scenario — typically when each scenario is its own logical target — point `metrics_path` at the scenario ID. The endpoint drains its buffer on every scrape, so only one consumer should pull from a given ID at a time:
+If you want one scrape job per scenario — typically when each scenario is its own logical target — point `metrics_path` at the scenario ID:
 
 ```yaml title="prometheus-scrape.yaml"
 scrape_configs:

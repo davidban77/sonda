@@ -7,8 +7,8 @@
 //! sample. `delay.close.stale_marker: false` disables the marker entirely.
 //! Non-`remote_write` sinks default to no close-emit; `snap_to` opts in.
 //!
-//! The recent-metrics buffer is capped at `MAX_RECENT_METRICS = 100`, so
-//! high-cardinality scenarios under-emit on close.
+//! The close-emit series set is uncapped, so high-cardinality scenarios
+//! still emit one stale marker per distinct series on close.
 
 #![cfg(feature = "config")]
 #![cfg(feature = "remote-write")]
@@ -140,8 +140,8 @@ fn run_with_capture(
         let _ = bus_for_thread;
     });
 
-    // Open then close after a short delay so the runner accumulates labels
-    // in stats.recent_metrics before the close commits.
+    // Open then close after a short delay so the runner accumulates the
+    // active series set before the close commits.
     if !open_at_start {
         thread::sleep(Duration::from_millis(50));
         bus.tick(1.0);
@@ -553,7 +553,7 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
         .expect("runner must succeed");
     });
 
-    // Let the scenario run for ~150ms so recent_metrics fills.
+    // Let the scenario run for ~150ms so the close-emit series set fills.
     thread::sleep(Duration::from_millis(150));
     let buf_before = capture.buf.lock().unwrap().clone();
 
