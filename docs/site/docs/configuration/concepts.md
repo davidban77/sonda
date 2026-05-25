@@ -1,36 +1,14 @@
 # Concepts
 
-Sonda generates synthetic telemetry — metrics, logs, histograms, summaries — from YAML you author. Four nouns carry the model: a **scenario** is a runnable YAML file, an **entry** is one signal inside that file, a **pack** is a reusable bundle of metric names, and a **catalog** is the directory of files Sonda discovers them from. The rest of this page defines each, shows what one looks like, and points at the detailed reference.
+## What Sonda is
 
-## The four pieces
+Sonda is a synthetic telemetry generator. You write a YAML recipe that says *"pretend to be a CPU metric that oscillates between 40% and 80%"* or *"pretend to be a router emitting interface counters"* or *"pretend to be an application emitting JSON logs at 100/sec"* — Sonda produces realistic-looking data shaped exactly like the real thing and ships it to your sinks (stdout, a file, Prometheus remote write, Loki, Kafka, OTLP). You point your dashboards, alert rules, and ingestion pipelines at the synthetic stream and exercise them without needing real production traffic.
 
-The pieces nest. A catalog directory contains scenario files. Each scenario file contains one or more entries. Each entry chooses a generator, an encoder, and a sink — or references a pack instead of declaring those by hand.
+The mental model in one sentence: **Sonda turns YAML recipes into telemetry streams.**
 
-```
-my-catalog/                <-- catalog (a directory you point sonda at)
-├── cpu-spike.yaml         <-- scenario file (kind: runnable)
-│   └── scenarios:
-│       └── - id: cpu      <-- entry (one signal you emit)
-│           generator: ...   one of these per entry
-│           encoder:   ...
-│           sink:      ...
-│
-└── snmp-pack.yaml         <-- scenario file (kind: composable, i.e. a "pack")
-    └── metrics:
-        - name: ifHCInOctets    one bundle of related metric names,
-        - name: ifHCOutOctets   reusable across scenarios
-```
+## A first example
 
-You can keep the catalog flat or nest subdirectories — Sonda walks the tree. What matters is what's inside each file.
-
-## Scenario
-
-A **scenario file** is a single YAML you can hand to `sonda run`. Every scenario file declares two top-level fields:
-
-- `version: 2` — the format version.
-- `kind: runnable` — a file you can execute. `kind: composable` marks a file as a pack instead (see [Pack](#pack) below).
-
-The other top-level fields are `defaults:` (shared settings) and `scenarios:` (the list of entries). The minimal runnable file:
+A scenario is a YAML file you hand to `sonda run`. The smallest useful one is six lines of substance:
 
 ```yaml title="hello.yaml"
 version: 2
@@ -55,13 +33,45 @@ scenarios:
 sonda run hello.yaml
 ```
 
-That file emits one Prometheus-formatted metric named `demo_cpu` to stdout at 1 sample/sec for 30 seconds. The `kind:` distinction is the rule of thumb: `kind: runnable` makes the file executable; `kind: composable` makes it a pack you reference from other files. For the full top-level field reference — catalog metadata, environment-variable interpolation, sink-error policy — see [Scenario Files](scenario-files.md).
+That file emits one Prometheus-formatted metric named `demo_cpu` with a constant value of `42`, once per second, for thirty seconds, printed to stdout. Reading top to bottom: `version: 2` and `kind: runnable` mark this as a scenario file Sonda can run. The `defaults:` block sets the cadence (`rate: 1`), how long to run (`duration: 30s`), the wire format (`prometheus_text`), and where to send the output (`stdout`). The `scenarios:` block lists what to emit — here, exactly one item, a constant-valued metric.
+
+That one YAML file demonstrates two of the four concepts Sonda is built around. The whole picture is four nouns, each one solving a problem the previous one creates.
+
+## The four pieces
+
+```
+catalog/                       <-- a directory of YAML files you point sonda at
+├── cpu-spike.yaml             <-- scenario file (kind: runnable)
+│   └── scenarios:
+│       └── - id: cpu          <-- entry (one signal you emit)
+│           generator: ...       one of these per entry
+│           encoder:   ...
+│           sink:      ...
+│
+└── snmp-pack.yaml             <-- scenario file (kind: composable, i.e. a "pack")
+    └── metrics:
+        - name: ifHCInOctets     a reusable bundle of metric names
+        - name: ifHCOutOctets    referenced from other scenarios by name
+```
+
+The pieces nest. A catalog directory contains scenario files. Each scenario file contains one or more entries. An entry either declares its own generator/encoder/sink or references a pack. The four sections below introduce each concept in order, starting from what `hello.yaml` already showed.
+
+## Scenario
+
+A **scenario file** is the YAML unit `sonda run` consumes. `hello.yaml` above is a complete one. Every scenario file declares two top-level fields:
+
+- `version: 2` — the format version.
+- `kind: runnable` — a file you can execute. `kind: composable` marks a file as a pack instead (see [Pack](#pack) below).
+
+The other top-level fields are `defaults:` (shared settings) and `scenarios:` (the list of entries). The `kind:` distinction is the rule of thumb: `kind: runnable` makes the file executable; `kind: composable` makes it a pack you reference from other files. For the full top-level field reference — catalog metadata, environment-variable interpolation, sink-error policy — see [Scenario Files](scenario-files.md).
 
 ## Entry
 
-An **entry** is one item under the `scenarios:` list. Each entry emits exactly one signal — one metric series, one log stream, one histogram, one summary. An entry needs at minimum a `signal_type:`, a `name:` (or a `pack:` reference), and the generator block that matches its signal type: `generator:` for metrics, `log_generator:` for logs, `distribution:` for histograms and summaries. Everything else — `rate`, `duration`, `encoder`, `sink`, `labels` — inherits from `defaults:` unless the entry overrides it.
+An **entry** is one item under the `scenarios:` list. Each entry emits exactly one signal — one metric series, one log stream, one histogram, one summary. `hello.yaml` had one entry; that is the floor, not the ceiling.
 
-Why a scenario file has multiple entries: production systems emit many signals at once. A single Prometheus scrape returns dozens of metrics from one process. To model that realistically, the scenario file declares one entry per metric and they all run together on shared defaults. A four-entry node-exporter-shaped file:
+Why scenario files have multiple entries: production systems emit many signals at once. A single process typically exposes dozens of metrics in parallel (CPU, memory, request rate, error rate, queue depth, ...). To model that realistically, the scenario file declares one entry per metric and they all run together on shared defaults. Each entry needs at minimum a `signal_type:`, a `name:` (or a `pack:` reference), and the generator block that matches its signal type: `generator:` for metrics, `log_generator:` for logs, `distribution:` for histograms and summaries. Everything else — `rate`, `duration`, `encoder`, `sink`, `labels` — inherits from `defaults:` unless the entry overrides it.
+
+A four-entry node-exporter-shaped file:
 
 ```yaml title="node-exporter-shape.yaml"
 version: 2
@@ -119,11 +129,11 @@ Four metrics, four generators, one shared encoder + sink + labels block — all 
 
 ## Pack
 
-A **pack** is a reusable bundle of metric names, label schemas, and sensible default generators per metric. You express a pack as a file with `kind: composable` and store it in the same catalog as your runnable scenarios. A runnable entry references a pack with `pack: <name>` and the compiler expands it at parse time into one entry per metric in the pack.
+The node-exporter file above declared four entries by hand. That is fine for four metrics. It gets old when you want to simulate a real exporter that exposes thirty metrics, and worse when you want twenty instances of that exporter across a fleet. Copy-pasting metric names is a recipe for typos and drift.
 
-The point: when you model an SNMP interface, you do not want to type out `ifHCInOctets`, `ifHCOutOctets`, `ifInErrors`, `ifOutErrors`, `ifOperStatus` and their label keys by hand. Author the pack once; reference it from every scenario that touches an interface.
+A **pack** is a reusable bundle of metric names, label schemas, and sensible default generators per metric. You express a pack as a file with `kind: composable` and store it in the same directory as your runnable scenarios. A runnable entry references a pack with `pack: <name>` and the compiler expands it at parse time into one entry per metric in the pack. Author the pack once; reference it from every scenario that uses that shape.
 
-Side-by-side — writing five entries by hand versus referencing one pack:
+Side-by-side — writing five SNMP interface entries by hand versus referencing one pack:
 
 === "By hand"
 
@@ -186,11 +196,11 @@ Side-by-side — writing five entries by hand versus referencing one pack:
           ifName: Gi0/0/0
     ```
 
-The pack version sits in the same catalog as the runnable file. The compiler reads `pack: telegraf_snmp_interface`, looks it up, and produces one prepared entry per metric — same names, same shared labels, ready to scrape. To author your own pack and read the full field reference, see [Metric Packs](../guides/metric-packs.md).
+The pack file sits in the same directory as the runnable file. The compiler reads `pack: telegraf_snmp_interface`, looks it up, and produces one prepared entry per metric — same names, same shared labels, ready to scrape. To author your own pack and read the full field reference, see [Metric Packs](../guides/metric-packs.md).
 
 ## Catalog
 
-A **catalog** is a directory of scenario files you point `sonda` at with `--catalog <dir>`. Sonda walks the directory, indexes each file by its `name:` (or by filename if `name:` is omitted), and lets you run anything in it with `sonda run @name`. Runnable files and packs live side by side — the `kind:` field tells Sonda which is which.
+Once you have more than one scenario file — and especially once packs enter the picture — Sonda needs to know where to look. A **catalog** is a directory of scenario files you point `sonda` at with `--catalog <dir>`. Sonda walks the directory, indexes each file by its `name:` (or by filename if `name:` is omitted), and lets you run anything in it with `sonda run @name`. Runnable files and packs live side by side — the `kind:` field tells Sonda which is which.
 
 ```
 ~/sonda-catalog/
@@ -204,7 +214,7 @@ sonda --catalog ~/sonda-catalog list
 sonda --catalog ~/sonda-catalog run @cpu-spike
 ```
 
-Packs live in the catalog but you do not run them directly — they are only meaningful when a runnable entry references them by name. The catalog is yours: keep it in the same git repo as your alert rules and dashboards, so the scenarios that exercise those rules ship alongside them. For the discovery rules, `sonda list` / `sonda show` output, and the full directory contract, see [Catalogs](../guides/scenarios.md).
+Packs live in the catalog but you do not run them directly — they are only meaningful when a runnable entry references them by name. The catalog is yours: keep it in the same git repo as your alert rules and dashboards, so the scenarios that exercise those rules ship alongside them. You can keep the catalog flat or nest subdirectories — Sonda walks the tree. For the discovery rules, `sonda list` / `sonda show` output, and the full directory contract, see [Catalogs](../guides/scenarios.md).
 
 ## Defaults & overrides
 
