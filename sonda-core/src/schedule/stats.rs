@@ -1,6 +1,6 @@
 //! Live statistics for a running scenario.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -11,11 +11,8 @@ use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 /// Dedup key for the close-emit series set: a distinct `(name, labels)` pair.
 pub type CloseEmitKey = (ValidatedMetricName, Arc<Labels>);
 
-/// Maximum number of recent metric events buffered for scrape endpoints.
-///
-/// This bounds memory usage to at most 100 `MetricEvent` clones per scenario.
-/// The buffer is a circular deque: when full, the oldest event is evicted.
-pub const MAX_RECENT_METRICS: usize = 100;
+/// Series identity for the [`ScenarioStats::current_values`] map.
+pub type MetricKey = (ValidatedMetricName, Arc<Labels>);
 
 /// How long since the last successful delivery before a failing scenario is
 /// considered degraded, in nanoseconds (30 seconds).
@@ -44,9 +41,9 @@ pub enum ScenarioState {
 /// [`std::sync::RwLock`]. The write lock is held only for the brief counter
 /// update, not during encode/write operations.
 ///
-/// The `recent_metrics` buffer holds the most recent metric events for
-/// scrape-based integration (e.g., Prometheus pulling from
-/// `GET /scenarios/{id}/metrics`). It is bounded by [`MAX_RECENT_METRICS`].
+/// The `current_values` map holds the current value of each distinct
+/// `(name, labels)` series the scenario has emitted. Scrape endpoints render
+/// one sample per series from this map.
 #[derive(Debug, Clone, Default, Serialize)]
 #[non_exhaustive]
 pub struct ScenarioStats {
@@ -72,14 +69,14 @@ pub struct ScenarioStats {
     pub last_sink_error: Option<String>,
     /// Wall-clock time of the most recent successful write, as Unix nanoseconds.
     pub last_successful_write_at: Option<u64>,
-    /// Circular buffer of recent metric events for scrape endpoints.
-    ///
-    /// Bounded by [`MAX_RECENT_METRICS`]. When full, the oldest event is
-    /// evicted on the next push. This field is not serialized because
-    /// [`MetricEvent`] does not implement `Serialize` and the buffer is
-    /// consumed via a dedicated drain method, not via JSON stats responses.
+    /// Current value of each distinct `(name, labels)` series the runner has
+    /// emitted since the scenario started. Overwritten in place on every new
+    /// emission for that series; bounded by series cardinality, not by sample
+    /// count. A cardinality-spike scenario that emits thousands of distinct
+    /// series will grow the map accordingly — that is the spec-correct
+    /// behavior for a Prometheus-style exporter.
     #[serde(skip)]
-    pub recent_metrics: VecDeque<MetricEvent>,
+    pub current_values: HashMap<MetricKey, MetricEvent>,
     /// Lifecycle state of the scenario.
     pub state: ScenarioState,
     /// Distinct `(name, labels)` series active since the last gate-close.
@@ -99,12 +96,10 @@ pub struct ScenarioStats {
 }
 
 impl ScenarioStats {
-    /// Push a metric event into the recent-metrics buffer.
-    ///
-    /// If the buffer is at capacity ([`MAX_RECENT_METRICS`]), the oldest
-    /// event is evicted before the new one is inserted. When
-    /// `track_close_series` is set, the event's `(name, labels)` series is
-    /// also recorded for close-emit.
+    /// Record a metric event as the current value of its `(name, labels)`
+    /// series. Overwrites any prior value for that series. When
+    /// `track_close_series` is set, the event's series is also recorded for
+    /// close-emit.
     pub fn push_metric(&mut self, event: MetricEvent) {
         // Only gated scenarios drain the series set on close; populating it
         // unconditionally would let a non-gated scenario's set grow unbounded.
@@ -113,10 +108,8 @@ impl ScenarioStats {
                 .insert((event.name.clone(), Arc::clone(&event.labels)));
             self.last_emit_ts = Some(event.timestamp);
         }
-        if self.recent_metrics.len() >= MAX_RECENT_METRICS {
-            self.recent_metrics.pop_front();
-        }
-        self.recent_metrics.push_back(event);
+        let key = (event.name.clone(), Arc::clone(&event.labels));
+        self.current_values.insert(key, event);
     }
 
     /// Enable close-emit series tracking. Called once when a close-emitter is
@@ -135,12 +128,16 @@ impl ScenarioStats {
         (series, ts)
     }
 
-    /// Drain and return all buffered metric events.
-    ///
-    /// After this call the buffer is empty. The returned events are ordered
-    /// oldest-first.
-    pub fn drain_recent_metrics(&mut self) -> Vec<MetricEvent> {
-        self.recent_metrics.drain(..).collect()
+    /// Snapshot the current value of each series, sorted by name then label
+    /// pairs so successive calls produce byte-identical output.
+    pub fn current_values_snapshot(&self) -> Vec<MetricEvent> {
+        let mut events: Vec<MetricEvent> = self.current_values.values().cloned().collect();
+        events.sort_by(|a, b| {
+            (*a.name)
+                .cmp(&b.name)
+                .then_with(|| a.labels.iter().cmp(b.labels.iter()))
+        });
+        events
     }
 
     /// Whether the scenario looks unhealthy. Returns `true` only when the
@@ -295,21 +292,12 @@ mod tests {
         assert_send_sync::<ScenarioStats>();
     }
 
-    // ---- recent_metrics buffer: default is empty ----------------------------
-
-    /// Default-constructed stats must have an empty recent_metrics buffer.
     #[test]
-    fn default_stats_has_empty_recent_metrics_buffer() {
+    fn default_stats_has_empty_current_values_map() {
         let s = ScenarioStats::default();
-        assert!(
-            s.recent_metrics.is_empty(),
-            "recent_metrics buffer must be empty on default construction"
-        );
+        assert!(s.current_values.is_empty());
     }
 
-    // ---- Helper: build a MetricEvent for testing ----------------------------
-
-    /// Build a MetricEvent with the given name and value for testing.
     fn make_metric_event(name: &str, value: f64) -> crate::model::metric::MetricEvent {
         crate::model::metric::MetricEvent::new(
             name.to_string(),
@@ -319,224 +307,110 @@ mod tests {
         .expect("test metric name must be valid")
     }
 
-    // ---- push_metric: adds events to the deque ------------------------------
-
-    /// push_metric adds a single event to the buffer.
-    #[test]
-    fn push_metric_adds_event_to_buffer() {
-        let mut s = ScenarioStats::default();
-        let event = make_metric_event("up", 1.0);
-        s.push_metric(event);
-        assert_eq!(
-            s.recent_metrics.len(),
-            1,
-            "buffer must contain exactly 1 event after one push"
-        );
+    fn make_labeled_event(
+        name: &str,
+        value: f64,
+        pairs: &[(&str, &str)],
+    ) -> crate::model::metric::MetricEvent {
+        let labels = crate::model::metric::Labels::from_pairs(pairs).expect("labels must build");
+        crate::model::metric::MetricEvent::new(name.to_string(), value, labels)
+            .expect("test metric name must be valid")
     }
 
-    /// push_metric preserves insertion order (oldest first).
     #[test]
-    fn push_metric_preserves_insertion_order() {
+    fn push_metric_inserts_new_series_into_current_values() {
         let mut s = ScenarioStats::default();
-        s.push_metric(make_metric_event("up", 10.0));
-        s.push_metric(make_metric_event("up", 20.0));
-        s.push_metric(make_metric_event("up", 30.0));
-
-        assert_eq!(s.recent_metrics.len(), 3);
-        assert_eq!(
-            s.recent_metrics[0].value, 10.0,
-            "first event must be the oldest (value=10.0)"
-        );
-        assert_eq!(
-            s.recent_metrics[1].value, 20.0,
-            "second event must be value=20.0"
-        );
-        assert_eq!(
-            s.recent_metrics[2].value, 30.0,
-            "third event must be the newest (value=30.0)"
-        );
+        s.push_metric(make_metric_event("up", 1.0));
+        assert_eq!(s.current_values.len(), 1);
     }
 
-    /// push_metric can fill the buffer up to MAX_RECENT_METRICS.
     #[test]
-    fn push_metric_fills_buffer_to_max_capacity() {
-        let mut s = ScenarioStats::default();
-        for i in 0..MAX_RECENT_METRICS {
-            s.push_metric(make_metric_event("up", i as f64));
-        }
-        assert_eq!(
-            s.recent_metrics.len(),
-            MAX_RECENT_METRICS,
-            "buffer must hold exactly MAX_RECENT_METRICS events"
-        );
-    }
-
-    // ---- push_metric: eviction when full ------------------------------------
-
-    /// When the buffer is full, push_metric evicts the oldest event.
-    #[test]
-    fn push_metric_evicts_oldest_when_full() {
-        let mut s = ScenarioStats::default();
-        // Fill to capacity with values 0..MAX_RECENT_METRICS.
-        for i in 0..MAX_RECENT_METRICS {
-            s.push_metric(make_metric_event("up", i as f64));
-        }
-        assert_eq!(s.recent_metrics.len(), MAX_RECENT_METRICS);
-
-        // The oldest event has value 0.0.
-        assert_eq!(
-            s.recent_metrics.front().unwrap().value,
-            0.0,
-            "oldest event before eviction must be value=0.0"
-        );
-
-        // Push one more event.
-        s.push_metric(make_metric_event("up", 999.0));
-
-        // Buffer size must not exceed MAX_RECENT_METRICS.
-        assert_eq!(
-            s.recent_metrics.len(),
-            MAX_RECENT_METRICS,
-            "buffer must not grow beyond MAX_RECENT_METRICS after eviction"
-        );
-
-        // The oldest event (value=0.0) was evicted; now value=1.0 is oldest.
-        assert_eq!(
-            s.recent_metrics.front().unwrap().value,
-            1.0,
-            "oldest event after eviction must be value=1.0"
-        );
-
-        // The newest event is value=999.0.
-        assert_eq!(
-            s.recent_metrics.back().unwrap().value,
-            999.0,
-            "newest event after eviction must be value=999.0"
-        );
-    }
-
-    /// Multiple evictions work correctly: push MAX + 5 events, oldest 5 are gone.
-    #[test]
-    fn push_metric_multiple_evictions_discard_oldest() {
-        let mut s = ScenarioStats::default();
-        let total = MAX_RECENT_METRICS + 5;
-        for i in 0..total {
-            s.push_metric(make_metric_event("up", i as f64));
-        }
-
-        assert_eq!(s.recent_metrics.len(), MAX_RECENT_METRICS);
-
-        // Oldest should be value 5.0 (0..4 evicted).
-        assert_eq!(
-            s.recent_metrics.front().unwrap().value,
-            5.0,
-            "after MAX+5 pushes, oldest event must be value=5.0"
-        );
-
-        // Newest should be value (total-1) = MAX_RECENT_METRICS + 4.
-        assert_eq!(
-            s.recent_metrics.back().unwrap().value,
-            (total - 1) as f64,
-            "newest event must be the last pushed value"
-        );
-    }
-
-    // ---- drain_recent_metrics: returns all and empties ----------------------
-
-    /// drain_recent_metrics returns all buffered events and empties the deque.
-    #[test]
-    fn drain_recent_metrics_returns_all_events_and_empties_buffer() {
+    fn push_metric_overwrites_existing_series_with_latest_value() {
         let mut s = ScenarioStats::default();
         s.push_metric(make_metric_event("up", 1.0));
         s.push_metric(make_metric_event("up", 2.0));
-        s.push_metric(make_metric_event("up", 3.0));
-
-        let drained = s.drain_recent_metrics();
-        assert_eq!(drained.len(), 3, "drain must return all 3 buffered events");
-        assert!(
-            s.recent_metrics.is_empty(),
-            "buffer must be empty after drain"
-        );
+        assert_eq!(s.current_values.len(), 1);
+        let snap = s.current_values_snapshot();
+        assert_eq!(snap[0].value, 2.0);
     }
 
-    /// drain_recent_metrics returns events ordered oldest-first.
     #[test]
-    fn drain_recent_metrics_returns_oldest_first_order() {
+    fn push_metric_distinguishes_different_label_sets() {
         let mut s = ScenarioStats::default();
-        s.push_metric(make_metric_event("up", 100.0));
-        s.push_metric(make_metric_event("up", 200.0));
-        s.push_metric(make_metric_event("up", 300.0));
-
-        let drained = s.drain_recent_metrics();
-        assert_eq!(drained[0].value, 100.0, "first drained must be oldest");
-        assert_eq!(drained[1].value, 200.0, "second drained must be middle");
-        assert_eq!(drained[2].value, 300.0, "third drained must be newest");
+        s.push_metric(make_labeled_event("up", 1.0, &[("host", "a")]));
+        s.push_metric(make_labeled_event("up", 2.0, &[("host", "b")]));
+        assert_eq!(s.current_values.len(), 2);
     }
 
-    /// drain_recent_metrics on an empty buffer returns an empty Vec.
     #[test]
-    fn drain_recent_metrics_on_empty_buffer_returns_empty_vec() {
+    fn current_values_snapshot_returns_one_event_per_series() {
         let mut s = ScenarioStats::default();
-        let drained = s.drain_recent_metrics();
-        assert!(
-            drained.is_empty(),
-            "draining an empty buffer must return an empty Vec"
-        );
+        for i in 0..100 {
+            s.push_metric(make_metric_event("up", i as f64));
+        }
+        let snap = s.current_values_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].value, 99.0);
     }
 
-    /// After draining, pushing new events starts fresh.
     #[test]
-    fn drain_then_push_starts_fresh_buffer() {
+    fn current_values_snapshot_is_deterministic_across_calls() {
+        let mut s = ScenarioStats::default();
+        s.push_metric(make_labeled_event("up", 1.0, &[("host", "c")]));
+        s.push_metric(make_labeled_event("up", 2.0, &[("host", "a")]));
+        s.push_metric(make_labeled_event("up", 3.0, &[("host", "b")]));
+        s.push_metric(make_labeled_event("down", 9.0, &[]));
+
+        let first = s.current_values_snapshot();
+        let second = s.current_values_snapshot();
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(&*a.name, &*b.name);
+            assert!(a.labels.iter().eq(b.labels.iter()));
+            assert_eq!(a.value, b.value);
+        }
+
+        let names: Vec<&str> = first.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, vec!["down", "up", "up", "up"]);
+        let up_hosts: Vec<&str> = first
+            .iter()
+            .filter(|e| &*e.name == "up")
+            .map(|e| {
+                e.labels
+                    .iter()
+                    .next()
+                    .map(|(_, v)| v)
+                    .expect("label must exist")
+            })
+            .collect();
+        assert_eq!(up_hosts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn current_values_grows_with_distinct_series_no_cap() {
+        let mut s = ScenarioStats::default();
+        for i in 0..200 {
+            s.push_metric(make_labeled_event(
+                "up",
+                i as f64,
+                &[("host", &format!("h{i}"))],
+            ));
+        }
+        assert_eq!(s.current_values.len(), 200);
+    }
+
+    #[test]
+    fn current_values_snapshot_on_empty_stats_returns_empty_vec() {
+        let s = ScenarioStats::default();
+        assert!(s.current_values_snapshot().is_empty());
+    }
+
+    #[test]
+    fn current_values_is_not_serialized_to_json() {
         let mut s = ScenarioStats::default();
         s.push_metric(make_metric_event("up", 1.0));
-        s.push_metric(make_metric_event("up", 2.0));
-
-        let first_drain = s.drain_recent_metrics();
-        assert_eq!(first_drain.len(), 2);
-        assert!(s.recent_metrics.is_empty());
-
-        // Push new events after drain.
-        s.push_metric(make_metric_event("up", 10.0));
-        assert_eq!(s.recent_metrics.len(), 1);
-
-        let second_drain = s.drain_recent_metrics();
-        assert_eq!(second_drain.len(), 1);
-        assert_eq!(
-            second_drain[0].value, 10.0,
-            "new event after drain must be retrievable"
-        );
-    }
-
-    /// Calling drain twice without intermediate pushes returns empty on second call.
-    #[test]
-    fn drain_twice_returns_empty_on_second_call() {
-        let mut s = ScenarioStats::default();
-        s.push_metric(make_metric_event("up", 42.0));
-
-        let first = s.drain_recent_metrics();
-        assert_eq!(first.len(), 1);
-
-        let second = s.drain_recent_metrics();
-        assert!(
-            second.is_empty(),
-            "second drain must return empty Vec after first drain consumed all events"
-        );
-    }
-
-    // ---- recent_metrics is not serialized (serde skip) ----------------------
-
-    /// The recent_metrics field is skipped during JSON serialization.
-    #[test]
-    fn recent_metrics_buffer_is_not_serialized_to_json() {
-        let mut s = ScenarioStats::default();
-        s.push_metric(make_metric_event("up", 1.0));
-        s.push_metric(make_metric_event("up", 2.0));
-
         let json = serde_json::to_string(&s).expect("must serialize");
-        assert!(
-            !json.contains("recent_metrics"),
-            "recent_metrics must not appear in JSON output (serde skip): {json}"
-        );
+        assert!(!json.contains("current_values"));
     }
 
     // ---- is_degraded --------------------------------------------------------
@@ -563,7 +437,11 @@ mod tests {
             "non-gated scenario must not accumulate the series set"
         );
         assert!(s.last_emit_ts.is_none(), "watermark must stay unset");
-        assert_eq!(s.recent_metrics.len(), 10, "scrape buffer must still fill");
+        assert_eq!(
+            s.current_values.len(),
+            10,
+            "scrape map must hold one entry per distinct series"
+        );
     }
 
     #[test]
@@ -595,23 +473,15 @@ mod tests {
     }
 
     #[test]
-    fn series_set_is_uncapped_past_recent_metrics_cap() {
+    fn series_set_grows_with_distinct_series_uncapped() {
         let mut s = ScenarioStats::default();
         s.enable_close_series_tracking();
-        let count = MAX_RECENT_METRICS * 4;
+        let count = 400;
         for i in 0..count {
             s.push_metric(make_series_event("up", &format!("h{i}")));
         }
-        assert_eq!(
-            s.close_emit_series.len(),
-            count,
-            "series set must hold every distinct series, ignoring the scrape cap"
-        );
-        assert_eq!(
-            s.recent_metrics.len(),
-            MAX_RECENT_METRICS,
-            "scrape buffer stays capped"
-        );
+        assert_eq!(s.close_emit_series.len(), count);
+        assert_eq!(s.current_values.len(), count);
     }
 
     #[test]

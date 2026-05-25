@@ -237,36 +237,12 @@ impl ScenarioHandle {
         }
     }
 
-    /// Drain and return recent metric events from the stats buffer.
-    ///
-    /// Acquires the write lock briefly, drains the buffered events, and
-    /// returns them ordered oldest-first. After this call the buffer is
-    /// empty. Subsequent calls return an empty vec until new events arrive.
-    ///
-    /// This is used by the scrape endpoint (`GET /scenarios/{id}/metrics`)
-    /// to retrieve the latest metric events for Prometheus text encoding.
-    ///
-    /// If the stats lock is poisoned (because a writer panicked), this method
-    /// recovers the data from the poisoned guard rather than propagating the
-    /// panic. The returned events may be incomplete but will not cause the
-    /// caller to panic.
-    pub fn recent_metrics(&self) -> Vec<crate::model::metric::MetricEvent> {
-        match self.stats.write() {
-            Ok(mut guard) => guard.drain_recent_metrics(),
-            Err(poisoned) => poisoned.into_inner().drain_recent_metrics(),
-        }
-    }
-
-    /// Clone the recent-metrics buffer without draining it.
+    /// Snapshot the current value of each series the scenario is emitting,
+    /// sorted by `(name, labels)` for deterministic output.
     pub fn recent_metrics_snapshot(&self) -> Vec<crate::model::metric::MetricEvent> {
         match self.stats.read() {
-            Ok(guard) => guard.recent_metrics.iter().cloned().collect(),
-            Err(poisoned) => poisoned
-                .into_inner()
-                .recent_metrics
-                .iter()
-                .cloned()
-                .collect(),
+            Ok(guard) => guard.current_values_snapshot(),
+            Err(poisoned) => poisoned.into_inner().current_values_snapshot(),
         }
     }
 }
@@ -498,9 +474,6 @@ mod tests {
         handle.join(None).ok();
     }
 
-    // ---- recent_metrics: drains from stats buffer ----------------------------
-
-    /// Helper to build a MetricEvent for testing.
     fn make_metric_event(name: &str, value: f64) -> crate::model::metric::MetricEvent {
         crate::model::metric::MetricEvent::new(
             name.to_string(),
@@ -510,57 +483,38 @@ mod tests {
         .expect("test metric name must be valid")
     }
 
-    /// recent_metrics on a fresh handle returns an empty Vec.
     #[test]
-    fn recent_metrics_on_fresh_handle_returns_empty() {
+    fn recent_metrics_snapshot_on_fresh_handle_returns_empty() {
         let handle = make_handle("test-rm-1", "fresh", 0, Duration::ZERO);
-        let events = handle.recent_metrics();
-        assert!(
-            events.is_empty(),
-            "recent_metrics must return empty Vec on a fresh handle"
-        );
+        assert!(handle.recent_metrics_snapshot().is_empty());
     }
 
-    /// recent_metrics drains events that were pushed to the stats buffer.
     #[test]
-    fn recent_metrics_drains_pushed_events() {
-        let handle = make_handle("test-rm-2", "drain", 0, Duration::ZERO);
-
-        // Push events directly into the stats buffer.
+    fn recent_metrics_snapshot_returns_current_values_not_history() {
+        let handle = make_handle("test-rm-2", "current", 0, Duration::ZERO);
         {
             let mut stats = handle.stats.write().expect("lock must not be poisoned");
             stats.push_metric(make_metric_event("up", 1.0));
             stats.push_metric(make_metric_event("up", 2.0));
+            stats.push_metric(make_metric_event("up", 3.0));
         }
-
-        let events = handle.recent_metrics();
-        assert_eq!(
-            events.len(),
-            2,
-            "recent_metrics must return all pushed events"
-        );
-        assert_eq!(events[0].value, 1.0, "first event must be value=1.0");
-        assert_eq!(events[1].value, 2.0, "second event must be value=2.0");
+        let events = handle.recent_metrics_snapshot();
+        assert_eq!(events.len(), 1, "same series must collapse to one entry");
+        assert_eq!(events[0].value, 3.0, "latest value must win");
     }
 
-    /// After calling recent_metrics, the buffer is empty (second call returns empty).
     #[test]
-    fn recent_metrics_clears_buffer_after_drain() {
-        let handle = make_handle("test-rm-3", "clear", 0, Duration::ZERO);
-
+    fn recent_metrics_snapshot_is_idempotent() {
+        let handle = make_handle("test-rm-3", "idempotent", 0, Duration::ZERO);
         {
             let mut stats = handle.stats.write().expect("lock must not be poisoned");
             stats.push_metric(make_metric_event("up", 42.0));
         }
-
-        let first = handle.recent_metrics();
+        let first = handle.recent_metrics_snapshot();
+        let second = handle.recent_metrics_snapshot();
         assert_eq!(first.len(), 1);
-
-        let second = handle.recent_metrics();
-        assert!(
-            second.is_empty(),
-            "second call to recent_metrics must return empty Vec after drain"
-        );
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].value, second[0].value);
     }
 
     // ---- stats_snapshot: recovers from poisoned lock -------------------------
@@ -619,22 +573,16 @@ mod tests {
         );
     }
 
-    // ---- recent_metrics: recovers from poisoned lock --------------------------
-
-    /// If the stats lock is poisoned, recent_metrics recovers the data instead
-    /// of panicking.
     #[test]
-    fn recent_metrics_recovers_from_poisoned_lock() {
+    fn recent_metrics_snapshot_recovers_from_poisoned_lock() {
         let shutdown = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        // Push a metric event before poisoning.
         {
             let mut guard = stats.write().expect("lock must not be poisoned");
             guard.push_metric(make_metric_event("up", 99.0));
         }
 
-        // Poison the lock.
         let stats_clone = Arc::clone(&stats);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = stats_clone.write().expect("lock must not be poisoned");
@@ -664,17 +612,9 @@ mod tests {
             ))),
         );
 
-        // recent_metrics must not panic — it recovers from the poisoned lock.
-        let events = handle.recent_metrics();
-        assert_eq!(
-            events.len(),
-            1,
-            "must recover buffered events from poisoned lock"
-        );
-        assert_eq!(
-            events[0].value, 99.0,
-            "recovered event must have correct value"
-        );
+        let events = handle.recent_metrics_snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].value, 99.0);
     }
 
     // ---- Contract: ScenarioHandle is Send -----------------------------------

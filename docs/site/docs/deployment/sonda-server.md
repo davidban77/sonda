@@ -423,8 +423,8 @@ Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELET
 | GET | `/scenarios/{id}` | Inspect a scenario: config, stats, elapsed |
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state, sink-failure counters. See [Self-observability via /stats](#self-observability-via-stats). |
-| GET | `/scenarios/{id}/metrics` | Latest metrics in Prometheus text format. DRAIN semantics — one consumer. |
-| GET | `/metrics` | Aggregate Prometheus scrape across all running scenarios. SNAPSHOT semantics — multi-consumer. Supports `?label=k:v` filtering. See [Aggregate Prometheus scrape](#aggregate-prometheus-scrape). |
+| GET | `/scenarios/{id}/metrics` | Current per-series values for one scenario in Prometheus text format. Idempotent snapshot. |
+| GET | `/metrics` | Aggregate Prometheus scrape across all running scenarios. Idempotent snapshot, multi-consumer safe. Supports `?label=k:v` filtering. See [Aggregate Prometheus scrape](#aggregate-prometheus-scrape). |
 | POST | `/events` | Emit one log or metric event synchronously. See [Single-Event API](events.md). |
 
 ## Authentication
@@ -720,7 +720,7 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
 ## Aggregate Prometheus scrape
 
-To a scraper, `sonda-server` presents itself the same way a Prometheus exporter on a real device does — one URL (`GET /metrics`), idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns a snapshot of every running scenario's recent metric events fused into a single Prometheus text-format response, and `?label=k:v` filters that view by the labels the user attached when starting each scenario.
+To a scraper, `sonda-server` presents itself the same way a Prometheus exporter on a real device does — one URL (`GET /metrics`), idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns the current value of every series across every running scenario, one sample per `(name, labels)` series with no per-sample timestamp, fused into a single Prometheus text-format response. `?label=k:v` filters that view by the labels the user attached when starting each scenario.
 
 It is a **typed** exporter: each metric is fronted by `# TYPE` and (when configured) `# HELP` lines, so Prometheus, VictoriaMetrics, vmagent, and Telegraf consumers see the same exposition shape they would see scraping any real device. Set [`metric_type:` and `help:`](../configuration/scenario-fields.md#prometheus-exposition-fields) on a scenario to declare the type and description explicitly; omit them and the server picks a sensible default (`gauge` for most metric generators, `counter` for [`step`](../configuration/generators.md#step), `histogram` / `summary` for those signal types).
 
@@ -767,22 +767,25 @@ curl http://localhost:8080/metrics
 ```text title="Response (text/plain; version=0.0.4; charset=utf-8)"
 # HELP memory_utilization Memory usage percent on the device.
 # TYPE memory_utilization gauge
-memory_utilization{device="srl1"} 41.528 1779645380851
-memory_utilization{device="srl2"} 67.812 1779645380851
+memory_utilization{device="srl1"} 41.528
+memory_utilization{device="srl2"} 67.812
 ```
 
-Each sample line is `metric_name{labels} value timestamp_ms`. Per-sample wall-clock millisecond timestamps let Prometheus and VictoriaMetrics dedupe naturally on `(name, labels, timestamp_ms, value)` across overlapping scrape windows. The `# TYPE` line appears once per metric name, and `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+One line per `(name, labels)` series, carrying the current value with no per-sample timestamp — the same shape `node_exporter` and Prometheus self-scrape produce. The scraper stamps every sample with its own scrape wall-clock at ingest time, so the server emitting its own timestamps would conflict with that. The `# TYPE` line appears once per metric name, and `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+
+!!! info "Idempotent within a scrape window"
+    `GET /metrics` is non-destructive and stable: two scrapes back-to-back return byte-identical bodies. A Prometheus job and a vmagent job (and an ops dashboard) can scrape the same server without stealing events from each other. The CLI streaming sinks (`stdout`, `file`, `tcp`, `udp`) still emit a timestamp per event — they encode a stream over time, so the timestamp is what gives each line its identity. The HTTP scrape and the CLI stream serve different consumer models, so the encoder is configured differently for each path.
 
 Histogram and summary scenarios surface the same way — one `# TYPE` block per base name covering every `_bucket{le="..."}`, `_sum`, `_count`, and quantile line:
 
 ```text title="Response (histogram entry)"
 # HELP http_request_duration_seconds Request latency in seconds.
 # TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{le="0.005",method="GET"} 3 1779645380851
-http_request_duration_seconds_bucket{le="0.01",method="GET"} 11 1779645380851
-http_request_duration_seconds_bucket{le="+Inf",method="GET"} 100 1779645380851
-http_request_duration_seconds_sum{method="GET"} 9.505 1779645380851
-http_request_duration_seconds_count{method="GET"} 100 1779645380851
+http_request_duration_seconds_bucket{le="0.005",method="GET"} 3
+http_request_duration_seconds_bucket{le="0.01",method="GET"} 11
+http_request_duration_seconds_bucket{le="+Inf",method="GET"} 100
+http_request_duration_seconds_sum{method="GET"} 9.505
+http_request_duration_seconds_count{method="GET"} 100
 ```
 
 This is the exposition shape `histogram_quantile()` expects, so PromQL percentile queries work end-to-end against the server.
@@ -815,14 +818,14 @@ A malformed filter (missing `:`, empty key, empty value) returns `400 Bad Reques
 
 ### `GET /metrics` vs `GET /scenarios/{id}/metrics`
 
-Both endpoints emit Prometheus text. They serve different scrape models:
+Both endpoints emit Prometheus text and both are idempotent snapshots — two back-to-back calls return byte-identical bodies. They differ only in scope:
 
-| Endpoint | Semantics | Use it for |
+| Endpoint | Scope | Use it for |
 |---|---|---|
-| `GET /metrics` | **Snapshot** — non-destructive. Two back-to-back calls return identical bytes. | Production scraping. Multiple scrapers can read it (Prometheus + vmagent + an ops dashboard) without stealing events from each other. |
-| `GET /scenarios/{id}/metrics` | **Drain** — each call empties the per-scenario buffer. | Debugging a single scenario. Drives the per-event consumer pattern (one consumer pulls, observes, discards). |
+| `GET /metrics` | Every running scenario fused into one response. Supports `?label=k:v` to slice the view. | Production scraping. One job covers every scenario, with no need to know IDs ahead of time. |
+| `GET /scenarios/{id}/metrics` | One scenario. | Debugging or wiring a per-scenario route when each scenario is its own logical target. |
 
-Pick `GET /metrics` for any Prometheus / VictoriaMetrics / vmagent job — it is the endpoint that behaves like a normal exporter. Reach for the per-scenario drain when you are inspecting one scenario in isolation or wiring a one-off pull-based consumer.
+Pick `GET /metrics` for any Prometheus / VictoriaMetrics / vmagent job — it is the endpoint that behaves like a normal exporter. Reach for the per-scenario endpoint when you are inspecting one scenario in isolation or want a stable URL per scenario.
 
 ### Scrape config
 
@@ -855,14 +858,14 @@ scrape_configs:
 
 ## Per-scenario scrape
 
-The `GET /scenarios/{id}/metrics` endpoint returns recent metric events for one scenario in Prometheus text exposition format. Each scrape **drains** the buffer — events appear once per cycle. Use it when you want a one-to-one consumer pulling from a single scenario; reach for [`GET /metrics`](#aggregate-prometheus-scrape) when more than one scraper needs the data or when you want a single job that covers every running scenario.
+The `GET /scenarios/{id}/metrics` endpoint returns the current value of every series one scenario is emitting, in Prometheus text exposition format. It is the per-scenario counterpart to [`GET /metrics`](#aggregate-prometheus-scrape): same one-sample-per-series shape, same idempotent snapshot semantics, scoped to a single scenario. Reach for it when each scenario is its own logical target and you have a stable ID to point at.
 
 The response carries the same `# TYPE` and `# HELP` annotations as the aggregate endpoint, scoped to the single scenario:
 
 ```text title="GET /scenarios/<SCENARIO_ID>/metrics"
 # HELP memory_utilization Memory usage percent on the device.
 # TYPE memory_utilization gauge
-memory_utilization{device="srl1"} 41.528 1779645380851
+memory_utilization{device="srl1"} 41.528
 ```
 
 See [Prometheus exposition fields](../configuration/scenario-fields.md#prometheus-exposition-fields) for how `metric_type:` and `help:` control these lines and how defaults are derived.
@@ -876,9 +879,7 @@ scrape_configs:
       - targets: ["localhost:8080"]
 ```
 
-Replace `<SCENARIO_ID>` with the ID returned by `POST /scenarios`.
-
-The endpoint accepts an optional `?limit=N` query parameter (default 100, max 1000) to control how many recent events are returned per scrape. If no metrics are available yet, you get `204 No Content`. Unknown scenario IDs return `404 Not Found`.
+Replace `<SCENARIO_ID>` with the ID returned by `POST /scenarios`. Unknown scenario IDs return `404 Not Found`.
 
 !!! note
     The server is also available as a [Docker image](docker.md) and

@@ -138,7 +138,7 @@ fn workshop_paused_finished_cascade_emits_stale_marker_via_multi_runner() {
     // Timeline (ms):
     //   0..200    primary UP   (value=1.0). Gate `>1` => CLOSED. downstream Pending->Paused.
     //   200..600  primary DOWN (value=2.0). Gate OPEN. delay.open=50ms debounce.
-    //   ~250      open commits. downstream Paused->Running. accumulates recent_metrics.
+    //   ~250      open commits. downstream Paused->Running. accumulates active series.
     //   600..800  primary UP. Gate CLOSE edge. delay.close=0 => commit immediately,
     //             close-emit fires (stale marker) and downstream goes Paused.
     //   800..1200 primary DOWN. Gate OPEN. open-commit at ~850. Running again.
@@ -362,9 +362,9 @@ scenarios:
 /// Mirrors the workshop's actual cascade: 1 primary + 7 downstream gated metrics
 /// (the 6 BGP counters from the workshop YAML + the operational status) all
 /// gated on the same `primary_flap` upstream. Each entry has its own GateBus
-/// subscriber, its own debounce, its own close-emit closure, its own
-/// recent_metrics buffer. If there's a multi-subscriber race in the GateBus
-/// broadcast or a per-entry stats-buffer issue, this exposes it.
+/// subscriber, its own debounce, its own close-emit closure, its own stats.
+/// If there's a multi-subscriber race in the GateBus broadcast or a per-entry
+/// stats issue, this exposes it.
 ///
 /// Expectation: every gated metric has >=1 stale-NaN sample reach the wire.
 #[test]
@@ -589,7 +589,7 @@ scenarios:
 /// Workshop: 2m duration, 90s flap cycle, 10s open debounce, 0s close debounce.
 /// Compressed-time tests run in microseconds — the workshop runs in seconds.
 /// Maybe at real-millisecond magnitudes something different happens around
-/// debounce reset, gate-edge ordering, or recent_metrics dedup.
+/// debounce reset, gate-edge ordering, or close-emit series dedup.
 ///
 /// Compressed here: 5s duration, 600ms up / 1200ms down (cycle 1.8s), 200ms
 /// open / 0s close. ~2.7 cycles → at least 2 running→paused transitions.

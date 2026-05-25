@@ -358,18 +358,16 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     )
     .expect("launch must succeed");
 
-    // Phase 1: emit ~3 events (150ms at 20/s).
+    // Phase 1: emit ~3 events (150ms at 20/s). Single series → one entry.
     thread::sleep(Duration::from_millis(150));
-    let phase1 = handle.recent_metrics();
-    let phase1_count = phase1.len();
-    assert!(
-        (2..=4).contains(&phase1_count),
-        "phase 1 expected ~3 events, got {phase1_count}"
+    let phase1 = handle.recent_metrics_snapshot();
+    assert_eq!(
+        phase1.len(),
+        1,
+        "single series must collapse to one current value, got {}",
+        phase1.len()
     );
-    let last_phase1_value = phase1
-        .last()
-        .map(|e| e.value)
-        .expect("phase 1 must have at least one value");
+    let last_phase1_value = phase1[0].value;
 
     // Phase 2: close gate.
     bus.tick(0.0);
@@ -378,7 +376,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     // Phase 3: reopen and let several more ticks fire.
     bus.tick(1.0);
     thread::sleep(Duration::from_millis(200));
-    let phase3 = handle.recent_metrics();
+    let phase3 = handle.recent_metrics_snapshot();
 
     handle.stop();
     handle.join(Some(Duration::from_secs(2))).ok();
@@ -436,9 +434,9 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     )
     .expect("launch must succeed");
 
-    // Phase 1: ~10 ticks emitted (200ms at 50/s).
+    // Phase 1: ~10 ticks emitted (200ms at 50/s). Single series → one entry.
     thread::sleep(Duration::from_millis(200));
-    let phase1 = handle.recent_metrics();
+    let phase1 = handle.recent_metrics_snapshot();
     let last_pre_pause = phase1
         .last()
         .map(|e| e.value)
@@ -455,7 +453,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     // Phase 3: resume.
     bus.tick(1.0);
     thread::sleep(Duration::from_millis(150));
-    let phase3 = handle.recent_metrics();
+    let phase3 = handle.recent_metrics_snapshot();
 
     handle.stop();
     handle.join(Some(Duration::from_secs(2))).ok();

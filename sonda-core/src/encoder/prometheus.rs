@@ -24,15 +24,18 @@ use super::Encoder;
 /// metric_name value timestamp_ms\n
 /// ```
 ///
-/// The timestamp is in milliseconds since the Unix epoch (integer).
+/// The timestamp is in milliseconds since the Unix epoch (integer) and is
+/// emitted by default. HTTP scrape endpoints opt out via
+/// [`PrometheusText::with_emit_timestamp`]`(false)` so the rendered exposition
+/// matches what `node_exporter` and Prometheus self-scrape produce.
 ///
 /// Label values are escaped: `\` → `\\`, `"` → `\"`, newline → `\n`.
 ///
 /// When `precision` is set, metric values are formatted to the specified number
 /// of decimal places (e.g., precision=2 formats `99.60573` as `99.61`).
 pub struct PrometheusText {
-    /// Optional decimal precision for metric values.
     precision: Option<u8>,
+    emit_timestamp: bool,
 }
 
 impl PrometheusText {
@@ -41,7 +44,17 @@ impl PrometheusText {
     /// `precision` optionally limits the number of decimal places in metric values.
     /// `None` preserves full `f64` precision (default behavior).
     pub fn new(precision: Option<u8>) -> Self {
-        Self { precision }
+        Self {
+            precision,
+            emit_timestamp: true,
+        }
+    }
+
+    /// Toggle per-sample timestamp emission. Default is `true` (CLI stream
+    /// behavior); HTTP scrape handlers set `false` for spec-correct output.
+    pub fn with_emit_timestamp(mut self, emit_timestamp: bool) -> Self {
+        self.emit_timestamp = emit_timestamp;
+        self
     }
 }
 
@@ -108,15 +121,15 @@ impl Encoder for PrometheusText {
         // Value: write f64, optionally with fixed decimal precision
         super::write_value(buf, event.value, self.precision);
 
-        // Timestamp in milliseconds since epoch
-        let timestamp_ms = event
-            .timestamp
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| SondaError::Encoder(EncoderError::TimestampBeforeEpoch(e)))?
-            .as_millis();
-
-        buf.push(b' ');
-        write!(buf, "{timestamp_ms}").expect("write to Vec<u8> is infallible");
+        if self.emit_timestamp {
+            let timestamp_ms = event
+                .timestamp
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| SondaError::Encoder(EncoderError::TimestampBeforeEpoch(e)))?
+                .as_millis();
+            buf.push(b' ');
+            write!(buf, "{timestamp_ms}").expect("write to Vec<u8> is infallible");
+        }
 
         buf.push(b'\n');
 
@@ -576,5 +589,70 @@ mod tests {
         assert_eq!(PromMetricType::Histogram.as_str(), "histogram");
         assert_eq!(PromMetricType::Summary.as_str(), "summary");
         assert_eq!(PromMetricType::Untyped.as_str(), "untyped");
+    }
+
+    #[test]
+    fn prometheus_text_default_constructor_emits_timestamp() {
+        let labels = Labels::from_pairs(&[("host", "srl1")]).unwrap();
+        let event = make_event("up", 1.0, labels, 1_700_000_000_000);
+        let enc = PrometheusText::new(None);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        assert_eq!(buf, b"up{host=\"srl1\"} 1 1700000000000\n");
+    }
+
+    #[test]
+    fn prometheus_text_with_emit_timestamp_false_omits_timestamp() {
+        let labels = Labels::from_pairs(&[("host", "srl1")]).unwrap();
+        let event = make_event("up", 1.0, labels, 1_700_000_000_000);
+        let enc = PrometheusText::new(None).with_emit_timestamp(false);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        assert_eq!(buf, b"up{host=\"srl1\"} 1\n");
+    }
+
+    #[test]
+    fn prometheus_text_with_emit_timestamp_false_no_labels_omits_timestamp() {
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("up", 42.5, labels, 1_700_000_000_000);
+        let enc = PrometheusText::new(None).with_emit_timestamp(false);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        assert_eq!(buf, b"up 42.5\n");
+    }
+
+    #[test]
+    fn prometheus_text_with_emit_timestamp_true_then_false_round_trips() {
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event = make_event("up", 1.0, labels, 1_700_000_000_000);
+        let enc = PrometheusText::new(None)
+            .with_emit_timestamp(false)
+            .with_emit_timestamp(true);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf).unwrap();
+        assert_eq!(buf, b"up 1 1700000000000\n");
+    }
+
+    #[test]
+    fn prometheus_text_with_emit_timestamp_false_still_emits_help_and_type_lines() {
+        let enc = PrometheusText::new(None).with_emit_timestamp(false);
+        let mut buf = Vec::new();
+        enc.encode_metadata("foo", PromMetricType::Gauge, Some("desc"), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert_eq!(out, "# HELP foo desc\n# TYPE foo gauge\n");
+    }
+
+    #[test]
+    fn prometheus_text_with_emit_timestamp_false_pre_epoch_does_not_error() {
+        let before_epoch = UNIX_EPOCH - Duration::from_secs(1);
+        let labels = Labels::from_pairs(&[]).unwrap();
+        let event =
+            MetricEvent::with_timestamp("up".to_string(), 1.0, labels, before_epoch).unwrap();
+        let enc = PrometheusText::new(None).with_emit_timestamp(false);
+        let mut buf = Vec::new();
+        enc.encode_metric(&event, &mut buf)
+            .expect("timestamp is not consulted when emission is disabled");
+        assert_eq!(buf, b"up 1\n");
     }
 }

@@ -264,6 +264,80 @@ scenarios:
       value: 42
 "#;
 
+const AUTOCON5_REPRO_YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: autocon5_up
+    signal_type: metrics
+    name: autocon5_up
+    labels:
+      device: srl1
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+#[test]
+fn autocon5_repro_one_line_per_series_at_rate_10() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("{base}/scenarios"))
+        .header("Content-Type", "text/yaml")
+        .body(AUTOCON5_REPRO_YAML)
+        .send()
+        .expect("POST autocon5_up must succeed");
+    assert_eq!(resp.status().as_u16(), 201);
+
+    // Wait long enough that the broken ring-buffer would have ~20 samples.
+    thread::sleep(Duration::from_secs(2));
+
+    let body_first = scrape_sample_lines(&client, &base);
+    assert_eq!(
+        body_first.len(),
+        1,
+        "autocon5 repro: exactly one sample per series, got: {body_first:?}"
+    );
+    let line = &body_first[0];
+    assert!(
+        line.starts_with("autocon5_up{") && line.ends_with(" 1"),
+        "sample must be `<name>{{labels}} <value>` with no trailing timestamp, got: {line}"
+    );
+
+    // Repeat scrapes — idempotent. The exact body bytes must match because
+    // there's no per-sample timestamp to drift.
+    let body_again = scrape_sample_lines(&client, &base);
+    assert_eq!(body_first, body_again, "scrape must be idempotent");
+
+    thread::sleep(Duration::from_secs(1));
+    let body_later = scrape_sample_lines(&client, &base);
+    assert_eq!(body_later.len(), 1, "still one sample 1s later");
+}
+
+fn scrape_sample_lines(client: &reqwest::blocking::Client, base: &str) -> Vec<String> {
+    let resp = client
+        .get(format!("{base}/metrics"))
+        .send()
+        .expect("GET /metrics must succeed");
+    assert_eq!(resp.status().as_u16(), 200);
+    resp.text()
+        .expect("body must be UTF-8")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
 #[test]
 fn e2e_yaml_metric_type_field_reaches_scrape_output() {
     let (port, _guard) = common::start_server();

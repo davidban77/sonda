@@ -11,7 +11,7 @@
 //! - `GET /scenarios` — list all scenarios with summary information.
 //! - `GET /scenarios/{id}` — inspect a single scenario with full detail and stats.
 //! - `GET /scenarios/{id}/stats` — return detailed live stats for a scenario.
-//! - `GET /scenarios/{id}/metrics` — return recent metrics in Prometheus text format (scrapeable).
+//! - `GET /scenarios/{id}/metrics` — return one Prometheus sample per series, no timestamps.
 //! - `DELETE /scenarios/{id}` — stop a running scenario and return final stats.
 //!
 //! All lifecycle logic is delegated to sonda-core. This module is pure HTTP
@@ -22,10 +22,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
@@ -762,44 +762,18 @@ pub async fn get_scenario_stats(
 
 // ---- Scrape endpoint --------------------------------------------------------
 
-/// Query parameters for `GET /scenarios/{id}/metrics`.
-#[derive(Debug, Deserialize)]
-pub struct MetricsQuery {
-    /// Maximum number of recent metric events to return. Defaults to 100,
-    /// capped at 1000.
-    pub limit: Option<usize>,
-}
-
 /// Prometheus text exposition format content type.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// `GET /scenarios/{id}/metrics` — return recent metrics in Prometheus text format.
+/// `GET /scenarios/{id}/metrics` — emit one Prometheus sample per series.
 ///
-/// Drains the recent metric event buffer from the scenario handle, encodes
-/// each event using the Prometheus text encoder, and returns the result with
-/// `Content-Type: text/plain; version=0.0.4; charset=utf-8`.
-///
-/// This endpoint is designed to be scraped by Prometheus or vmagent. Each
-/// call drains the buffer, so repeated scrapes within the same tick interval
-/// may return fewer events.
-///
-/// # Query parameters
-///
-/// * `limit` — maximum number of events to return (default 100, max 1000).
-///
-/// # Responses
-///
-/// * `200 OK` — Prometheus text exposition (possibly empty when no events
-///   are buffered between scrapes).
-/// * `404 Not Found` — scenario ID not found.
+/// Returns the current value of every series the scenario has emitted so far,
+/// encoded in Prometheus text exposition format with no per-sample timestamp,
+/// matching the shape that `node_exporter` and Prometheus self-scrape produce.
 pub async fn get_scenario_metrics(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<MetricsQuery>,
 ) -> Result<Response, Response> {
-    let limit = query.limit.unwrap_or(100).min(1000);
-
-    // Look up the scenario by ID.
     let scenarios = state
         .scenarios
         .read()
@@ -809,25 +783,11 @@ pub async fn get_scenario_metrics(
         .get(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
-    // Drain recent metric events from the handle's stats buffer.
-    let events = handle.recent_metrics();
+    let events = handle.recent_metrics_snapshot();
 
-    // Empty buffer renders as `200 OK` with an empty Prometheus exposition,
-    // matching the contract Prometheus / vmagent / Telegraf scrapers expect.
-    // Returning 204 here breaks scrapers that use `curl --fail` or treat
-    // anything but 200 as an exposition error.
-    let events_to_encode: &[_] = if events.is_empty() {
-        &[]
-    } else if events.len() > limit {
-        &events[events.len() - limit..]
-    } else {
-        &events
-    };
-
-    // Encode each event into Prometheus text format.
-    let encoder = PrometheusText::new(None);
-    let mut buf = Vec::with_capacity(events_to_encode.len() * 128 + 256);
-    if !events_to_encode.is_empty() {
+    let encoder = PrometheusText::new(None).with_emit_timestamp(false);
+    let mut buf = Vec::with_capacity(events.len() * 128 + 256);
+    if !events.is_empty() {
         if let Some(meta) = handle.prometheus_meta.as_ref() {
             if let Err(e) = encoder.encode_metadata(
                 &handle.name,
@@ -839,7 +799,7 @@ pub async fn get_scenario_metrics(
             }
         }
     }
-    for event in events_to_encode {
+    for event in &events {
         if let Err(e) = encoder.encode_metric(event, &mut buf) {
             warn!(id = %id, error = %e, "GET /scenarios/{id}/metrics: failed to encode metric event");
         }
@@ -927,7 +887,7 @@ pub async fn get_aggregate_metrics(
     let mut ids: Vec<&String> = scenarios.keys().collect();
     ids.sort();
 
-    let encoder = PrometheusText::new(None);
+    let encoder = PrometheusText::new(None).with_emit_timestamp(false);
     let mut buf = Vec::new();
     let mut groups: Vec<AggregateGroup> = Vec::new();
     for id in ids {
@@ -3410,19 +3370,6 @@ scenarios:
         app.oneshot(req).await.unwrap()
     }
 
-    /// Helper: send a GET /scenarios/{id}/metrics?limit=N request.
-    async fn get_metrics_with_limit(
-        app: axum::Router,
-        id: &str,
-        limit: usize,
-    ) -> hyper::Response<axum::body::Body> {
-        let req = Request::builder()
-            .uri(format!("/scenarios/{id}/metrics?limit={limit}"))
-            .body(Body::empty())
-            .unwrap();
-        app.oneshot(req).await.unwrap()
-    }
-
     /// Helper: extract the body as a String from a response.
     async fn body_string(response: axum::response::Response) -> String {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -3472,7 +3419,6 @@ scenarios:
 
     // ---- Metrics scrape: returns Prometheus text format ----------------------
 
-    /// GET /scenarios/{id}/metrics returns Prometheus text exposition format.
     #[tokio::test]
     async fn metrics_endpoint_returns_prometheus_text_format() {
         let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
@@ -3483,22 +3429,79 @@ scenarios:
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
-
-        // Each event should produce a line starting with "up". TYPE/HELP lines (starting with '#')
-        // appear once per metric name and are filtered out here.
         let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
-        assert!(
-            sample_lines.len() >= 2,
-            "must have at least 2 sample lines of Prometheus text, got {}",
-            sample_lines.len()
+        assert_eq!(
+            sample_lines.len(),
+            1,
+            "same series must collapse to one sample, got {sample_lines:?}"
         );
+        assert!(
+            sample_lines[0].starts_with("up"),
+            "sample must start with metric name 'up', got: {}",
+            sample_lines[0]
+        );
+    }
 
-        for line in &sample_lines {
-            assert!(
-                line.starts_with("up"),
-                "each sample line must start with the metric name 'up', got: {line}"
-            );
+    #[tokio::test]
+    async fn per_scenario_metrics_emits_one_sample_per_series_no_timestamp() {
+        let events = vec![make_metric_event("up", 42.0)];
+        let h = make_handle_with_metrics("id-no-ts", "no_ts", events);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_metrics_req(app, "id-no-ts").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_string(resp).await;
+        let sample_lines: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(sample_lines.len(), 1);
+        assert_eq!(
+            sample_lines[0], "up 42",
+            "sample must omit trailing timestamp, got: {}",
+            sample_lines[0]
+        );
+        assert!(
+            body.ends_with("up 42\n"),
+            "body must end with value+newline, no timestamp: {body:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_distinct_series_emit_distinct_samples() {
+        let events = vec![
+            labeled_metric_event("up", 1.0, &[("host", "a")]),
+            labeled_metric_event("up", 2.0, &[("host", "b")]),
+        ];
+        let h = make_handle_with_metrics("id-distinct", "distinct", events);
+        let app = router_with_handles(vec![h]);
+
+        let resp = get_metrics_req(app, "id-distinct").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let sample_lines: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(sample_lines.len(), 2, "got: {body:?}");
+    }
+
+    #[tokio::test]
+    async fn per_scenario_metrics_idempotent_across_scrapes() {
+        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
+        let h = make_handle_with_metrics("id-idem", "idem", events);
+        let state = AppState::new();
+        {
+            let mut map = state.scenarios.write().unwrap();
+            map.insert(h.id.clone(), h);
         }
+
+        let app1 = router(state.clone());
+        let body_1 = body_string(get_metrics_req(app1, "id-idem").await).await;
+        let app2 = router(state.clone());
+        let body_2 = body_string(get_metrics_req(app2, "id-idem").await).await;
+        assert_eq!(
+            body_1, body_2,
+            "two scrapes must return byte-identical bodies"
+        );
+        assert!(!body_1.is_empty(), "first scrape must not be empty");
+
+        cleanup_scenarios(&state);
     }
 
     // ---- Metrics scrape: correct Content-Type header ------------------------
@@ -3525,94 +3528,6 @@ scenarios:
         );
     }
 
-    // ---- Metrics scrape: ?limit=N returns at most N events ------------------
-
-    /// GET /scenarios/{id}/metrics?limit=2 returns at most 2 events from a buffer of 5.
-    #[tokio::test]
-    async fn metrics_endpoint_limit_parameter_caps_event_count() {
-        let events: Vec<_> = (0..5).map(|i| make_metric_event("up", i as f64)).collect();
-        let h = make_handle_with_metrics("id-metrics-limit", "limit_test", events);
-        let app = router_with_handles(vec![h]);
-
-        let resp = get_metrics_with_limit(app, "id-metrics-limit", 2).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = body_string(resp).await;
-        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
-        assert_eq!(
-            sample_lines.len(),
-            2,
-            "limit=2 must produce exactly 2 sample lines of output, got {}",
-            sample_lines.len()
-        );
-    }
-
-    /// GET /scenarios/{id}/metrics?limit=N returns the most recent N events.
-    #[tokio::test]
-    async fn metrics_endpoint_limit_returns_most_recent_events() {
-        // Push 5 events with values 0.0, 1.0, 2.0, 3.0, 4.0.
-        let events: Vec<_> = (0..5).map(|i| make_metric_event("val", i as f64)).collect();
-        let h = make_handle_with_metrics("id-metrics-recent", "recent_test", events);
-        let app = router_with_handles(vec![h]);
-
-        // Request only the most recent 2.
-        let resp = get_metrics_with_limit(app, "id-metrics-recent", 2).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = body_string(resp).await;
-        // The last 2 events have values 3.0 and 4.0.
-        assert!(
-            body.contains("3"),
-            "limited output must contain the second-to-last event value (3.0)"
-        );
-        assert!(
-            body.contains("4"),
-            "limited output must contain the last event value (4.0)"
-        );
-    }
-
-    /// `limit=0` drains the buffer but encodes zero events; returns 200 with empty body.
-    #[tokio::test]
-    async fn metrics_endpoint_limit_zero_returns_200_empty_body() {
-        let events = vec![make_metric_event("up", 1.0)];
-        let h = make_handle_with_metrics("id-metrics-lim0", "lim0_test", events);
-        let app = router_with_handles(vec![h]);
-
-        let resp = get_metrics_with_limit(app, "id-metrics-lim0", 0).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    // ---- Metrics scrape: drain clears buffer --------------------------------
-
-    /// After scraping, a second request returns 200 with an empty body because
-    /// the buffer was drained. Prometheus contract: 200 with empty exposition,
-    /// not 204.
-    #[tokio::test]
-    async fn metrics_endpoint_drain_clears_buffer_second_request_returns_200_empty() {
-        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
-        let h = make_handle_with_metrics("id-metrics-drain", "drain_test", events);
-        let state = AppState::new();
-        {
-            let mut map = state.scenarios.write().unwrap();
-            map.insert(h.id.clone(), h);
-        }
-
-        let app1 = router(state.clone());
-        let resp1 = get_metrics_req(app1, "id-metrics-drain").await;
-        assert_eq!(resp1.status(), StatusCode::OK);
-        assert!(!body_string(resp1).await.is_empty());
-
-        let app2 = router(state.clone());
-        let resp2 = get_metrics_req(app2, "id-metrics-drain").await;
-        assert_eq!(resp2.status(), StatusCode::OK);
-        assert!(
-            body_string(resp2).await.is_empty(),
-            "drained buffer must render as empty Prometheus exposition"
-        );
-
-        cleanup_scenarios(&state);
-    }
-
     // ---- Metrics scrape: 404 returns JSON Content-Type ----------------------
 
     /// GET /scenarios/{id}/metrics 404 has Content-Type application/json.
@@ -3635,17 +3550,15 @@ scenarios:
         );
     }
 
-    // ---- Metrics scrape: limit defaults to 100 (implicit) -------------------
-
-    /// Without a limit parameter, all buffered events (up to 100 default) are returned.
     #[tokio::test]
-    async fn metrics_endpoint_default_limit_returns_all_buffered_events() {
-        // Push 5 events, no limit parameter.
-        let events: Vec<_> = (0..5).map(|i| make_metric_event("up", i as f64)).collect();
-        let h = make_handle_with_metrics("id-metrics-nomax", "nomax_test", events);
+    async fn metrics_endpoint_emits_one_sample_per_distinct_series() {
+        let events: Vec<_> = (0..5)
+            .map(|i| labeled_metric_event("up", i as f64, &[("host", &format!("h{i}"))]))
+            .collect();
+        let h = make_handle_with_metrics("id-metrics-five", "five_series", events);
         let app = router_with_handles(vec![h]);
 
-        let resp = get_metrics_req(app, "id-metrics-nomax").await;
+        let resp = get_metrics_req(app, "id-metrics-five").await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = body_string(resp).await;
@@ -3653,28 +3566,7 @@ scenarios:
         assert_eq!(
             sample_lines.len(),
             5,
-            "all 5 buffered events must be returned when no limit is specified"
-        );
-    }
-
-    // ---- Metrics scrape: limit larger than buffer returns all events ---------
-
-    /// When limit > buffer size, all buffered events are returned.
-    #[tokio::test]
-    async fn metrics_endpoint_limit_larger_than_buffer_returns_all() {
-        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
-        let h = make_handle_with_metrics("id-metrics-biglim", "biglim_test", events);
-        let app = router_with_handles(vec![h]);
-
-        let resp = get_metrics_with_limit(app, "id-metrics-biglim", 500).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = body_string(resp).await;
-        let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
-        assert_eq!(
-            sample_lines.len(),
-            2,
-            "when limit > buffer size, all buffered events must be returned"
+            "five distinct series must produce five samples, got {sample_lines:?}"
         );
     }
 
@@ -3784,7 +3676,10 @@ scenarios:
 
     #[tokio::test]
     async fn aggregate_metrics_single_scenario_no_filter_returns_events() {
-        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
+        let events = vec![
+            labeled_metric_event("up", 1.0, &[("host", "a")]),
+            labeled_metric_event("up", 2.0, &[("host", "b")]),
+        ];
         let h = make_handle_with_labels_and_metrics("agg-1", "single", vec![], events);
         let app = router_with_handles(vec![h]);
 
@@ -3793,19 +3688,56 @@ scenarios:
 
         let body = body_string(resp).await;
         let sample_lines: Vec<&str> = body.lines().filter(|line| !line.starts_with('#')).collect();
-        assert_eq!(sample_lines.len(), 2, "must encode 2 events, got: {body:?}");
+        assert_eq!(sample_lines.len(), 2, "must encode 2 series, got: {body:?}");
         for line in &sample_lines {
             assert!(
                 line.starts_with("up"),
                 "each sample line must start with metric name 'up', got: {line}"
             );
+            assert!(
+                !line.chars().last().unwrap().is_ascii_digit() || !line.contains(" 17"),
+                "no trailing timestamp expected on aggregate scrape, got: {line}"
+            );
         }
     }
 
     #[tokio::test]
-    async fn aggregate_metrics_snapshot_is_non_destructive() {
-        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
-        let h = make_handle_with_labels_and_metrics("agg-snap", "snap", vec![], events);
+    async fn aggregate_metrics_emits_one_sample_per_series_no_timestamp() {
+        let h1 = make_handle_with_labels_and_metrics(
+            "agg-no-ts-1",
+            "scrape",
+            vec![("device", "srl1")],
+            vec![make_metric_event("up", 1.0)],
+        );
+        let h2 = make_handle_with_labels_and_metrics(
+            "agg-no-ts-2",
+            "scrape",
+            vec![("device", "srl2")],
+            vec![make_metric_event("up", 2.0)],
+        );
+        let app = router_with_handles(vec![h1, h2]);
+
+        let resp = get_aggregate_req(app, "").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        let sample_lines: Vec<&str> = body.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(sample_lines.len(), 2);
+        for line in &sample_lines {
+            assert!(
+                line == &"up 1" || line == &"up 2",
+                "each sample must be exactly metric+value with no timestamp, got: {line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregate_metrics_idempotent_across_scrapes() {
+        let h = make_handle_with_labels_and_metrics(
+            "agg-idem",
+            "idem",
+            vec![],
+            vec![make_metric_event("up", 7.0)],
+        );
         let state = AppState::new();
         {
             let mut map = state.scenarios.write().unwrap();
@@ -3814,26 +3746,22 @@ scenarios:
 
         let app1 = router(state.clone());
         let body_1 = body_string(get_aggregate_req(app1, "").await).await;
-
         let app2 = router(state.clone());
         let body_2 = body_string(get_aggregate_req(app2, "").await).await;
-
-        assert_eq!(
-            body_1, body_2,
-            "two snapshot calls must return identical bodies"
-        );
-        assert!(
-            !body_1.trim().is_empty(),
-            "snapshot must include the pushed events"
-        );
+        assert_eq!(body_1, body_2);
+        assert!(!body_1.trim().is_empty());
 
         cleanup_scenarios(&state);
     }
 
     #[tokio::test]
-    async fn per_scenario_metrics_still_drains_after_aggregate_snapshot() {
-        let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
-        let h = make_handle_with_labels_and_metrics("agg-drain", "drain", vec![], events);
+    async fn aggregate_and_per_scenario_scrapes_are_both_idempotent() {
+        let h = make_handle_with_labels_and_metrics(
+            "agg-both",
+            "both",
+            vec![],
+            vec![make_metric_event("up", 1.0)],
+        );
         let state = AppState::new();
         {
             let mut map = state.scenarios.write().unwrap();
@@ -3842,20 +3770,17 @@ scenarios:
 
         let agg_app = router(state.clone());
         let agg_body = body_string(get_aggregate_req(agg_app, "").await).await;
-        assert!(!agg_body.trim().is_empty(), "aggregate must see the events");
+        assert!(!agg_body.trim().is_empty());
 
         let per_app = router(state.clone());
-        let per_body = body_string(get_metrics_req(per_app, "agg-drain").await).await;
-        assert!(
-            !per_body.trim().is_empty(),
-            "per-scenario scrape must still drain the buffer"
-        );
+        let per_body = body_string(get_metrics_req(per_app, "agg-both").await).await;
+        assert!(!per_body.trim().is_empty());
 
         let per_app_2 = router(state.clone());
-        let per_body_2 = body_string(get_metrics_req(per_app_2, "agg-drain").await).await;
-        assert!(
-            per_body_2.trim().is_empty(),
-            "second per-scenario scrape must return empty after drain"
+        let per_body_2 = body_string(get_metrics_req(per_app_2, "agg-both").await).await;
+        assert_eq!(
+            per_body, per_body_2,
+            "per-scenario scrape must be idempotent"
         );
 
         cleanup_scenarios(&state);
@@ -4095,25 +4020,6 @@ scenarios:
         assert!(filters.is_empty());
         let filters2 = parse_label_filters(Some("")).expect("must parse");
         assert!(filters2.is_empty());
-    }
-
-    // ---- MetricsQuery deserialization ----------------------------------------
-
-    /// MetricsQuery with no fields deserializes with limit=None.
-    #[test]
-    fn metrics_query_default_limit_is_none() {
-        let q: MetricsQuery = serde_json::from_str("{}").expect("must deserialize");
-        assert!(
-            q.limit.is_none(),
-            "limit must default to None when not specified"
-        );
-    }
-
-    /// MetricsQuery with limit=50 deserializes correctly.
-    #[test]
-    fn metrics_query_with_limit_deserializes() {
-        let q: MetricsQuery = serde_json::from_str(r#"{"limit": 50}"#).expect("must deserialize");
-        assert_eq!(q.limit, Some(50));
     }
 
     // ---- PROMETHEUS_CONTENT_TYPE constant ------------------------------------
