@@ -191,9 +191,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     // Wait for both threads to finish (they exit when duration expires).
@@ -311,9 +309,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut handles = handles;
@@ -508,9 +504,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 8, "must launch primary + 7 downstream");
 
     let deadline = Instant::now() + Duration::from_secs(6);
@@ -641,9 +635,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1445,9 +1437,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1542,9 +1532,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1746,9 +1734,7 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let handles =
-        launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled).expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + gated_metric");
 
     let deadline = Instant::now() + Duration::from_secs(5);

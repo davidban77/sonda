@@ -350,9 +350,14 @@ fn run_compiled_with_progress(
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
-    let handles =
-        sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, Arc::clone(running))
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(compiled)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
+        handles.iter().map(|h| Arc::clone(&h.shutdown)).collect();
+    let done = Arc::new(AtomicBool::new(false));
+    let watchdog =
+        spawn_ctrlc_watchdog(Arc::clone(running), per_handle_shutdowns, Arc::clone(&done));
 
     let progress = maybe_start_progress_multi(&handles, verbosity);
 
@@ -363,6 +368,9 @@ fn run_compiled_with_progress(
         }
     }
 
+    done.store(true, Ordering::SeqCst);
+    let _ = watchdog.join();
+
     if let Some(p) = progress {
         p.stop();
     }
@@ -371,6 +379,31 @@ fn run_compiled_with_progress(
         return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
     Ok(())
+}
+
+fn spawn_ctrlc_watchdog(
+    master: Arc<AtomicBool>,
+    per_handle: Vec<Arc<AtomicBool>>,
+    done: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("sonda-cli-shutdown-watchdog".to_string())
+        .spawn(move || {
+            let poll = std::time::Duration::from_millis(100);
+            loop {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                if !master.load(Ordering::SeqCst) {
+                    for flag in &per_handle {
+                        flag.store(false, Ordering::SeqCst);
+                    }
+                    return;
+                }
+                std::thread::sleep(poll);
+            }
+        })
+        .expect("watchdog thread must spawn")
 }
 
 fn stop_infos_for_groups(

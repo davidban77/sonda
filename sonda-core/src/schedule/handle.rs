@@ -41,7 +41,10 @@ pub struct ScenarioHandle {
     /// File-level `scenario_name` from the source YAML, when set. Read-only
     /// after launch; every handle from the same POST shares this value.
     pub scenario_name: Option<String>,
-    /// Shared shutdown flag. Setting this to `false` signals the runner to exit.
+    /// Per-handle shutdown flag, owned exclusively by this handle. `stop()`
+    /// flips it. Each scenario launched by `launch_multi_compiled` gets a
+    /// fresh, independent flag — `stop()` on one handle never affects any
+    /// other.
     pub shutdown: Arc<AtomicBool>,
     /// The OS thread running the scenario. `None` after [`ScenarioHandle::join`] consumes it.
     pub thread: Option<JoinHandle<Result<(), SondaError>>>,
@@ -96,10 +99,12 @@ impl ScenarioHandle {
         }
     }
 
-    /// Signal the scenario to stop.
+    /// Signal this scenario to stop.
     ///
-    /// Sets the shutdown flag to `false` with `SeqCst` ordering. The runner
-    /// thread will observe this on its next tick and exit cleanly.
+    /// Affects only this scenario; calling `stop()` on one handle never
+    /// affects another handle returned from the same `launch_multi_compiled`
+    /// call. The runner thread observes the per-handle shutdown flag on its
+    /// next tick and exits cleanly.
     pub fn stop(&self) {
         self.shutdown.store(false, Ordering::SeqCst);
     }
