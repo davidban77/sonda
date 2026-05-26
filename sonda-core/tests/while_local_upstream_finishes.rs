@@ -171,13 +171,16 @@ scenarios:
 
 #[test]
 fn local_downstream_paused_finishes_when_upstream_finishes() {
-    // Sawtooth dips below threshold so the downstream is Paused when
-    // the upstream's duration expires.
+    // A non-repeating sequence drops below threshold on tick 1 and stays
+    // there for the rest of the upstream's life. The downstream is
+    // therefore reliably Paused (not Running) at the moment the upstream
+    // exits, anchoring the Paused-arm `UpstreamGone → UpstreamFinished`
+    // branch in core_loop.rs.
     let yaml = r#"
 version: 2
 kind: runnable
 defaults:
-  rate: 100
+  rate: 50
   encoder:
     type: prometheus_text
   sink:
@@ -186,12 +189,11 @@ scenarios:
   - id: upstream
     signal_type: metrics
     name: upstream
-    duration: 300ms
+    duration: 400ms
     generator:
-      type: sawtooth
-      min: 0.0
-      max: 100.0
-      period_secs: 0.2
+      type: sequence
+      values: [100.0, 0.0]
+      repeat: false
   - id: downstream
     signal_type: metrics
     name: downstream
@@ -202,7 +204,7 @@ scenarios:
     while:
       ref: upstream
       op: ">"
-      value: 90.0
+      value: 50.0
 "#;
 
     let resolver = InMemoryPackResolver::new();
@@ -213,6 +215,7 @@ scenarios:
     {
         let upstream = find_by_id(&handles, "upstream");
         let downstream = find_by_id(&handles, "downstream");
+        wait_for_state(downstream, ScenarioState::Paused, Duration::from_secs(2));
         wait_for_state(upstream, ScenarioState::Finished, Duration::from_secs(2));
         wait_for_state(downstream, ScenarioState::Finished, Duration::from_secs(2));
         wait_for_not_alive(upstream, Duration::from_secs(1));
