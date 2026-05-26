@@ -1,9 +1,8 @@
 //! Multi-scenario runner: runs multiple scenarios concurrently on separate threads.
 //!
-//! Each scenario runs on its own OS thread via [`launch_scenario`]. All threads
-//! share a single shutdown flag so that Ctrl+C (or any external signal) stops
-//! all scenarios cleanly. Thread errors are collected and returned after all
-//! threads have finished.
+//! Each scenario owns its own shutdown flag. [`run_multi`] and
+//! [`run_multi_compiled`] accept a master `shutdown` flag and use a watchdog
+//! thread to fan a transition out into each handle's per-scenario flag.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,49 +29,29 @@ use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 use std::collections::HashMap;
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
-///
-/// Each scenario thread runs until either:
-/// - The scenario's own duration expires, or
-/// - The shared `shutdown` flag is set to `false`.
-///
-/// The main thread blocks until all scenario threads have finished. If any
-/// thread returns an error, those errors are collected and returned as a
-/// combined [`SondaError::Runtime`] with the
-/// [`RuntimeError::ScenariosFailed`] variant. Errors from all threads are
-/// reported, not just the first one.
-///
-/// # Parameters
-///
-/// * `entries` — the scenario entries to run concurrently, typically sourced
-///   from [`compile_scenario_file`][crate::compile_scenario_file].
-/// * `shutdown` — shared shutdown flag. Set to `false` to stop all running scenarios.
-///   Each scenario thread polls this flag on every tick.
-///
-/// # Errors
-///
-/// Returns [`SondaError::Config`] for synchronous validation failures
-/// (invalid config fields, bad phase_offset). Returns
-/// [`SondaError::Runtime`] if any scenario thread encounters an error during
-/// setup (sink creation) or during the event loop (encoding, I/O). All
-/// thread errors are collected and formatted into a single
-/// [`RuntimeError::ScenariosFailed`] error.
+/// Set `shutdown` to `false` to stop all running scenarios.
 pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
     // Expand, validate, and resolve phase offsets for all entries atomically.
     let prepared = prepare_entries(entries)?;
 
     let mut handles = Vec::with_capacity(prepared.len());
+    let mut per_handle_shutdowns: Vec<Arc<AtomicBool>> = Vec::with_capacity(prepared.len());
     for (i, prepared_entry) in prepared.into_iter().enumerate() {
         let id = format!("multi-{i}");
+        let scenario_shutdown = Arc::new(AtomicBool::new(true));
         let handle = launch_scenario(
             id,
             prepared_entry.entry,
-            Arc::clone(&shutdown),
+            Arc::clone(&scenario_shutdown),
             prepared_entry.start_delay,
         )?;
+        per_handle_shutdowns.push(scenario_shutdown);
         handles.push(handle);
     }
 
-    // Collect results from all threads.
+    let done = Arc::new(AtomicBool::new(false));
+    let watchdog = spawn_shutdown_watchdog(shutdown, per_handle_shutdowns, Arc::clone(&done));
+
     let mut errors: Vec<String> = Vec::new();
     for mut handle in handles {
         match handle.join(None) {
@@ -81,6 +60,9 @@ pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Resu
         }
     }
 
+    done.store(true, Ordering::SeqCst);
+    let _ = watchdog.join();
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -88,6 +70,32 @@ pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Resu
             errors.join("; "),
         )))
     }
+}
+
+/// Mirror `master`'s false transition into each per-handle shutdown; exit when `master` flips or `done` flips.
+fn spawn_shutdown_watchdog(
+    master: Arc<AtomicBool>,
+    per_handle: Vec<Arc<AtomicBool>>,
+    done: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("sonda-shutdown-watchdog".to_string())
+        .spawn(move || {
+            let poll = std::time::Duration::from_millis(100);
+            loop {
+                if done.load(Ordering::SeqCst) {
+                    return;
+                }
+                if !master.load(Ordering::SeqCst) {
+                    for flag in &per_handle {
+                        flag.store(false, Ordering::SeqCst);
+                    }
+                    return;
+                }
+                std::thread::sleep(poll);
+            }
+        })
+        .expect("watchdog thread must spawn")
 }
 
 /// Set the shutdown flag, signalling all running scenarios to stop.
@@ -99,17 +107,12 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in,
-/// returning the live handles without joining them.
-///
-/// Equivalent to the spawn portion of [`run_multi_compiled`]: pre-builds an
-/// `Arc<GateBus>` per metric scenario id, subscribes each downstream to its
-/// upstream's bus, and launches every scenario with the matching
-/// [`GateContext`]. Returns the launched [`ScenarioHandle`]s so callers can
-/// observe per-scenario stats (for progress displays) before joining.
+/// returning the live handles without joining them. Each handle owns an
+/// independent shutdown flag; for a master "stop all" trigger, use
+/// [`run_multi_compiled`].
 #[cfg(feature = "config")]
 pub fn launch_multi_compiled(
     file: CompiledFile,
-    shutdown: Arc<AtomicBool>,
 ) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
     let CompiledFile {
         scenario_name,
@@ -202,11 +205,12 @@ pub fn launch_multi_compiled(
     let mut handles = Vec::with_capacity(launches.len());
     for (idx, plan) in launches.into_iter().enumerate() {
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
+        let scenario_shutdown = Arc::new(AtomicBool::new(true));
         match launch_scenario_with_gates(
             id,
             scenario_name.clone(),
             plan.entry,
-            Arc::clone(&shutdown),
+            scenario_shutdown,
             plan.start_delay,
             plan.upstream_bus,
             plan.gate_ctx,
@@ -234,7 +238,12 @@ pub fn launch_multi_compiled(
 /// overhead.
 #[cfg(feature = "config")]
 pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
-    let handles = launch_multi_compiled(file, shutdown)?;
+    let handles = launch_multi_compiled(file)?;
+    let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
+        handles.iter().map(|h| Arc::clone(&h.shutdown)).collect();
+
+    let done = Arc::new(AtomicBool::new(false));
+    let watchdog = spawn_shutdown_watchdog(shutdown, per_handle_shutdowns, Arc::clone(&done));
 
     let mut errors: Vec<String> = Vec::new();
     for mut handle in handles {
@@ -243,6 +252,9 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
             Err(e) => errors.push(e.to_string()),
         }
     }
+
+    done.store(true, Ordering::SeqCst);
+    let _ = watchdog.join();
 
     if errors.is_empty() {
         Ok(())
@@ -1112,9 +1124,7 @@ scenarios:
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
 
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let mut handles =
-            launch_multi_compiled(compiled, Arc::clone(&shutdown)).expect("launch must succeed");
+        let mut handles = launch_multi_compiled(compiled).expect("launch must succeed");
         assert_eq!(handles.len(), 2, "must launch both entries");
         assert!(
             handles.iter().all(|h| h.is_alive()),
@@ -1138,6 +1148,83 @@ scenarios:
             handle
                 .join(Some(Duration::from_secs(1)))
                 .expect("join must succeed after stop");
+        }
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn launch_multi_compiled_gives_each_handle_an_independent_shutdown_flag() {
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 10s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: iso_a
+    signal_type: metrics
+    name: iso_a
+    generator:
+      type: constant
+      value: 1.0
+  - id: iso_b
+    signal_type: metrics
+    name: iso_b
+    generator:
+      type: constant
+      value: 2.0
+  - id: iso_c
+    signal_type: metrics
+    name: iso_c
+    generator:
+      type: constant
+      value: 3.0
+";
+        let resolver = InMemoryPackResolver::new();
+        let compiled =
+            compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
+
+        let mut handles = launch_multi_compiled(compiled).expect("launch must succeed");
+        assert_eq!(handles.len(), 3, "must launch all three entries");
+
+        for i in 0..handles.len() {
+            for j in (i + 1)..handles.len() {
+                assert!(
+                    !Arc::ptr_eq(&handles[i].shutdown, &handles[j].shutdown),
+                    "handles {i} and {j} must own independent shutdown Arcs"
+                );
+            }
+        }
+
+        handles[0].stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && handles[0].is_alive() {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!handles[0].is_alive(), "stopped handle must exit");
+        assert!(
+            handles[1].is_alive() && handles[2].is_alive(),
+            "siblings must remain alive — stop() on one handle must not cascade"
+        );
+
+        for handle in &handles {
+            handle.stop();
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && handles.iter().any(|h| h.is_alive()) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        for handle in &mut handles {
+            handle
+                .join(Some(Duration::from_secs(1)))
+                .expect("join must succeed");
         }
     }
 }
