@@ -59,6 +59,7 @@ fn bench_baseline_ungated(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();
@@ -97,6 +98,7 @@ fn bench_gated_open(c: &mut Criterion) {
                     if_unresolved: None,
                     start_unresolved: false,
                 }),
+                None,
             )
             .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();

@@ -290,7 +290,7 @@ scenarios:
         - message: "request handled"
 ```
 
-Three signal types, three threads, two sinks — metrics + histogram go to Prometheus, logs go to Loki. For entries that depend on each other in time (one starts only after another crosses a threshold; one emits only while another is in a given state), see `after:` and `while:` on the [Scenario Files](scenario-files.md#temporal-chains-with-after) page. For a hands-on walkthrough, see the [Multi-Scenario Runs](../guides/tutorial-multi-scenario.md) tutorial.
+Three signal types, three threads, two sinks — metrics + histogram go to Prometheus, logs go to Loki. For entries that depend on each other in time (one starts only after another crosses a threshold; one emits only while another is in a given state), see `after:` and `while:` on the [Scenario Files](scenario-files.md#temporal-chains-with-after) page. When the upstream signal is itself driven by a separate POST to a running [`sonda-server`](../deployment/sonda-server.md), the `while:` clause supports cross-POST refs — see [Cross-POST `while:` refs](scenario-files.md#cross-post-while-refs). For a hands-on walkthrough, see the [Multi-Scenario Runs](../guides/tutorial-multi-scenario.md) tutorial.
 
 ## What next
 

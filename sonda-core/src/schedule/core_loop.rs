@@ -907,7 +907,9 @@ fn write_state(
 ) {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
-            st.state = state;
+            if st.state != state {
+                st.transition_state(state);
+            }
             if paused_zero_rate {
                 st.current_rate = 0.0;
             }
@@ -922,7 +924,9 @@ fn write_state(
 fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
-            st.state = ScenarioState::Finished;
+            if st.state != ScenarioState::Finished {
+                st.transition_state(ScenarioState::Finished);
+            }
         }
     }
     Ok(())

@@ -30,7 +30,7 @@ use serde_json::json;
 use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
 use sonda_core::encoder::Encoder;
-use sonda_core::{ScenarioState, ScenarioStats};
+use sonda_core::{GateBusResolver, ScenarioState, ScenarioStats};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -100,6 +100,9 @@ pub struct ScenarioDetail {
     /// Whether the scenario has sink failures and no recent successful delivery.
     pub degraded: bool,
     pub stats: StatsResponse,
+    /// Cross-POST `while:` reference snapshot when state is `unresolved`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_ref: Option<sonda_core::PendingRef>,
 }
 
 /// Response body for a successfully deleted (stopped) scenario.
@@ -200,6 +203,10 @@ pub struct DetailedStatsResponse {
     pub last_successful_write_at: Option<u64>,
     /// Whether the scenario has sink failures and no recent successful delivery.
     pub degraded: bool,
+    /// Seconds elapsed since the most recent state transition.
+    pub current_state_secs: f64,
+    /// Lifetime count of resolver subscription attempts for this scenario.
+    pub cumulative_resolution_attempts: u64,
 }
 
 // ---- Error helpers ----------------------------------------------------------
@@ -436,6 +443,48 @@ fn yaml_body_text(body: &[u8], headers: &HeaderMap) -> Result<String, String> {
 
 // ---- Handlers ---------------------------------------------------------------
 
+fn parse_validate_strict(raw_query: Option<&str>) -> bool {
+    let Some(raw) = raw_query else {
+        return false;
+    };
+    raw.split('&').any(|pair| pair == "validate=strict")
+}
+
+#[derive(Debug, Serialize)]
+struct UnresolvedRefEntry {
+    scenario_name: String,
+    entry_id: String,
+    referenced_by: String,
+}
+
+fn collect_unresolved_refs(state: &AppState, compiled: &CompiledFile) -> Vec<UnresolvedRefEntry> {
+    let mut out = Vec::new();
+    let own_name = compiled.scenario_name.as_deref();
+    for entry in &compiled.entries {
+        let Some(clause) = entry.while_clause.as_ref() else {
+            continue;
+        };
+        let Some(scenario_name) = clause.scenario_name.as_deref() else {
+            continue;
+        };
+        if Some(scenario_name) == own_name {
+            continue;
+        }
+        if state
+            .gate_bus_registry
+            .lookup(scenario_name, &clause.ref_id)
+            .is_none()
+        {
+            out.push(UnresolvedRefEntry {
+                scenario_name: scenario_name.to_string(),
+                entry_id: clause.ref_id.clone(),
+                referenced_by: entry.id.clone().unwrap_or_default(),
+            });
+        }
+    }
+    out
+}
+
 /// `POST /scenarios` — start scenarios from a v2 YAML or JSON body.
 ///
 /// The body is compiled via [`compile_scenario_file_compiled`] and launched
@@ -458,8 +507,10 @@ fn yaml_body_text(body: &[u8], headers: &HeaderMap) -> Result<String, String> {
 pub async fn post_scenario(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    let strict = parse_validate_strict(raw_query.as_deref());
     let catalog_dir = state.catalog_dir.as_deref().map(|p| p.as_path());
     let parsed = parse_body(&body, &headers, catalog_dir).map_err(|fail| {
         warn!(error = %fail.message(), "POST /scenarios: invalid request body");
@@ -471,11 +522,36 @@ pub async fn post_scenario(
 
     let ParsedBody::Compiled(compiled) = parsed;
 
+    if strict {
+        let unresolved = collect_unresolved_refs(&state, &compiled);
+        if !unresolved.is_empty() {
+            warn!(
+                count = unresolved.len(),
+                "POST /scenarios?validate=strict: rejecting body with unresolved refs"
+            );
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "error": "unresolved_refs",
+                    "unresolved_refs": unresolved,
+                })),
+            )
+                .into_response());
+        }
+    }
+
     if let Some(name) = compiled.scenario_name.as_deref() {
-        let conflicts = collect_active_conflicts(&state, name).map_err(|()| {
+        let mut conflicts = collect_active_conflicts(&state, name).map_err(|()| {
             warn!("POST /scenarios: scenarios lock is poisoned");
             internal_error("internal state lock is poisoned")
         })?;
+        if conflicts.is_empty() && state.gate_bus_registry.scenario_name_in_use(name) {
+            conflicts.push(ConflictingScenario {
+                id: String::new(),
+                name: name.to_string(),
+                state: "running".to_string(),
+            });
+        }
         if !conflicts.is_empty() {
             warn!(
                 scenario_name = %name,
@@ -520,7 +596,8 @@ async fn launch_compiled(
     warnings: Vec<String>,
 ) -> Result<Response, Response> {
     let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handles = launch_multi_compiled(compiled, shutdown, None).map_err(|e| {
+    let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
+    let mut handles = launch_multi_compiled(compiled, shutdown, Some(resolver)).map_err(|e| {
         warn!(error = %e, "POST /scenarios: failed to launch scenarios");
         match e {
             sonda_core::SondaError::Config(_) => unprocessable(e),
@@ -538,7 +615,8 @@ async fn launch_compiled(
     let mut created: Vec<CreatedScenario> = Vec::with_capacity(handles.len());
     for handle in handles.iter_mut() {
         let new_id = Uuid::new_v4().to_string();
-        handle.id = new_id.clone();
+        let old_id = std::mem::replace(&mut handle.id, new_id.clone());
+        state.gate_bus_registry.rename_handle(&old_id, &new_id);
         let name = handle.name.clone();
         let state_str = state_string(&handle.stats_snapshot()).to_string();
         info!(id = %new_id, name = %name, state = %state_str, "scenario launched");
@@ -638,16 +716,22 @@ pub async fn get_scenario(
 
     let snap = handle.stats_snapshot();
     let degraded = snap.is_degraded(now_unix_nanos);
-    let state = state_string(&snap).to_string();
+    let state_str = state_string(&snap).to_string();
+    let pending_ref = if snap.state == ScenarioState::Unresolved {
+        state.gate_bus_registry.pending_for_handle(&handle.id)
+    } else {
+        None
+    };
     let mut stats: StatsResponse = snap.into();
     stats.degraded = degraded;
     let detail = ScenarioDetail {
         id: id.clone(),
         name: handle.name.clone(),
-        state,
+        state: state_str,
         elapsed_secs: handle.elapsed().as_secs_f64(),
         degraded,
         stats,
+        pending_ref,
     };
 
     Ok(Json(detail))
@@ -675,6 +759,12 @@ pub async fn delete_scenario(
         .get_mut(&id)
         .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
 
+    // Pre-mark so the StateGuard skips its own unregister; Phase 1 owns it.
+    handle
+        .cleaned_up
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let scenario_name_to_unregister = handle.scenario_name.clone();
+
     // Signal the scenario to stop (idempotent — safe to call on already-stopped).
     handle.stop();
 
@@ -700,8 +790,12 @@ pub async fn delete_scenario(
 
     // Remove the handle from the map to free resources (fixes memory leak).
     scenarios.remove(&id);
-    // Release the write lock before logging and building the response.
+    // Lock order: scenarios then registry.
     drop(scenarios);
+
+    if let Some(name) = scenario_name_to_unregister {
+        state.gate_bus_registry.unregister(&name);
+    }
 
     info!(id = %id, status = %status, total_events = final_stats.total_events, "scenario deleted");
 
@@ -742,8 +836,9 @@ pub async fn get_scenario_stats(
         .unwrap_or(0);
 
     let snap = handle.stats_snapshot();
-    let state = state_string(&snap).to_string();
+    let state_str = state_string(&snap).to_string();
     let degraded = snap.is_degraded(now_unix_nanos);
+    let current_state_secs = snap.current_state_secs();
     let response = DetailedStatsResponse {
         total_events: snap.total_events,
         current_rate: snap.current_rate,
@@ -751,7 +846,7 @@ pub async fn get_scenario_stats(
         bytes_emitted: snap.bytes_emitted,
         errors: snap.errors,
         uptime_secs: handle.elapsed().as_secs_f64(),
-        state,
+        state: state_str,
         in_gap: snap.in_gap,
         in_burst: snap.in_burst,
         consecutive_failures: snap.consecutive_failures,
@@ -759,6 +854,8 @@ pub async fn get_scenario_stats(
         last_sink_error: snap.last_sink_error,
         last_successful_write_at: snap.last_successful_write_at,
         degraded,
+        current_state_secs,
+        cumulative_resolution_attempts: snap.cumulative_resolution_attempts,
     };
 
     Ok(Json(response))
@@ -1736,6 +1833,7 @@ scenarios:
             state: "stopped".to_string(),
             elapsed_secs: 42.0,
             degraded: false,
+            pending_ref: None,
             stats: StatsResponse {
                 total_events: 100,
                 current_rate: 5.0,
@@ -3271,6 +3369,8 @@ scenarios:
             last_sink_error: None,
             last_successful_write_at: None,
             degraded: false,
+            current_state_secs: 0.0,
+            cumulative_resolution_attempts: 0,
         };
         let json = serde_json::to_value(&resp).expect("must serialize");
         assert_eq!(json["total_events"], 42);
@@ -4935,6 +5035,8 @@ scenarios:
             last_sink_error: Some("connection refused".to_string()),
             last_successful_write_at: Some(1_700_000_000_000_000_000),
             degraded: true,
+            current_state_secs: 5.25,
+            cumulative_resolution_attempts: 2,
         };
         snapshot_settings().bind(|| {
             insta::assert_json_snapshot!("detailed_stats_response", resp);
@@ -4974,6 +5076,8 @@ scenarios:
             last_sink_error: None,
             last_successful_write_at: None,
             degraded: false,
+            current_state_secs: 0.0,
+            cumulative_resolution_attempts: 0,
         };
         assert_eq!(resp.state, wire);
         snapshot_settings().bind(|| {
@@ -5399,5 +5503,305 @@ scenarios:
             body.contains("rpc_duration_count"),
             "expected _count series, got:\n{body}"
         );
+    }
+
+    // ========================================================================
+    // Brief 3 — cross-POST while: HTTP surface
+    // ========================================================================
+
+    const DOWNSTREAM_YAML: &str = "\
+version: 2
+kind: runnable
+scenario_name: downstream_post
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_metric
+      op: \">\"
+      value: 0
+      scenario_name: upstream_post
+      if_unresolved: pending
+";
+
+    const UPSTREAM_YAML: &str = "\
+version: 2
+kind: runnable
+scenario_name: upstream_post
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream_metric
+    signal_type: metrics
+    name: upstream_metric
+    generator:
+      type: constant
+      value: 1.0
+";
+
+    async fn post_with_query(
+        app: axum::Router,
+        content_type: &str,
+        body: &str,
+        query: &str,
+    ) -> hyper::Response<axum::body::Body> {
+        let uri = if query.is_empty() {
+            "/scenarios".to_string()
+        } else {
+            format!("/scenarios?{query}")
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", content_type)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        app.oneshot(req).await.unwrap()
+    }
+
+    async fn get_body(app: axum::Router, uri: &str) -> serde_json::Value {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        body_json(resp).await
+    }
+
+    #[tokio::test]
+    async fn t14_validate_strict_with_typo_returns_422_and_unresolved_refs() {
+        let (_, state) = test_router();
+        let bad = DOWNSTREAM_YAML.replace("upstream_post", "totally_wrong");
+        let resp = post_with_query(
+            router(state.clone()),
+            "application/x-yaml",
+            &bad,
+            "validate=strict",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(resp).await;
+        assert_eq!(body["error"], "unresolved_refs");
+        let unresolved = body["unresolved_refs"]
+            .as_array()
+            .expect("unresolved_refs must be array");
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0]["scenario_name"], "totally_wrong");
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn t15_validate_strict_with_mixed_refs_rejects_whole_body() {
+        let (_, state) = test_router();
+        let mixed = "\
+version: 2
+kind: runnable
+scenario_name: mixed_post
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: resolvable_dep
+    signal_type: metrics
+    name: resolvable_dep
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_metric
+      op: \">\"
+      value: 0
+      scenario_name: upstream_post
+      if_unresolved: pending
+  - id: unresolvable_dep
+    signal_type: metrics
+    name: unresolvable_dep
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: missing_ref
+      op: \">\"
+      value: 0
+      scenario_name: missing_post
+      if_unresolved: pending
+";
+        // Post upstream so one ref resolves.
+        let upstream_resp = post_with_query(
+            router(state.clone()),
+            "application/x-yaml",
+            UPSTREAM_YAML,
+            "",
+        )
+        .await;
+        assert_eq!(upstream_resp.status(), StatusCode::CREATED);
+
+        let resp = post_with_query(
+            router(state.clone()),
+            "application/x-yaml",
+            mixed,
+            "validate=strict",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(resp).await;
+        let unresolved = body["unresolved_refs"].as_array().unwrap();
+        assert_eq!(unresolved.len(), 1, "only one entry must be flagged");
+        assert_eq!(unresolved[0]["scenario_name"], "missing_post");
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn t16_validate_strict_with_all_resolvable_returns_201() {
+        let (_, state) = test_router();
+        let up_resp = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
+        assert_eq!(up_resp.status(), StatusCode::CREATED);
+
+        let resp = post_with_query(
+            router(state.clone()),
+            "text/yaml",
+            DOWNSTREAM_YAML,
+            "validate=strict",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn t18_get_scenario_for_unresolved_returns_pending_ref() {
+        let (_, state) = test_router();
+        let resp = post_with_query(
+            router(state.clone()),
+            "application/x-yaml",
+            DOWNSTREAM_YAML,
+            "",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let created = body_json(resp).await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        // Give the scenario a moment to reach Unresolved.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let detail = get_body(router(state.clone()), &format!("/scenarios/{id}")).await;
+        assert_eq!(detail["state"], "unresolved");
+        assert!(
+            detail["pending_ref"].is_object(),
+            "pending_ref must be populated for Unresolved, got: {detail}",
+        );
+        assert_eq!(detail["pending_ref"]["scenario_name"], "upstream_post");
+        assert_eq!(detail["pending_ref"]["entry_id"], "upstream_metric");
+
+        // Now post upstream and verify pending_ref clears once Running.
+        let up = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
+        assert_eq!(up.status(), StatusCode::CREATED);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_running = false;
+        while Instant::now() < deadline {
+            let detail = get_body(router(state.clone()), &format!("/scenarios/{id}")).await;
+            if detail["state"] == "running" {
+                saw_running = true;
+                assert!(
+                    detail["pending_ref"].is_null() || detail.get("pending_ref").is_none(),
+                    "pending_ref must be null/absent for non-Unresolved",
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            saw_running,
+            "downstream must reach Running after upstream POST"
+        );
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn t19_stats_endpoint_has_current_state_secs_and_cumulative_attempts() {
+        let (_, state) = test_router();
+        let resp = post_with_query(
+            router(state.clone()),
+            "application/x-yaml",
+            DOWNSTREAM_YAML,
+            "",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let created = body_json(resp).await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        std::thread::sleep(Duration::from_millis(300));
+        let stats = get_body(router(state.clone()), &format!("/scenarios/{id}/stats")).await;
+        assert!(stats["current_state_secs"].is_f64());
+        let secs_unresolved = stats["current_state_secs"].as_f64().unwrap();
+        assert!(secs_unresolved > 0.0);
+        let attempts_before = stats["cumulative_resolution_attempts"].as_u64().unwrap();
+
+        // Trigger a state transition by resolving the upstream.
+        let up = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
+        assert_eq!(up.status(), StatusCode::CREATED);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saw_running = false;
+        let mut attempts_after = 0u64;
+        while Instant::now() < deadline {
+            let s = get_body(router(state.clone()), &format!("/scenarios/{id}/stats")).await;
+            if s["state"] == "running" {
+                // current_state_secs reset on transition.
+                let s2 = s["current_state_secs"].as_f64().unwrap();
+                assert!(
+                    s2 < secs_unresolved,
+                    "current_state_secs must reset on transition; was {secs_unresolved}, now {s2}",
+                );
+                attempts_after = s["cumulative_resolution_attempts"].as_u64().unwrap();
+                saw_running = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            saw_running,
+            "downstream must reach Running after upstream POST"
+        );
+        assert!(
+            attempts_after > attempts_before,
+            "cumulative_resolution_attempts must strictly increase across unresolved→running; was {attempts_before}, now {attempts_after}",
+        );
+        assert!(
+            attempts_after >= 1,
+            "the resolving sweep counts as at least one attempt, got {attempts_after}",
+        );
+        cleanup_scenarios(&state);
+    }
+
+    #[tokio::test]
+    async fn t20_duplicate_scenario_name_returns_409_via_registry() {
+        let (_, state) = test_router();
+        let first = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        let body = body_json(second).await;
+        assert!(body["conflicting_scenarios"].is_array());
+        cleanup_scenarios(&state);
     }
 }
