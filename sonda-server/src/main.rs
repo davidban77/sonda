@@ -4,6 +4,7 @@
 //! stopped over HTTP. All scenario lifecycle logic is delegated to sonda-core.
 
 mod auth;
+mod gate_registry;
 mod routes;
 mod state;
 

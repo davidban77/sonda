@@ -544,10 +544,11 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
     } = file;
 
     let id_to_idx = build_id_index(&entries);
+    let file_scenario_name = scenario_name.as_deref();
 
     for entry in &entries {
         let source_id = source_label(entry);
-        for (ref_id, clause) in outgoing_edges(entry) {
+        for (ref_id, clause) in outgoing_edges(entry, file_scenario_name) {
             resolve_reference(ref_id, &id_to_idx, &source_id, clause)?;
             if entry.id.as_deref() == Some(ref_id) {
                 return Err(CompileAfterError::SelfReference {
@@ -562,7 +563,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
     let mut in_degree = vec![0u32; n];
     let mut dependents: Vec<Vec<(usize, ClauseKind)>> = vec![Vec::new(); n];
     for (i, entry) in entries.iter().enumerate() {
-        for (ref_id, clause) in outgoing_edges(entry) {
+        for (ref_id, clause) in outgoing_edges(entry, file_scenario_name) {
             let dep_idx = id_to_idx[ref_id];
             in_degree[i] += 1;
             dependents[dep_idx].push((i, clause));
@@ -581,7 +582,7 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         }
     }
     if sorted.len() < n {
-        let cycle = find_cycle(&entries, &id_to_idx);
+        let cycle = find_cycle(&entries, &id_to_idx, file_scenario_name);
         return Err(CompileAfterError::CircularDependency { cycle });
     }
 
@@ -589,6 +590,9 @@ pub fn compile_after(file: ExpandedFile) -> Result<CompiledFile, CompileAfterErr
         let Some(clause) = &entry.while_clause else {
             continue;
         };
+        if is_deferred_while(clause, file_scenario_name) {
+            continue;
+        }
         let source_id = source_label(entry).into_owned();
         let dep_idx = id_to_idx[clause.ref_id.as_str()];
         let target = &entries[dep_idx];
@@ -830,23 +834,30 @@ fn resolve_reference(
 }
 
 /// Yield every outgoing edge from `entry` as `(target_ref_id, edge_label)`.
-///
-/// Order is `after:` first, then `while:` — used by index building, cycle
-/// detection, and reference validation. Adding a new clause type (e.g.
-/// v2's `gated_by:`) extends this iterator and reaches every cycle-aware
-/// site automatically.
-fn outgoing_edges(entry: &ExpandedEntry) -> impl Iterator<Item = (&str, ClauseKind)> {
+/// Cross-POST `while:` refs (scenario_name outside the file) are excluded.
+fn outgoing_edges<'a>(
+    entry: &'a ExpandedEntry,
+    file_scenario_name: Option<&'a str>,
+) -> impl Iterator<Item = (&'a str, ClauseKind)> {
+    let while_edge = entry
+        .while_clause
+        .as_ref()
+        .filter(|c| !is_deferred_while(c, file_scenario_name))
+        .map(|c| (c.ref_id.as_str(), ClauseKind::While));
+
     entry
         .after
         .as_ref()
         .map(|c| (c.ref_id.as_str(), ClauseKind::After))
         .into_iter()
-        .chain(
-            entry
-                .while_clause
-                .as_ref()
-                .map(|c| (c.ref_id.as_str(), ClauseKind::While)),
-        )
+        .chain(while_edge)
+}
+
+fn is_deferred_while(clause: &WhileClause, file_scenario_name: Option<&str>) -> bool {
+    match clause.scenario_name.as_deref() {
+        Some(name) => Some(name) != file_scenario_name,
+        None => false,
+    }
 }
 
 /// Format an entry into a human-readable label for error messages.
@@ -1215,6 +1226,7 @@ fn auto_chain_name(members: &[usize], entries: &[ExpandedEntry]) -> String {
 fn find_cycle(
     entries: &[ExpandedEntry],
     id_to_idx: &BTreeMap<&str, usize>,
+    file_scenario_name: Option<&str>,
 ) -> Vec<(String, ClauseKind)> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Color {
@@ -1231,13 +1243,14 @@ fn find_cycle(
         node: usize,
         entries: &[ExpandedEntry],
         id_to_idx: &BTreeMap<&str, usize>,
+        file_scenario_name: Option<&str>,
         color: &mut [Color],
         path: &mut Vec<(usize, ClauseKind)>,
     ) -> Option<Vec<(usize, ClauseKind)>> {
         color[node] = Color::Gray;
         path.push((node, ClauseKind::After));
 
-        for (ref_id, clause) in outgoing_edges(&entries[node]) {
+        for (ref_id, clause) in outgoing_edges(&entries[node], file_scenario_name) {
             let Some(&dep) = id_to_idx.get(ref_id) else {
                 continue;
             };
@@ -1246,7 +1259,9 @@ fn find_cycle(
             }
             match color[dep] {
                 Color::White => {
-                    if let Some(cycle) = dfs(dep, entries, id_to_idx, color, path) {
+                    if let Some(cycle) =
+                        dfs(dep, entries, id_to_idx, file_scenario_name, color, path)
+                    {
                         return Some(cycle);
                     }
                 }
@@ -1267,7 +1282,14 @@ fn find_cycle(
 
     for start in 0..n {
         if color[start] == Color::White {
-            if let Some(cycle) = dfs(start, entries, id_to_idx, &mut color, &mut path) {
+            if let Some(cycle) = dfs(
+                start,
+                entries,
+                id_to_idx,
+                file_scenario_name,
+                &mut color,
+                &mut path,
+            ) {
                 return cycle
                     .into_iter()
                     .map(|(i, kind)| (source_label(&entries[i]).into_owned(), kind))
@@ -2384,6 +2406,8 @@ scenarios:
                 ref_id: "w_target".to_string(),
                 op: WhileOp::LessThan,
                 value: 0.0,
+                scenario_name: None,
+                if_unresolved: None,
             }),
             delay_clause: None,
             distribution: None,
@@ -2396,7 +2420,7 @@ scenarios:
             metric_type: None,
             help: None,
         };
-        let edges: Vec<_> = outgoing_edges(&e).collect();
+        let edges: Vec<_> = outgoing_edges(&e, None).collect();
         assert_eq!(
             edges,
             vec![
@@ -2406,11 +2430,11 @@ scenarios:
         );
 
         e.while_clause = None;
-        let edges_after_only: Vec<_> = outgoing_edges(&e).collect();
+        let edges_after_only: Vec<_> = outgoing_edges(&e, None).collect();
         assert_eq!(edges_after_only, vec![("a_target", ClauseKind::After)]);
 
         e.after = None;
-        let edges_none: Vec<_> = outgoing_edges(&e).collect();
+        let edges_none: Vec<_> = outgoing_edges(&e, None).collect();
         assert!(edges_none.is_empty());
     }
 
@@ -2788,5 +2812,95 @@ scenarios:
             msg.contains("unsupported operator") && msg.contains("strict"),
             "error must use the 'unsupported operator … strict' wording. got: {msg}"
         );
+    }
+
+    #[test]
+    fn while_with_self_scenario_name_and_local_match_resolves_locally() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenario_name: foo
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator: { type: constant, value: 1 }
+    while: { ref: link, op: ">", value: 0, scenario_name: foo, if_unresolved: open }
+"#;
+        let compiled = compile_after_from_yaml(yaml).expect("self-scenario_name compiles locally");
+        let dep = compiled
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("dependent"))
+            .expect("dependent present");
+        let w = dep.while_clause.as_ref().expect("while preserved");
+        assert_eq!(w.ref_id, "link");
+        assert_eq!(w.scenario_name.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn while_with_cross_scenario_name_and_unknown_ref_defers() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenario_name: bar
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator: { type: constant, value: 1 }
+    while: { ref: non_local_id, op: ">", value: 0, scenario_name: foo, if_unresolved: open }
+"#;
+        let compiled = compile_after_from_yaml(yaml).expect("cross-POST defers, no error");
+        let dep = compiled
+            .entries
+            .iter()
+            .find(|e| e.id.as_deref() == Some("dependent"))
+            .expect("dependent present");
+        let w = dep.while_clause.as_ref().expect("while preserved");
+        assert_eq!(w.ref_id, "non_local_id");
+        assert_eq!(w.scenario_name.as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn while_with_self_scenario_name_and_typo_ref_errors() {
+        let yaml = r#"
+version: 2
+kind: runnable
+scenario_name: foo
+defaults:
+  rate: 1
+  duration: 1m
+scenarios:
+  - id: link
+    signal_type: metrics
+    name: link
+    generator: { type: flap, up_duration: 60s, down_duration: 30s }
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator: { type: constant, value: 1 }
+    while: { ref: typo_id, op: ">", value: 0, scenario_name: foo, if_unresolved: open }
+"#;
+        let err = compile_after_from_yaml(yaml).expect_err("self-scenario_name + typo errors");
+        match err {
+            CompileAfterError::UnknownRef {
+                source_id, ref_id, ..
+            } => {
+                assert_eq!(source_id, "dependent");
+                assert_eq!(ref_id, "typo_id");
+            }
+            other => panic!("expected UnknownRef, got {other:?}"),
+        }
     }
 }

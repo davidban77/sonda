@@ -59,6 +59,7 @@ fn bench_baseline_ungated(c: &mut Criterion) {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();
@@ -87,14 +88,8 @@ fn bench_gated_open(c: &mut Criterion) {
                 shutdown,
                 None,
                 Some(Arc::clone(&bus)),
-                Some(GateContext {
-                    gate_rx: rx,
-                    initial: init,
-                    delay: None,
-                    has_after: false,
-                    has_while: true,
-                    close_emit: None,
-                }),
+                Some(GateContext::new(rx, init).with_has_while(true)),
+                None,
             )
             .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();

@@ -16,5 +16,7 @@ expression: resp
   "total_sink_failures": 7,
   "last_sink_error": "connection refused",
   "last_successful_write_at": 1700000000000000000,
-  "degraded": true
+  "degraded": true,
+  "current_state_secs": 5.25,
+  "cumulative_resolution_attempts": 2
 }

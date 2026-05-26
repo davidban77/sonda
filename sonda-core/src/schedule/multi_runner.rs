@@ -22,11 +22,16 @@ use crate::config::expand_entry;
 #[cfg(feature = "config")]
 use crate::schedule::core_loop::GateContext;
 #[cfg(feature = "config")]
-use crate::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
+use crate::schedule::gate_bus::{
+    GateBus, GateBusResolver, GateReceiver, InitialState, PendingResolution, SubscriptionSpec,
+    WhileSpec,
+};
 #[cfg(feature = "config")]
 use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
+#[cfg(feature = "config")]
+use std::sync::mpsc;
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 /// Set `shutdown` to `false` to stop all running scenarios.
@@ -107,26 +112,49 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in,
-/// returning the live handles without joining them. Each handle owns an
-/// independent shutdown flag; for a master "stop all" trigger, use
-/// [`run_multi_compiled`].
+/// returning the live handles without joining them. When `resolver` is `Some`,
+/// cross-POST `while:` references resolve through the registry; otherwise every
+/// reference must resolve inside `file`. Each handle owns an independent
+/// shutdown flag — see [`run_multi_compiled`] for the master-stop-all path.
 #[cfg(feature = "config")]
 pub fn launch_multi_compiled(
     file: CompiledFile,
+    resolver: Option<Arc<dyn GateBusResolver>>,
 ) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
     let CompiledFile {
-        scenario_name,
+        scenario_name: file_scenario_name,
         entries,
         ..
     } = file;
+    let file_scenario_name_ref = file_scenario_name.as_deref();
 
-    let bus_ids = while_upstream_ids(&entries);
+    let mut bus_ids = while_upstream_ids(&entries, file_scenario_name_ref);
+    if file_scenario_name_ref.is_some() {
+        for entry in &entries {
+            if entry.signal_type == "metrics" {
+                if let Some(id) = entry.id.as_deref() {
+                    bus_ids.push(id.to_string());
+                }
+            }
+        }
+        bus_ids.sort();
+        bus_ids.dedup();
+    }
     let mut buses: HashMap<String, Arc<GateBus>> = HashMap::with_capacity(bus_ids.len());
     for id in bus_ids {
         buses.insert(id, Arc::new(GateBus::new()));
     }
 
-    // Build (entry, gate_ctx, upstream_bus, start_delay, id) per scenario.
+    if let (Some(ref r), Some(name)) = (&resolver, file_scenario_name_ref) {
+        for (entry_id, bus) in buses.iter() {
+            r.register(name, entry_id, Arc::clone(bus)).map_err(|e| {
+                SondaError::Config(crate::ConfigError::invalid(format!(
+                    "gate bus registry: {e}"
+                )))
+            })?;
+        }
+    }
+
     let mut launches: Vec<LaunchPlan> = Vec::with_capacity(entries.len());
     for compiled_entry in entries.into_iter() {
         let id = compiled_entry.id.clone();
@@ -159,29 +187,82 @@ pub fn launch_multi_compiled(
 
         let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
 
+        let mut deferred: Option<DeferredSubscription> = None;
+        let mut active: Option<ActiveSubscription> = None;
         let gate_ctx = if let Some(ref clause) = while_clause {
-            let upstream = buses.get(&clause.ref_id).ok_or_else(|| {
-                SondaError::Config(crate::ConfigError::invalid(format!(
-                    "while: ref '{}' not found among scenario ids",
-                    clause.ref_id
-                )))
-            })?;
-            let spec = SubscriptionSpec {
-                after: None,
-                while_: Some(WhileSpec {
+            if let Some(cross_scenario) = cross_scenario_target(clause, file_scenario_name_ref) {
+                let resolver = resolver.as_ref().ok_or_else(|| {
+                    SondaError::Config(crate::ConfigError::invalid(
+                        "cross-POST while: reference requires a GateBusResolver; \
+                         the CLI does not support cross-POST `while:`",
+                    ))
+                })?;
+                let spec = WhileSpec {
                     op: clause.op,
                     threshold: clause.value,
-                }),
-            };
-            let (rx, init) = upstream.subscribe(spec);
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: delay_clause,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-            })
+                };
+                let (tx, rx) = mpsc::sync_channel::<crate::schedule::gate_bus::GateEdge>(1);
+                let if_unresolved = clause.if_unresolved.unwrap_or_default();
+                let bus = resolver.lookup(cross_scenario, clause.ref_id.as_str());
+                let (gate_rx, initial, start_unresolved) = match bus {
+                    Some(bus) => {
+                        let init = bus.subscribe_with_while_sender(spec, tx.clone());
+                        active = Some(ActiveSubscription {
+                            sender: tx,
+                            scenario_name: cross_scenario.to_string(),
+                            entry_id: clause.ref_id.clone(),
+                            if_unresolved,
+                            spec,
+                        });
+                        (GateReceiver::from_while_rx(rx), init, false)
+                    }
+                    None => {
+                        deferred = Some(DeferredSubscription {
+                            sender: tx,
+                            scenario_name: cross_scenario.to_string(),
+                            entry_id: clause.ref_id.clone(),
+                            if_unresolved,
+                            spec,
+                        });
+                        (
+                            GateReceiver::from_while_rx(rx),
+                            InitialState {
+                                after_already_fired: false,
+                                while_gate_open: None,
+                                current_value: f64::NAN,
+                            },
+                            true,
+                        )
+                    }
+                };
+                Some(
+                    GateContext::new(gate_rx, initial)
+                        .with_delay(delay_clause)
+                        .with_has_while(true)
+                        .with_if_unresolved(Some(if_unresolved))
+                        .with_start_unresolved(start_unresolved),
+                )
+            } else {
+                let upstream = buses.get(&clause.ref_id).ok_or_else(|| {
+                    SondaError::Config(crate::ConfigError::invalid(format!(
+                        "while: ref '{}' not found among scenario ids",
+                        clause.ref_id
+                    )))
+                })?;
+                let spec = SubscriptionSpec {
+                    after: None,
+                    while_: Some(WhileSpec {
+                        op: clause.op,
+                        threshold: clause.value,
+                    }),
+                };
+                let (rx, init) = upstream.subscribe(spec);
+                Some(
+                    GateContext::new(rx, init)
+                        .with_delay(delay_clause)
+                        .with_has_while(true),
+                )
+            }
         } else {
             None
         };
@@ -199,23 +280,56 @@ pub fn launch_multi_compiled(
             gate_ctx,
             upstream_bus,
             start_delay,
+            deferred,
+            active,
         });
     }
 
     let mut handles = Vec::with_capacity(launches.len());
     for (idx, plan) in launches.into_iter().enumerate() {
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
+        let deferred = plan.deferred;
+        let active = plan.active;
         let scenario_shutdown = Arc::new(AtomicBool::new(true));
         match launch_scenario_with_gates(
-            id,
-            scenario_name.clone(),
+            id.clone(),
+            file_scenario_name.clone(),
             plan.entry,
             scenario_shutdown,
             plan.start_delay,
             plan.upstream_bus,
             plan.gate_ctx,
+            resolver.clone(),
         ) {
-            Ok(handle) => handles.push(handle),
+            Ok(handle) => {
+                if let (Some(d), Some(r)) = (deferred, resolver.as_ref()) {
+                    r.insert_pending(PendingResolution {
+                        handle_id: handle.id.clone(),
+                        stats: Arc::downgrade(&handle.stats),
+                        edge_sender: d.sender,
+                        scenario_name: d.scenario_name,
+                        entry_id: d.entry_id,
+                        if_unresolved: d.if_unresolved,
+                        registered_at: std::time::Instant::now(),
+                        attempts: 0,
+                        spec: d.spec,
+                    });
+                }
+                if let (Some(a), Some(r)) = (active, resolver.as_ref()) {
+                    r.track_subscriber(PendingResolution {
+                        handle_id: handle.id.clone(),
+                        stats: Arc::downgrade(&handle.stats),
+                        edge_sender: a.sender,
+                        scenario_name: a.scenario_name,
+                        entry_id: a.entry_id,
+                        if_unresolved: a.if_unresolved,
+                        registered_at: std::time::Instant::now(),
+                        attempts: 0,
+                        spec: a.spec,
+                    });
+                }
+                handles.push(handle);
+            }
             Err(e) => {
                 for handle in &handles {
                     handle.stop();
@@ -228,7 +342,42 @@ pub fn launch_multi_compiled(
         }
     }
 
+    if let Some(ref r) = resolver {
+        r.sweep_pending();
+    }
+
     Ok(handles)
+}
+
+#[cfg(feature = "config")]
+fn cross_scenario_target<'a>(
+    clause: &'a crate::compiler::WhileClause,
+    file_scenario_name: Option<&'a str>,
+) -> Option<&'a str> {
+    let name = clause.scenario_name.as_deref()?;
+    if Some(name) == file_scenario_name {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+#[cfg(feature = "config")]
+struct DeferredSubscription {
+    sender: crate::schedule::gate_bus::GateEdgeSender,
+    scenario_name: String,
+    entry_id: String,
+    if_unresolved: crate::compiler::UnresolvedBehavior,
+    spec: WhileSpec,
+}
+
+#[cfg(feature = "config")]
+struct ActiveSubscription {
+    sender: crate::schedule::gate_bus::GateEdgeSender,
+    scenario_name: String,
+    entry_id: String,
+    if_unresolved: crate::compiler::UnresolvedBehavior,
+    spec: WhileSpec,
 }
 
 /// Run a compiled scenario file with `while:` / `after:` gating wired in.
@@ -238,7 +387,7 @@ pub fn launch_multi_compiled(
 /// overhead.
 #[cfg(feature = "config")]
 pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
-    let handles = launch_multi_compiled(file)?;
+    let handles = launch_multi_compiled(file, None)?;
     let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
         handles.iter().map(|h| Arc::clone(&h.shutdown)).collect();
 
@@ -265,14 +414,22 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
     }
 }
 
-/// Collect the set of compiled-entry ids referenced by some `while:` clause.
-/// Only these ids need a [`GateBus`]; non-referenced entries publish nothing
-/// and skip the per-tick `tick()` lock.
+/// Local `while:` upstream ids; cross-POST refs are excluded.
 #[cfg(feature = "config")]
-fn while_upstream_ids(entries: &[crate::compiler::compile_after::CompiledEntry]) -> Vec<String> {
+fn while_upstream_ids(
+    entries: &[crate::compiler::compile_after::CompiledEntry],
+    file_scenario_name: Option<&str>,
+) -> Vec<String> {
     let mut ids: Vec<String> = entries
         .iter()
-        .filter_map(|e| e.while_clause.as_ref().map(|w| w.ref_id.clone()))
+        .filter_map(|e| {
+            let clause = e.while_clause.as_ref()?;
+            if cross_scenario_target(clause, file_scenario_name).is_some() {
+                None
+            } else {
+                Some(clause.ref_id.clone())
+            }
+        })
         .collect();
     ids.sort();
     ids.dedup();
@@ -286,6 +443,8 @@ struct LaunchPlan {
     gate_ctx: Option<GateContext>,
     upstream_bus: Option<Arc<GateBus>>,
     start_delay: Option<std::time::Duration>,
+    deferred: Option<DeferredSubscription>,
+    active: Option<ActiveSubscription>,
 }
 
 #[cfg(test)]
@@ -1082,7 +1241,7 @@ scenarios:
         let resolver = InMemoryPackResolver::new();
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
-        let ids = while_upstream_ids(&compiled.entries);
+        let ids = while_upstream_ids(&compiled.entries, compiled.scenario_name.as_deref());
         assert_eq!(
             ids,
             vec!["upstream_a".to_string()],
@@ -1124,7 +1283,7 @@ scenarios:
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
 
-        let mut handles = launch_multi_compiled(compiled).expect("launch must succeed");
+        let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
         assert_eq!(handles.len(), 2, "must launch both entries");
         assert!(
             handles.iter().all(|h| h.is_alive()),
@@ -1148,6 +1307,513 @@ scenarios:
             handle
                 .join(Some(Duration::from_secs(1)))
                 .expect("join must succeed after stop");
+        }
+    }
+
+    #[cfg(feature = "config")]
+    mod cross_post {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex, RwLock, Weak};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        use crate::compile_scenario_file_compiled;
+        use crate::compiler::expand::InMemoryPackResolver;
+        use crate::schedule::gate_bus::{
+            GateBus, GateBusResolver, GateEdgeSender, PendingRef, PendingResolution, RegistryError,
+        };
+        use crate::schedule::handle::ScenarioHandle;
+        use crate::schedule::stats::{ScenarioState, ScenarioStats};
+
+        use super::super::launch_multi_compiled;
+
+        struct TestRegistry {
+            buses: Mutex<HashMap<(String, String), Arc<GateBus>>>,
+            pending: Mutex<Vec<PendingResolution>>,
+        }
+
+        impl TestRegistry {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    buses: Mutex::new(HashMap::new()),
+                    pending: Mutex::new(Vec::new()),
+                })
+            }
+
+            fn pending_len(&self) -> usize {
+                self.pending.lock().unwrap().len()
+            }
+        }
+
+        impl GateBusResolver for TestRegistry {
+            fn register(
+                &self,
+                scenario_name: &str,
+                entry_id: &str,
+                bus: Arc<GateBus>,
+            ) -> Result<(), RegistryError> {
+                let key = (scenario_name.to_string(), entry_id.to_string());
+                let mut buses = self.buses.lock().unwrap();
+                if buses.contains_key(&key) {
+                    return Err(RegistryError::DuplicateScenarioName {
+                        name: scenario_name.to_string(),
+                    });
+                }
+                buses.insert(key, bus);
+                Ok(())
+            }
+
+            fn lookup(&self, scenario_name: &str, entry_id: &str) -> Option<Arc<GateBus>> {
+                self.buses
+                    .lock()
+                    .unwrap()
+                    .get(&(scenario_name.to_string(), entry_id.to_string()))
+                    .cloned()
+            }
+
+            fn subscribe(
+                &self,
+                upstream: (&str, &str),
+                _downstream_handle_id: &str,
+                _downstream_stats: Weak<RwLock<ScenarioStats>>,
+                _edge_sender: GateEdgeSender,
+            ) -> Option<Arc<GateBus>> {
+                self.buses
+                    .lock()
+                    .unwrap()
+                    .get(&(upstream.0.to_string(), upstream.1.to_string()))
+                    .cloned()
+            }
+
+            fn unregister(&self, scenario_name: &str) {
+                let mut buses = self.buses.lock().unwrap();
+                let keys: Vec<_> = buses
+                    .keys()
+                    .filter(|(s, _)| s == scenario_name)
+                    .cloned()
+                    .collect();
+                for key in keys {
+                    if let Some(bus) = buses.remove(&key) {
+                        bus.broadcast_upstream_gone();
+                    }
+                }
+            }
+
+            fn sweep_pending(&self) -> usize {
+                let mut pending = self.pending.lock().unwrap();
+                let buses = self.buses.lock().unwrap();
+                let mut promoted = 0;
+                pending.retain(|p| {
+                    if p.stats.strong_count() == 0 {
+                        return false;
+                    }
+                    let key = (p.scenario_name.clone(), p.entry_id.clone());
+                    if let Some(bus) = buses.get(&key) {
+                        bus.subscribe_with_while_sender(p.spec, p.edge_sender.clone());
+                        promoted += 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                promoted
+            }
+
+            fn insert_pending(&self, pending: PendingResolution) {
+                self.pending.lock().unwrap().push(pending);
+            }
+
+            fn pending_for_handle(&self, handle_id: &str) -> Option<PendingRef> {
+                let pending = self.pending.lock().unwrap();
+                pending
+                    .iter()
+                    .find(|p| p.handle_id == handle_id)
+                    .map(|p| PendingRef {
+                        scenario_name: p.scenario_name.clone(),
+                        entry_id: p.entry_id.clone(),
+                        if_unresolved: p.if_unresolved,
+                        #[cfg(feature = "config")]
+                        registered_at: chrono::DateTime::<chrono::Utc>::from(
+                            std::time::SystemTime::now(),
+                        ),
+                        attempts: p.attempts,
+                    })
+            }
+
+            fn scenario_name_in_use(&self, scenario_name: &str) -> bool {
+                self.buses
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .any(|(s, _)| s == scenario_name)
+            }
+        }
+
+        fn downstream_yaml(if_unresolved: &str) -> String {
+            format!(
+                r#"
+version: 2
+kind: runnable
+scenario_name: downstream_post
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream_metric
+      op: ">"
+      value: 0
+      scenario_name: upstream_post
+      if_unresolved: {if_unresolved}
+"#
+            )
+        }
+
+        fn upstream_yaml() -> String {
+            r#"
+version: 2
+kind: runnable
+scenario_name: upstream_post
+defaults:
+  rate: 50
+  duration: 5s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream_metric
+    signal_type: metrics
+    name: upstream_metric
+    generator:
+      type: constant
+      value: 1.0
+"#
+            .to_string()
+        }
+
+        fn wait_for_state(handle: &ScenarioHandle, expected: ScenarioState, timeout: Duration) {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if handle.stats_snapshot().state == expected {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let actual = handle.stats_snapshot().state;
+            panic!("timed out waiting for {expected:?}; current state = {actual:?}");
+        }
+
+        fn stop_and_join(mut handles: Vec<ScenarioHandle>) {
+            for h in &handles {
+                h.stop();
+            }
+            for h in &mut handles {
+                let _ = h.join(Some(Duration::from_secs(2)));
+            }
+        }
+
+        #[test]
+        fn t8_downstream_enters_unresolved_then_promoted_on_register_and_sweep() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let compiled = compile_scenario_file_compiled(
+                &downstream_yaml("pending"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+
+            let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .expect("launch downstream");
+            assert_eq!(handles.len(), 1);
+            wait_for_state(
+                &handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+            assert_eq!(registry.pending_len(), 1);
+
+            let bus = Arc::new(GateBus::new());
+            bus.tick(1.0);
+            resolver
+                .register("upstream_post", "upstream_metric", bus)
+                .expect("register upstream");
+            let promoted = resolver.sweep_pending();
+            assert_eq!(promoted, 1);
+
+            wait_for_state(&handles[0], ScenarioState::Running, Duration::from_secs(2));
+            stop_and_join(handles);
+        }
+
+        #[test]
+        fn t9_downstream_first_then_upstream_post_promotes_via_sweep() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let downstream = compile_scenario_file_compiled(
+                &downstream_yaml("pending"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+
+            let downstream_handles = launch_multi_compiled(downstream, Some(Arc::clone(&resolver)))
+                .expect("launch downstream");
+            wait_for_state(
+                &downstream_handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+
+            let upstream =
+                compile_scenario_file_compiled(&upstream_yaml(), &InMemoryPackResolver::new())
+                    .expect("compile upstream");
+            let upstream_handles = launch_multi_compiled(upstream, Some(Arc::clone(&resolver)))
+                .expect("launch upstream");
+            wait_for_state(
+                &downstream_handles[0],
+                ScenarioState::Running,
+                Duration::from_secs(2),
+            );
+
+            stop_and_join(downstream_handles);
+            stop_and_join(upstream_handles);
+        }
+
+        // Re-resolution after `unregister` (so a downstream Unresolved can pick up a fresh
+        // upstream with the same scenario_name) requires the registry to push affected
+        // downstreams back into `pending` on unregister — that mechanism lives with the
+        // production `GateBusRegistry` implementation, not the test resolver.
+        #[test]
+        fn t10_unregister_drives_downstream_back_to_unresolved() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let upstream =
+                compile_scenario_file_compiled(&upstream_yaml(), &InMemoryPackResolver::new())
+                    .expect("compile upstream");
+            let upstream_handles = launch_multi_compiled(upstream, Some(Arc::clone(&resolver)))
+                .expect("launch upstream");
+
+            let downstream = compile_scenario_file_compiled(
+                &downstream_yaml("open"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+            let downstream_handles = launch_multi_compiled(downstream, Some(Arc::clone(&resolver)))
+                .expect("launch downstream");
+            wait_for_state(
+                &downstream_handles[0],
+                ScenarioState::Running,
+                Duration::from_secs(2),
+            );
+
+            resolver.unregister("upstream_post");
+            wait_for_state(
+                &downstream_handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+            for h in &upstream_handles {
+                h.stop();
+            }
+            for mut h in upstream_handles {
+                let _ = h.join(Some(Duration::from_secs(1)));
+            }
+
+            let bus = Arc::new(GateBus::new());
+            bus.tick(1.0);
+            resolver
+                .register("upstream_post", "upstream_metric", bus)
+                .expect("re-register");
+            assert_eq!(
+                downstream_handles[0].stats_snapshot().state,
+                ScenarioState::Unresolved,
+            );
+
+            stop_and_join(downstream_handles);
+        }
+
+        #[test]
+        fn t11_if_unresolved_open_ticks_at_full_rate() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let compiled = compile_scenario_file_compiled(
+                &downstream_yaml("open"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+            let handles =
+                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            wait_for_state(
+                &handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+
+            let snapshot_at_t0 = handles[0].stats_snapshot().total_events;
+            thread::sleep(Duration::from_millis(400));
+            let snapshot_after = handles[0].stats_snapshot().total_events;
+            let delta = snapshot_after - snapshot_at_t0;
+            assert!(
+                delta >= 5,
+                "if_unresolved: open must keep ticking; delta = {delta}"
+            );
+
+            stop_and_join(handles);
+        }
+
+        #[test]
+        fn t11b_if_unresolved_open_transitions_to_running_on_upstream_register() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let compiled = compile_scenario_file_compiled(
+                &downstream_yaml("open"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+            let handles =
+                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            wait_for_state(
+                &handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+
+            let pre_register = handles[0].stats_snapshot().total_events;
+
+            let bus = Arc::new(GateBus::new());
+            bus.tick(1.0);
+            resolver
+                .register("upstream_post", "upstream_metric", bus)
+                .expect("register upstream");
+            let promoted = resolver.sweep_pending();
+            assert_eq!(promoted, 1);
+
+            wait_for_state(&handles[0], ScenarioState::Running, Duration::from_secs(2));
+
+            let post_transition = handles[0].stats_snapshot().total_events;
+            thread::sleep(Duration::from_millis(400));
+            let after_running = handles[0].stats_snapshot().total_events;
+            assert!(
+                post_transition > pre_register,
+                "emission must continue across the Unresolved -> Running transition; \
+                 pre_register = {pre_register}, post_transition = {post_transition}"
+            );
+            let delta = after_running - post_transition;
+            assert!(
+                delta >= 5,
+                "Running state must keep ticking after transition; delta = {delta}"
+            );
+
+            stop_and_join(handles);
+        }
+
+        #[test]
+        fn t12_if_unresolved_closed_does_not_emit() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let compiled = compile_scenario_file_compiled(
+                &downstream_yaml("closed"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+            let handles =
+                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            wait_for_state(
+                &handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+
+            let snapshot_at_t0 = handles[0].stats_snapshot().total_events;
+            thread::sleep(Duration::from_millis(400));
+            let snapshot_after = handles[0].stats_snapshot().total_events;
+            assert_eq!(
+                snapshot_after, snapshot_at_t0,
+                "if_unresolved: closed must not emit ticks"
+            );
+
+            stop_and_join(handles);
+        }
+
+        #[test]
+        fn t13_if_unresolved_pending_does_not_emit_and_holds_state() {
+            let registry = TestRegistry::new();
+            let resolver: Arc<dyn GateBusResolver> = registry.clone();
+
+            let compiled = compile_scenario_file_compiled(
+                &downstream_yaml("pending"),
+                &InMemoryPackResolver::new(),
+            )
+            .expect("compile downstream");
+            let handles =
+                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            wait_for_state(
+                &handles[0],
+                ScenarioState::Unresolved,
+                Duration::from_secs(2),
+            );
+
+            let snapshot_at_t0 = handles[0].stats_snapshot().total_events;
+            thread::sleep(Duration::from_millis(400));
+            let snap = handles[0].stats_snapshot();
+            assert_eq!(snap.total_events, snapshot_at_t0);
+            assert_eq!(snap.state, ScenarioState::Unresolved);
+
+            stop_and_join(handles);
+        }
+
+        #[test]
+        fn t_regress_2_local_only_while_path_unchanged() {
+            let yaml = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 200ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: upstream
+    signal_type: metrics
+    name: upstream
+    generator:
+      type: constant
+      value: 1.0
+  - id: dependent
+    signal_type: metrics
+    name: dependent
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: upstream
+      op: ">"
+      value: 0
+"#;
+            let compiled = compile_scenario_file_compiled(yaml, &InMemoryPackResolver::new())
+                .expect("compile local-only");
+            let mut handles = launch_multi_compiled(compiled, None).expect("launch");
+            assert_eq!(handles.len(), 2);
+            for h in &mut handles {
+                let _ = h.join(Some(Duration::from_secs(2)));
+            }
         }
     }
 
@@ -1191,7 +1857,7 @@ scenarios:
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
 
-        let mut handles = launch_multi_compiled(compiled).expect("launch must succeed");
+        let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
         assert_eq!(handles.len(), 3, "must launch all three entries");
 
         for i in 0..handles.len() {

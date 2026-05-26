@@ -1,6 +1,5 @@
 ---
 source: sonda-server/src/routes/scenarios.rs
-assertion_line: 4189
 expression: resp
 ---
 {
@@ -15,5 +14,7 @@ expression: resp
   "in_burst": false,
   "consecutive_failures": 0,
   "total_sink_failures": 0,
-  "degraded": false
+  "degraded": false,
+  "current_state_secs": 0.0,
+  "cumulative_resolution_attempts": 0
 }

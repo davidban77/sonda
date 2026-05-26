@@ -6,12 +6,15 @@ use std::sync::{Arc, RwLock};
 
 use sonda_core::ScenarioHandle;
 
+use crate::gate_registry::GateBusRegistry;
+
 /// Shared application state for the HTTP server.
 ///
-/// Holds a map of running [`ScenarioHandle`]s keyed by scenario ID and an
-/// optional API key for bearer-token authentication. No scenario lifecycle
-/// logic lives here — this is only the container. All launch and stop
-/// operations are delegated to sonda-core.
+/// Holds a map of running [`ScenarioHandle`]s keyed by scenario ID, the
+/// process-wide [`GateBusRegistry`] backing cross-POST `while:` refs, and
+/// an optional API key for bearer-token authentication. No scenario lifecycle
+/// logic lives here — all launch and stop operations are delegated to
+/// sonda-core.
 ///
 /// The state is wrapped in an [`Arc`] by axum and cloned into each handler
 /// automatically via the `State` extractor.
@@ -23,6 +26,8 @@ pub struct AppState {
     pub api_key: Option<Arc<String>>,
     /// Optional catalog directory for resolving `pack:` references in posted bodies.
     pub catalog_dir: Option<Arc<PathBuf>>,
+    /// Registry of cross-POST `while:` upstream buses.
+    pub gate_bus_registry: Arc<GateBusRegistry>,
 }
 
 impl AppState {
@@ -32,6 +37,7 @@ impl AppState {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: None,
             catalog_dir: None,
+            gate_bus_registry: Arc::new(GateBusRegistry::new()),
         }
     }
 
@@ -41,6 +47,7 @@ impl AppState {
             scenarios: Arc::new(RwLock::new(HashMap::new())),
             api_key: api_key.map(Arc::new),
             catalog_dir: None,
+            gate_bus_registry: Arc::new(GateBusRegistry::new()),
         }
     }
 }

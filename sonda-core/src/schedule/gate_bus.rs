@@ -8,10 +8,14 @@
 //! latest, keeping memory flat regardless of upstream chatter.
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use crate::compiler::WhileOp;
+use crate::compiler::{UnresolvedBehavior, WhileOp};
+use crate::schedule::stats::ScenarioStats;
+
+/// Sender end of a per-subscriber gate-edge channel.
+pub type GateEdgeSender = SyncSender<GateEdge>;
 
 /// Direction of a strict comparison used by an `after:` clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,10 +26,13 @@ pub enum AfterOpDir {
 
 /// Edge fired into a [`GateReceiver`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum GateEdge {
     AfterFired,
     WhileOpen,
     WhileClose,
+    /// Upstream scenario has been removed; downstream must terminate.
+    UpstreamGone,
 }
 
 /// A subscriber's request for `after:` edges.
@@ -69,6 +76,14 @@ pub struct GateReceiver {
 }
 
 impl GateReceiver {
+    #[cfg(feature = "config")]
+    pub(crate) fn from_while_rx(rx: Receiver<GateEdge>) -> Self {
+        Self {
+            after_rx: None,
+            while_rx: Some(rx),
+        }
+    }
+
     /// Poll both per-kind channels in priority order: after, then while.
     pub fn try_recv(&self) -> Option<GateEdge> {
         if let Some(ref rx) = self.after_rx {
@@ -224,6 +239,51 @@ impl GateBus {
         )
     }
 
+    /// Subscribe an existing [`GateEdgeSender`] to the bus's `while:` events.
+    pub fn subscribe_with_while_sender(
+        &self,
+        spec: WhileSpec,
+        while_tx: GateEdgeSender,
+    ) -> InitialState {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let (current_value, while_gate_open) = if inner.has_value {
+            let v = inner.last_value;
+            let open = strict_eval(v, spec.op, spec.threshold);
+            let edge = if open {
+                GateEdge::WhileOpen
+            } else {
+                GateEdge::WhileClose
+            };
+            let _ = while_tx.try_send(edge);
+            (v, Some(open))
+        } else {
+            (f64::NAN, None)
+        };
+
+        let sub = Subscription {
+            spec: SubscriptionSpec {
+                after: None,
+                while_: Some(spec),
+            },
+            after_tx: None,
+            while_tx: Some(while_tx),
+            after_fired: false,
+            prev_while_open: while_gate_open,
+        };
+
+        inner.subs.push(sub);
+
+        InitialState {
+            after_already_fired: false,
+            while_gate_open,
+            current_value,
+        }
+    }
+
     /// Publish a new upstream value.
     ///
     /// Fast path: bit-equal to the previous publish returns immediately
@@ -273,6 +333,21 @@ impl GateBus {
     pub(crate) fn drive_value(&self, v: f64) {
         self.tick(v);
     }
+
+    pub fn broadcast_upstream_gone(&self) {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for sub in inner.subs.iter() {
+            if let Some(ref tx) = sub.while_tx {
+                replace_send(tx, GateEdge::UpstreamGone);
+            }
+            if let Some(ref tx) = sub.after_tx {
+                replace_send(tx, GateEdge::UpstreamGone);
+            }
+        }
+    }
 }
 
 impl Default for GateBus {
@@ -307,6 +382,126 @@ fn replace_send(tx: &SyncSender<GateEdge>, edge: GateEdge) {
     // the bus's `last_value` on every running-segment entry, so a missed
     // intermediate edge does not cause a permanent gate desync.
     let _ = tx.try_send(edge);
+}
+
+/// A downstream subscription waiting for the named upstream to register.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct PendingResolution {
+    pub handle_id: String,
+    pub stats: Weak<RwLock<ScenarioStats>>,
+    pub edge_sender: GateEdgeSender,
+    pub scenario_name: String,
+    pub entry_id: String,
+    pub if_unresolved: UnresolvedBehavior,
+    pub registered_at: Instant,
+    pub attempts: u64,
+    pub spec: WhileSpec,
+}
+
+impl PendingResolution {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        handle_id: String,
+        stats: Weak<RwLock<ScenarioStats>>,
+        edge_sender: GateEdgeSender,
+        scenario_name: String,
+        entry_id: String,
+        if_unresolved: UnresolvedBehavior,
+        registered_at: Instant,
+        attempts: u64,
+        spec: WhileSpec,
+    ) -> Self {
+        Self {
+            handle_id,
+            stats,
+            edge_sender,
+            scenario_name,
+            entry_id,
+            if_unresolved,
+            registered_at,
+            attempts,
+            spec,
+        }
+    }
+}
+
+/// Wire-shaped projection of a [`PendingResolution`] surfaced over the HTTP API.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "config", derive(serde::Serialize))]
+#[non_exhaustive]
+pub struct PendingRef {
+    pub scenario_name: String,
+    pub entry_id: String,
+    pub if_unresolved: UnresolvedBehavior,
+    #[cfg(feature = "config")]
+    pub registered_at: chrono::DateTime<chrono::Utc>,
+    pub attempts: u64,
+}
+
+impl PendingRef {
+    /// Snapshot a [`PendingRef`] from a registry's [`PendingResolution`].
+    pub fn from_pending(pending: &PendingResolution, now: std::time::SystemTime) -> Self {
+        #[cfg(not(feature = "config"))]
+        let _ = now;
+        Self {
+            scenario_name: pending.scenario_name.clone(),
+            entry_id: pending.entry_id.clone(),
+            if_unresolved: pending.if_unresolved,
+            #[cfg(feature = "config")]
+            registered_at: {
+                let elapsed = pending.registered_at.elapsed();
+                let wall = now.checked_sub(elapsed).unwrap_or(std::time::UNIX_EPOCH);
+                chrono::DateTime::<chrono::Utc>::from(wall)
+            },
+            attempts: pending.attempts,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RegistryError {
+    #[error("scenario_name '{name}' is already in use by a running scenario")]
+    DuplicateScenarioName { name: String },
+}
+
+/// Process-wide registry for cross-POST gate bus lookup.
+pub trait GateBusResolver: Send + Sync {
+    fn register(
+        &self,
+        scenario_name: &str,
+        entry_id: &str,
+        bus: Arc<GateBus>,
+    ) -> Result<(), RegistryError>;
+
+    fn lookup(&self, scenario_name: &str, entry_id: &str) -> Option<Arc<GateBus>>;
+
+    /// Returns the bus to subscribe against if the upstream is live; `None`
+    /// signals the caller must defer via [`insert_pending`](Self::insert_pending).
+    fn subscribe(
+        &self,
+        upstream: (&str, &str),
+        downstream_handle_id: &str,
+        downstream_stats: Weak<RwLock<ScenarioStats>>,
+        edge_sender: GateEdgeSender,
+    ) -> Option<Arc<GateBus>>;
+
+    fn unregister(&self, scenario_name: &str);
+
+    /// Discard pending entries whose downstream stats handle has been dropped.
+    fn sweep_pending(&self) -> usize;
+
+    fn insert_pending(&self, pending: PendingResolution);
+
+    fn pending_for_handle(&self, handle_id: &str) -> Option<PendingRef>;
+
+    fn scenario_name_in_use(&self, scenario_name: &str) -> bool;
+
+    /// Record an active subscriber so [`unregister`](Self::unregister) can
+    /// re-pend it for cross-POST re-resolution. Default impl is a no-op for
+    /// resolvers that do not implement re-resolution tracking.
+    fn track_subscriber(&self, _pending: PendingResolution) {}
 }
 
 #[cfg(test)]
@@ -493,5 +688,68 @@ mod tests {
     fn gate_bus_is_send_and_sync() {
         fn check<T: Send + Sync>() {}
         check::<GateBus>();
+    }
+
+    // ---- GateBusResolver: trait object-safety + no-op impl --------------------
+
+    struct NoOpResolver;
+
+    impl GateBusResolver for NoOpResolver {
+        fn register(
+            &self,
+            _scenario_name: &str,
+            _entry_id: &str,
+            _bus: Arc<GateBus>,
+        ) -> Result<(), RegistryError> {
+            Ok(())
+        }
+
+        fn lookup(&self, _scenario_name: &str, _entry_id: &str) -> Option<Arc<GateBus>> {
+            None
+        }
+
+        fn subscribe(
+            &self,
+            _upstream: (&str, &str),
+            _downstream_handle_id: &str,
+            _downstream_stats: Weak<RwLock<ScenarioStats>>,
+            _edge_sender: GateEdgeSender,
+        ) -> Option<Arc<GateBus>> {
+            None
+        }
+
+        fn unregister(&self, _scenario_name: &str) {}
+
+        fn sweep_pending(&self) -> usize {
+            0
+        }
+
+        fn insert_pending(&self, _pending: PendingResolution) {}
+
+        fn pending_for_handle(&self, _handle_id: &str) -> Option<PendingRef> {
+            None
+        }
+
+        fn scenario_name_in_use(&self, _scenario_name: &str) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn gate_bus_resolver_is_object_safe() {
+        let resolver: Box<dyn GateBusResolver> = Box::new(NoOpResolver);
+        assert!(resolver.lookup("nothing", "here").is_none());
+    }
+
+    #[test]
+    fn gate_edge_upstream_gone_variant_exists() {
+        let edge = GateEdge::UpstreamGone;
+        let label = match edge {
+            GateEdge::AfterFired => "after",
+            GateEdge::WhileOpen => "open",
+            GateEdge::WhileClose => "close",
+            GateEdge::UpstreamGone => "gone",
+        };
+        assert_eq!(label, "gone");
     }
 }

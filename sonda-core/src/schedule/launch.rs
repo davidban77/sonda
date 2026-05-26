@@ -16,7 +16,7 @@ use crate::config::validate::{
 use crate::config::{expand_entry, PromMeta, PromMetricType, ScenarioEntry};
 use crate::generator::GeneratorConfig;
 use crate::schedule::core_loop::GateContext;
-use crate::schedule::gate_bus::GateBus;
+use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
 use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
 use crate::schedule::log_runner::run_logs_with_sink_gated;
@@ -200,7 +200,7 @@ pub fn launch_scenario(
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None)
+    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None, None)
 }
 
 /// Launch a scenario with optional `while:` / `after:` gating wired in.
@@ -208,7 +208,9 @@ pub fn launch_scenario(
 /// `scenario_name` surfaces on [`ScenarioHandle::scenario_name`]; pass `None`
 /// for anonymous bodies. `upstream_bus` is the bus this scenario PUBLISHES
 /// into (for downstream gates to read). `gate_ctx` is what THIS scenario
-/// consumes from an upstream bus.
+/// consumes from an upstream bus. When `resolver` is `Some` AND `scenario_name`
+/// is `Some`, natural-exit cleanup unregisters the upstream bus on thread exit.
+#[allow(clippy::too_many_arguments)]
 pub fn launch_scenario_with_gates(
     id: String,
     scenario_name: Option<String>,
@@ -217,6 +219,7 @@ pub fn launch_scenario_with_gates(
     start_delay: Option<Duration>,
     upstream_bus: Option<Arc<GateBus>>,
     gate_ctx: Option<GateContext>,
+    resolver: Option<Arc<dyn GateBusResolver>>,
 ) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
@@ -245,6 +248,10 @@ pub fn launch_scenario_with_gates(
 
     let stats_for_state = Arc::clone(&stats);
     let is_gated = gate_ctx.is_some();
+    let cleaned_up = Arc::new(AtomicBool::new(false));
+    let cleaned_up_for_thread = Arc::clone(&cleaned_up);
+    let resolver_for_thread = resolver.clone();
+    let scenario_name_for_thread = scenario_name.clone();
 
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
@@ -256,9 +263,12 @@ pub fn launch_scenario_with_gates(
                 flag: alive_for_thread,
             };
 
-            // Drop guard writes ScenarioState::Finished on every exit path.
+            // Marks Finished on drop; unregisters when a resolver is wired.
             let _state_guard = StateGuard {
                 stats: Arc::clone(&stats_for_state),
+                resolver: resolver_for_thread,
+                scenario_name: scenario_name_for_thread,
+                cleaned_up: cleaned_up_for_thread,
             };
 
             // Sleep through the start_delay before entering the event loop.
@@ -282,7 +292,7 @@ pub fn launch_scenario_with_gates(
             // need someone to mark Running once the start_delay has elapsed.
             if !is_gated {
                 if let Ok(mut st) = stats_for_state.write() {
-                    st.state = ScenarioState::Running;
+                    st.transition_state(ScenarioState::Running);
                 }
             }
 
@@ -344,6 +354,7 @@ pub fn launch_scenario_with_gates(
         alive,
         labels,
         prometheus_meta,
+        cleaned_up,
     ))
 }
 
@@ -380,12 +391,26 @@ impl Drop for AliveGuard {
 
 struct StateGuard {
     stats: Arc<RwLock<ScenarioStats>>,
+    resolver: Option<Arc<dyn GateBusResolver>>,
+    scenario_name: Option<String>,
+    cleaned_up: Arc<AtomicBool>,
 }
 
 impl Drop for StateGuard {
     fn drop(&mut self) {
         if let Ok(mut st) = self.stats.write() {
-            st.state = ScenarioState::Finished;
+            if st.state != ScenarioState::Finished {
+                st.transition_state(ScenarioState::Finished);
+            }
+        }
+        // Skip when Phase 1 (delete_scenario) already ran; ensure exactly once.
+        if self.cleaned_up.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let (Some(name), Some(resolver)) =
+            (self.scenario_name.as_deref(), self.resolver.as_ref())
+        {
+            resolver.unregister(name);
         }
     }
 }
@@ -1557,6 +1582,9 @@ mod tests {
         {
             let _g = StateGuard {
                 stats: Arc::clone(&stats),
+                resolver: None,
+                scenario_name: None,
+                cleaned_up: Arc::new(AtomicBool::new(false)),
             };
         }
         assert_eq!(stats.read().unwrap().state, ScenarioState::Finished);
@@ -1572,6 +1600,9 @@ mod tests {
             .spawn(move || {
                 let _g = StateGuard {
                     stats: stats_for_thread,
+                    resolver: None,
+                    scenario_name: None,
+                    cleaned_up: Arc::new(AtomicBool::new(false)),
                 };
                 panic!("intentional panic for StateGuard test");
             })

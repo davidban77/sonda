@@ -344,14 +344,11 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(delay),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(delay))
+                    .with_has_while(true),
+            ),
         )
         .expect("gated runner must succeed");
         sink

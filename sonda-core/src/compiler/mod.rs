@@ -392,6 +392,22 @@ impl<'de> serde::Deserialize<'de> for WhileOp {
     }
 }
 
+/// Policy applied when a cross-POST `while:` reference cannot be resolved at
+/// scenario start. Only meaningful when [`WhileClause::scenario_name`] is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "config", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "config", serde(rename_all = "lowercase"))]
+#[non_exhaustive]
+pub enum UnresolvedBehavior {
+    /// Treat the gate as open until the upstream registers.
+    Open,
+    /// Treat the gate as closed until the upstream registers.
+    Closed,
+    /// Hold the scenario in `unresolved` state until the upstream registers.
+    #[default]
+    Pending,
+}
+
 /// Continuous lifecycle gate on another signal's value.
 ///
 /// ```yaml
@@ -411,6 +427,16 @@ pub struct WhileClause {
     pub ref_id: String,
     pub op: WhileOp,
     pub value: f64,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub scenario_name: Option<String>,
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub if_unresolved: Option<UnresolvedBehavior>,
 }
 
 /// Open / close debounce windows applied to a [`WhileClause`] transition.

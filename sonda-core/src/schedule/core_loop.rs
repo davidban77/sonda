@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::compiler::DelayClause;
+use crate::compiler::{DelayClause, UnresolvedBehavior};
 use crate::config::validate::StartTime;
 use crate::config::OnSinkError;
 use crate::model::metric::MetricEvent;
@@ -505,6 +505,7 @@ fn invoke_close_emit(
 const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Gate-side context attached to a `gated_loop` run.
+#[non_exhaustive]
 pub struct GateContext {
     /// Receiver for `after:` and/or `while:` edges from the upstream bus.
     pub gate_rx: GateReceiver,
@@ -520,6 +521,54 @@ pub struct GateContext {
     /// transition. Metric runners with a `RemoteWrite` sink set this; logs,
     /// histograms, and summaries leave it `None`.
     pub close_emit: Option<CloseEmitFn>,
+    pub if_unresolved: Option<UnresolvedBehavior>,
+    pub start_unresolved: bool,
+}
+
+impl GateContext {
+    /// Construct a `GateContext` with required pieces; optional fields default to `None` / `false`.
+    pub fn new(gate_rx: GateReceiver, initial: InitialState) -> Self {
+        Self {
+            gate_rx,
+            initial,
+            delay: None,
+            has_after: false,
+            has_while: false,
+            close_emit: None,
+            if_unresolved: None,
+            start_unresolved: false,
+        }
+    }
+
+    pub fn with_delay(mut self, delay: Option<DelayClause>) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    pub fn with_has_after(mut self, has_after: bool) -> Self {
+        self.has_after = has_after;
+        self
+    }
+
+    pub fn with_has_while(mut self, has_while: bool) -> Self {
+        self.has_while = has_while;
+        self
+    }
+
+    pub fn with_close_emit(mut self, close_emit: Option<CloseEmitFn>) -> Self {
+        self.close_emit = close_emit;
+        self
+    }
+
+    pub fn with_if_unresolved(mut self, mode: Option<UnresolvedBehavior>) -> Self {
+        self.if_unresolved = mode;
+        self
+    }
+
+    pub fn with_start_unresolved(mut self, start_unresolved: bool) -> Self {
+        self.start_unresolved = start_unresolved;
+        self
+    }
 }
 
 /// Run a signal scenario through the four-state lifecycle gate.
@@ -600,7 +649,11 @@ fn gated_loop_body(
     let started_at = Instant::now();
     let wall = WallClock::resolve(schedule, started_at);
 
-    let mut state = ScenarioState::Pending;
+    let mut state = if gate_ctx.start_unresolved {
+        ScenarioState::Unresolved
+    } else {
+        ScenarioState::Pending
+    };
     let mut after_satisfied = if gate_ctx.has_after {
         gate_ctx.initial.after_already_fired
     } else {
@@ -616,7 +669,8 @@ fn gated_loop_body(
 
     let mut next_tick: u64 = 0;
 
-    write_state(stats, ScenarioState::Pending, false);
+    let paused_zero_rate = matches!(state, ScenarioState::Unresolved | ScenarioState::Paused);
+    write_state(stats, state, paused_zero_rate);
 
     loop {
         if shutdown_requested(shutdown) {
@@ -642,6 +696,13 @@ fn gated_loop_body(
                         }
                         Some(GateEdge::WhileClose) => {
                             while_open = false;
+                        }
+                        Some(GateEdge::UpstreamGone) => {
+                            state = ScenarioState::Unresolved;
+                            while_open = false;
+                            write_state(stats, ScenarioState::Unresolved, true);
+                            debounce.reset();
+                            continue;
                         }
                         None => {
                             continue;
@@ -677,6 +738,7 @@ fn gated_loop_body(
                     wall,
                     sink,
                     tick_fn,
+                    false,
                 )?;
                 next_tick = last_tick.load(Ordering::SeqCst);
 
@@ -685,6 +747,20 @@ fn gated_loop_body(
                 }
                 if duration_expired(schedule, started_at) {
                     return Ok(LoopExit::DurationExpired);
+                }
+                if exit == SegmentExit::UpstreamGone {
+                    invoke_close_emit(
+                        schedule,
+                        stats,
+                        close_warn_limiter,
+                        gate_ctx.close_emit.as_mut(),
+                        sink,
+                    )?;
+                    state = ScenarioState::Unresolved;
+                    while_open = false;
+                    write_state(stats, ScenarioState::Unresolved, true);
+                    debounce.reset();
+                    continue;
                 }
                 if exit == SegmentExit::WhileClose
                     && !debounce_close_to_paused(
@@ -732,6 +808,13 @@ fn gated_loop_body(
                     Some(GateEdge::AfterFired) => {
                         after_satisfied = true;
                     }
+                    Some(GateEdge::UpstreamGone) => {
+                        state = ScenarioState::Unresolved;
+                        while_open = false;
+                        write_state(stats, ScenarioState::Unresolved, true);
+                        debounce.reset();
+                        continue;
+                    }
                     None => {}
                 }
 
@@ -745,6 +828,85 @@ fn gated_loop_body(
                         }
                         GateEdge::WhileClose => {}
                         GateEdge::AfterFired => {}
+                        GateEdge::UpstreamGone => {}
+                    }
+                }
+            }
+            ScenarioState::Unresolved => {
+                let mode = gate_ctx.if_unresolved.unwrap_or_default();
+                match mode {
+                    UnresolvedBehavior::Open => {
+                        let segment_running = Arc::new(AtomicBool::new(true));
+                        let last_tick = Arc::new(AtomicU64::new(next_tick));
+                        let exit = run_running_segment(
+                            schedule,
+                            rate,
+                            shutdown,
+                            stats.cloned(),
+                            gate_ctx,
+                            &segment_running,
+                            next_tick,
+                            Arc::clone(&last_tick),
+                            wall,
+                            sink,
+                            tick_fn,
+                            true,
+                        )?;
+                        next_tick = last_tick.load(Ordering::SeqCst);
+
+                        if shutdown_requested(shutdown) {
+                            return Ok(LoopExit::Shutdown);
+                        }
+                        if duration_expired(schedule, started_at) {
+                            return Ok(LoopExit::DurationExpired);
+                        }
+                        match exit {
+                            SegmentExit::WhileClose => {
+                                invoke_close_emit(
+                                    schedule,
+                                    stats,
+                                    close_warn_limiter,
+                                    gate_ctx.close_emit.as_mut(),
+                                    sink,
+                                )?;
+                                state = ScenarioState::Paused;
+                                while_open = false;
+                                write_state(stats, ScenarioState::Paused, true);
+                                debounce.reset();
+                            }
+                            SegmentExit::UpstreamGone => {
+                                // Already Unresolved; stay.
+                            }
+                            SegmentExit::WhileOpen => {
+                                state = ScenarioState::Running;
+                                while_open = true;
+                                write_state(stats, ScenarioState::Running, false);
+                                debounce.reset();
+                            }
+                            SegmentExit::ShutdownOrDuration => {}
+                        }
+                    }
+                    UnresolvedBehavior::Closed | UnresolvedBehavior::Pending => {
+                        let wakeup = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
+                        match gate_ctx.gate_rx.recv_timeout(wakeup) {
+                            Some(GateEdge::WhileOpen) => {
+                                while_open = true;
+                                state = ScenarioState::Pending;
+                                write_state(stats, ScenarioState::Pending, false);
+                                debounce.reset();
+                            }
+                            Some(GateEdge::WhileClose) => {
+                                while_open = false;
+                                state = ScenarioState::Paused;
+                                write_state(stats, ScenarioState::Paused, true);
+                                debounce.reset();
+                            }
+                            Some(GateEdge::AfterFired) => {
+                                after_satisfied = true;
+                            }
+                            Some(GateEdge::UpstreamGone) => {}
+                            None => {}
+                        }
                     }
                 }
             }
@@ -792,7 +954,9 @@ fn write_state(
 ) {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
-            st.state = state;
+            if st.state != state {
+                st.transition_state(state);
+            }
             if paused_zero_rate {
                 st.current_rate = 0.0;
             }
@@ -807,7 +971,9 @@ fn write_state(
 fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
     if let Some(s) = stats {
         if let Ok(mut st) = s.write() {
-            st.state = ScenarioState::Finished;
+            if st.state != ScenarioState::Finished {
+                st.transition_state(ScenarioState::Finished);
+            }
         }
     }
     Ok(())
@@ -818,6 +984,10 @@ fn finish(stats: Option<Arc<RwLock<ScenarioStats>>>) -> Result<(), SondaError> {
 enum SegmentExit {
     /// Upstream gate transitioned to closed.
     WhileClose,
+    /// Upstream scenario was removed mid-segment.
+    UpstreamGone,
+    /// Upstream gate transitioned to open while running under `if_unresolved: open`.
+    WhileOpen,
     /// User-shutdown flag cleared, or scenario duration expired.
     ShutdownOrDuration,
 }
@@ -871,6 +1041,7 @@ fn debounce_close_to_paused(
             Some(GateEdge::WhileOpen) => return false,
             Some(GateEdge::WhileClose) => {}
             Some(GateEdge::AfterFired) => {}
+            Some(GateEdge::UpstreamGone) => return true,
             None => {}
         }
     }
@@ -897,8 +1068,11 @@ fn run_running_segment(
     wall: WallClock,
     sink: &mut dyn Sink,
     tick_fn: &mut TickFn<'_>,
+    exit_on_while_open: bool,
 ) -> Result<SegmentExit, SondaError> {
     let saw_close = Arc::new(AtomicBool::new(false));
+    let saw_gone = Arc::new(AtomicBool::new(false));
+    let saw_open = Arc::new(AtomicBool::new(false));
 
     // The inner loop's `shutdown` parameter wants "true = keep running."
     // We pass our segment flag, and we additionally drain the user
@@ -906,6 +1080,8 @@ fn run_running_segment(
     let user_shutdown_for_wrapper = shutdown;
     let segment_for_wrapper = Arc::clone(segment_running);
     let saw_close_for_wrapper = Arc::clone(&saw_close);
+    let saw_gone_for_wrapper = Arc::clone(&saw_gone);
+    let saw_open_for_wrapper = Arc::clone(&saw_open);
     let gate_rx = &gate_ctx.gate_rx;
 
     type WrappedTick<'a> = Box<
@@ -931,10 +1107,17 @@ fn run_running_segment(
                         segment_for_wrapper.store(false, Ordering::SeqCst);
                     }
                     GateEdge::WhileOpen => {
-                        // Already running; ignore.
+                        if exit_on_while_open {
+                            saw_open_for_wrapper.store(true, Ordering::SeqCst);
+                            segment_for_wrapper.store(false, Ordering::SeqCst);
+                        }
                     }
                     GateEdge::AfterFired => {
                         // Already past the after gate.
+                    }
+                    GateEdge::UpstreamGone => {
+                        saw_gone_for_wrapper.store(true, Ordering::SeqCst);
+                        segment_for_wrapper.store(false, Ordering::SeqCst);
                     }
                 }
             }
@@ -962,8 +1145,12 @@ fn run_running_segment(
         wrapped.as_mut(),
     )?;
 
-    Ok(if saw_close.load(Ordering::SeqCst) {
+    Ok(if saw_gone.load(Ordering::SeqCst) {
+        SegmentExit::UpstreamGone
+    } else if saw_close.load(Ordering::SeqCst) {
         SegmentExit::WhileClose
+    } else if saw_open.load(Ordering::SeqCst) {
+        SegmentExit::WhileOpen
     } else {
         SegmentExit::ShutdownOrDuration
     })
@@ -1013,6 +1200,7 @@ impl DebounceState {
                 }
             }
             GateEdge::AfterFired => {}
+            GateEdge::UpstreamGone => {}
         }
     }
 

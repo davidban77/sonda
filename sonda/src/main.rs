@@ -350,7 +350,7 @@ fn run_compiled_with_progress(
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
-    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(compiled)
+    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, None)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
