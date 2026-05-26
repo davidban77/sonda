@@ -999,6 +999,81 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
 }
 
 #[test]
+fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
+    // Subscribe with after.op=">" threshold=100 at value=5: after has not
+    // fired, gate is irrelevant (after gates Pending entry). Broadcast
+    // UpstreamGone while still Pending. With if_unresolved=None, the
+    // Pending arm must return LoopExit::UpstreamFinished and the scenario
+    // must transition to Finished.
+    let bus = Arc::new(GateBus::new());
+    bus.tick(5.0);
+
+    let (rx, init) = bus.subscribe(SubscriptionSpec {
+        after: Some(AfterSpec {
+            op: AfterOpDir::GreaterThan,
+            threshold: 100.0,
+        }),
+        while_: Some(WhileSpec {
+            op: WhileOp::GreaterThan,
+            threshold: 0.0,
+        }),
+    });
+    assert!(!init.after_already_fired);
+    assert_eq!(init.while_gate_open, Some(true));
+
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let entry = metrics_entry("pending_upstream_gone", 100.0, 5000);
+    let mut handle = launch_scenario_with_gates(
+        "pending_upstream_gone".to_string(),
+        None,
+        entry,
+        Arc::clone(&shutdown),
+        None,
+        None,
+        Some(
+            GateContext::new(rx, init)
+                .with_has_after(true)
+                .with_has_while(true),
+        ),
+        None,
+    )
+    .expect("launch must succeed");
+
+    thread::sleep(Duration::from_millis(80));
+    let snap = handle.stats_snapshot();
+    assert_eq!(
+        snap.state,
+        ScenarioState::Pending,
+        "expected Pending before UpstreamGone, got {:?}",
+        snap.state
+    );
+    assert_eq!(snap.total_events, 0);
+
+    bus.broadcast_upstream_gone();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if handle.stats_snapshot().state == ScenarioState::Finished {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let snap = handle.stats_snapshot();
+    assert_eq!(
+        snap.state,
+        ScenarioState::Finished,
+        "UpstreamGone in Pending arm must transition to Finished, got {:?}",
+        snap.state
+    );
+    assert_eq!(
+        snap.total_events, 0,
+        "Pending scenario must emit zero events before UpstreamGone"
+    );
+
+    handle.join(Some(Duration::from_secs(2))).ok();
+}
+
+#[test]
 fn while_runtime_steady_within_5pct_of_baseline() {
     // Perf-regression gate (A10): a scenario with `while:` open the entire
     // run must produce within 5% of the event count of the same scenario

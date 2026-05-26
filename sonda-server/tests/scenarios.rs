@@ -2251,3 +2251,74 @@ fn delete_one_scenario_does_not_cascade_finish_siblings() {
         );
     }
 }
+
+const LOCAL_WHILE_UPSTREAM_FINISHES_YAML: &str = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: local_upstream
+    signal_type: metrics
+    name: local_upstream
+    duration: 1s
+    generator:
+      type: constant
+      value: 1.0
+  - id: local_downstream
+    signal_type: metrics
+    name: local_downstream
+    duration: 30s
+    generator:
+      type: constant
+      value: 1.0
+    while:
+      ref: local_upstream
+      op: \">\"
+      value: 0.0
+";
+
+/// Local-POST downstream (`while:` ref to a sibling, no `scenario_name:`)
+/// must finish when its upstream's duration expires.
+#[test]
+fn while_local_downstream_finishes_when_upstream_finishes() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(LOCAL_WHILE_UPSTREAM_FINISHES_YAML)
+        .send()
+        .expect("POST must succeed");
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let body: serde_json::Value = resp.json().expect("response must be JSON");
+    let scenarios = body["scenarios"]
+        .as_array()
+        .expect("multi response must have a 'scenarios' array");
+    let downstream_id = scenarios
+        .iter()
+        .find(|s| s["name"].as_str() == Some("local_downstream"))
+        .and_then(|s| s["id"].as_str())
+        .expect("downstream must be in response")
+        .to_string();
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let detail = client
+        .get(format!("http://127.0.0.1:{port}/scenarios/{downstream_id}"))
+        .send()
+        .expect("GET downstream detail must succeed");
+    assert_eq!(detail.status().as_u16(), 200);
+    let body: serde_json::Value = detail.json().expect("detail body is JSON");
+    let state = body["state"].as_str().unwrap_or("");
+    assert_eq!(
+        state, "finished",
+        "local-POST downstream must reach finished after upstream's duration expires, got {state:?}"
+    );
+}
