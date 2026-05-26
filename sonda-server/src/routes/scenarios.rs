@@ -18,7 +18,6 @@
 //! plumbing: deserialize → compile → launch → store → respond.
 
 use std::path::Path as FsPath;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -595,9 +594,8 @@ async fn launch_compiled(
     compiled: CompiledFile,
     warnings: Vec<String>,
 ) -> Result<Response, Response> {
-    let shutdown = Arc::new(AtomicBool::new(true));
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
-    let mut handles = launch_multi_compiled(compiled, shutdown, Some(resolver)).map_err(|e| {
+    let mut handles = launch_multi_compiled(compiled, Some(resolver)).map_err(|e| {
         warn!(error = %e, "POST /scenarios: failed to launch scenarios");
         match e {
             sonda_core::SondaError::Config(_) => unprocessable(e),

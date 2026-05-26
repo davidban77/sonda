@@ -2131,3 +2131,123 @@ fn post_named_scenario_with_finished_existing_returns_201() {
         "finished handles are stale; new POST with the same scenario_name must return 201"
     );
 }
+
+const THREE_SCENARIO_NO_DURATION_YAML: &str = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: cascade_a
+    signal_type: metrics
+    name: cascade_a
+    generator:
+      type: constant
+      value: 1.0
+  - id: cascade_b
+    signal_type: metrics
+    name: cascade_b
+    generator:
+      type: constant
+      value: 2.0
+  - id: cascade_c
+    signal_type: metrics
+    name: cascade_c
+    generator:
+      type: constant
+      value: 3.0
+";
+
+/// Regression: DELETE on one scenario from a multi-scenario POST must not
+/// cascade-finish its siblings (sonda 1.12.2 bug — shared shutdown flag).
+#[test]
+fn delete_one_scenario_does_not_cascade_finish_siblings() {
+    let (port, _guard) = common::start_server();
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(THREE_SCENARIO_NO_DURATION_YAML)
+        .send()
+        .expect("POST must succeed");
+    assert_eq!(resp.status().as_u16(), 201);
+
+    let body: serde_json::Value = resp.json().expect("response must be JSON");
+    let ids: Vec<String> = body["scenarios"]
+        .as_array()
+        .expect("multi response must have a 'scenarios' array")
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3, "POST must launch all three scenarios");
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let pre_delete_events: Vec<u64> = ids[1..]
+        .iter()
+        .map(|id| {
+            let stats = client
+                .get(format!("http://127.0.0.1:{port}/scenarios/{id}/stats"))
+                .send()
+                .expect("GET /stats must succeed");
+            assert_eq!(stats.status().as_u16(), 200);
+            let body: serde_json::Value = stats.json().expect("stats body is JSON");
+            body["total_events"].as_u64().unwrap_or(0)
+        })
+        .collect();
+
+    let first = &ids[0];
+    let del = client
+        .delete(format!("http://127.0.0.1:{port}/scenarios/{first}"))
+        .send()
+        .expect("DELETE must succeed");
+    assert_eq!(
+        del.status().as_u16(),
+        200,
+        "DELETE on the first scenario must return 200"
+    );
+    let del_body: serde_json::Value = del.json().expect("DELETE body is JSON");
+    assert_eq!(
+        del_body["status"].as_str(),
+        Some("stopped"),
+        "DELETE response status must be 'stopped'"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    for (i, id) in ids[1..].iter().enumerate() {
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/scenarios/{id}"))
+            .send()
+            .expect("GET /scenarios/{id} must succeed");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "sibling {id} must still be addressable after DELETE on a peer"
+        );
+        let body: serde_json::Value = resp.json().expect("GET body is JSON");
+        let state = body["state"].as_str().unwrap_or("");
+        assert_eq!(
+            state, "running",
+            "sibling {id} must remain running after DELETE on a peer, got state={state:?}"
+        );
+
+        let stats = client
+            .get(format!("http://127.0.0.1:{port}/scenarios/{id}/stats"))
+            .send()
+            .expect("GET /stats must succeed");
+        let stats_body: serde_json::Value = stats.json().expect("stats body is JSON");
+        let total = stats_body["total_events"].as_u64().unwrap_or(0);
+        assert!(
+            total > pre_delete_events[i],
+            "sibling {id} must keep emitting after DELETE on a peer: pre={} post={}",
+            pre_delete_events[i],
+            total
+        );
+    }
+}
