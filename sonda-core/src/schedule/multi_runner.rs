@@ -1,10 +1,8 @@
 //! Multi-scenario runner: runs multiple scenarios concurrently on separate threads.
 //!
-//! Each scenario runs on its own OS thread via [`launch_scenario`]. Every
-//! scenario owns its own shutdown flag — `handle.stop()` affects only that
-//! scenario, never its siblings. Callers that want a "stop them all" master
-//! trigger (CLI Ctrl+C, batch [`run_multi`]) pass a master `shutdown` flag
-//! and a watchdog thread fans it out into each handle's per-scenario flag.
+//! Each scenario owns its own shutdown flag. [`run_multi`] and
+//! [`run_multi_compiled`] accept a master `shutdown` flag and use a watchdog
+//! thread to fan a transition out into each handle's per-scenario flag.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -31,34 +29,7 @@ use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 use std::collections::HashMap;
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
-///
-/// Each scenario thread runs until either:
-/// - The scenario's own duration expires, or
-/// - The master `shutdown` flag is set to `false` (a watchdog fans the
-///   transition out into every scenario's per-handle shutdown).
-///
-/// The main thread blocks until all scenario threads have finished. If any
-/// thread returns an error, those errors are collected and returned as a
-/// combined [`SondaError::Runtime`] with the
-/// [`RuntimeError::ScenariosFailed`] variant. Errors from all threads are
-/// reported, not just the first one.
-///
-/// # Parameters
-///
-/// * `entries` — the scenario entries to run concurrently, typically sourced
-///   from [`compile_scenario_file`][crate::compile_scenario_file].
-/// * `shutdown` — master shutdown flag. Set to `false` to stop all running
-///   scenarios; an internal watchdog mirrors the transition into each
-///   scenario's per-handle shutdown.
-///
-/// # Errors
-///
-/// Returns [`SondaError::Config`] for synchronous validation failures
-/// (invalid config fields, bad phase_offset). Returns
-/// [`SondaError::Runtime`] if any scenario thread encounters an error during
-/// setup (sink creation) or during the event loop (encoding, I/O). All
-/// thread errors are collected and formatted into a single
-/// [`RuntimeError::ScenariosFailed`] error.
+/// Set `shutdown` to `false` to stop all running scenarios.
 pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
     // Expand, validate, and resolve phase offsets for all entries atomically.
     let prepared = prepare_entries(entries)?;
@@ -136,13 +107,9 @@ pub fn signal_shutdown(shutdown: &AtomicBool) {
 }
 
 /// Launch a compiled scenario file with `while:` / `after:` gating wired in,
-/// returning the live handles without joining them.
-///
-/// Each returned handle owns an independent shutdown flag — calling
-/// `handle.stop()` on one handle never affects any other handle from this
-/// call. Callers that need a master "stop them all" trigger iterate the
-/// handles and call `.stop()` on each, or use [`run_multi_compiled`] which
-/// wires a watchdog for that purpose.
+/// returning the live handles without joining them. Each handle owns an
+/// independent shutdown flag; for a master "stop all" trigger, use
+/// [`run_multi_compiled`].
 #[cfg(feature = "config")]
 pub fn launch_multi_compiled(
     file: CompiledFile,
