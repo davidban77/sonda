@@ -631,6 +631,16 @@ pub(crate) fn gated_loop(
             )?;
             finish(stats)
         }
+        Ok(LoopExit::UpstreamFinished) => {
+            invoke_close_emit(
+                schedule,
+                stats.as_ref(),
+                &mut close_warn_limiter,
+                gate_ctx.close_emit.as_mut(),
+                sink,
+            )?;
+            finish(stats)
+        }
         Err(e) => Err(e),
     }
 }
@@ -698,6 +708,9 @@ fn gated_loop_body(
                             while_open = false;
                         }
                         Some(GateEdge::UpstreamGone) => {
+                            if gate_ctx.if_unresolved.is_none() {
+                                return Ok(LoopExit::UpstreamFinished);
+                            }
                             state = ScenarioState::Unresolved;
                             while_open = false;
                             write_state(stats, ScenarioState::Unresolved, true);
@@ -749,6 +762,9 @@ fn gated_loop_body(
                     return Ok(LoopExit::DurationExpired);
                 }
                 if exit == SegmentExit::UpstreamGone {
+                    if gate_ctx.if_unresolved.is_none() {
+                        return Ok(LoopExit::UpstreamFinished);
+                    }
                     invoke_close_emit(
                         schedule,
                         stats,
@@ -809,6 +825,9 @@ fn gated_loop_body(
                         after_satisfied = true;
                     }
                     Some(GateEdge::UpstreamGone) => {
+                        if gate_ctx.if_unresolved.is_none() {
+                            return Ok(LoopExit::UpstreamFinished);
+                        }
                         state = ScenarioState::Unresolved;
                         while_open = false;
                         write_state(stats, ScenarioState::Unresolved, true);
@@ -1007,6 +1026,7 @@ enum SegmentExit {
 enum LoopExit {
     Shutdown,
     DurationExpired,
+    UpstreamFinished,
 }
 
 /// Wait `delay.close` for either a fresh `WhileOpen` (cancel) or the
@@ -1262,10 +1282,12 @@ mod tests {
             match le {
                 LoopExit::Shutdown => {}
                 LoopExit::DurationExpired => {}
+                LoopExit::UpstreamFinished => {}
             }
         }
         assert_clean_exit_match(LoopExit::Shutdown);
         assert_clean_exit_match(LoopExit::DurationExpired);
+        assert_clean_exit_match(LoopExit::UpstreamFinished);
     }
 
     /// Build a minimal ParsedSchedule for testing.

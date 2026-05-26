@@ -253,6 +253,15 @@ pub fn launch_scenario_with_gates(
     let resolver_for_thread = resolver.clone();
     let scenario_name_for_thread = scenario_name.clone();
 
+    // Cross-POST scenarios broadcast via resolver.unregister; broadcasting
+    // here too races the registry's subscriber migration.
+    let bus_for_finish_guard =
+        if scenario_name_for_thread.is_some() && resolver_for_thread.is_some() {
+            None
+        } else {
+            upstream_bus.as_ref().map(Arc::clone)
+        };
+
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
@@ -269,6 +278,12 @@ pub fn launch_scenario_with_gates(
                 resolver: resolver_for_thread,
                 scenario_name: scenario_name_for_thread,
                 cleaned_up: cleaned_up_for_thread,
+            };
+
+            // Drops before _state_guard so downstreams see UpstreamGone
+            // before the scenario flips to Finished.
+            let _bus_finish_guard = BusFinishGuard {
+                bus: bus_for_finish_guard,
             };
 
             // Sleep through the start_delay before entering the event loop.
@@ -411,6 +426,18 @@ impl Drop for StateGuard {
             (self.scenario_name.as_deref(), self.resolver.as_ref())
         {
             resolver.unregister(name);
+        }
+    }
+}
+
+struct BusFinishGuard {
+    bus: Option<Arc<GateBus>>,
+}
+
+impl Drop for BusFinishGuard {
+    fn drop(&mut self) {
+        if let Some(bus) = self.bus.take() {
+            bus.broadcast_upstream_gone();
         }
     }
 }
