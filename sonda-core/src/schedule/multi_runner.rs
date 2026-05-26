@@ -180,6 +180,7 @@ pub fn launch_multi_compiled(
         let upstream_bus = id.as_ref().and_then(|name| buses.get(name).cloned());
 
         let mut deferred: Option<DeferredSubscription> = None;
+        let mut active: Option<ActiveSubscription> = None;
         let gate_ctx = if let Some(ref clause) = while_clause {
             if let Some(cross_scenario) = cross_scenario_target(clause, file_scenario_name_ref) {
                 let resolver = resolver.as_ref().ok_or_else(|| {
@@ -194,15 +195,17 @@ pub fn launch_multi_compiled(
                 };
                 let (tx, rx) = mpsc::sync_channel::<crate::schedule::gate_bus::GateEdge>(1);
                 let if_unresolved = clause.if_unresolved.unwrap_or_default();
-                let bus = resolver.subscribe(
-                    (cross_scenario, clause.ref_id.as_str()),
-                    id.as_deref().unwrap_or(""),
-                    std::sync::Weak::new(),
-                    tx.clone(),
-                );
+                let bus = resolver.lookup(cross_scenario, clause.ref_id.as_str());
                 let (gate_rx, initial, start_unresolved) = match bus {
                     Some(bus) => {
-                        let init = bus.subscribe_with_while_sender(spec, tx);
+                        let init = bus.subscribe_with_while_sender(spec, tx.clone());
+                        active = Some(ActiveSubscription {
+                            sender: tx,
+                            scenario_name: cross_scenario.to_string(),
+                            entry_id: clause.ref_id.clone(),
+                            if_unresolved,
+                            spec,
+                        });
                         (GateReceiver::from_while_rx(rx), init, false)
                     }
                     None => {
@@ -278,6 +281,7 @@ pub fn launch_multi_compiled(
             upstream_bus,
             start_delay,
             deferred,
+            active,
         });
     }
 
@@ -285,6 +289,7 @@ pub fn launch_multi_compiled(
     for (idx, plan) in launches.into_iter().enumerate() {
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
         let deferred = plan.deferred;
+        let active = plan.active;
         match launch_scenario_with_gates(
             id.clone(),
             file_scenario_name.clone(),
@@ -293,6 +298,7 @@ pub fn launch_multi_compiled(
             plan.start_delay,
             plan.upstream_bus,
             plan.gate_ctx,
+            resolver.clone(),
         ) {
             Ok(handle) => {
                 if let (Some(d), Some(r)) = (deferred, resolver.as_ref()) {
@@ -306,6 +312,19 @@ pub fn launch_multi_compiled(
                         registered_at: std::time::Instant::now(),
                         attempts: 0,
                         spec: d.spec,
+                    });
+                }
+                if let (Some(a), Some(r)) = (active, resolver.as_ref()) {
+                    r.track_subscriber(PendingResolution {
+                        handle_id: handle.id.clone(),
+                        stats: Arc::downgrade(&handle.stats),
+                        edge_sender: a.sender,
+                        scenario_name: a.scenario_name,
+                        entry_id: a.entry_id,
+                        if_unresolved: a.if_unresolved,
+                        registered_at: std::time::Instant::now(),
+                        attempts: 0,
+                        spec: a.spec,
                     });
                 }
                 handles.push(handle);
@@ -344,6 +363,15 @@ fn cross_scenario_target<'a>(
 
 #[cfg(feature = "config")]
 struct DeferredSubscription {
+    sender: crate::schedule::gate_bus::GateEdgeSender,
+    scenario_name: String,
+    entry_id: String,
+    if_unresolved: crate::compiler::UnresolvedBehavior,
+    spec: WhileSpec,
+}
+
+#[cfg(feature = "config")]
+struct ActiveSubscription {
     sender: crate::schedule::gate_bus::GateEdgeSender,
     scenario_name: String,
     entry_id: String,
@@ -407,6 +435,7 @@ struct LaunchPlan {
     upstream_bus: Option<Arc<GateBus>>,
     start_delay: Option<std::time::Duration>,
     deferred: Option<DeferredSubscription>,
+    active: Option<ActiveSubscription>,
 }
 
 #[cfg(test)]

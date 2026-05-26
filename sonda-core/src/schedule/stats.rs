@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use serde::Serialize;
 
@@ -96,6 +96,11 @@ pub struct ScenarioStats {
     /// Whether the push path should track distinct series for close-emit.
     #[serde(skip)]
     pub track_close_series: bool,
+    /// Instant of the most recent [`ScenarioState`] change; resets on every transition.
+    #[serde(skip)]
+    pub last_state_transition_at: Option<Instant>,
+    /// Lifetime count of resolver subscription attempts; persists across state transitions.
+    pub cumulative_resolution_attempts: u64,
 }
 
 impl ScenarioStats {
@@ -119,6 +124,19 @@ impl ScenarioStats {
     /// built for the scenario.
     pub fn enable_close_series_tracking(&mut self) {
         self.track_close_series = true;
+    }
+
+    /// Move into `new_state` and reset the current-state watermark.
+    pub fn transition_state(&mut self, new_state: ScenarioState) {
+        self.state = new_state;
+        self.last_state_transition_at = Some(Instant::now());
+    }
+
+    /// Seconds spent in the current state. Zero if no transition has been recorded.
+    pub fn current_state_secs(&self) -> f64 {
+        self.last_state_transition_at
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0)
     }
 
     /// Drain the close-emit series set and reset the emit-timestamp watermark.

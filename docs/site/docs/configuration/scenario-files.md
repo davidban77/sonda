@@ -415,7 +415,7 @@ For continuous gating that pauses and resumes a downstream as the upstream's val
 
 ## Continuous coupling with `while:`
 
-`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. A `while:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one, because the `paused` state needs a terminal point to bound the scenario's lifetime. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately.
+`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. A `while:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one, because the `paused` state needs a terminal point to bound the scenario's lifetime. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately. The upstream signal lives in the same scenario file by default; for [`sonda-server`](../deployment/sonda-server.md) deployments where the upstream arrives in a separate POST body, see [Cross-POST `while:` refs](#cross-post-while-refs).
 
 ```yaml title="link-traffic.yaml"
 version: 2
@@ -678,6 +678,107 @@ scenarios:
 ```
 
 The `delay.close: 5s` debounces flap transitions: a brief recovery on the primary does not immediately tear down `backup_util`, but a sustained recovery longer than 5s does.
+
+### Cross-POST `while:` refs
+
+The `while:` clause shown above gates a scenario on another signal *in the same file*. When you drive Sonda via [`sonda-server`](../deployment/sonda-server.md), you can also gate on a signal from a **separately POSTed body** by qualifying the `ref:` with the upstream's `scenario_name:`. This lets one process drive multiple independent POSTs whose lifecycles are loosely coupled — a baseline counter you launch at boot, paused or resumed by a cascade body you POST on demand later — without restarting either side or rewriting the YAML when a new upstream arrives.
+
+Cross-POST refs are a `sonda-server` feature. The CLI runs every scenario in a single process and has no cross-POST registry, so `sonda run` rejects a file with `while.scenario_name` at parse time and points here.
+
+#### Schema
+
+A cross-POST `while:` clause is the same shape as the local form plus two fields:
+
+```yaml
+while:
+  scenario_name: <upstream-body-name>     # which POST body owns the upstream signal
+  ref: <entry-id>                         # entry id INSIDE that body
+  op: ">"                                 # same operators as local while: (< or >)
+  value: 1                                # threshold
+  if_unresolved: open                     # behavior when the upstream is not running yet
+```
+
+Both POST bodies — the gated one and the gate source — MUST declare a top-level `scenario_name:` field. The upstream body's `scenario_name:` is the identifier the downstream's `while.scenario_name` references. A body without a top-level `scenario_name:` is anonymous and cannot be addressed by another body's `while:` clause; the compiler rejects a cross-POST `while:` on a body that does not name itself.
+
+`ref:` must be the top-level entry `id:` of an entry in the upstream body. Pack sub-signal syntax (`ref: my_entry.metric_name`) is rejected at parse time on cross-POST refs — use the top-level entry id.
+
+#### `if_unresolved:` modes
+
+`if_unresolved:` controls what the downstream does when its named upstream has not yet POSTed. Three values:
+
+| Value | Behavior |
+|---|---|
+| `open` | Emit at full rate as if the gate were true. Events flow at the configured rate; the scenario sits in `unresolved` (the resolution-status state) until the upstream POSTs and the resolver wires the subscription. Use this when the downstream is a baseline counter you want running unless the cascade gates it. |
+| `closed` | Pause emission as if the gate were false. The scenario sits in `unresolved`, no events are emitted. |
+| `pending` (default) | Neither emit nor advance state. The scenario sits in `unresolved` until the upstream POSTs. This is the conservative default — no traffic until the dependency is satisfied. |
+
+Once the upstream IS running, the downstream behaves like a local `while:` clause: open when the predicate is true, paused (with `delay:` debounce, recovery markers, etc. — see [Continuous coupling with `while:`](#continuous-coupling-with-while)) when the predicate is false.
+
+#### Lifecycle
+
+A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresolved`**, used while waiting for the named upstream to register. The scenario moves through the lifecycle like this:
+
+- **Initial POST**: the downstream lands in `unresolved`. Its [`pending_ref` field on `GET /scenarios/{id}`](../deployment/sonda-server.md#pending_ref-field-on-get-scenariosid) shows the upstream it is waiting on.
+- **Upstream POSTs**: the downstream resolves automatically — the server's resolver wires the subscription and the downstream transitions to `running` (or to `paused` if the predicate is already false). No client orchestration needed.
+- **Upstream is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again — `open` keeps it emitting, `closed` pauses, `pending` halts.
+- **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the gap — counters preserve their value through pause/resume cycles.
+
+#### Example: baseline counter gated by a cascade
+
+A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0:
+
+```yaml title="baseline.yaml — POST first, runs immediately under if_unresolved: open"
+version: 2
+kind: runnable
+scenario_name: baseline_post
+defaults:
+  rate: 100
+  duration: 1h
+  encoder:
+    type: prometheus_text
+  sink:
+    type: remote_write
+    url: ${VICTORIAMETRICS_REMOTE_WRITE_URL:-http://localhost:8428/api/v1/write}
+scenarios:
+  - id: requests_total
+    signal_type: metrics
+    name: requests_total
+    generator:
+      type: step
+      start: 0
+      step_size: 1
+    while:
+      scenario_name: cascade_post
+      ref: link_state
+      op: ">"
+      value: 0
+      if_unresolved: open
+```
+
+```yaml title="cascade.yaml — POST later to gate the baseline"
+version: 2
+kind: runnable
+scenario_name: cascade_post
+defaults:
+  rate: 1
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: link_state
+    signal_type: metrics
+    name: link_state
+    generator:
+      type: flap
+      up_duration: 10s
+      down_duration: 5s
+```
+
+POST `baseline.yaml` first. Because the cascade has not arrived, `if_unresolved: open` keeps the counter emitting at the full 100/s rate. Later, POST `cascade.yaml` — the baseline resolves to the cascade automatically. The counter now emits only while `link_state > 0` and pauses while it is `0`. When the cascade finishes (30s) or you DELETE it, the baseline returns to `if_unresolved: open` and resumes the unpaused 100/s rate. POST the cascade again and the baseline re-resolves; the counter picks up from where it froze, so its values stay monotonic across pause/resume cycles.
+
+For the HTTP surface — the strict-validation flag, the `pending_ref` field, the duplicate-name 409, and the new `/stats` fields — see [Server API](../deployment/sonda-server.md#cross-post-while-refs).
 
 ## Pack-backed entries
 

@@ -76,6 +76,7 @@ pub struct GateReceiver {
 }
 
 impl GateReceiver {
+    #[cfg(feature = "config")]
     pub(crate) fn from_while_rx(rx: Receiver<GateEdge>) -> Self {
         Self {
             after_rx: None,
@@ -238,7 +239,8 @@ impl GateBus {
         )
     }
 
-    pub(crate) fn subscribe_with_while_sender(
+    /// Subscribe an existing [`GateEdgeSender`] to the bus's `while:` events.
+    pub fn subscribe_with_while_sender(
         &self,
         spec: WhileSpec,
         while_tx: GateEdgeSender,
@@ -332,8 +334,7 @@ impl GateBus {
         self.tick(v);
     }
 
-    #[cfg(test)]
-    pub(crate) fn broadcast_upstream_gone(&self) {
+    pub fn broadcast_upstream_gone(&self) {
         let inner = self
             .inner
             .lock()
@@ -398,6 +399,33 @@ pub struct PendingResolution {
     pub spec: WhileSpec,
 }
 
+impl PendingResolution {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        handle_id: String,
+        stats: Weak<RwLock<ScenarioStats>>,
+        edge_sender: GateEdgeSender,
+        scenario_name: String,
+        entry_id: String,
+        if_unresolved: UnresolvedBehavior,
+        registered_at: Instant,
+        attempts: u64,
+        spec: WhileSpec,
+    ) -> Self {
+        Self {
+            handle_id,
+            stats,
+            edge_sender,
+            scenario_name,
+            entry_id,
+            if_unresolved,
+            registered_at,
+            attempts,
+            spec,
+        }
+    }
+}
+
 /// Wire-shaped projection of a [`PendingResolution`] surfaced over the HTTP API.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "config", derive(serde::Serialize))]
@@ -409,6 +437,26 @@ pub struct PendingRef {
     #[cfg(feature = "config")]
     pub registered_at: chrono::DateTime<chrono::Utc>,
     pub attempts: u64,
+}
+
+impl PendingRef {
+    /// Snapshot a [`PendingRef`] from a registry's [`PendingResolution`].
+    pub fn from_pending(pending: &PendingResolution, now: std::time::SystemTime) -> Self {
+        #[cfg(not(feature = "config"))]
+        let _ = now;
+        Self {
+            scenario_name: pending.scenario_name.clone(),
+            entry_id: pending.entry_id.clone(),
+            if_unresolved: pending.if_unresolved,
+            #[cfg(feature = "config")]
+            registered_at: {
+                let elapsed = pending.registered_at.elapsed();
+                let wall = now.checked_sub(elapsed).unwrap_or(std::time::UNIX_EPOCH);
+                chrono::DateTime::<chrono::Utc>::from(wall)
+            },
+            attempts: pending.attempts,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -449,6 +497,11 @@ pub trait GateBusResolver: Send + Sync {
     fn pending_for_handle(&self, handle_id: &str) -> Option<PendingRef>;
 
     fn scenario_name_in_use(&self, scenario_name: &str) -> bool;
+
+    /// Record an active subscriber so [`unregister`](Self::unregister) can
+    /// re-pend it for cross-POST re-resolution. Default impl is a no-op for
+    /// resolvers that do not implement re-resolution tracking.
+    fn track_subscriber(&self, _pending: PendingResolution) {}
 }
 
 #[cfg(test)]

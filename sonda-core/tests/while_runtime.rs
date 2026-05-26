@@ -122,6 +122,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
         None,
         None,
         Some(gate_ctx),
+        None,
     )
     .expect("launch must succeed");
 
@@ -179,6 +180,7 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -223,6 +225,7 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -262,6 +265,7 @@ fn while_runtime_no_catch_up_burst_on_resume() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -365,6 +369,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -443,6 +448,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -509,6 +515,7 @@ fn while_runtime_finished_state_after_duration_expires() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -548,6 +555,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch a must succeed");
 
@@ -568,6 +576,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch b must succeed");
 
@@ -615,6 +624,7 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -679,6 +689,7 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -741,6 +752,7 @@ fn while_runtime_strict_lt_threshold_gating() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -784,6 +796,7 @@ fn scenario_restart_does_not_leak_gate_bus() {
                 if_unresolved: None,
                 start_unresolved: false,
             }),
+            None,
         )
         .expect("launch must succeed");
         handle
@@ -836,6 +849,7 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -916,6 +930,7 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -990,6 +1005,7 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -1075,6 +1091,7 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 
@@ -1130,6 +1147,7 @@ fn while_runtime_steady_within_5pct_of_baseline() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         handle.join(Some(Duration::from_secs(2))).unwrap();
@@ -1159,6 +1177,7 @@ fn while_runtime_steady_within_5pct_of_baseline() {
                 if_unresolved: None,
                 start_unresolved: false,
             }),
+            None,
         )
         .unwrap();
         handle.join(Some(Duration::from_secs(2))).unwrap();
@@ -1309,6 +1328,7 @@ fn nan_upstream_value_keeps_downstream_paused() {
             if_unresolved: None,
             start_unresolved: false,
         }),
+        None,
     )
     .expect("launch must succeed");
 

@@ -206,7 +206,7 @@ Post a [scenario](../configuration/scenario-files.md) YAML or JSON body to `POST
 
     The JSON body is transcoded to YAML server-side and compiled through the same pipeline as the YAML path. Any valid scenario file can be posted as JSON by converting the YAML to its JSON equivalent.
 
-The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body; anything that compiles to two or more entries (for example, a pack-backed entry that fans out) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time and takes one of `"pending"`, `"running"`, `"paused"`, or `"finished"` (see [`/scenarios/{id}/stats`](#scenariosidstats) for the full enum and the `pending -> paused` transition note).
+The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body; anything that compiles to two or more entries (for example, a pack-backed entry that fans out) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time and takes one of `"pending"`, `"running"`, `"paused"`, `"unresolved"`, or `"finished"` (see [`/scenarios/{id}/stats`](#scenariosidstats) for the full enum, the `pending -> paused` transition note, and the [cross-POST `unresolved` state](#unresolved-lifecycle-state)).
 
 ### Multi-scenario body
 
@@ -388,7 +388,7 @@ Without `--catalog`, a body that references a pack by name is rejected with `400
 |--------|-----------|--------------|
 | **400 Bad Request** | Body is not UTF-8, not valid JSON/YAML, missing `version: 2`, or fails compilation. | Parser or compiler error; v1 bodies include the migration hint. |
 | **409 Conflict** | The posted body sets a top-level `scenario_name` that matches an active scenario already in the map. | Identifies the duplicate name and lists the conflicting scenarios. See [Duplicate scenario_name returns 409](#duplicate-scenario_name-returns-409). |
-| **422 Unprocessable Entity** | Body compiles but fails runtime validation (`rate: 0`, zero `duration`, etc.). | Validation error identifying the failing entry. |
+| **422 Unprocessable Entity** | Body compiles but fails runtime validation (`rate: 0`, zero `duration`, etc.), or — with `?validate=strict` — at least one cross-POST `while:` reference does not resolve at compile time. | Validation error identifying the failing entry, or `{error: "unresolved_refs", unresolved_refs: [...]}`. See [Cross-POST `while:` refs](#cross-post-while-refs). |
 | **500 Internal Server Error** | Scenario thread could not be spawned, or internal state error. | Short internal error; check server logs. |
 
 ### Duplicate scenario_name returns 409
@@ -411,7 +411,98 @@ The 409 body lists every active scenario contributing to the conflict so the ope
 }
 ```
 
-Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELETE /scenarios/{id}`), the per-entry `name` (the runtime-launched scenario name, not the file-level `scenario_name`), and the live `state` (one of `pending`, `running`, `paused`). When the body produced multiple entries (multi-entry POST or pack expansion), each launched handle inherits the same file-level `scenario_name` and contributes one item to the array.
+Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELETE /scenarios/{id}`), the per-entry `name` (the runtime-launched scenario name, not the file-level `scenario_name`), and the live `state` (one of `pending`, `running`, `paused`, `unresolved`). When the body produced multiple entries (multi-entry POST or pack expansion), each launched handle inherits the same file-level `scenario_name` and contributes one item to the array.
+
+## Cross-POST `while:` refs
+
+A POSTed scenario can `while:`-gate itself on a signal in a **separate** POST body by qualifying the `ref:` with the upstream's `scenario_name:`. The HTTP surface adds four things on top of the [YAML schema](../configuration/scenario-files.md#cross-post-while-refs): a `?validate=strict` flag on `POST /scenarios`, a `pending_ref` field on `GET /scenarios/{id}`, an `unresolved` lifecycle state, and two new fields on `GET /scenarios/{id}/stats`.
+
+### Deferred vs strict validation
+
+By default `POST /scenarios` accepts a body whose cross-POST refs have not been registered yet. The scenario lands in the `unresolved` state and resolves automatically once a matching upstream POSTs — this is the loose-coupling shape that lets you launch a baseline body without coordinating with whatever drives it later.
+
+Pass `?validate=strict` to flip that behavior: the server rejects the whole body with `422 Unprocessable Entity` if any cross-POST `while:` reference does not resolve at compile time. Nothing is launched. Use it when the dependency order is part of your contract and a missing upstream should fail loudly.
+
+```bash
+curl -X POST -H "Content-Type: text/yaml" \
+  --data-binary @baseline.yaml \
+  'http://localhost:8080/scenarios?validate=strict'
+```
+
+```json title="Response (422 Unprocessable Entity) — strict rejection"
+{
+  "error": "unresolved_refs",
+  "unresolved_refs": [
+    {
+      "scenario_name": "cascade_post",
+      "entry_id": "link_state",
+      "referenced_by": "requests_total"
+    }
+  ]
+}
+```
+
+Each `unresolved_refs` entry identifies the missing upstream by `scenario_name` (the upstream POST body's name), `entry_id` (the entry inside that body the `while:` clause references), and `referenced_by` (the id of the downstream entry whose `while:` clause could not be wired).
+
+### `unresolved` lifecycle state
+
+A scenario whose cross-POST `while:` clause has no registered upstream — and whose `if_unresolved:` mode is `pending` (the default) — sits in the `unresolved` state. The wire string is `"state": "unresolved"`. The lifecycle states a scenario can report on `GET /scenarios/{id}` and `GET /scenarios/{id}/stats` are therefore:
+
+| State | When |
+|---|---|
+| `pending` | Waiting for `after:` to fire, or the first eligible tick of a local `while:` gate. |
+| `running` | Emitting events. |
+| `paused` | Local `while:` gate is closed, or a cross-POST gate's `if_unresolved: closed` is in effect. |
+| `unresolved` | Cross-POST `while.scenario_name:` has not been POSTed yet (with `if_unresolved: pending`), or its upstream was DELETEd. |
+| `finished` | `duration:` elapsed or shutdown signalled. Terminal. |
+
+A scenario can transition `unresolved → pending → running` once the upstream registers, and back to `unresolved` when the upstream is DELETEd or finishes its own duration. Re-POSTing the same `scenario_name:` re-resolves the downstream automatically — no client orchestration. See [Cross-POST `while:` refs](../configuration/scenario-files.md#cross-post-while-refs) for the YAML schema and the `if_unresolved:` mode reference.
+
+!!! warning "Add `unresolved` to your dashboards"
+    If you maintain Prometheus recording rules or Grafana dashboards that enumerate `state=~"pending|running|paused|finished"`, add `unresolved` to the alternation (`state=~"pending|running|paused|unresolved|finished"`) or rewrite the matcher as a negation (`state!="finished"`). Cross-POST scenarios in `unresolved` are silently dropped by exhaustive enumerations.
+
+### `pending_ref` field on `GET /scenarios/{id}`
+
+When a scenario is in the `unresolved` state, `GET /scenarios/{id}` includes a `pending_ref` object identifying the upstream it is waiting on. The field is omitted from the response for any other state.
+
+```bash
+curl -s http://localhost:8080/scenarios/$ID | jq .
+```
+
+```json title="Response (state == unresolved)"
+{
+  "id": "a1b2c3d4-...",
+  "name": "requests_total",
+  "state": "unresolved",
+  "elapsed_secs": 2.4,
+  "degraded": false,
+  "stats": { "total_events": 0, "current_rate": 0.0, "bytes_emitted": 0, "...": "..." },
+  "pending_ref": {
+    "scenario_name": "cascade_post",
+    "entry_id": "link_state",
+    "if_unresolved": "pending",
+    "registered_at": "2026-05-26T14:32:08Z",
+    "attempts": 3
+  }
+}
+```
+
+`scenario_name` and `entry_id` are the upstream the downstream is waiting for. `if_unresolved` is the mode that applies until the upstream resolves (`open`, `closed`, or `pending`). `registered_at` is the ISO-8601 wall-clock time the downstream entered the resolver queue. `attempts` counts how many times the resolver has tried to wire this subscription — it advances on every promotion attempt and persists across `unresolved → running → unresolved` cycles so you can detect a downstream that has bounced repeatedly between states.
+
+### New stats fields
+
+`GET /scenarios/{id}/stats` adds two fields to the existing [stats payload](#scenariosidstats):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `current_state_secs` | float | Seconds since the most recent state transition. Resets to `0.0` every time `state` changes (including the `unresolved → running` resolution edge). Use this to alert on a scenario that has been stuck in one state too long — e.g., `current_state_secs > 60 and state == "unresolved"` flags a cross-POST dependency that has not arrived. |
+| `cumulative_resolution_attempts` | integer | Lifetime count of how many times the cross-POST resolver has tried to wire this scenario's subscription. Increments on each promotion attempt; persists across `unresolved → running → unresolved` cycles. Only `DELETE /scenarios/{id}` resets it. Use it to spot a downstream that is bouncing between states because its upstream keeps coming and going. |
+
+Both fields are present on every response, not just `unresolved` scenarios — `cumulative_resolution_attempts` is `0` for any scenario whose `while:` clause does not carry `scenario_name:`, and `current_state_secs` measures time since the last lifecycle edge for every state.
+
+### Duplicate name across POSTs
+
+The [`409 Conflict` rule](#duplicate-scenario_name-returns-409) extends to cross-POST scenarios: a body whose top-level `scenario_name:` collides with one already registered in the resolver — whether that earlier scenario is `pending`, `running`, `paused`, or `unresolved` — is rejected. The `conflicting_scenarios` array on the 409 response identifies which IDs to DELETE before re-POSTing. This applies both to the upstream (the body that publishes the gate signal) and to any downstream POST whose top-level `scenario_name:` is already in use.
 
 ## API Endpoints
 
@@ -585,7 +676,7 @@ curl -s http://localhost:8080/scenarios | jq .
 }
 ```
 
-Each entry carries `id`, `name`, `state`, `elapsed_secs`, and `degraded`. The `state` field takes one of `pending`, `running`, `paused`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means and the transition note for `pending -> paused`).
+Each entry carries `id`, `name`, `state`, `elapsed_secs`, and `degraded`. The `state` field takes one of `pending`, `running`, `paused`, `unresolved`, or `finished` (see the [`state` field reference](#scenariosidstats) below for what each value means, the transition note for `pending -> paused`, and the [cross-POST `unresolved` state](#unresolved-lifecycle-state)).
 
 #### The `degraded` field
 
@@ -643,7 +734,9 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
   "total_sink_failures": 12,
   "last_sink_error": "HTTP 500 from 'http://loki:3100/loki/api/v1/push'",
   "last_successful_write_at": 1714694400000000000,
-  "degraded": true
+  "degraded": true,
+  "current_state_secs": 12.7,
+  "cumulative_resolution_attempts": 0
 }
 ```
 
@@ -687,7 +780,9 @@ This is the shape to look for: rising `total_events`, `last_successful_write_at`
 | `bytes_emitted` | integer | Total bytes written to the sink. |
 | `errors` | integer | Encode or sink-write errors observed. |
 | `uptime_secs` | float | Seconds since the scenario was launched. |
-| `state` | string | One of `pending`, `running`, `paused`, `finished`. See the [`while:` lifecycle diagram](../configuration/scenario-files.md#lifecycle-states). |
+| `state` | string | One of `pending`, `running`, `paused`, `unresolved`, `finished`. See the [`while:` lifecycle diagram](../configuration/scenario-files.md#lifecycle-states) and the [cross-POST `unresolved` state](#unresolved-lifecycle-state). |
+| `current_state_secs` | float | Seconds since the most recent state transition. See [Cross-POST `while:` refs](#cross-post-while-refs). |
+| `cumulative_resolution_attempts` | integer | Lifetime count of cross-POST resolver attempts for this scenario. `0` for local-only scenarios. See [Cross-POST `while:` refs](#cross-post-while-refs). |
 | `in_gap` | bool | `true` while a [gap window](../configuration/scenario-fields.md#gap-window) is suppressing output. |
 | `in_burst` | bool | `true` while a [burst window](../configuration/scenario-fields.md#burst-window) is elevating the rate. |
 | `consecutive_failures` | integer | Sink errors observed since the most recent successful *delivery*. Resets to `0` on the next delivery. |
