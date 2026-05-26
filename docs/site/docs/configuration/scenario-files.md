@@ -628,7 +628,7 @@ When an entry carries both `after:` and `while:` against different upstreams, bo
 
 ### Supported operators
 
-`while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time -- equality on a continuous-valued upstream is numerically unsafe and forbidden by design.
+`while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time with the message `unsupported operator '<op>' on while: — only strict comparisons '<' and '>' are accepted`. Real-valued upstream signals make exact equality ambiguous; if you need an equality-like gate, pick a strict comparison with a small tolerance built into the upstream generator (for example, a `constant` upstream at `1.0` gated by `op: "<" value: 0.5`).
 
 ### Value typing
 
@@ -723,6 +723,24 @@ A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresol
 - **Upstream is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again — `open` keeps it emitting, `closed` pauses, `pending` halts.
 - **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the gap — counters preserve their value through pause/resume cycles.
 
+`GET /scenarios/{id}` exposes the wait target as `pending_ref` whenever `state` is `unresolved`. The field is omitted in every other state.
+
+```json title="GET /scenarios/{id} — unresolved downstream"
+{
+  "id": "01HX...",
+  "name": "requests_total",
+  "state": "unresolved",
+  "pending_ref": {
+    "scenario_name": "cascade_post",
+    "entry_id": "link_state"
+  }
+}
+```
+
+`pending_ref.scenario_name` is the upstream POST body the downstream is waiting on; `pending_ref.entry_id` is the entry id inside that body. Both match the values written in the downstream's `while.scenario_name` and `while.ref`.
+
+Re-resolution is event-driven, not polled. There is no periodic background sweep — the server attempts to resolve a downstream's `pending_ref` only when a POST lands carrying a matching `scenario_name:`. If no upstream POST ever arrives, the downstream stays `unresolved` indefinitely (or, with `if_unresolved: open`, keeps emitting at its default rate). The orchestration implication: POST the upstream first when the wiring is predictable, or accept that the downstream sits in `unresolved` until the upstream shows up.
+
 #### Example: baseline counter gated by a cascade
 
 A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0:
@@ -777,6 +795,122 @@ scenarios:
 ```
 
 POST `baseline.yaml` first. Because the cascade has not arrived, `if_unresolved: open` keeps the counter emitting at the full 100/s rate. Later, POST `cascade.yaml` — the baseline resolves to the cascade automatically. The counter now emits only while `link_state > 0` and pauses while it is `0`. When the cascade finishes (30s) or you DELETE it, the baseline returns to `if_unresolved: open` and resumes the unpaused 100/s rate. POST the cascade again and the baseline re-resolves; the counter picks up from where it froze, so its values stay monotonic across pause/resume cycles.
+
+#### Failing fast on a misspelled ref — `?validate=strict`
+
+By default `POST /scenarios` accepts a body whose `while.scenario_name` does not match any running scenario: the entry lands in `unresolved` and re-resolves whenever a matching upstream POSTs. That is the right behavior for predictable client-orchestrated wiring, but it can hide typos — a downstream gated on `bgp_peer_stat` (missing an `e`) sits in `unresolved` forever instead of failing the POST.
+
+Append `?validate=strict` to reject the entire body if any cross-POST `while:` ref is unresolvable at POST time:
+
+```bash
+curl -X POST 'http://localhost:8080/scenarios?validate=strict' \
+  -H 'Content-Type: application/x-yaml' \
+  --data-binary @downstream.yaml
+```
+
+The check is atomic — either every entry passes or the whole body is rejected; no scenarios spawn on rejection. The response is `HTTP 422 Unprocessable Entity` with an `unresolved_refs` array listing the missing upstreams:
+
+```json
+{
+  "error": "unresolved_refs",
+  "unresolved_refs": [
+    {
+      "scenario_name": "bgp_peer_stat",
+      "entry_id": "down",
+      "referenced_by": "alert_route_flap"
+    }
+  ]
+}
+```
+
+Use `?validate=strict` for pre-flight checks in CI pipelines and for one-shot POSTs where the upstream is meant to already exist. Leave it off (the default) when the downstream is intentionally launched ahead of its upstream — for instance the `if_unresolved: open` baseline-counter pattern above.
+
+#### Re-POSTing under the same `scenario_name` is two operations
+
+Every POST whose top-level `scenario_name:` matches an entry already in `pending` / `running` / `paused` / `unresolved` returns `HTTP 409 Conflict`. There is no in-place update — replacing an active cascade is always DELETE-then-POST.
+
+```json title="409 response body"
+{
+  "error": "scenario_name 'cascade_post' is already running",
+  "conflicting_scenarios": [
+    {
+      "id": "01HX...",
+      "name": "link_state",
+      "state": "running"
+    }
+  ],
+  "hint": "DELETE the conflicting scenarios before posting a new cascade with the same scenario_name"
+}
+```
+
+`conflicting_scenarios` lists every active entry that shares the posted `scenario_name`. DELETE each one (a multi-entry body produces multiple handles, all of which must go) before the next POST. Entries that have already transitioned to `finished` do not block — they are stale handles and the server ignores them.
+
+#### Aggregate `/metrics` sees paused and unresolved scenarios
+
+The aggregate [`GET /metrics`](../deployment/sonda-server.md#get-metrics-vs-get-scenariosidmetrics) endpoint walks the full scenario map without filtering on state. Every scenario the server currently knows about — `running`, `paused`, `unresolved`, even `pending` — contributes the most recent value per `(metric_name, label_set)` to the scrape output. The handle holds those last-seen samples until you DELETE the scenario; gate-pause alone does not clear them.
+
+The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." If you want only one scenario to contribute a given series at a time, DELETE the inactive one rather than relying on the gate to silence it. This is load-bearing for the cascade-replaces-baseline pattern below.
+
+#### Example: cascade replaces baseline emission
+
+The `if_unresolved: open` pattern shown earlier pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note just above). When the goal is to **replace** the baseline's emission with the cascade's (a constant healthy value swapped out for a flapping outage value on the same series), gate-pause is not enough — orchestrate with DELETE + POST.
+
+```yaml title="baseline.yaml — steady-state value"
+version: 2
+kind: runnable
+scenario_name: link_baseline
+defaults:
+  rate: 1
+  duration: 1h
+  encoder:
+    type: prometheus_text
+  sink:
+    type: remote_write
+    url: ${VICTORIAMETRICS_REMOTE_WRITE_URL:-http://localhost:8428/api/v1/write}
+scenarios:
+  - id: interface_oper_state
+    signal_type: metrics
+    name: interface_oper_state
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/0/0
+    generator:
+      type: constant
+      value: 1
+```
+
+```yaml title="outage.yaml — flapping value on the same series"
+version: 2
+kind: runnable
+scenario_name: link_outage
+defaults:
+  rate: 1
+  duration: 10m
+  encoder:
+    type: prometheus_text
+  sink:
+    type: remote_write
+    url: ${VICTORIAMETRICS_REMOTE_WRITE_URL:-http://localhost:8428/api/v1/write}
+scenarios:
+  - id: interface_oper_state
+    signal_type: metrics
+    name: interface_oper_state
+    labels:
+      device: rtr-edge-01
+      interface: GigabitEthernet0/0/0
+    generator:
+      type: flap
+      up_duration: 30s
+      down_duration: 60s
+```
+
+The orchestration sequence:
+
+1. **Start the baseline.** POST `baseline.yaml`. The series `interface_oper_state{device="rtr-edge-01", interface="GigabitEthernet0/0/0"}` reads `1` (healthy).
+2. **Begin the outage.** DELETE the baseline (`DELETE /scenarios/{baseline-id}`), then POST `outage.yaml`. Same series now flaps between `1` and `0` from the outage cascade.
+3. **End the outage.** DELETE the outage cascade, then POST `baseline.yaml` again. Series returns to a steady `1`.
+
+The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
 
 For the HTTP surface — the strict-validation flag, the `pending_ref` field, the duplicate-name 409, and the new `/stats` fields — see [Server API](../deployment/sonda-server.md#cross-post-while-refs).
 
