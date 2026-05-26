@@ -76,6 +76,13 @@ pub struct GateReceiver {
 }
 
 impl GateReceiver {
+    pub(crate) fn from_while_rx(rx: Receiver<GateEdge>) -> Self {
+        Self {
+            after_rx: None,
+            while_rx: Some(rx),
+        }
+    }
+
     /// Poll both per-kind channels in priority order: after, then while.
     pub fn try_recv(&self) -> Option<GateEdge> {
         if let Some(ref rx) = self.after_rx {
@@ -231,6 +238,50 @@ impl GateBus {
         )
     }
 
+    pub(crate) fn subscribe_with_while_sender(
+        &self,
+        spec: WhileSpec,
+        while_tx: GateEdgeSender,
+    ) -> InitialState {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let (current_value, while_gate_open) = if inner.has_value {
+            let v = inner.last_value;
+            let open = strict_eval(v, spec.op, spec.threshold);
+            let edge = if open {
+                GateEdge::WhileOpen
+            } else {
+                GateEdge::WhileClose
+            };
+            let _ = while_tx.try_send(edge);
+            (v, Some(open))
+        } else {
+            (f64::NAN, None)
+        };
+
+        let sub = Subscription {
+            spec: SubscriptionSpec {
+                after: None,
+                while_: Some(spec),
+            },
+            after_tx: None,
+            while_tx: Some(while_tx),
+            after_fired: false,
+            prev_while_open: while_gate_open,
+        };
+
+        inner.subs.push(sub);
+
+        InitialState {
+            after_already_fired: false,
+            while_gate_open,
+            current_value,
+        }
+    }
+
     /// Publish a new upstream value.
     ///
     /// Fast path: bit-equal to the previous publish returns immediately
@@ -280,6 +331,22 @@ impl GateBus {
     pub(crate) fn drive_value(&self, v: f64) {
         self.tick(v);
     }
+
+    #[cfg(test)]
+    pub(crate) fn broadcast_upstream_gone(&self) {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for sub in inner.subs.iter() {
+            if let Some(ref tx) = sub.while_tx {
+                replace_send(tx, GateEdge::UpstreamGone);
+            }
+            if let Some(ref tx) = sub.after_tx {
+                replace_send(tx, GateEdge::UpstreamGone);
+            }
+        }
+    }
 }
 
 impl Default for GateBus {
@@ -328,6 +395,7 @@ pub struct PendingResolution {
     pub if_unresolved: UnresolvedBehavior,
     pub registered_at: Instant,
     pub attempts: u64,
+    pub spec: WhileSpec,
 }
 
 /// Wire-shaped projection of a [`PendingResolution`] surfaced over the HTTP API.

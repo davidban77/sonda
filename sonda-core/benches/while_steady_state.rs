@@ -94,6 +94,8 @@ fn bench_gated_open(c: &mut Criterion) {
                     has_after: false,
                     has_while: true,
                     close_emit: None,
+                    if_unresolved: None,
+                    start_unresolved: false,
                 }),
             )
             .unwrap();

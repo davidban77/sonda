@@ -127,6 +127,8 @@ fn run_with_capture(
             has_after: false,
             has_while: true,
             close_emit: None,
+            if_unresolved: None,
+            start_unresolved: false,
         };
         sonda_core::schedule::runner::run_with_sink_gated(
             &config,
@@ -351,6 +353,8 @@ fn non_remote_write_sink_no_close_marker_by_default() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -448,6 +452,8 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -548,6 +554,8 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -650,6 +658,8 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -739,6 +749,8 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -840,6 +852,8 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -930,6 +944,8 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -1024,6 +1040,8 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
@@ -1119,6 +1137,8 @@ fn shutdown_while_gate_open_emits_stale_marker() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("runner must succeed");
