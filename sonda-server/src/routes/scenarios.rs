@@ -939,6 +939,52 @@ fn parse_label_filters(raw: Option<&str>) -> Result<Vec<(String, String)>, Strin
     Ok(filters)
 }
 
+/// Parse `include_state=a,b,...` into a deduped allowlist of [`ScenarioState`].
+/// Returns `Ok(None)` when the param is absent, `Err` for empty / unknown tokens.
+fn parse_include_state(raw_query: Option<&str>) -> Result<Option<Vec<ScenarioState>>, String> {
+    let Some(raw) = raw_query else {
+        return Ok(None);
+    };
+    // Last occurrence wins, matching axum's `Query<T>` convention.
+    let mut last_value: Option<String> = None;
+    for pair in raw.split('&').filter(|s| !s.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "include_state" {
+            last_value = Some(percent_decode(value));
+        }
+    }
+    let Some(decoded) = last_value else {
+        return Ok(None);
+    };
+    if decoded.is_empty() {
+        return Err("include_state requires at least one state name".to_string());
+    }
+    let mut out: Vec<ScenarioState> = Vec::new();
+    for token in decoded.split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return Err("include_state requires at least one state name".to_string());
+        }
+        let state = match trimmed {
+            "pending" => ScenarioState::Pending,
+            "running" => ScenarioState::Running,
+            "paused" => ScenarioState::Paused,
+            "unresolved" => ScenarioState::Unresolved,
+            "finished" => ScenarioState::Finished,
+            other => {
+                return Err(format!(
+                    "unknown state name '{other}' in include_state — expected one of: \
+                     pending, running, paused, unresolved, finished"
+                ));
+            }
+        };
+        if !out.contains(&state) {
+            out.push(state);
+        }
+    }
+    Ok(Some(out))
+}
+
 fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -977,6 +1023,7 @@ pub async fn get_aggregate_metrics(
     RawQuery(raw_query): RawQuery,
 ) -> Result<Response, Response> {
     let filters = parse_label_filters(raw_query.as_deref()).map_err(bad_request)?;
+    let state_filter = parse_include_state(raw_query.as_deref()).map_err(bad_request)?;
 
     let scenarios = state
         .scenarios
@@ -1002,6 +1049,11 @@ pub async fn get_aggregate_metrics(
                 .unwrap_or(false)
         }) {
             continue;
+        }
+        if let Some(allow) = &state_filter {
+            if !allow.contains(&handle.stats_snapshot().state) {
+                continue;
+            }
         }
         let events = handle.recent_metrics_snapshot();
         if events.is_empty() && handle.prometheus_meta.is_none() {
@@ -4129,6 +4181,114 @@ scenarios:
         assert!(filters.is_empty());
         let filters2 = parse_label_filters(Some("")).expect("must parse");
         assert!(filters2.is_empty());
+    }
+
+    #[test]
+    fn parse_include_state_absent_returns_none() {
+        assert!(parse_include_state(None).unwrap().is_none());
+        assert!(parse_include_state(Some("")).unwrap().is_none());
+        assert!(parse_include_state(Some("label=device:srl1"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn parse_include_state_single_value() {
+        let states = parse_include_state(Some("include_state=running"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Running]);
+    }
+
+    #[test]
+    fn parse_include_state_comma_separated() {
+        let states = parse_include_state(Some("include_state=running,paused"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Running, ScenarioState::Paused]);
+    }
+
+    #[test]
+    fn parse_include_state_trims_whitespace_per_token() {
+        let states = parse_include_state(Some("include_state=running,%20paused"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Running, ScenarioState::Paused]);
+    }
+
+    #[test]
+    fn parse_include_state_dedups_duplicates() {
+        let states = parse_include_state(Some("include_state=running,running,paused"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Running, ScenarioState::Paused]);
+    }
+
+    #[test]
+    fn parse_include_state_accepts_all_known_variants() {
+        let states = parse_include_state(Some(
+            "include_state=pending,running,paused,unresolved,finished",
+        ))
+        .unwrap()
+        .expect("filter must be present");
+        assert_eq!(
+            states,
+            vec![
+                ScenarioState::Pending,
+                ScenarioState::Running,
+                ScenarioState::Paused,
+                ScenarioState::Unresolved,
+                ScenarioState::Finished,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_include_state_empty_value_is_error() {
+        let err = parse_include_state(Some("include_state=")).unwrap_err();
+        assert!(
+            err.contains("at least one state name"),
+            "error must explain the empty value: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_include_state_unknown_token_is_error() {
+        let err = parse_include_state(Some("include_state=running,foo")).unwrap_err();
+        assert!(
+            err.contains("'foo'"),
+            "error must quote the bad token: {err}"
+        );
+        assert!(
+            err.contains("pending, running, paused, unresolved, finished"),
+            "error must list valid options: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_include_state_rejects_unknown_sentinel() {
+        let err = parse_include_state(Some("include_state=unknown")).unwrap_err();
+        assert!(
+            err.contains("'unknown'"),
+            "the catch-all `unknown` sentinel must be rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_include_state_repeated_param_takes_last() {
+        let states = parse_include_state(Some("include_state=running&include_state=paused"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Paused]);
+    }
+
+    #[test]
+    fn parse_include_state_composes_with_other_query_keys() {
+        let states =
+            parse_include_state(Some("label=env:prod&include_state=running&validate=strict"))
+                .unwrap()
+                .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Running]);
     }
 
     // ---- PROMETHEUS_CONTENT_TYPE constant ------------------------------------

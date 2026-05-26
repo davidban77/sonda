@@ -851,6 +851,21 @@ The aggregate [`GET /metrics`](../deployment/sonda-server.md#get-metrics-vs-get-
 
 The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." If you want only one scenario to contribute a given series at a time, DELETE the inactive one rather than relying on the gate to silence it. This is load-bearing for the cascade-replaces-baseline pattern below.
 
+Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped; with the parameter absent the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the five scenario states — `pending`, `running`, `paused`, `unresolved`, `finished` — in any combination:
+
+```bash
+# Only running scenarios — paused and unresolved ghosts are filtered out
+curl 'http://localhost:8080/metrics?include_state=running'
+
+# Multiple states at once; whitespace after the comma is tolerated
+curl 'http://localhost:8080/metrics?include_state=running,paused'
+
+# Combine with the label filter; both are applied as intersection
+curl 'http://localhost:8080/metrics?include_state=running&label=device:srl1'
+```
+
+An unknown state name or an empty value (`?include_state=`) returns `400 Bad Request` with a message listing the five valid options. This filter is pull-only — push sinks such as `remote_write`, `kafka`, and `otlp` already honor scenario state by construction, because the runner skips encoding and writing while the gate is closed.
+
 #### Example: cascade replaces baseline emission
 
 The `if_unresolved: open` pattern shown earlier pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note just above). When the goal is to **replace** the baseline's emission with the cascade's (a constant healthy value swapped out for a flapping outage value on the same series), gate-pause is not enough — orchestrate with DELETE + POST.
@@ -911,6 +926,8 @@ The orchestration sequence:
 3. **End the outage.** DELETE the outage cascade, then POST `baseline.yaml` again. Series returns to a steady `1`.
 
 The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
+
+If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow: POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so that exactly one of them is `running` at any moment. Scrapers request `GET /metrics?include_state=running` and see whichever scenario currently holds the gate open; the paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter — push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
 
 For the HTTP surface — the strict-validation flag, the `pending_ref` field, the duplicate-name 409, and the new `/stats` fields — see [Server API](../deployment/sonda-server.md#cross-post-while-refs).
 

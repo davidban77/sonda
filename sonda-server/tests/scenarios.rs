@@ -2322,3 +2322,503 @@ fn while_local_downstream_finishes_when_upstream_finishes() {
         "local-POST downstream must reach finished after upstream's duration expires, got {state:?}"
     );
 }
+
+// ---- GET /metrics?include_state=... allowlist filter ------------------------
+
+const ISFILTER_BASELINE_YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_baseline_up
+    signal_type: metrics
+    name: isfilter_baseline_up
+    labels:
+      env: prod
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+const ISFILTER_BASELINE_DEV_YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_baseline_dev_up
+    signal_type: metrics
+    name: isfilter_baseline_dev_up
+    labels:
+      env: dev
+    generator:
+      type: constant
+      value: 1.0
+"#;
+
+const ISFILTER_PAUSED_UPSTREAM_YAML: &str = r#"
+version: 2
+kind: runnable
+scenario_name: isfilter_paused_upstream
+defaults:
+  rate: 10
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_upstream_signal
+    signal_type: metrics
+    name: isfilter_upstream_signal
+    generator:
+      type: sequence
+      values: [1.0, 1.0, 1.0, 1.0, 0.0]
+      repeat: false
+"#;
+
+const ISFILTER_PAUSED_DOWNSTREAM_YAML: &str = r#"
+version: 2
+kind: runnable
+scenario_name: isfilter_paused_downstream
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_downstream_metric
+    signal_type: metrics
+    name: isfilter_downstream_metric
+    generator:
+      type: constant
+      value: 7.0
+    while:
+      ref: isfilter_upstream_signal
+      op: ">"
+      value: 0
+      scenario_name: isfilter_paused_upstream
+"#;
+
+const ISFILTER_UNRESOLVED_DOWNSTREAM_YAML: &str = r#"
+version: 2
+kind: runnable
+scenario_name: isfilter_unresolved_downstream
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_unresolved_metric
+    signal_type: metrics
+    name: isfilter_unresolved_metric
+    generator:
+      type: constant
+      value: 3.0
+    while:
+      ref: nope
+      op: ">"
+      value: 0
+      scenario_name: isfilter_missing_upstream
+"#;
+
+fn isfilter_wait_for_state(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    id: &str,
+    expected: &str,
+    timeout: std::time::Duration,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last = serde_json::Value::Null;
+    while std::time::Instant::now() < deadline {
+        let resp = client
+            .get(format!("{base}/scenarios/{id}"))
+            .send()
+            .expect("GET scenario detail");
+        let body: serde_json::Value = resp.json().expect("detail must be JSON");
+        if body["state"] == expected {
+            return body;
+        }
+        last = body;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("timed out waiting for state {expected:?} on {id}; last detail = {last}");
+}
+
+fn isfilter_post(client: &reqwest::blocking::Client, base: &str, yaml: &str) -> serde_json::Value {
+    let resp = client
+        .post(format!("{base}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(yaml.to_string())
+        .send()
+        .expect("POST must succeed");
+    let status = resp.status().as_u16();
+    let body_text = resp.text().expect("body must be UTF-8");
+    assert_eq!(status, 201, "POST must return 201; body={body_text}");
+    serde_json::from_str(&body_text).expect("response must be JSON")
+}
+
+fn isfilter_scrape(client: &reqwest::blocking::Client, base: &str, query: &str) -> String {
+    let url = if query.is_empty() {
+        format!("{base}/metrics")
+    } else {
+        format!("{base}/metrics?{query}")
+    };
+    let resp = client.get(url).send().expect("GET /metrics must succeed");
+    assert_eq!(resp.status().as_u16(), 200, "GET /metrics must return 200");
+    resp.text().expect("body must be UTF-8")
+}
+
+#[test]
+fn include_state_absent_returns_running_and_paused() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let baseline = isfilter_post(&client, &base, ISFILTER_BASELINE_YAML);
+    let baseline_id = baseline["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &baseline_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+
+    let upstream = isfilter_post(&client, &base, ISFILTER_PAUSED_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, ISFILTER_PAUSED_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "running",
+        std::time::Duration::from_secs(3),
+    );
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "paused",
+        std::time::Duration::from_secs(3),
+    );
+
+    let body = isfilter_scrape(&client, &base, "");
+    assert!(
+        body.contains("isfilter_baseline_up"),
+        "default scrape must include running scenario; body=\n{body}"
+    );
+    assert!(
+        body.contains("isfilter_downstream_metric"),
+        "default scrape must include paused scenario's last-known sample (ghost); body=\n{body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{baseline_id}"))
+        .send();
+}
+
+#[test]
+fn include_state_running_excludes_paused() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let baseline = isfilter_post(&client, &base, ISFILTER_BASELINE_YAML);
+    let baseline_id = baseline["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &baseline_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+
+    let upstream = isfilter_post(&client, &base, ISFILTER_PAUSED_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, ISFILTER_PAUSED_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "running",
+        std::time::Duration::from_secs(3),
+    );
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "paused",
+        std::time::Duration::from_secs(3),
+    );
+
+    let body = isfilter_scrape(&client, &base, "include_state=running");
+    assert!(
+        body.contains("isfilter_baseline_up"),
+        "running filter must include the running scenario; body=\n{body}"
+    );
+    assert!(
+        !body.contains("isfilter_downstream_metric"),
+        "running filter must exclude the paused scenario's ghost; body=\n{body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{baseline_id}"))
+        .send();
+}
+
+#[test]
+fn include_state_multi_value_running_unresolved_excludes_paused() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let baseline = isfilter_post(&client, &base, ISFILTER_BASELINE_YAML);
+    let baseline_id = baseline["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &baseline_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+
+    let unresolved = isfilter_post(&client, &base, ISFILTER_UNRESOLVED_DOWNSTREAM_YAML);
+    let unresolved_id = unresolved["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &unresolved_id,
+        "unresolved",
+        std::time::Duration::from_secs(2),
+    );
+
+    let upstream = isfilter_post(&client, &base, ISFILTER_PAUSED_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, ISFILTER_PAUSED_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "running",
+        std::time::Duration::from_secs(3),
+    );
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "paused",
+        std::time::Duration::from_secs(3),
+    );
+
+    let body = isfilter_scrape(&client, &base, "include_state=running,unresolved");
+    assert!(
+        body.contains("isfilter_baseline_up"),
+        "multi-state filter must include the running scenario; body=\n{body}"
+    );
+    // Unresolved downstream never ticks, so it contributes no samples even though it matches.
+    assert!(
+        !body.contains("isfilter_downstream_metric"),
+        "multi-state filter must exclude the paused scenario's ghost; body=\n{body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{unresolved_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{baseline_id}"))
+        .send();
+}
+
+#[test]
+fn include_state_unknown_value_returns_400() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let resp = client
+        .get(format!("{base}/metrics?include_state=foo"))
+        .send()
+        .expect("GET /metrics must succeed");
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: serde_json::Value = resp.json().expect("error body must be JSON");
+    let detail = body["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("'foo'"),
+        "error detail must quote the bad token: {detail}"
+    );
+    assert!(
+        detail.contains("pending, running, paused, unresolved, finished"),
+        "error detail must list valid options: {detail}"
+    );
+}
+
+#[test]
+fn include_state_empty_value_returns_400() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let resp = client
+        .get(format!("{base}/metrics?include_state="))
+        .send()
+        .expect("GET /metrics must succeed");
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: serde_json::Value = resp.json().expect("error body must be JSON");
+    let detail = body["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("at least one state name"),
+        "error detail must explain the empty value: {detail}"
+    );
+}
+
+#[test]
+fn include_state_combined_with_label_filter_intersects() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let prod = isfilter_post(&client, &base, ISFILTER_BASELINE_YAML);
+    let prod_id = prod["id"].as_str().unwrap().to_string();
+    let dev = isfilter_post(&client, &base, ISFILTER_BASELINE_DEV_YAML);
+    let dev_id = dev["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &prod_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &dev_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+
+    let upstream = isfilter_post(&client, &base, ISFILTER_PAUSED_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, ISFILTER_PAUSED_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "paused",
+        std::time::Duration::from_secs(5),
+    );
+
+    let body = isfilter_scrape(&client, &base, "include_state=running&label=env:prod");
+    assert!(
+        body.contains("isfilter_baseline_up"),
+        "intersection must include the prod-labelled running scenario; body=\n{body}"
+    );
+    assert!(
+        !body.contains("isfilter_baseline_dev_up"),
+        "intersection must exclude the dev-labelled scenario via label filter; body=\n{body}"
+    );
+    assert!(
+        !body.contains("isfilter_downstream_metric"),
+        "intersection must exclude the paused scenario via state filter; body=\n{body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+    let _ = client.delete(format!("{base}/scenarios/{dev_id}")).send();
+    let _ = client.delete(format!("{base}/scenarios/{prod_id}")).send();
+}
+
+#[test]
+fn include_state_whitespace_after_comma_parses_two_states() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let baseline = isfilter_post(&client, &base, ISFILTER_BASELINE_YAML);
+    let baseline_id = baseline["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &baseline_id,
+        "running",
+        std::time::Duration::from_secs(2),
+    );
+
+    let upstream = isfilter_post(&client, &base, ISFILTER_PAUSED_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, ISFILTER_PAUSED_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "paused",
+        std::time::Duration::from_secs(5),
+    );
+
+    let body = isfilter_scrape(&client, &base, "include_state=running,%20paused");
+    assert!(
+        body.contains("isfilter_baseline_up"),
+        "whitespace-tolerant filter must include the running scenario; body=\n{body}"
+    );
+    assert!(
+        body.contains("isfilter_downstream_metric"),
+        "whitespace-tolerant filter must include the paused scenario; body=\n{body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{baseline_id}"))
+        .send();
+}
