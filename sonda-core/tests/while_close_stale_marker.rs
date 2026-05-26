@@ -120,16 +120,9 @@ fn run_with_capture(
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let shutdown = Arc::new(AtomicBool::new(true));
-        let gate_ctx = GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        };
+        let gate_ctx = GateContext::new(rx, init)
+            .with_delay(delay)
+            .with_has_while(true);
         sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
@@ -346,16 +339,7 @@ fn non_remote_write_sink_no_close_marker_by_default() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
         )
         .expect("runner must succeed");
         sink
@@ -445,16 +429,11 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(delay),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(delay))
+                    .with_has_while(true),
+            ),
         )
         .expect("runner must succeed");
         sink
@@ -547,16 +526,11 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(delay),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(delay))
+                    .with_has_while(true),
+            ),
         )
         .expect("runner must succeed");
     });
@@ -651,16 +625,7 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
         )
         .expect("runner must succeed");
     });
@@ -742,16 +707,11 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(delay),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(delay))
+                    .with_has_while(true),
+            ),
         )
         .expect("runner must succeed");
         sink
@@ -840,21 +800,16 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(DelayClause {
-                    open: Some(Duration::from_millis(0)),
-                    close: Some(Duration::from_millis(0)),
-                    close_stale_marker: None,
-                    close_snap_to: None,
-                }),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(DelayClause {
+                        open: Some(Duration::from_millis(0)),
+                        close: Some(Duration::from_millis(0)),
+                        close_stale_marker: None,
+                        close_snap_to: None,
+                    }))
+                    .with_has_while(true),
+            ),
         )
         .expect("runner must succeed");
     });
@@ -937,16 +892,7 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
         )
         .expect("runner must succeed");
     });
@@ -1028,21 +974,16 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
             Some(shutdown.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: Some(DelayClause {
-                    open: Some(Duration::from_millis(0)),
-                    close: Some(Duration::from_millis(0)),
-                    close_stale_marker: None,
-                    close_snap_to: None,
-                }),
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(
+                GateContext::new(rx, init)
+                    .with_delay(Some(DelayClause {
+                        open: Some(Duration::from_millis(0)),
+                        close: Some(Duration::from_millis(0)),
+                        close_stale_marker: None,
+                        close_snap_to: None,
+                    }))
+                    .with_has_while(true),
+            ),
         )
         .expect("runner must succeed");
     });
@@ -1130,16 +1071,7 @@ fn shutdown_while_gate_open_emits_stale_marker() {
             Some(shutdown_for_thread.as_ref()),
             Some(stats_for_thread),
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
         )
         .expect("runner must succeed");
     });

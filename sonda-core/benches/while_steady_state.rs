@@ -88,16 +88,7 @@ fn bench_gated_open(c: &mut Criterion) {
                 shutdown,
                 None,
                 Some(Arc::clone(&bus)),
-                Some(GateContext {
-                    gate_rx: rx,
-                    initial: init,
-                    delay: None,
-                    has_after: false,
-                    has_while: true,
-                    close_emit: None,
-                    if_unresolved: None,
-                    start_unresolved: false,
-                }),
+                Some(GateContext::new(rx, init).with_has_while(true)),
                 None,
             )
             .unwrap();

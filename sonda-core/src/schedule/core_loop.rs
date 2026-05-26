@@ -505,6 +505,7 @@ fn invoke_close_emit(
 const PAUSED_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Gate-side context attached to a `gated_loop` run.
+#[non_exhaustive]
 pub struct GateContext {
     /// Receiver for `after:` and/or `while:` edges from the upstream bus.
     pub gate_rx: GateReceiver,
@@ -522,6 +523,52 @@ pub struct GateContext {
     pub close_emit: Option<CloseEmitFn>,
     pub if_unresolved: Option<UnresolvedBehavior>,
     pub start_unresolved: bool,
+}
+
+impl GateContext {
+    /// Construct a `GateContext` with required pieces; optional fields default to `None` / `false`.
+    pub fn new(gate_rx: GateReceiver, initial: InitialState) -> Self {
+        Self {
+            gate_rx,
+            initial,
+            delay: None,
+            has_after: false,
+            has_while: false,
+            close_emit: None,
+            if_unresolved: None,
+            start_unresolved: false,
+        }
+    }
+
+    pub fn with_delay(mut self, delay: Option<DelayClause>) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    pub fn with_has_after(mut self, has_after: bool) -> Self {
+        self.has_after = has_after;
+        self
+    }
+
+    pub fn with_has_while(mut self, has_while: bool) -> Self {
+        self.has_while = has_while;
+        self
+    }
+
+    pub fn with_close_emit(mut self, close_emit: Option<CloseEmitFn>) -> Self {
+        self.close_emit = close_emit;
+        self
+    }
+
+    pub fn with_if_unresolved(mut self, mode: Option<UnresolvedBehavior>) -> Self {
+        self.if_unresolved = mode;
+        self
+    }
+
+    pub fn with_start_unresolved(mut self, start_unresolved: bool) -> Self {
+        self.start_unresolved = start_unresolved;
+        self
+    }
 }
 
 /// Run a signal scenario through the four-state lifecycle gate.
