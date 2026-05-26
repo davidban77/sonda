@@ -351,6 +351,8 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
                 has_after: false,
                 has_while: true,
                 close_emit: None,
+                if_unresolved: None,
+                start_unresolved: false,
             }),
         )
         .expect("gated runner must succeed");

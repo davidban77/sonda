@@ -350,9 +350,12 @@ fn run_compiled_with_progress(
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
-    let handles =
-        sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, Arc::clone(running))
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(
+        compiled,
+        Arc::clone(running),
+        None,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let progress = maybe_start_progress_multi(&handles, verbosity);
 

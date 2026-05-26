@@ -344,6 +344,7 @@ pub fn launch_scenario_with_gates(
         alive,
         labels,
         prometheus_meta,
+        Arc::new(AtomicBool::new(false)),
     ))
 }
 

@@ -63,6 +63,7 @@ pub struct ScenarioHandle {
     ///
     /// `Some` for metrics, histogram, and summary scenarios; `None` for logs.
     pub prometheus_meta: Option<Arc<PromMeta>>,
+    pub cleaned_up: Arc<AtomicBool>,
 }
 
 impl ScenarioHandle {
@@ -80,6 +81,7 @@ impl ScenarioHandle {
         alive: Arc<AtomicBool>,
         labels: Arc<HashMap<String, String>>,
         prometheus_meta: Option<Arc<PromMeta>>,
+        cleaned_up: Arc<AtomicBool>,
     ) -> Self {
         Self {
             id,
@@ -93,6 +95,7 @@ impl ScenarioHandle {
             alive,
             labels,
             prometheus_meta,
+            cleaned_up,
         }
     }
 
@@ -247,6 +250,21 @@ impl ScenarioHandle {
     }
 }
 
+impl Drop for ScenarioHandle {
+    fn drop(&mut self) {
+        if self.cleaned_up.load(Ordering::SeqCst) {
+            return;
+        }
+        if self.scenario_name.is_none() {
+            return;
+        }
+        eprintln!(
+            "sonda: scenario '{}' dropped without unregistering from the gate bus registry",
+            self.id
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -303,6 +321,7 @@ mod tests {
                 crate::config::PromMetricType::Gauge,
                 None,
             ))),
+            Arc::new(AtomicBool::new(true)),
         )
     }
 
@@ -563,6 +582,7 @@ mod tests {
                 crate::config::PromMetricType::Gauge,
                 None,
             ))),
+            Arc::new(AtomicBool::new(true)),
         );
 
         // stats_snapshot must not panic — it recovers from the poisoned lock.
@@ -610,6 +630,7 @@ mod tests {
                 crate::config::PromMetricType::Gauge,
                 None,
             ))),
+            Arc::new(AtomicBool::new(true)),
         );
 
         let events = handle.recent_metrics_snapshot();

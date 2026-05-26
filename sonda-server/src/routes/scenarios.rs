@@ -520,7 +520,7 @@ async fn launch_compiled(
     warnings: Vec<String>,
 ) -> Result<Response, Response> {
     let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handles = launch_multi_compiled(compiled, shutdown).map_err(|e| {
+    let mut handles = launch_multi_compiled(compiled, shutdown, None).map_err(|e| {
         warn!(error = %e, "POST /scenarios: failed to launch scenarios");
         match e {
             sonda_core::SondaError::Config(_) => unprocessable(e),
@@ -1039,6 +1039,7 @@ mod tests {
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -1075,6 +1076,7 @@ mod tests {
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -2908,6 +2910,7 @@ scenarios:
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -3364,6 +3367,7 @@ scenarios:
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -3643,6 +3647,7 @@ scenarios:
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -4076,6 +4081,7 @@ scenarios:
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -4109,6 +4115,7 @@ scenarios:
                 sonda_core::PromMetricType::Gauge,
                 None,
             ))),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -5021,6 +5028,7 @@ scenarios:
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::collections::HashMap::new()),
             meta.map(std::sync::Arc::new),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
@@ -5147,6 +5155,7 @@ scenarios:
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(label_map),
             meta.map(std::sync::Arc::new),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         )
     }
 
