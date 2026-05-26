@@ -2438,6 +2438,25 @@ scenarios:
       scenario_name: isfilter_missing_upstream
 "#;
 
+const ISFILTER_FINISHED_SCENARIO_YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 1s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: isfilter_finished_metric
+    signal_type: metrics
+    name: isfilter_finished_metric
+    generator:
+      type: constant
+      value: 5.0
+"#;
+
 fn isfilter_wait_for_state(
     client: &reqwest::blocking::Client,
     base: &str,
@@ -2601,7 +2620,7 @@ fn include_state_running_excludes_paused() {
 }
 
 #[test]
-fn include_state_multi_value_running_unresolved_excludes_paused() {
+fn include_state_multi_value_admits_running_and_finished_excludes_paused() {
     let (port, _guard) = common::start_server();
     let base = format!("http://127.0.0.1:{port}");
     let client = common::http_client();
@@ -2646,17 +2665,33 @@ fn include_state_multi_value_running_unresolved_excludes_paused() {
         std::time::Duration::from_secs(3),
     );
 
-    let body = isfilter_scrape(&client, &base, "include_state=running,unresolved");
+    let finished = isfilter_post(&client, &base, ISFILTER_FINISHED_SCENARIO_YAML);
+    let finished_id = finished["id"].as_str().unwrap().to_string();
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &finished_id,
+        "finished",
+        std::time::Duration::from_secs(3),
+    );
+
+    let body = isfilter_scrape(&client, &base, "include_state=running,unresolved,finished");
     assert!(
         body.contains("isfilter_baseline_up"),
         "multi-state filter must include the running scenario; body=\n{body}"
     );
-    // Unresolved downstream never ticks, so it contributes no samples even though it matches.
+    assert!(
+        body.contains("isfilter_finished_metric"),
+        "multi-state filter must include the finished scenario's last sample; body=\n{body}"
+    );
     assert!(
         !body.contains("isfilter_downstream_metric"),
         "multi-state filter must exclude the paused scenario's ghost; body=\n{body}"
     );
 
+    let _ = client
+        .delete(format!("{base}/scenarios/{finished_id}"))
+        .send();
     let _ = client
         .delete(format!("{base}/scenarios/{downstream_id}"))
         .send();
