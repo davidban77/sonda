@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.13.0](https://github.com/davidban77/sonda/compare/v1.12.2...v1.13.0) (2026-05-26)
+
+
+### Features
+
+* cross-POST while: ref resolution across scenario sources ([#426](https://github.com/davidban77/sonda/issues/426)) ([6a0b673](https://github.com/davidban77/sonda/commit/6a0b6732b6d8dd791f3e71b31c2aba3ef2d25ce1))
+
+
+### Bug Fixes
+
+* **ci:** pin release workflow to dtolnay/rust-toolchain@1.95.0 ([#416](https://github.com/davidban77/sonda/issues/416)) ([2dadf53](https://github.com/davidban77/sonda/commit/2dadf53212ae473398a7b39e37fc8583c4bef7c0))
+* **core:** finish local-POST while-gated downstreams on upstream exit ([#428](https://github.com/davidban77/sonda/issues/428)) ([4923172](https://github.com/davidban77/sonda/commit/4923172c42bc2d51645dbfd2d054d35c094272c6))
+* **server:** isolate scenario shutdown flag so DELETE does not cascade ([#420](https://github.com/davidban77/sonda/issues/420)) ([365658a](https://github.com/davidban77/sonda/commit/365658a7a66264d1c13a728a84cb38214b6f5d61))
+
+
+### Documentation
+
+* minimize README, defer to docs site for tutorials and references ([#415](https://github.com/davidban77/sonda/issues/415)) ([6dabb96](https://github.com/davidban77/sonda/commit/6dabb96a333b6744a68ae5778922f8c3d2438675))
+
 ## [1.12.2](https://github.com/davidban77/sonda/compare/v1.12.1...v1.12.2) (2026-05-25)
 
 
