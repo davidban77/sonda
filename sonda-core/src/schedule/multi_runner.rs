@@ -227,16 +227,13 @@ pub fn launch_multi_compiled(
                         )
                     }
                 };
-                Some(GateContext {
-                    gate_rx,
-                    initial,
-                    delay: delay_clause,
-                    has_after: false,
-                    has_while: true,
-                    close_emit: None,
-                    if_unresolved: Some(if_unresolved),
-                    start_unresolved,
-                })
+                Some(
+                    GateContext::new(gate_rx, initial)
+                        .with_delay(delay_clause)
+                        .with_has_while(true)
+                        .with_if_unresolved(Some(if_unresolved))
+                        .with_start_unresolved(start_unresolved),
+                )
             } else {
                 let upstream = buses.get(&clause.ref_id).ok_or_else(|| {
                     SondaError::Config(crate::ConfigError::invalid(format!(
@@ -252,16 +249,11 @@ pub fn launch_multi_compiled(
                     }),
                 };
                 let (rx, init) = upstream.subscribe(spec);
-                Some(GateContext {
-                    gate_rx: rx,
-                    initial: init,
-                    delay: delay_clause,
-                    has_after: false,
-                    has_while: true,
-                    close_emit: None,
-                    if_unresolved: None,
-                    start_unresolved: false,
-                })
+                Some(
+                    GateContext::new(rx, init)
+                        .with_delay(delay_clause)
+                        .with_has_while(true),
+                )
             }
         } else {
             None

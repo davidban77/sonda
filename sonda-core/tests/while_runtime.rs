@@ -102,16 +102,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let shutdown = Arc::new(AtomicBool::new(true));
-    let gate_ctx = GateContext {
-        gate_rx: rx,
-        initial: init,
-        delay: None,
-        has_after: false,
-        has_while: true,
-        close_emit: None,
-        if_unresolved: None,
-        start_unresolved: false,
-    };
+    let gate_ctx = GateContext::new(rx, init).with_has_while(true);
 
     let entry = metrics_entry("downstream", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
@@ -170,16 +161,7 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -215,16 +197,7 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -255,16 +228,7 @@ fn while_runtime_no_catch_up_burst_on_resume() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -359,16 +323,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -438,16 +393,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -505,16 +451,7 @@ fn while_runtime_finished_state_after_duration_expires() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -545,16 +482,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx_a,
-            initial: init_a,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx_a, init_a).with_has_while(true)),
         None,
     )
     .expect("launch a must succeed");
@@ -566,16 +494,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx_b,
-            initial: init_b,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx_b, init_b).with_has_while(true)),
         None,
     )
     .expect("launch b must succeed");
@@ -614,16 +533,7 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -679,16 +589,11 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: Some(delay),
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(
+            GateContext::new(rx, init)
+                .with_delay(Some(delay))
+                .with_has_while(true),
+        ),
         None,
     )
     .expect("launch must succeed");
@@ -742,16 +647,7 @@ fn while_runtime_strict_lt_threshold_gating() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
@@ -786,16 +682,7 @@ fn scenario_restart_does_not_leak_gate_bus() {
             shutdown,
             None,
             None,
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
             None,
         )
         .expect("launch must succeed");
@@ -839,16 +726,11 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: Some(delay),
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(
+            GateContext::new(rx, init)
+                .with_delay(Some(delay))
+                .with_has_while(true),
+        ),
         None,
     )
     .expect("launch must succeed");
@@ -920,16 +802,11 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: true,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(
+            GateContext::new(rx, init)
+                .with_has_after(true)
+                .with_has_while(true),
+        ),
         None,
     )
     .expect("launch must succeed");
@@ -995,16 +872,11 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: true,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(
+            GateContext::new(rx, init)
+                .with_has_after(true)
+                .with_has_while(true),
+        ),
         None,
     )
     .expect("launch must succeed");
@@ -1081,16 +953,11 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: true,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(
+            GateContext::new(rx, init)
+                .with_has_after(true)
+                .with_has_while(true),
+        ),
         None,
     )
     .expect("launch must succeed");
@@ -1167,16 +1034,7 @@ fn while_runtime_steady_within_5pct_of_baseline() {
             shutdown,
             None,
             Some(Arc::clone(&bus)),
-            Some(GateContext {
-                gate_rx: rx,
-                initial: init,
-                delay: None,
-                has_after: false,
-                has_while: true,
-                close_emit: None,
-                if_unresolved: None,
-                start_unresolved: false,
-            }),
+            Some(GateContext::new(rx, init).with_has_while(true)),
             None,
         )
         .unwrap();
@@ -1318,16 +1176,7 @@ fn nan_upstream_value_keeps_downstream_paused() {
         Arc::clone(&shutdown),
         None,
         None,
-        Some(GateContext {
-            gate_rx: rx,
-            initial: init,
-            delay: None,
-            has_after: false,
-            has_while: true,
-            close_emit: None,
-            if_unresolved: None,
-            start_unresolved: false,
-        }),
+        Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
     .expect("launch must succeed");
