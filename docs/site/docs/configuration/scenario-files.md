@@ -685,6 +685,17 @@ The `while:` clause shown above gates a scenario on another signal *in the same 
 
 Cross-POST refs are a `sonda-server` feature. The CLI runs every scenario in a single process and has no cross-POST registry, so `sonda run` rejects a file with `while.scenario_name` at parse time and points here.
 
+#### Two patterns, pick the one your scrape pipeline needs
+
+Cross-POST `while:` is most often used to coordinate a long-running **baseline** with an on-demand **cascade**. Two shapes show up; the right one depends on whether the baseline and the cascade emit the *same* `(metric_name, label_set)` series or *different* series.
+
+| Pattern | Use when | How it works |
+|---|---|---|
+| [**Pattern A — Cascade signals to pause a baseline**](#pattern-a-cascade-signals-to-pause-a-baseline) | Baseline and cascade emit **different series**. You want the baseline silent (no emissions, no scrape ghosts) only while the cascade is firing. | Baseline carries a cross-POST `while:` gated on a cascade signal, plus `if_unresolved: open` so it runs at the default rate when the cascade is absent. Push sinks honor the gate naturally; pull scrapers need `?include_state=running,unresolved` (see the callout under `?include_state=`). |
+| [**Pattern B — Cascade overrides baseline emission**](#pattern-b-cascade-overrides-baseline-emission) | Baseline and cascade emit the **same series**. You want the cascade's values to replace the baseline's in the scrape during the outage window. | DELETE the baseline, POST the cascade for the outage window, DELETE the cascade, POST the baseline again. Or — for scrapers that can pass `?include_state=running` — keep both alive with inverse `while:` clauses so only one is `running` at a time. |
+
+Both worked examples are below. Read both before picking — the same-series vs different-series distinction governs which one is correct for your pipeline, and getting it wrong shows up as either duplicate samples in `/metrics` or an empty scrape body at steady state.
+
 #### Schema
 
 A cross-POST `while:` clause is the same shape as the local form plus two fields:
@@ -741,9 +752,9 @@ A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresol
 
 Re-resolution is event-driven, not polled. There is no periodic background sweep — the server attempts to resolve a downstream's `pending_ref` only when a POST lands carrying a matching `scenario_name:`. If no upstream POST ever arrives, the downstream stays `unresolved` indefinitely (or, with `if_unresolved: open`, keeps emitting at its default rate). The orchestration implication: POST the upstream first when the wiring is predictable, or accept that the downstream sits in `unresolved` until the upstream shows up.
 
-#### Example: baseline counter gated by a cascade
+#### Pattern A — Cascade signals to pause a baseline
 
-A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0:
+A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0. The baseline and the cascade emit **different series** (`requests_total` and `link_state`); the cascade just signals the baseline to stop emitting while it is firing.
 
 ```yaml title="baseline.yaml — POST first, runs immediately under if_unresolved: open"
 version: 2
@@ -866,9 +877,22 @@ curl 'http://localhost:8080/metrics?include_state=running&label=device:srl1'
 
 An unknown state name or an empty value (`?include_state=`) returns `400 Bad Request` with a message listing the five valid options. This filter is pull-only — push sinks such as `remote_write`, `kafka`, and `otlp` already honor scenario state by construction, because the runner skips encoding and writing while the gate is closed.
 
-#### Example: cascade replaces baseline emission
+!!! warning "`?include_state=running` filters out `if_unresolved: open` baselines"
 
-The `if_unresolved: open` pattern shown earlier pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note just above). When the goal is to **replace** the baseline's emission with the cascade's (a constant healthy value swapped out for a flapping outage value on the same series), gate-pause is not enough — orchestrate with DELETE + POST.
+    A scenario that uses `if_unresolved: open` (Pattern A above) reports `state: "unresolved"`, not `state: "running"`, while no upstream cascade has resolved — the state machine treats "emitting at the open default" and "running normally as a resolved scenario" as distinct lifecycle states. A scraper hitting `?include_state=running` on a deployment that uses Pattern A will filter the baseline out and see an empty scrape body at steady state.
+
+    For that combination, use `?include_state=running,unresolved`:
+
+    ```bash
+    # Keeps the if_unresolved: open baseline visible at rest, still filters paused ghosts during a cascade
+    curl 'http://localhost:8080/metrics?include_state=running,unresolved'
+    ```
+
+    The baseline stays visible while the cascade is absent; once the cascade POSTs and the baseline resolves to `running`, both states still pass the filter, so the scrape never goes dark. During a gate-pause the baseline transitions to `paused` and drops out of the response, which is the desired behavior.
+
+#### Pattern B — Cascade overrides baseline emission
+
+Pattern A pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note just above) — which is fine when the baseline and cascade emit different series. When they emit the **same** `(metric_name, label_set)` series — a constant healthy value swapped out for a flapping outage value on the same series — gate-pause is not enough, because the baseline's last `1` would sit alongside the cascade's `0` in the scrape. Orchestrate with DELETE + POST instead.
 
 ```yaml title="baseline.yaml — steady-state value"
 version: 2
