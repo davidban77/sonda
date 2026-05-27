@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.13.1](https://github.com/davidban77/sonda/compare/v1.13.0...v1.13.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **server:** add /metrics?include_state= allowlist filter ([#435](https://github.com/davidban77/sonda/issues/435)) ([d74514a](https://github.com/davidban77/sonda/commit/d74514aa7e94cd0b27f15d4057193ecf0c436091))
+
+
+### Documentation
+
+* clarify cross-POST while: ghost samples, validate=strict, 409 collisions ([#430](https://github.com/davidban77/sonda/issues/430)) ([072506c](https://github.com/davidban77/sonda/commit/072506c61354ff4b6b79ea9162f5a741d2c4df2f))
+* label cross-POST while: patterns A/B and add include_state + if_unresolved callout ([#438](https://github.com/davidban77/sonda/issues/438)) ([c884138](https://github.com/davidban77/sonda/commit/c884138114c50fad4dd7164dfadb8b93e973980b))
+
 ## [1.13.0](https://github.com/davidban77/sonda/compare/v1.12.2...v1.13.0) (2026-05-26)
 
 
