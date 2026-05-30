@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.14.0](https://github.com/davidban77/sonda/compare/v1.13.1...v1.14.0) (2026-05-30)
+
+
+### Features
+
+* **server:** add ScenarioState::Held + ?include_state=held filter token ([#440](https://github.com/davidban77/sonda/issues/440)) ([a7fc4c9](https://github.com/davidban77/sonda/commit/a7fc4c90918780e3a5cac890e0946e0d3e40d90d))
+
 ## [1.13.1](https://github.com/davidban77/sonda/compare/v1.13.0...v1.13.1) (2026-05-27)
 
 
