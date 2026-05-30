@@ -183,6 +183,7 @@ pub fn run_with_sink_gated(
                 ctx.delay.as_ref(),
                 Arc::clone(&encoder),
             );
+            ctx.holds_on_close = ctx.delay.as_ref().and_then(|d| d.close_snap_to).is_some();
             core_loop::gated_loop(
                 &schedule,
                 config.rate,

@@ -477,6 +477,8 @@ A scenario carrying a `while:` clause walks through four lifecycle states. The r
 
 `pending` covers the wait for the upstream's first eligible tick. The downstream enters `running` when the gate first opens, oscillates between `running` and `paused` for the rest of the run, and ends in `finished` when its `duration:` elapses or shutdown is signaled. A scenario with both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly -- `pending` need not always precede `running`.
 
+A fifth state, `held`, replaces `paused` after a gate close when the scenario opts into the snap-to recovery shape via [`delay.close.snap_to`](#recovering-prometheus-alerts-on-gate-close) AND has emitted at least one sample. `held` differs from `paused` only on the pull-path: scrapers passing [`?include_state=...,held`](#aggregate-metrics-sees-paused-and-unresolved-scenarios) keep seeing the frozen value, while `paused` ghosts stay filtered out under that same allowlist. Push sinks behave identically in both states (the runner stops emitting). `held` applies to metric scenarios. See [Pattern C — Counter freeze-and-hold during outage](#pattern-c-counter-freeze-and-hold-during-outage) for the orchestration.
+
 ### Debouncing transitions with `delay:`
 
 Pair `while:` with `delay:` to debounce noisy upstream signals.
@@ -693,8 +695,9 @@ Cross-POST `while:` is most often used to coordinate a long-running **baseline**
 |---|---|---|
 | [**Pattern A — Cascade signals to pause a baseline**](#pattern-a-cascade-signals-to-pause-a-baseline) | Baseline and cascade emit **different series**. You want the baseline silent (no emissions, no scrape ghosts) only while the cascade is firing. | Baseline carries a cross-POST `while:` gated on a cascade signal, plus `if_unresolved: open` so it runs at the default rate when the cascade is absent. Push sinks honor the gate naturally; pull scrapers need `?include_state=running,unresolved` (see the callout under `?include_state=`). |
 | [**Pattern B — Cascade overrides baseline emission**](#pattern-b-cascade-overrides-baseline-emission) | Baseline and cascade emit the **same series**. You want the cascade's values to replace the baseline's in the scrape during the outage window. | DELETE the baseline, POST the cascade for the outage window, DELETE the cascade, POST the baseline again. Or — for scrapers that can pass `?include_state=running` — keep both alive with inverse `while:` clauses so only one is `running` at a time. |
+| [**Pattern C — Counter freeze-and-hold during outage**](#pattern-c-counter-freeze-and-hold-during-outage) | Single metric series (no separate baseline POST) whose value should freeze at the last sample during the outage window, then resume from the frozen value when the gate reopens. | A single scenario with `delay.close.snap_to: <value>` and a `while:` clause. Gate close transitions the scenario to `held`, the pull-path retains the frozen sample, and scrapers opt in with `?include_state=running,unresolved,held`. No DELETE-and-replace orchestration. |
 
-Both worked examples are below. Read both before picking — the same-series vs different-series distinction governs which one is correct for your pipeline, and getting it wrong shows up as either duplicate samples in `/metrics` or an empty scrape body at steady state.
+All three worked examples are below. Read them before picking — the same-series vs different-series distinction governs A vs B, and the freeze-vs-replace distinction governs C. Picking the wrong one shows up as either duplicate samples in `/metrics`, an empty scrape body at steady state, or a counter that goes to zero during the outage when you wanted it held at its last value.
 
 #### Schema
 
@@ -862,20 +865,25 @@ The aggregate [`GET /metrics`](../deployment/sonda-server.md#get-metrics-vs-get-
 
 The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." If you want only one scenario to contribute a given series at a time, DELETE the inactive one rather than relying on the gate to silence it. This is load-bearing for the cascade-replaces-baseline pattern below.
 
-Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped; with the parameter absent the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the five scenario states — `pending`, `running`, `paused`, `unresolved`, `finished` — in any combination:
+Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped; with the parameter absent the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the six scenario states — `pending`, `running`, `paused`, `held`, `unresolved`, `finished` — in any combination:
 
 ```bash
-# Only running scenarios — paused and unresolved ghosts are filtered out
+# Only running scenarios — paused, held, and unresolved ghosts are filtered out
 curl 'http://localhost:8080/metrics?include_state=running'
 
 # Multiple states at once; whitespace after the comma is tolerated
 curl 'http://localhost:8080/metrics?include_state=running,paused'
 
+# Include held scenarios in the scrape (counter freeze-and-hold pattern)
+curl 'http://localhost:8080/metrics?include_state=running,unresolved,held'
+
 # Combine with the label filter; both are applied as intersection
 curl 'http://localhost:8080/metrics?include_state=running&label=device:srl1'
 ```
 
-An unknown state name or an empty value (`?include_state=`) returns `400 Bad Request` with a message listing the five valid options. This filter is pull-only — push sinks such as `remote_write`, `kafka`, and `otlp` already honor scenario state by construction, because the runner skips encoding and writing while the gate is closed.
+An unknown state name or an empty value (`?include_state=`) returns `400 Bad Request` with a message listing the six valid options. This filter is pull-only — push sinks such as `remote_write`, `kafka`, and `otlp` already honor scenario state by construction, because the runner skips encoding and writing while the gate is closed.
+
+A metric scenario configured with `delay.close.snap_to` reports `state: "held"` after gate close instead of `state: "paused"`, provided at least one sample emitted before the close. A scraper that matches on `?include_state=paused` to surface snap-to scenarios should switch to `?include_state=held` (or include both).
 
 !!! warning "`?include_state=running` filters out `if_unresolved: open` baselines"
 
@@ -952,6 +960,60 @@ The orchestration sequence:
 The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
 
 If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow: POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so that exactly one of them is `running` at any moment. Scrapers request `GET /metrics?include_state=running` and see whichever scenario currently holds the gate open; the paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter — push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
+
+#### Pattern C — Counter freeze-and-hold during outage
+
+Some operational signals should freeze at their last value during an outage rather than go silent or drop to zero. A monotonic counter that represents "requests served" or a gauge that represents "last-known interface state" is more truthful held at the last sample than reset, and a scraper that sees the frozen value can keep alerting against the same threshold throughout the outage window.
+
+A single metric scenario with a `while:` clause and `delay.close.snap_to: <value>` does this without a separate baseline POST and without DELETE-and-replace orchestration. When the gate closes, the runner fires the one-shot recovery sample, the scenario transitions to the `held` lifecycle state, and `current_values` retains the frozen sample. Scrapers that pass `?include_state=running,unresolved,held` continue to see the frozen value on every scrape; scrapers that omit `held` from the allowlist see the series drop out for the duration of the outage.
+
+```yaml title="held-counter.yaml — single scenario, frozen during outage"
+version: 2
+kind: runnable
+scenario_name: held_counter_post
+defaults:
+  rate: 1
+  duration: 1h
+  encoder:
+    type: prometheus_text
+  sink:
+    type: remote_write
+    url: ${VICTORIAMETRICS_REMOTE_WRITE_URL:-http://localhost:8428/api/v1/write}
+scenarios:
+  - id: bgp_oper_state
+    signal_type: metrics
+    name: bgp_oper_state
+    labels:
+      device: rtr-edge-01
+      peer: 10.0.0.1
+    generator:
+      type: constant
+      value: 1
+    while:
+      scenario_name: outage_signal_post
+      ref: link_state
+      op: ">"
+      value: 0
+      if_unresolved: open
+    delay:
+      close:
+        duration: 0s
+        snap_to: 1
+```
+
+The orchestration sequence:
+
+1. **Steady state.** POST `held-counter.yaml`. Because the outage signal has not arrived, `if_unresolved: open` keeps the counter at `1`. The state reads `unresolved`. Scrapers using `?include_state=running,unresolved,held` see the value.
+2. **Outage begins.** POST an outage cascade that publishes `link_state` going to `0` (the same shape used in Patterns A and B). The gate closes — the runner fires the `snap_to: 1` recovery sample, and the scenario transitions from `unresolved` (or `running`) to `held`. The frozen `1` stays visible on the pull-path. Push sinks (`remote_write`, `kafka`, `loki`, etc.) stop receiving new samples for the duration of the hold; the one recovery sample at the close edge is the last write they see.
+3. **Outage ends.** The outage cascade reopens `link_state` (or is DELETEd). The downstream transitions from `held` back to `running` and resumes emission at the configured rate. The series carries forward without a gap on the pull-path; push sinks pick up new samples at the next tick.
+
+`held` is reachable only from metric scenarios that have emitted at least one sample before the gate first closes. A snap-to-equipped scenario whose gate closes before its first emission lands in `paused` (not `held`) because there is no frozen value to retain — the next gate open then emits normally and a subsequent close can transition into `held`.
+
+The choice between Patterns A, B, and C:
+
+- **A** drops the baseline to zero contributions during the outage by gating its emission shut. Use when the baseline and the outage cascade emit different series, and "absent" is the right scrape behavior during the outage.
+- **B** replaces the baseline series with the outage cascade's values during the outage window. Use when the two emit the same series and you need the outage values to overwrite the baseline values in the scrape.
+- **C** holds a single series at its last value for the duration of the outage. Use when the right scrape behavior is "the value you last saw," with no separate baseline POST and no DELETE-and-replace orchestration.
 
 For the HTTP surface — the strict-validation flag, the `pending_ref` field, the duplicate-name 409, and the new `/stats` fields — see [Server API](../deployment/sonda-server.md#cross-post-while-refs).
 
