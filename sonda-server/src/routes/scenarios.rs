@@ -74,7 +74,7 @@ pub struct CreatedScenariosResponse {
 pub struct ScenarioSummary {
     pub id: String,
     pub name: String,
-    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
+    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`, `"finished"`.
     pub state: String,
     pub elapsed_secs: f64,
     /// Whether the scenario has sink failures and no recent successful delivery.
@@ -93,7 +93,7 @@ pub struct ListScenariosResponse {
 pub struct ScenarioDetail {
     pub id: String,
     pub name: String,
-    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"finished"`.
+    /// Current state: one of `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`, `"finished"`.
     pub state: String,
     pub elapsed_secs: f64,
     /// Whether the scenario has sink failures and no recent successful delivery.
@@ -120,7 +120,7 @@ pub struct DeletedScenario {
 pub struct ConflictingScenario {
     pub id: String,
     pub name: String,
-    /// One of `"pending"`, `"running"`, `"paused"`. Never `"finished"`.
+    /// One of `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`. Never `"finished"`.
     pub state: String,
 }
 
@@ -186,7 +186,7 @@ pub struct DetailedStatsResponse {
     pub errors: u64,
     /// Seconds elapsed since the scenario was launched.
     pub uptime_secs: f64,
-    /// Current state: `"pending"`, `"running"`, `"paused"`, or `"finished"`.
+    /// Current state: `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`, or `"finished"`.
     pub state: String,
     /// Whether the scenario is currently in a gap window (no events emitted).
     pub in_gap: bool,
@@ -256,6 +256,7 @@ fn state_string(stats: &ScenarioStats) -> &'static str {
         ScenarioState::Pending => "pending",
         ScenarioState::Running => "running",
         ScenarioState::Paused => "paused",
+        ScenarioState::Held => "held",
         ScenarioState::Unresolved => "unresolved",
         ScenarioState::Finished => "finished",
         _ => "unknown",
@@ -280,6 +281,7 @@ fn collect_active_conflicts(state: &AppState, name: &str) -> Result<Vec<Conflict
             ScenarioState::Pending
             | ScenarioState::Running
             | ScenarioState::Paused
+            | ScenarioState::Held
             | ScenarioState::Unresolved => true,
             ScenarioState::Finished => false,
             _ => false,
@@ -969,12 +971,13 @@ fn parse_include_state(raw_query: Option<&str>) -> Result<Option<Vec<ScenarioSta
             "pending" => ScenarioState::Pending,
             "running" => ScenarioState::Running,
             "paused" => ScenarioState::Paused,
+            "held" => ScenarioState::Held,
             "unresolved" => ScenarioState::Unresolved,
             "finished" => ScenarioState::Finished,
             other => {
                 return Err(format!(
                     "unknown state name '{other}' in include_state — expected one of: \
-                     pending, running, paused, unresolved, finished"
+                     pending, running, paused, held, unresolved, finished"
                 ));
             }
         };
@@ -1848,6 +1851,8 @@ scenarios:
         assert_eq!(state_string(&s), "running");
         s.state = ScenarioState::Paused;
         assert_eq!(state_string(&s), "paused");
+        s.state = ScenarioState::Held;
+        assert_eq!(state_string(&s), "held");
         s.state = ScenarioState::Unresolved;
         assert_eq!(state_string(&s), "unresolved");
         s.state = ScenarioState::Finished;
@@ -4227,7 +4232,7 @@ scenarios:
     #[test]
     fn parse_include_state_accepts_all_known_variants() {
         let states = parse_include_state(Some(
-            "include_state=pending,running,paused,unresolved,finished",
+            "include_state=pending,running,paused,held,unresolved,finished",
         ))
         .unwrap()
         .expect("filter must be present");
@@ -4237,10 +4242,19 @@ scenarios:
                 ScenarioState::Pending,
                 ScenarioState::Running,
                 ScenarioState::Paused,
+                ScenarioState::Held,
                 ScenarioState::Unresolved,
                 ScenarioState::Finished,
             ]
         );
+    }
+
+    #[test]
+    fn parse_include_state_single_held_value() {
+        let states = parse_include_state(Some("include_state=held"))
+            .unwrap()
+            .expect("filter must be present");
+        assert_eq!(states, vec![ScenarioState::Held]);
     }
 
     #[test]
@@ -4260,7 +4274,7 @@ scenarios:
             "error must quote the bad token: {err}"
         );
         assert!(
-            err.contains("pending, running, paused, unresolved, finished"),
+            err.contains("pending, running, paused, held, unresolved, finished"),
             "error must list valid options: {err}"
         );
     }

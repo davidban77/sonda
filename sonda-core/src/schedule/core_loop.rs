@@ -523,6 +523,8 @@ pub struct GateContext {
     pub close_emit: Option<CloseEmitFn>,
     pub if_unresolved: Option<UnresolvedBehavior>,
     pub start_unresolved: bool,
+    /// Whether a gate-close should land the scenario in `Held` (snap-to opt-in) instead of `Paused`.
+    pub holds_on_close: bool,
 }
 
 impl GateContext {
@@ -537,6 +539,7 @@ impl GateContext {
             close_emit: None,
             if_unresolved: None,
             start_unresolved: false,
+            holds_on_close: false,
         }
     }
 
@@ -567,6 +570,11 @@ impl GateContext {
 
     pub fn with_start_unresolved(mut self, start_unresolved: bool) -> Self {
         self.start_unresolved = start_unresolved;
+        self
+    }
+
+    pub fn with_holds_on_close(mut self, holds_on_close: bool) -> Self {
+        self.holds_on_close = holds_on_close;
         self
     }
 }
@@ -679,7 +687,10 @@ fn gated_loop_body(
 
     let mut next_tick: u64 = 0;
 
-    let paused_zero_rate = matches!(state, ScenarioState::Unresolved | ScenarioState::Paused);
+    let paused_zero_rate = matches!(
+        state,
+        ScenarioState::Unresolved | ScenarioState::Paused | ScenarioState::Held
+    );
     write_state(stats, state, paused_zero_rate);
 
     loop {
@@ -732,8 +743,9 @@ fn gated_loop_body(
                     state = ScenarioState::Running;
                     write_state(stats, ScenarioState::Running, false);
                 } else {
-                    state = ScenarioState::Paused;
-                    write_state(stats, ScenarioState::Paused, true);
+                    let close_state = close_target_state(gate_ctx.holds_on_close, stats);
+                    state = close_state;
+                    write_state(stats, close_state, true);
                 }
             }
             ScenarioState::Running => {
@@ -795,12 +807,13 @@ fn gated_loop_body(
                         sink,
                     )?;
                 }
-                state = ScenarioState::Paused;
+                let close_state = close_target_state(gate_ctx.holds_on_close, stats);
+                state = close_state;
                 while_open = false;
-                write_state(stats, ScenarioState::Paused, true);
+                write_state(stats, close_state, true);
                 debounce.reset();
             }
-            ScenarioState::Paused => {
+            ScenarioState::Paused | ScenarioState::Held => {
                 let now = Instant::now();
                 let mut wakeup = PAUSED_POLL_INTERVAL;
                 if let Some(d) = debounce.next_wakeup(now) {
@@ -888,9 +901,11 @@ fn gated_loop_body(
                                     gate_ctx.close_emit.as_mut(),
                                     sink,
                                 )?;
-                                state = ScenarioState::Paused;
+                                let close_state =
+                                    close_target_state(gate_ctx.holds_on_close, stats);
+                                state = close_state;
                                 while_open = false;
-                                write_state(stats, ScenarioState::Paused, true);
+                                write_state(stats, close_state, true);
                                 debounce.reset();
                             }
                             SegmentExit::UpstreamGone => {
@@ -916,8 +931,10 @@ fn gated_loop_body(
                             }
                             Some(GateEdge::WhileClose) => {
                                 while_open = false;
-                                state = ScenarioState::Paused;
-                                write_state(stats, ScenarioState::Paused, true);
+                                let close_state =
+                                    close_target_state(gate_ctx.holds_on_close, stats);
+                                state = close_state;
+                                write_state(stats, close_state, true);
                                 debounce.reset();
                             }
                             Some(GateEdge::AfterFired) => {
@@ -934,6 +951,23 @@ fn gated_loop_body(
                 return Ok(LoopExit::Shutdown);
             }
         }
+    }
+}
+
+fn close_target_state(
+    holds_on_close: bool,
+    stats: Option<&Arc<RwLock<ScenarioStats>>>,
+) -> ScenarioState {
+    if !holds_on_close {
+        return ScenarioState::Paused;
+    }
+    let has_emitted = stats
+        .and_then(|s| s.read().ok().map(|st| !st.current_values.is_empty()))
+        .unwrap_or(false);
+    if has_emitted {
+        ScenarioState::Held
+    } else {
+        ScenarioState::Paused
     }
 }
 
@@ -2153,5 +2187,58 @@ mod tests {
             first_ptr.get().is_some(),
             "tick_fn must have observed at least one events_buf pointer"
         );
+    }
+
+    #[test]
+    fn close_target_state_paused_when_holds_off() {
+        assert_eq!(close_target_state(false, None), ScenarioState::Paused);
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        assert_eq!(
+            close_target_state(false, Some(&stats)),
+            ScenarioState::Paused
+        );
+    }
+
+    #[test]
+    fn close_target_state_paused_when_holds_on_but_no_samples() {
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        assert_eq!(
+            close_target_state(true, Some(&stats)),
+            ScenarioState::Paused,
+            "snap_to with zero emissions must remain Paused"
+        );
+        assert_eq!(
+            close_target_state(true, None),
+            ScenarioState::Paused,
+            "no stats means no emissions known — must remain Paused"
+        );
+    }
+
+    #[test]
+    fn close_target_state_held_when_holds_on_and_samples_present() {
+        use crate::model::metric::{Labels, MetricEvent};
+
+        let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+        {
+            let mut st = stats.write().unwrap();
+            let event = MetricEvent::new("up".to_string(), 1.0, Labels::default())
+                .expect("valid metric name");
+            st.push_metric(event);
+        }
+        assert_eq!(close_target_state(true, Some(&stats)), ScenarioState::Held);
+    }
+
+    #[test]
+    fn gate_context_with_holds_on_close_setter_round_trip() {
+        use crate::schedule::gate_bus::{GateBus, SubscriptionSpec};
+
+        let bus = GateBus::new();
+        bus.tick(0.0);
+        let (rx, init) = bus.subscribe(SubscriptionSpec {
+            after: None,
+            while_: None,
+        });
+        let ctx = GateContext::new(rx, init).with_holds_on_close(true);
+        assert!(ctx.holds_on_close);
     }
 }

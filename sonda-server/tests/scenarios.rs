@@ -1626,9 +1626,10 @@ scenarios:
         );
     }
 
-    /// Posting a v2 cascade with the new extended `delay.close` shape (struct
-    /// form with `snap_to`) accepts and runs end-to-end. The downstream
-    /// reaches `paused` after the upstream's gate closes.
+    /// Posting a v2 cascade with the extended `delay.close` shape (struct form
+    /// with `snap_to`) accepts and runs end-to-end. The downstream reaches
+    /// `held` after the upstream's gate closes — snap_to opts the scenario
+    /// into the held lifecycle state.
     const STALE_MARKER_CASCADE_YAML: &str = "\
 version: 2
 kind: runnable
@@ -1664,7 +1665,7 @@ scenarios:
 ";
 
     #[test]
-    fn post_cascade_with_extended_delay_close_form_runs_to_paused() {
+    fn post_cascade_with_extended_delay_close_form_runs_to_held() {
         let (port, _guard) = common::start_server();
         let client = common::http_client();
 
@@ -1702,8 +1703,8 @@ scenarios:
         }
 
         assert!(
-            observed.contains("paused"),
-            "downstream must reach 'paused' at least once, observed: {observed:?}"
+            observed.contains("held"),
+            "downstream with snap_to must reach 'held' at least once, observed: {observed:?}"
         );
     }
 
@@ -2724,7 +2725,7 @@ fn include_state_unknown_value_returns_400() {
         "error detail must quote the bad token: {detail}"
     );
     assert!(
-        detail.contains("pending, running, paused, unresolved, finished"),
+        detail.contains("pending, running, paused, held, unresolved, finished"),
         "error detail must list valid options: {detail}"
     );
 }
@@ -2855,5 +2856,152 @@ fn include_state_whitespace_after_comma_parses_two_states() {
         .send();
     let _ = client
         .delete(format!("{base}/scenarios/{baseline_id}"))
+        .send();
+}
+
+// ---- ?include_state=held + held lifecycle E2E --------------------------------
+
+const HELD_UPSTREAM_YAML: &str = r#"
+version: 2
+kind: runnable
+scenario_name: held_upstream_xpost
+defaults:
+  rate: 20
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: held_upstream_signal
+    signal_type: metrics
+    name: held_upstream_signal
+    generator:
+      type: sequence
+      values: [1.0, 1.0, 1.0, 0.0]
+      repeat: false
+"#;
+
+const HELD_DOWNSTREAM_YAML: &str = r#"
+version: 2
+kind: runnable
+scenario_name: held_downstream_xpost
+defaults:
+  rate: 50
+  duration: 30s
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: held_downstream_metric
+    signal_type: metrics
+    name: held_downstream_metric
+    generator:
+      type: constant
+      value: 42.0
+    while:
+      ref: held_upstream_signal
+      op: '>'
+      value: 0
+      scenario_name: held_upstream_xpost
+    delay:
+      close:
+        duration: 0s
+        snap_to: 42
+"#;
+
+#[test]
+fn held_scenario_visible_via_include_state_held_and_excluded_by_running_filter() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let upstream = isfilter_post(&client, &base, HELD_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, HELD_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "running",
+        std::time::Duration::from_secs(3),
+    );
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "held",
+        std::time::Duration::from_secs(3),
+    );
+
+    let body_held = isfilter_scrape(&client, &base, "include_state=held");
+    assert!(
+        body_held.contains("held_downstream_metric"),
+        "?include_state=held must include the held scenario's frozen sample; body=\n{body_held}"
+    );
+
+    let body_running = isfilter_scrape(&client, &base, "include_state=running,unresolved");
+    assert!(
+        !body_running.contains("held_downstream_metric"),
+        "?include_state=running,unresolved must exclude the held scenario (regression pin); body=\n{body_running}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
+        .send();
+}
+
+#[test]
+fn post_with_existing_held_scenario_name_returns_409_with_held_in_conflicts() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let upstream = isfilter_post(&client, &base, HELD_UPSTREAM_YAML);
+    let upstream_id = upstream["id"].as_str().unwrap().to_string();
+    let downstream = isfilter_post(&client, &base, HELD_DOWNSTREAM_YAML);
+    let downstream_id = downstream["id"].as_str().unwrap().to_string();
+
+    isfilter_wait_for_state(
+        &client,
+        &base,
+        &downstream_id,
+        "held",
+        std::time::Duration::from_secs(4),
+    );
+
+    let resp = client
+        .post(format!("{base}/scenarios"))
+        .header("content-type", "application/x-yaml")
+        .body(HELD_DOWNSTREAM_YAML)
+        .send()
+        .expect("re-POST must succeed at HTTP level");
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "re-POST of a held scenario_name must conflict"
+    );
+    let body: serde_json::Value = resp.json().expect("409 body must be JSON");
+    let conflicts = body["conflicting_scenarios"]
+        .as_array()
+        .expect("conflicting_scenarios array");
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| c["state"].as_str() == Some("held")),
+        "the held scenario must appear with state='held' in conflicts; got: {body}"
+    );
+
+    let _ = client
+        .delete(format!("{base}/scenarios/{downstream_id}"))
+        .send();
+    let _ = client
+        .delete(format!("{base}/scenarios/{upstream_id}"))
         .send();
 }

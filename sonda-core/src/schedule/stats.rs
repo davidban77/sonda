@@ -21,10 +21,11 @@ pub const DEGRADED_STALENESS_NANOS: u64 = 30 * 1_000_000_000;
 /// Lifecycle position of a scenario, surfaced for `while:`-gated runs.
 ///
 /// `Pending` covers the pre-`after:` window for chained scenarios; `Running`
-/// and `Paused` reflect the live `while:` gate state; `Unresolved` marks a
-/// cross-POST `while:` reference whose upstream has not yet registered;
-/// `Finished` marks the scenario as having exited (duration expired or
-/// shutdown received).
+/// and `Paused` reflect the live `while:` gate state; `Held` is the
+/// snap-to-frozen variant of `Paused` for scenarios that opted in via
+/// `delay.close.snap_to`; `Unresolved` marks a cross-POST `while:` reference
+/// whose upstream has not yet registered; `Finished` marks the scenario as
+/// having exited (duration expired or shutdown received).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
@@ -33,6 +34,8 @@ pub enum ScenarioState {
     Pending,
     Running,
     Paused,
+    /// Frozen at the last emitted value after a gate close, opted in via `delay.close.snap_to`.
+    Held,
     Unresolved,
     Finished,
 }
@@ -614,6 +617,21 @@ mod tests {
             ..Default::default()
         };
         assert!(s.is_degraded(1_000_000_000_000_000));
+    }
+
+    #[test]
+    fn held_state_serializes_as_lowercase_held() {
+        let s = ScenarioStats {
+            state: ScenarioState::Held,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).expect("must serialize");
+        assert!(json.contains("\"state\":\"held\""));
+    }
+
+    #[test]
+    fn held_state_is_distinct_from_paused() {
+        assert_ne!(ScenarioState::Held, ScenarioState::Paused);
     }
 
     #[test]
