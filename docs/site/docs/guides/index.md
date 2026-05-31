@@ -9,7 +9,7 @@
 </div>
 
 !!! tip "New to Sonda?"
-    Start with the [**Tutorial**](tutorial.md) -- a seven-page walkthrough of
+    Start with the [**Tutorial**](../get-started/quickstart.md) -- a seven-page walkthrough of
     generators, encoders, sinks, log generation, scheduling, multi-scenario
     runs, and the Server API. Everything below assumes you have already done
     that, or you know what you are looking for.
@@ -18,43 +18,43 @@
 
 <div class="grid cards" markdown>
 
--   :material-bookshelf: __[Catalog & packs](scenarios.md)__
+-   :material-bookshelf: __[Catalog & packs](../build/catalogs-and-packs.md)__
 
     Pre-built scenarios you can run instantly, plus the building blocks that
-    compose them. Start with [Built-in Scenarios](scenarios.md), then
-    [Dynamic Labels](dynamic-labels.md), [Examples](examples.md), and
-    [Metric Packs](metric-packs.md).
+    compose them. Start with [Built-in Scenarios](../build/catalogs-and-packs.md), then
+    [Dynamic Labels](../build/scheduling.md), [Examples](../test/examples.md), and
+    [Metric Packs](../build/catalogs-and-packs.md).
 
--   :material-bell-alert: __[Alert testing](alert-testing.md)__
+-   :material-bell-alert: __[Alert testing](../test/alert-testing.md)__
 
     Triggering, resolving, and validating alert rules with the right metric
-    shape. The [overview](alert-testing.md) maps each alert pattern to the
+    shape. The [overview](../test/alert-testing.md) maps each alert pattern to the
     right generator -- thresholds, resolution, correlation, cardinality,
     histograms, recording rules, and the full pipeline.
 
--   :material-pipe: __[Pipelines & scale](pipeline-validation.md)__
+-   :material-pipe: __[Pipelines & scale](../test/end-to-end-pipelines.md)__
 
     Validating ingest changes, sizing backends, and end-to-end flow. Covers
-    [pipeline validation](pipeline-validation.md),
-    [synthetic monitoring](synthetic-monitoring.md),
-    [capacity planning](capacity-planning.md), and
-    [E2E testing](e2e-testing.md).
+    [pipeline validation](../test/end-to-end-pipelines.md),
+    [synthetic monitoring](../test/synthetic-monitoring.md),
+    [capacity planning](../test/capacity-planning.md), and
+    [E2E testing](../test/end-to-end-pipelines.md).
 
--   :material-router-network: __[Network telemetry](network-device-telemetry.md)__
+-   :material-router-network: __[Network telemetry](../test/network-device-telemetry.md)__
 
     Modeling network devices and exercising automation responses.
-    [Device telemetry](network-device-telemetry.md) covers routers, switches,
-    and link cascades; [automation testing](network-automation-testing.md)
+    [Device telemetry](../test/network-device-telemetry.md) covers routers, switches,
+    and link cascades; [automation testing](../test/network-automation-testing.md)
     covers remediation flows that react to those alerts.
 
--   :material-database-import: __[Importing real data](csv-import.md)__
+-   :material-database-import: __[Importing real data](../import/from-csv.md)__
 
     Turning recorded series into reusable scenarios.
-    [CSV import](csv-import.md) detects patterns and generates portable YAML;
-    [Grafana CSV replay](grafana-csv-replay.md) reproduces the original series
+    [CSV import](../import/from-csv.md) detects patterns and generates portable YAML;
+    [Grafana CSV replay](../import/grafana-exports.md) reproduces the original series
     bit-for-bit.
 
--   :material-tools: __[Troubleshooting](troubleshooting.md)__
+-   :material-tools: __[Troubleshooting](../reference/troubleshooting.md)__
 
     Diagnostics for connection refused, empty backends, schema mismatches, and
     the `localhost` trap.

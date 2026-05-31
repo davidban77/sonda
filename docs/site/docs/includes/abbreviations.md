@@ -23,3 +23,17 @@
 *[Containerlab]: Tool for spinning up multi-vendor network topologies as containers, used in the netobs lab.
 *[SASL]: Simple Authentication and Security Layer -- pluggable auth framework used by Kafka brokers.
 *[mTLS]: Mutual TLS -- both client and server present certificates to authenticate each other.
+*[MSRV]: Minimum Supported Rust Version -- oldest toolchain the codebase compiles on.
+*[catalog]: Directory of scenario YAML files Sonda walks with --catalog <dir>.
+*[pack]: Reusable bundle of metric names + label schemas referenced from a scenario by name.
+*[signal_type]: Scenario category -- metrics, logs, histogram, or summary.
+*[histogram]: Distribution of observations across cumulative buckets, with _sum and _count series.
+*[summary]: Distribution observed via client-side quantile sampling (p50, p95, p99).
+*[stream]: Loki's smallest indexed unit -- identified by its label set.
+*[syslog]: RFC 5424 log line format.
+*[gap]: Recurring time window during which a scenario suppresses emission.
+*[burst]: Recurring window during which a scenario emits at an elevated rate.
+*[vmagent]: VictoriaMetrics's lightweight metrics relay and forwarder.
+*[vmalert]: VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.
+*[OpenTelemetry]: CNCF observability framework for traces, metrics, and logs.
+*[Prometheus]: Open-source TSDB and monitoring system; ships PromQL and Alertmanager.

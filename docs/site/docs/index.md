@@ -15,8 +15,8 @@ hide:
 <p class="sonda-hero__subtitle">Metrics, logs, histograms, and summaries shaped like the production thing — in a single static binary. Test your pipelines, your alerts, and your dashboards before production tests them for you.</p>
 
 <div class="sonda-hero__ctas" markdown>
-[Get started in 5 minutes](getting-started.md){ .md-button .md-button--primary }
-[Browse the guides](guides/index.md){ .md-button }
+[Get started in 5 minutes](get-started/quickstart.md){ .md-button .md-button--primary }
+[Browse the guides](test/index.md){ .md-button }
 [See it on GitHub](https://github.com/davidban77/sonda){ .md-button }
 </div>
 
@@ -48,6 +48,8 @@ example_metric 1 1777243958972
 example_metric 1 1777243959978
 example_metric 1 1777243960981
 ```
+
+Each line is Prometheus exposition format (Prometheus's plain-text format for emitting metrics — see the [glossary](reference/glossary.md#prometheus-exposition-format)): `metric_name value timestamp_ms`.
 
 Edit `hello.yaml` to shape the signal — swap `constant` for `sine`, add labels, point the sink at a real backend:
 
@@ -81,7 +83,7 @@ cpu_usage{host="web-01"} 100 1777243959982
 cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 ```
 
-Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployment/sonda-server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus, Loki, or OTLP backend — see [Getting Started](getting-started.md).
+Same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus, Loki, or OTLP backend — see [Getting Started](get-started/quickstart.md).
 
 ## Why Sonda
 
@@ -96,14 +98,18 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
 -   :material-shape-outline: __Signals shaped like real ones__
 
     Metrics with sine/sawtooth/step/spike shapes; logs with bursty distributions;
-    histograms with realistic latency tails. Match the schema, the cardinality, and
-    the failure modes — not just the volume.
+    histograms (distributions across buckets) with realistic latency tails. Match
+    the schema, the cardinality (the number of unique label-value combinations —
+    see the [glossary](reference/glossary.md#cardinality)), and the failure modes —
+    not just the volume.
 
 -   :material-connection: __Speaks your pipeline's protocols__
 
-    Prometheus text, remote-write, InfluxDB line protocol, JSON, syslog, OTLP/gRPC,
-    Kafka, Loki, raw TCP/UDP — pick the encoder and sink, point at the backend,
-    done. No custom shim per stack.
+    Prometheus text, remote_write (Prometheus's metric-push protocol — see the
+    [glossary](reference/glossary.md#remote_write)), InfluxDB line protocol, JSON,
+    syslog, OTLP/gRPC, Kafka, Loki, raw TCP/UDP — pick the [encoder](reference/glossary.md#encoder)
+    and [sink](reference/glossary.md#sink), point at the backend, done. No custom
+    shim per stack.
 
 -   :material-source-branch: __YAML-first, code-second__
 
@@ -117,32 +123,32 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
 
 <div class="grid cards" markdown>
 
--   :material-rocket-launch: __[Get started in 5 minutes](getting-started.md)__
+-   :material-rocket-launch: __[Get started in 5 minutes](get-started/quickstart.md)__
 
     Install Sonda, stream your first metric, and push to a real backend.
 
--   :material-bookshelf: __[Author your own scenarios](guides/scenarios.md)__
+-   :material-bookshelf: __[Author your own scenarios](build/catalogs-and-packs.md)__
 
     Organize a catalog directory of runnable scenarios and composable packs;
     discover them with `sonda list --catalog <dir>` and run with
     `sonda run @name`.
 
--   :material-file-document-outline: __[Scenario files](configuration/scenario-files.md)__
+-   :material-file-document-outline: __[Scenario files](build/scenario-files.md)__
 
     The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`,
     inline packs, `after:` temporal chains, and env-var interpolation.
 
--   :material-database-import: __[CSV import](guides/csv-import.md)__
+-   :material-database-import: __[CSV import](import/from-csv.md)__
 
     Turn Grafana exports into portable, parameterized scenarios — one
     `sonda new --from <csv>` away.
 
--   :material-bell-alert: __[Test your alert rules](guides/alert-testing.md)__
+-   :material-bell-alert: __[Test your alert rules](test/alert-testing.md)__
 
     Trigger, resolve, and validate alert rules with the right metric shape —
     thresholds, correlation, cardinality, histograms, recording rules.
 
--   :material-server-network: __[Run as a server](deployment/sonda-server.md)__
+-   :material-server-network: __[Run as a server](deploy/server.md)__
 
     Run `sonda-server` as a long-lived HTTP control plane and submit scenarios
     over the REST API. Great for CI and synthetic-monitoring fleets.

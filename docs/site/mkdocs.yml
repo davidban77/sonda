@@ -8,6 +8,9 @@ copyright: Copyright &copy; 2026 David Flores · Built with Material for MkDocs
 
 not_in_nav: |
   /includes/
+  /guides/index.md
+  /configuration/index.md
+  /deployment/index.md
 
 theme:
   name: material
@@ -95,7 +98,65 @@ plugins:
   - search
   - redirects:
       redirect_maps:
-        'configuration/v2-scenarios.md': 'configuration/scenario-files.md'
+        # Legacy v2 scenario path
+        'configuration/v2-scenarios.md': 'build/scenario-files.md'
+
+        # Renamed/moved pages
+        'getting-started.md': 'get-started/quickstart.md'
+        'configuration/concepts.md': 'build/concepts.md'
+        'configuration/scenario-files.md': 'build/scenario-files.md'
+        'configuration/scenario-fields.md': 'reference/scenario-fields.md'
+        'configuration/cli-reference.md': 'reference/cli-flags.md'
+        'configuration/generators.md': 'build/generators.md'
+        'configuration/encoders.md': 'build/encoders.md'
+        'configuration/sinks.md': 'build/sinks.md'
+        'configuration/sink-batching.md': 'build/sink-batching.md'
+        'configuration/index.md': 'build/index.md'
+
+        # Deleted tutorial pages
+        'guides/tutorial.md': 'get-started/quickstart.md'
+        'guides/tutorial-generators.md': 'build/generators.md'
+        'guides/tutorial-encoders.md': 'build/encoders.md'
+        'guides/tutorial-sinks.md': 'build/sinks.md'
+        'guides/tutorial-logs.md': 'build/generators.md'
+        'guides/tutorial-scheduling.md': 'build/scheduling.md'
+        'guides/tutorial-multi-scenario.md': 'build/scenario-files.md'
+        'guides/tutorial-server.md': 'deploy/server.md'
+
+        # Pages that move in Pass 2 (redirect now to target location)
+        'guides/alert-testing.md': 'test/alert-testing.md'
+        'guides/alert-testing-thresholds.md': 'test/alert-testing.md'
+        'guides/alert-testing-resolution.md': 'test/alert-testing.md'
+        'guides/alert-testing-correlation.md': 'test/alert-testing.md'
+        'guides/alert-testing-cardinality.md': 'test/alert-testing.md'
+        'guides/alert-testing-replay.md': 'test/alert-testing.md'
+        'guides/histogram-alerts.md': 'test/alert-testing.md'
+        'guides/alerting-pipeline.md': 'test/end-to-end-pipelines.md'
+        'guides/e2e-testing.md': 'test/end-to-end-pipelines.md'
+        'guides/ci-alert-validation.md': 'test/end-to-end-pipelines.md'
+        'guides/pipeline-validation.md': 'test/end-to-end-pipelines.md'
+        'guides/scenarios.md': 'build/catalogs-and-packs.md'
+        'guides/metric-packs.md': 'build/catalogs-and-packs.md'
+        'guides/dynamic-labels.md': 'build/scheduling.md'
+        'guides/recording-rules.md': 'test/recording-rules.md'
+        'guides/csv-import.md': 'import/from-csv.md'
+        'guides/grafana-csv-replay.md': 'import/grafana-exports.md'
+        'guides/log-csv-replay.md': 'import/log-files.md'
+        'guides/synthetic-monitoring.md': 'test/synthetic-monitoring.md'
+        'guides/capacity-planning.md': 'test/capacity-planning.md'
+        'guides/network-device-telemetry.md': 'test/network-device-telemetry.md'
+        'guides/network-automation-testing.md': 'test/network-automation-testing.md'
+        'guides/troubleshooting.md': 'reference/troubleshooting.md'
+        'guides/examples.md': 'test/examples.md'
+        'guides/index.md': 'test/index.md'
+
+        # Deployment renames + merges
+        'deployment/sonda-server.md': 'deploy/server.md'
+        'deployment/events.md': 'deploy/http-api.md'
+        'deployment/docker.md': 'deploy/docker.md'
+        'deployment/kubernetes.md': 'deploy/kubernetes.md'
+        'deployment/endpoints.md': 'deploy/server.md'
+        'deployment/index.md': 'deploy/index.md'
 
 extra:
   social:
@@ -112,61 +173,46 @@ extra:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - Configuration:
-    - configuration/index.md
-    - Concepts: configuration/concepts.md
-    - Scenario Fields: configuration/scenario-fields.md
-    - Scenario Files: configuration/scenario-files.md
-    - Generators: configuration/generators.md
-    - Encoders: configuration/encoders.md
-    - Sinks: configuration/sinks.md
-    - Sink Batching: configuration/sink-batching.md
-    - CLI Reference: configuration/cli-reference.md
-  - Deployment:
-    - deployment/index.md
-    - Endpoints & networking: deployment/endpoints.md
-    - Docker: deployment/docker.md
-    - Kubernetes: deployment/kubernetes.md
-    - Server API: deployment/sonda-server.md
-    - Single-Event API: deployment/events.md
-  - Guides:
-    - guides/index.md
-    - Tutorial:
-      - guides/tutorial.md
-      - Generators: guides/tutorial-generators.md
-      - Encoders: guides/tutorial-encoders.md
-      - Sinks: guides/tutorial-sinks.md
-      - Generating Logs: guides/tutorial-logs.md
-      - Scheduling: guides/tutorial-scheduling.md
-      - Multi-Scenario Runs: guides/tutorial-multi-scenario.md
-      - The Server API: guides/tutorial-server.md
-    - Catalog & packs:
-      - Catalogs: guides/scenarios.md
-      - Dynamic Labels: guides/dynamic-labels.md
-      - Example Scenarios: guides/examples.md
-      - Metric Packs: guides/metric-packs.md
-    - Alert testing:
-      - Overview: guides/alert-testing.md
-      - "Threshold & for: duration": guides/alert-testing-thresholds.md
-      - Resolution & recovery: guides/alert-testing-resolution.md
-      - Compound & correlated alerts: guides/alert-testing-correlation.md
-      - Cardinality explosion: guides/alert-testing-cardinality.md
-      - Replaying incidents: guides/alert-testing-replay.md
-      - Histogram & Summary Alerts: guides/histogram-alerts.md
-      - Recording Rules: guides/recording-rules.md
-      - Alerting Pipeline: guides/alerting-pipeline.md
-      - CI Alert Validation: guides/ci-alert-validation.md
-    - Pipelines & scale:
-      - Pipeline Validation: guides/pipeline-validation.md
-      - Synthetic Monitoring: guides/synthetic-monitoring.md
-      - Capacity Planning: guides/capacity-planning.md
-      - E2E Testing: guides/e2e-testing.md
-    - Network telemetry:
-      - Network Device Telemetry: guides/network-device-telemetry.md
-      - Network Automation Testing: guides/network-automation-testing.md
-    - Importing real data:
-      - CSV Import: guides/csv-import.md
-      - Grafana CSV Replay: guides/grafana-csv-replay.md
-      - Log CSV Replay: guides/log-csv-replay.md
-    - Troubleshooting: guides/troubleshooting.md
+  - Get started:
+      - get-started/index.md
+      - Quickstart: get-started/quickstart.md
+      - Your first scenario: get-started/your-first-scenario.md
+      - Send to a real backend: get-started/send-to-a-backend.md
+  - Build scenarios:
+      - build/index.md
+      - Concepts: build/concepts.md
+      - Scenario file format: build/scenario-files.md
+      - Generators: build/generators.md
+      - Encoders: build/encoders.md
+      - Sinks: build/sinks.md
+      - Sink batching: build/sink-batching.md
+      - Scheduling: build/scheduling.md
+      - Catalogs and packs: build/catalogs-and-packs.md
+  - Test pipelines:
+      - test/index.md
+      - Alert testing: test/alert-testing.md
+      - Recording rules: test/recording-rules.md
+      - End-to-end pipelines: test/end-to-end-pipelines.md
+      - Synthetic monitoring: test/synthetic-monitoring.md
+      - Capacity planning: test/capacity-planning.md
+      - Network device telemetry: test/network-device-telemetry.md
+      - Network automation testing: test/network-automation-testing.md
+      - Examples: test/examples.md
+  - Import real data:
+      - import/index.md
+      - From a CSV file: import/from-csv.md
+      - Grafana exports: import/grafana-exports.md
+      - Log files: import/log-files.md
+  - Deploy:
+      - deploy/index.md
+      - As a CLI: deploy/cli.md
+      - As a server: deploy/server.md
+      - HTTP API reference: deploy/http-api.md
+      - Docker: deploy/docker.md
+      - Kubernetes: deploy/kubernetes.md
+  - Reference:
+      - reference/index.md
+      - CLI flags: reference/cli-flags.md
+      - Scenario fields: reference/scenario-fields.md
+      - Glossary: reference/glossary.md
+      - Troubleshooting: reference/troubleshooting.md
