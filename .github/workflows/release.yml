@@ -48,7 +48,7 @@ jobs:
         # rustup name) which does not have the target std — surfacing as
         # `error[E0463]: can't find crate for core`. Bumping rust-toolchain.toml
         # requires bumping this version too.
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.target }}
 
