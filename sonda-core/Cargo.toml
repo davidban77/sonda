@@ -43,8 +43,13 @@ tempfile = "3"
 insta = { workspace = true, features = ["filters"] }
 rstest = { workspace = true }
 criterion = { version = "0.8", default-features = false }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tracing-test = "0.2"
 
 [[bench]]
 name = "while_steady_state"
+harness = false
+
+[[bench]]
+name = "scheduler_baseline"
 harness = false
