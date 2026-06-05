@@ -1,11 +1,11 @@
 ---
 title: Send to a real backend
-description: Point Sonda at Prometheus remote_write, Loki, or an OTLP collector instead of stdout.
+description: Point Sonda at Prometheus remote_write or Loki instead of stdout.
 ---
 
 # Send to a real backend
 
-Stdout is useful for "does this YAML work?". For "does my alert rule fire when latency crosses 200 ms?" you need data in a real backend. This page walks the three backends most readers want first — Prometheus (`remote_write`), Loki, and an OTLP collector — with a 30-second local Docker setup and a `curl` verification for each.
+Stdout is useful for "does this YAML work?". For "does my alert rule fire when latency crosses 200 ms?" you need data in a real backend. This page walks the two backends most readers want first — Prometheus (`remote_write`) and Loki — with a 30-second local Docker setup and a `curl` verification for each.
 
 The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`) in your YAML, point it at the backend, and run.
 
@@ -14,7 +14,7 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
 
 === "Prometheus remote_write"
 
-    [VictoriaMetrics](../reference/glossary.md#victoriametrics) is the easiest Prometheus-compatible backend to spin up — single container, no config file, accepts `remote_write` (Prometheus's protocol for pushing samples to a [TSDB](../reference/glossary.md#tsdb) over HTTP with protobuf + Snappy compression — see the [glossary](../reference/glossary.md#remote_write)).
+    [VictoriaMetrics](../reference/glossary.md#victoriametrics) is the easiest Prometheus-compatible backend to spin up: single container, no config file, accepts Prometheus [`remote_write`](../reference/glossary.md#remote_write) out of the box.
 
     Start it:
 
@@ -24,6 +24,9 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
     ```
 
     Update your scenario's encoder and sink:
+
+    !!! info "Why both are called `remote_write`"
+        The encoder and the sink share the name `remote_write` because they are two sides of the same protocol: the encoder produces the protobuf+snappy payload, the sink delivers it over HTTP. You pick both together when targeting Prometheus's remote-write endpoint.
 
     ```yaml title="cpu-remote-write.yaml"
     version: 2
@@ -109,64 +112,13 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
 
     See [Sinks — `loki`](../build/sinks.md#loki) for the stream model, per-flush cardinality cap, and dynamic-label rotations.
 
-=== "OTLP"
-
-    [OTLP](../reference/glossary.md#otlp) is the OpenTelemetry Protocol — the wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs. Start a Collector with the default OTLP receiver enabled:
-
-    ```bash
-    docker run -d --name otel -p 4317:4317 \
-      otel/opentelemetry-collector-contrib:latest
-    ```
-
-    The OTLP encoder and `otlp_grpc` sink are gated behind a Cargo feature flag — pre-built release binaries do **not** include them. You'll need to build from source:
-
-    ```bash
-    cargo build --release --features otlp -p sonda
-    ```
-
-    Update your scenario:
-
-    ```yaml title="cpu-otlp.yaml"
-    version: 2
-    kind: runnable
-    defaults:
-      rate: 10
-      duration: 30s
-      encoder:
-        type: otlp
-      sink:
-        type: otlp_grpc
-        endpoint: "http://localhost:4317"
-        signal_type: metrics
-    scenarios:
-      - id: cpu
-        signal_type: metrics
-        name: cpu_usage
-        generator:
-          type: sine
-          amplitude: 50.0
-          offset: 50.0
-          period_secs: 60
-    ```
-
-    Run:
-
-    ```bash
-    ./target/release/sonda run cpu-otlp.yaml
-    ```
-
-    Verify by tailing the Collector's stdout (it logs every batch it receives with the default `logging` exporter):
-
-    ```bash
-    docker logs -f otel
-    ```
-
-    See [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc) for the compatible receiver matrix (Collector, Grafana Alloy, Datadog Agent, Elastic APM).
+!!! info "What about OTLP?"
+    The OTLP encoder and `otlp_grpc` sink are gated behind a Cargo feature flag — pre-built release binaries do **not** include them. To use them you build Sonda from source with `cargo build --release --features otlp -p sonda`. See [Encoders — `otlp`](../build/encoders.md#otlp) and [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc) for the wire format, sink shape, and the compatible receiver matrix.
 
 ## Tear down
 
 ```bash
-docker rm -f vm loki otel
+docker rm -f vm loki
 ```
 
 ## Where to next

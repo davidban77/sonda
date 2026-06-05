@@ -1,6 +1,6 @@
 ---
 title: Sonda — synthetic telemetry generator
-description: Synthetic metrics, logs, histograms, and summaries shaped like the real thing — in a single static binary.
+description: Synthetic metrics, logs, histograms, and summaries shaped like real telemetry — in a single static binary.
 hide:
   - navigation
   - toc
@@ -12,11 +12,11 @@ hide:
 
 <h1 class="sonda-hero__title">Telemetry that looks real, on demand.</h1>
 
-<p class="sonda-hero__subtitle">Metrics, logs, histograms, and summaries shaped like the production thing — in a single static binary. Test your pipelines, your alerts, and your dashboards before production tests them for you.</p>
+<p class="sonda-hero__subtitle">Metrics, logs, histograms, and summaries shaped like real telemetry — in a single static binary. Test your pipelines, your alerts, and your dashboards before they break in production.</p>
 
 <div class="sonda-hero__ctas" markdown>
 [Get started in 5 minutes](get-started/quickstart.md){ .md-button .md-button--primary }
-[Browse the guides](test/index.md){ .md-button }
+[See what you can test](test/index.md){ .md-button }
 [See it on GitHub](https://github.com/davidban77/sonda){ .md-button }
 </div>
 
@@ -34,9 +34,9 @@ hide:
 <a href="https://github.com/davidban77/sonda/blob/main/LICENSE-MIT"><img alt="License" src="https://img.shields.io/crates/l/sonda.svg?style=for-the-badge&color=f97316"></a>
 </p>
 
-## A taste
+## Try it
 
-Two commands. No YAML to hand-author yet — `sonda new --template` scaffolds a runnable starter file, and `sonda run` plays it back.
+Two commands. No YAML to write yourself yet — `sonda new --template` generates a runnable starter file, and `sonda run` runs it.
 
 ```bash
 sonda new --template -o hello.yaml
@@ -83,7 +83,7 @@ cpu_usage{host="web-01"} 100 1777243959982
 cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 ```
 
-Same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus, Loki, or OTLP backend — see [Getting Started](get-started/quickstart.md).
+Sonda ships as both a CLI (`sonda`) and an optional long-running HTTP server (`sonda-server`). The CLI is enough for laptop and CI use; the server lets you POST scenarios over a REST API. The same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus or Loki backend — see [Getting Started](get-started/quickstart.md).
 
 ## Why Sonda
 
@@ -105,11 +105,11 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/s
 
 -   :material-connection: __Speaks your pipeline's protocols__
 
-    Prometheus text, remote_write (Prometheus's metric-push protocol — see the
-    [glossary](reference/glossary.md#remote_write)), InfluxDB line protocol, JSON,
-    syslog, OTLP/gRPC, Kafka, Loki, raw TCP/UDP — pick the [encoder](reference/glossary.md#encoder)
-    and [sink](reference/glossary.md#sink), point at the backend, done. No custom
-    shim per stack.
+    Encoders translate to formats like Prometheus text, InfluxDB line protocol,
+    JSON, syslog, OTLP, and Prometheus [remote-write](reference/glossary.md#remote_write).
+    Sinks deliver to destinations like stdout, files, TCP/UDP, HTTP, Kafka, Loki,
+    and OTLP collectors. Pick an [encoder](reference/glossary.md#encoder) and a
+    [sink](reference/glossary.md#sink) — no custom shim per stack.
 
 -   :material-source-branch: __YAML-first, code-second__
 
@@ -132,16 +132,6 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/s
     Organize a catalog directory of runnable scenarios and composable packs;
     discover them with `sonda list --catalog <dir>` and run with
     `sonda run @name`.
-
--   :material-file-document-outline: __[Scenario files](build/scenario-files.md)__
-
-    The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`,
-    inline packs, `after:` temporal chains, and env-var interpolation.
-
--   :material-database-import: __[CSV import](import/from-csv.md)__
-
-    Turn Grafana exports into portable, parameterized scenarios — one
-    `sonda new --from <csv>` away.
 
 -   :material-bell-alert: __[Test your alert rules](test/alert-testing.md)__
 

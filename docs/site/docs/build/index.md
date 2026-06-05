@@ -9,6 +9,8 @@ Sonda scenarios are YAML files you check into git alongside your alert rules and
 
 Start with **Concepts** if you've finished [Get started](../get-started/index.md) and want the names for the four moving parts. Jump straight to **Generators**, **Encoders**, or **Sinks** when you're looking up a specific type.
 
+### Start here
+
 <div class="grid cards" markdown>
 
 -   :material-shape-outline: __[Concepts](concepts.md)__
@@ -18,6 +20,16 @@ Start with **Concepts** if you've finished [Get started](../get-started/index.md
 -   :material-file-document-outline: __[Scenario file format](scenario-files.md)__
 
     The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`, `after:` chains, env-var interpolation, sink-error policy.
+
+-   :material-folder-multiple-outline: __[Catalogs and packs](catalogs-and-packs.md)__
+
+    Organize a directory of scenarios with `--catalog <dir>`; reuse metric shapes across scenarios with composable packs.
+
+</div>
+
+### Building blocks
+
+<div class="grid cards" markdown>
 
 -   :material-chart-line-variant: __[Generators](generators.md)__
 
@@ -31,16 +43,18 @@ Start with **Concepts** if you've finished [Get started](../get-started/index.md
 
     stdout, file, TCP/UDP, HTTP push, remote_write, Loki, Kafka, OTLP gRPC. Includes TLS, SASL, and retry-with-backoff.
 
--   :material-package-variant: __[Sink batching](sink-batching.md)__
+</div>
 
-    How network sinks buffer events before delivery, the size and time thresholds, and the trade-offs when tuning them.
+### Advanced
+
+<div class="grid cards" markdown>
 
 -   :material-clock-time-four-outline: __[Scheduling](scheduling.md)__
 
     Gaps, bursts, dynamic labels, cardinality spikes, and dependencies (`after:` and `while:`) — everything that shapes the scenario over time.
 
--   :material-folder-multiple-outline: __[Catalogs and packs](catalogs-and-packs.md)__
+-   :material-package-variant: __[Sink batching](sink-batching.md)__
 
-    Organize a directory of scenarios with `--catalog <dir>`; reuse metric shapes across scenarios with composable packs.
+    How network sinks buffer events before delivery, the size and time thresholds, and the trade-offs when tuning them.
 
 </div>

@@ -15,7 +15,7 @@ A scenario field that fires a one-shot trigger when a referenced upstream scenar
 
 ### Alert rule
 
-A [PromQL](#promql) expression that the alert evaluator (Alertmanager, vmalert) checks on every evaluation tick. When the expression returns a non-empty result for the rule's `for:` window, the alert fires. Sonda's alert-testing patterns shape synthetic metrics to exercise these rules deterministically. See [Alert testing](../test/alert-testing.md).
+A [PromQL](#promql) expression that the alert evaluator ([Alertmanager](#alertmanager), [vmalert](#vmalert)) re-checks on every [evaluation tick](#evaluation-tick). When the expression returns a non-empty result for the rule's `for:` window, the alert fires. Sonda's alert-testing patterns shape synthetic metrics to exercise these rules deterministically. See [Alert testing](../test/alert-testing.md).
 
 ### Alertmanager
 
@@ -31,19 +31,15 @@ A recurring time window during which a scenario emits at an elevated rate, mimic
 
 ### Cardinality
 
-The number of unique label-value combinations a metric has. A metric `http_requests_total` with two labels — `method` (5 values) and `status_code` (10 values) — has cardinality 50. High cardinality blows up [TSDB](#tsdb) memory and index size; low cardinality limits the dimensions you can slice on. See [Capacity planning](../test/capacity-planning.md).
+The number of unique label-value combinations a metric has. A metric `http_requests_total` with two labels — `method` (5 values) and `status_code` (10 values) — has cardinality 50. High cardinality rapidly grows [TSDB](#tsdb) memory and index size; low cardinality limits the dimensions you can slice on. See [Capacity planning](../test/capacity-planning.md).
 
 ### Cardinality spike
 
-A sudden burst of new label combinations on a metric, often caused by a buggy deployment, a runaway user-generated label, or a misbehaving scraper. The classic ingester killer. Sonda's `cardinality_spikes:` field models the pattern deterministically. See [Scheduling — Cardinality spikes](../build/scheduling.md#cardinality-spikes).
+A sudden burst of new label combinations on a metric, often caused by a buggy deployment, a runaway user-generated label, or a misbehaving scraper. A common cause of TSDB ingester failures. Sonda's `cardinality_spikes:` field models the pattern deterministically. See [Scheduling — Cardinality spikes](../build/scheduling.md#cardinality-spikes).
 
 ### Catalog
 
 A directory of scenario YAML files. Sonda walks it with `--catalog <dir>` and indexes each file by name so you can run any entry with `sonda run @name`. Runnable scenarios and composable [packs](#pack) live side by side. See [Catalogs and packs](../build/catalogs-and-packs.md).
-
-### Containerlab
-
-A tool for spinning up multi-vendor network topologies as containers, used in the network-observability lab. Sonda is being built to replace Containerlab + Telegraf for synthetic telemetry generation in that lab.
 
 ## D
 
@@ -60,6 +56,10 @@ The Sonda component that serializes events into a wire format before a [sink](#s
 ### Entry
 
 One item under a scenario file's `scenarios:` list. Each entry emits exactly one signal — one metric series, one log stream, one histogram, one summary. A scenario file can have many entries running concurrently on shared `defaults:`. See [Concepts — Entry](../build/concepts.md#entry).
+
+### Evaluation tick
+
+The interval at which an alert evaluator ([Alertmanager](#alertmanager), [vmalert](#vmalert)) re-checks every rule's PromQL expression — usually 15–60 seconds, set per evaluator. Distinct from Sonda's per-tick emission cadence (set on the scenario's `rate:`): one is the rate Sonda produces samples, the other is how often the evaluator queries them.
 
 ### Exposition format
 
@@ -86,6 +86,10 @@ A signal type that records the distribution of observations across pre-defined b
 ### InfluxDB line protocol
 
 InfluxDB's text format for metrics: `measurement,tag=v field=v timestamp`. Used by Telegraf, InfluxDB ingest, and many downstream consumers. Sonda's `influx_lp` encoder emits this format. See [Encoders — `influx_lp`](../build/encoders.md#influx_lp).
+
+### Ingester
+
+The component of a [TSDB](#tsdb) (Prometheus, VictoriaMetrics, etc.) that receives incoming samples and writes them to storage. Sonda's cardinality patterns are designed to stress-test ingesters before they fall over in production. See [Capacity planning](../test/capacity-planning.md).
 
 ## K
 
@@ -116,10 +120,6 @@ Loki's query language. Combines label selectors with log line filters and metric
 ### Metric
 
 A numeric value emitted on a regular cadence, typically with one or more [labels](#label). Sonda emits metrics from a `signal_type: metrics` entry driven by a [generator](#generator).
-
-### MSRV
-
-Minimum Supported Rust Version. The oldest Rust toolchain the codebase is guaranteed to compile on. Sonda's MSRV is `1.75`.
 
 ## O
 
@@ -175,7 +175,7 @@ The unit of work Sonda runs — a YAML file describing what to generate, how, an
 
 ### Scrape endpoint
 
-The HTTP URL Prometheus pulls metrics from on its scrape interval. `sonda-server` exposes one scrape endpoint per running scenario at `/scenarios/{id}/metrics`, so Prometheus can scrape Sonda's synthetic output without any additional plumbing. See [Server API](../deploy/server.md).
+The HTTP URL Prometheus pulls metrics from on its scrape interval. `sonda-server` exposes one scrape endpoint per running scenario at `/scenarios/{id}/metrics`, so Prometheus can scrape Sonda's synthetic output without additional integration code. See [Server API](../deploy/server.md).
 
 ### Signal type
 
@@ -207,13 +207,23 @@ The RFC 5424 log format. Sonda's `syslog` encoder emits log events as syslog lin
 
 ## T
 
+### Threshold
+
+In `while:` and `after:` clauses, the numeric value the upstream scenario's emission must cross to open the gate or fire the trigger. See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
+
 ### Telegraf
 
-InfluxData's plugin-driven agent for collecting and shipping telemetry. Sonda's metric schemas often align with the names and labels Telegraf produces — useful when you want synthetic data your existing Telegraf-shaped dashboards understand.
+InfluxData's plugin-driven agent for collecting and shipping telemetry. Sonda's built-in SNMP and node packs match Telegraf's metric names and labels, so synthetic data slots into dashboards and alert rules built against Telegraf output.
 
 ### TSDB
 
 Time-series database. A storage engine optimized for timestamp-indexed numeric samples — Prometheus, VictoriaMetrics, Thanos, Cortex, Mimir, InfluxDB. Sonda doesn't store data; it pushes to (or is scraped by) a TSDB.
+
+## U
+
+### Upstream scenario
+
+In a `while:` or `after:` clause, the upstream scenario is the one whose value the clause references. The scenario carrying the `while:`/`after:` clause is the downstream — its emission depends on the upstream's value. See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
 
 ## V
 

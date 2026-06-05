@@ -3,7 +3,7 @@
 *[TSDB]: Time-series database -- storage engine optimised for timestamp-indexed numeric samples (e.g., Prometheus, VictoriaMetrics).
 *[remote-write]: Prometheus protocol for pushing samples from a producer to a TSDB over HTTP, using protobuf + Snappy compression.
 *[exposition format]: Prometheus text format for metrics scraped from an HTTP endpoint (`# HELP`, `# TYPE`, `name{label="v"} value`).
-*[cardinality]: Number of unique label-value combinations for a metric. High cardinality blows up TSDB memory and index size.
+*[cardinality]: Number of unique label-value combinations for a metric. High cardinality rapidly grows TSDB memory and index size.
 *[scrape]: Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.
 *[line protocol]: InfluxDB text format: `measurement,tag=v field=v timestamp`. Used by Telegraf and InfluxDB ingest.
 *[PromQL]: Prometheus Query Language -- the query syntax for selecting and aggregating time-series data.
@@ -18,9 +18,9 @@
 *[generator]: Sonda component that produces synthetic events (metrics, logs) according to a pattern.
 *[encoder]: Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).
 *[sink]: Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).
-*[metric pack]: Curated bundle of generators that simulate a known system (Linux node, NGINX, network device).
+*[metric pack]: Reusable bundle of metric names, label schemas, and default generators per metric.
 *[Telegraf]: InfluxData's plugin-driven agent for collecting and shipping telemetry.
-*[Containerlab]: Tool for spinning up multi-vendor network topologies as containers, used in the netobs lab.
+*[Containerlab]: Tool for spinning up multi-vendor network topologies as containers.
 *[SASL]: Simple Authentication and Security Layer -- pluggable auth framework used by Kafka brokers.
 *[mTLS]: Mutual TLS -- both client and server present certificates to authenticate each other.
 *[MSRV]: Minimum Supported Rust Version -- oldest toolchain the codebase compiles on.

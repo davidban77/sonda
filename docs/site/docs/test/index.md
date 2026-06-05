@@ -21,7 +21,7 @@ This section covers the patterns. Each page starts from a real failure mode you'
 
 -   :material-source-pull: __[End-to-end pipelines](end-to-end-pipelines.md)__
 
-    Four end-to-end pipeline patterns: alerting loop (metric → vmalert → Alertmanager → receiver), CI alert validation, scrape + remote-write topologies, multi-backend fanout.
+    Four validation shapes in one page: a local alerting pipeline (metric → vmalert → Alertmanager → webhook), an encoder × sink coverage matrix, the alerting loop wired into CI, and lighter-weight production smoke checks (exit codes, line counts, multi-format diffs).
 
 -   :material-monitor-eye: __[Synthetic monitoring](synthetic-monitoring.md)__
 

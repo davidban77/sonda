@@ -131,7 +131,7 @@ Four metrics, four generators, one shared encoder + sink + labels block — all 
 
 The node-exporter file above declared four entries by hand. That is fine for four metrics. It gets old when you want to simulate a real exporter that exposes thirty metrics, and worse when you want twenty instances of that exporter across a fleet. Copy-pasting metric names is a recipe for typos and drift.
 
-A **pack** (see the [glossary](../reference/glossary.md#pack)) is a reusable bundle of metric names, label schemas, and sensible default generators per metric. You express a pack as a file with `kind: composable` and store it in the same directory as your runnable scenarios. A runnable entry references a pack with `pack: <name>` and the compiler expands it at parse time into one entry per metric in the pack. Author the pack once; reference it from every scenario that uses that shape.
+A **pack** (see the [glossary](../reference/glossary.md#pack)) is a reusable bundle of metric names, label schemas, and sensible default generators per metric. You express a pack as a file with `kind: composable` and store it in the same directory as your runnable scenarios. A runnable entry references a pack with `pack: <name>`, and `sonda run` expands the reference at parse time into one entry per metric in the pack. Author the pack once; reference it from every scenario that uses that shape.
 
 Side-by-side — writing five SNMP interface entries by hand versus referencing one pack:
 
@@ -196,7 +196,7 @@ Side-by-side — writing five SNMP interface entries by hand versus referencing 
           ifName: Gi0/0/0
     ```
 
-The pack file sits in the same directory as the runnable file. The compiler reads `pack: telegraf_snmp_interface`, looks it up, and produces one prepared entry per metric — same names, same shared labels, ready to scrape. To author your own pack and read the full field reference, see [Metric Packs](catalogs-and-packs.md).
+The pack file sits in the same directory as the runnable file. At parse time, `sonda run` reads `pack: telegraf_snmp_interface`, looks it up, and produces one prepared entry per metric — same names, same shared labels, ready to scrape. To author your own pack and read the full field reference, see [Metric Packs](catalogs-and-packs.md).
 
 ## Catalog
 
@@ -250,7 +250,7 @@ scenarios:
     generator: { type: constant, value: 1 }
 ```
 
-Two entries inherit `rate: 10`; the third overrides to `rate: 1`. Every entry shares the same encoder, sink, and `job` label. This is the everyday ergonomic win once a scenario file has more than one entry.
+Two entries inherit `rate: 10`; the third overrides to `rate: 1`. Every entry shares the same encoder, sink, and `job` label. This is the everyday convenience once a scenario file has more than one entry.
 
 ## Multi-scenario runs
 

@@ -11,7 +11,7 @@ hide:
 
 <h1 class="sonda-section-hero__title">Get started with Sonda</h1>
 
-<p class="sonda-section-hero__subtitle">Install Sonda, stream your first synthetic metric to stdout, then point the sink at a real Prometheus, Loki, or OTLP backend. No YAML to hand-write — <code>sonda new</code> scaffolds it.</p>
+<p class="sonda-section-hero__subtitle">Install Sonda, stream your first synthetic metric to stdout, then point the sink at a real Prometheus or Loki backend. No YAML to write yourself — <code>sonda new</code> generates a starter file.</p>
 
 </div>
 
@@ -41,8 +41,10 @@ hide:
       run my-scenario.yaml
     ```
 
-    The default entrypoint runs `sonda-server`, but dispatches to the `sonda` CLI
-    when the first argument is a known subcommand (`run`, `list`, `show`, `new`).
+    The image's entrypoint runs `sonda-server` by default. When you pass a CLI
+    subcommand as the first argument (`run`, `list`, `show`, `new`), it dispatches
+    to the `sonda` CLI instead — which is what the example above does, since the
+    first argument is `run`.
 
 === "From source"
 
@@ -58,11 +60,16 @@ Check it works: `sonda --version` should print the installed version.
 
 ## Your first metric
 
-Sonda runs YAML scenario files. A scenario file is the unit `sonda run` consumes — see the [glossary](../reference/glossary.md#scenario). Scaffold one with `sonda new --template`, save it, and run it:
+Sonda runs YAML scenario files. A scenario file is the unit `sonda run` consumes — see the [glossary](../reference/glossary.md#scenario). Generate one with `sonda new --template`, save it, and run it:
+
+!!! info "Terminology"
+    The YAML file is a **scenario file**. Each item under `scenarios:` is an **entry**. We use both terms throughout the docs — "scenario file" when we mean the whole document, "entry" when we mean one item in the list. Plain "scenario" appears when the meaning is clear from context.
 
 ```bash
 sonda new --template -o hello.yaml
 ```
+
+The generated file declares the file `version` (use `2`), the `kind` (`runnable` means you can `sonda run` it), shared `defaults` (rate, duration, encoder, sink — applied to every entry), and one `scenarios:` entry that emits a metric called `example_metric` at value `1`. We walk through what each field does in [Your first scenario](your-first-scenario.md).
 
 ```yaml title="hello.yaml"
 version: 2
@@ -109,7 +116,7 @@ progress line between the banners (see
 !!! tip "Suppress banners"
     `sonda -q run hello.yaml` (or `--quiet`) silences the banners.
 
-Shape the signal by swapping the `generator:` block (the value-pattern producer — see the [glossary](../reference/glossary.md#generator)) for a sine wave with labels (key-value tags attached to each event — see the [glossary](../reference/glossary.md#label)):
+Shape the signal by swapping the `generator:` block — the producer of the value emitted on every tick — for a sine wave, and add a few labels (key-value tags attached to each event):
 
 ```yaml title="cpu-sine.yaml"
 version: 2
@@ -149,7 +156,7 @@ cpu_usage{host="web-01"} 90.45084971874738 1774277940081
 The wave oscillates between 0 and 100 with a 10-second period. The
 [Tutorial -- Generators](../build/generators.md) covers all eight generators.
 
-## A larger scenario
+## A larger scenario file
 
 The same shape lets you share defaults across many entries and add scheduling like
 gaps and bursts:
@@ -234,7 +241,7 @@ Field pools, severity weights, and multiple templates are in the
 
 ## Sending to a backend
 
-Edit the `sink:` block (the destination component — see the [glossary](../reference/glossary.md#sink)) in the YAML, or override at the CLI with `--sink`, `--endpoint`, and `--encoder` (the format converter that writes Prometheus text, JSON, OTLP, etc. — see the [glossary](../reference/glossary.md#encoder)), to push data anywhere. The example below uses Prometheus's `remote_write` protocol (its metric-push wire format, see the [glossary](../reference/glossary.md#remote_write)):
+Sonda delivers events through a **sink** — the destination component. Edit the `sink:` block in your YAML to push data somewhere other than stdout, or override it from the CLI with `--sink`, `--endpoint`, and `--encoder`. The example below targets a [Prometheus remote-write](../reference/glossary.md#remote_write) endpoint, which expects the `remote_write` encoder and the `remote_write` sink together (the encoder produces Prometheus's protobuf+snappy payload, the sink delivers it over HTTP):
 
 ```yaml title="cpu-remote-write.yaml"
 encoder:
@@ -254,7 +261,7 @@ See [Tutorial -- Sinks](../build/sinks.md) for every sink type.
 
 ## Catalogs and `@name`
 
-When you organize scenarios into a directory (a **catalog** — see the [glossary](../reference/glossary.md#catalog)), point `--catalog <dir>` at it and refer to entries with `@name`:
+A **catalog** is a directory of scenario files. Point `--catalog <dir>` at it and you can run, list, or show any file in the catalog by name with `@name`:
 
 ```bash title="./my-catalog"
 sonda list --catalog ./my-catalog
@@ -262,13 +269,13 @@ sonda show @cpu-spike --catalog ./my-catalog
 sonda run @cpu-spike --catalog ./my-catalog
 ```
 
-The catalog is just a directory of scenario YAML files with `kind: runnable` (scenarios you can run) or `kind: composable` (**packs** — reusable bundles of metric specs that other scenarios reference with `pack: <name>`; see the [glossary](../reference/glossary.md#pack)). See [Author your own catalog](../build/catalogs-and-packs.md) for the layout.
+Packs — reusable bundles of metric specs — also live in a catalog, but you don't run them directly. See [Catalogs and packs](../build/catalogs-and-packs.md) for the full mechanics: directory layout, the `kind: composable` shape, and how a runnable entry references a pack with `pack: <name>`.
 
 ## What next
 
-**[Your first scenario](your-first-scenario.md)** walks through every generator, encoder, sink, and advanced feature step by step. Skip the YAML grind:
+**[Your first scenario](your-first-scenario.md)** walks through every generator, encoder, sink, and advanced feature step by step. Skip writing YAML from scratch:
 
-- **`sonda new`** -- interactive scaffolder for a starter scenario; non-interactive with
+- **`sonda new`** -- interactive starter for a scenario file; non-interactive with
   `--template` or `--from <csv>` ([CLI Reference](../reference/cli-flags.md#sonda-new)).
 - **[Author your own catalog](../build/catalogs-and-packs.md)** -- organize scenarios and composable
   packs so you can reference them with `@name`.

@@ -38,7 +38,7 @@ For the full file reference — `defaults:`, multi-entry layouts, environment va
 
 ## Generator
 
-A **generator** produces the value for each tick of a scenario. Sonda ships eight core metric generators (`constant`, `sine`, `sawtooth`, `uniform`, `sequence`, `step`, `spike`, `csv_replay`) and a handful of operational aliases (`steady`, `flap`, `saturation`, `leak`, `degradation`, `spike_event`) that desugar into the core eight. For logs, the `template` generator builds messages from templates and field pools. Pick the generator that matches the shape you're modelling.
+A **generator** produces the value for each tick of a scenario. Sonda ships eight core metric generators (`constant`, `sine`, `sawtooth`, `uniform`, `sequence`, `step`, `spike`, `csv_replay`) and a handful of operational aliases (`steady`, `flap`, `saturation`, `leak`, `degradation`, `spike_event`) that translate into the core eight at config load time. For logs, the `template` generator builds messages from templates and field pools. Pick the generator that matches the shape you're modelling.
 
 A sine wave between 0 and 100, period of 10 seconds:
 
@@ -93,7 +93,7 @@ For the full encoder catalog including precision rules, feature flags, and `Cont
 
 ## Sink
 
-A **sink** delivers the encoded bytes to a destination. `stdout` is the default; `file` writes to disk; `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, and `udp` ship to real backends. Each sink has its own parameter shape — batching thresholds, URLs, headers, TLS, SASL.
+A **sink** delivers the encoded bytes to a destination. `stdout` is the default; `file` writes to disk; `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, and `udp` ship to real backends. Each sink has its own parameter shape — batching thresholds, URLs, headers, TLS, SASL. Batching matters at high event rates so you don't open one HTTP call per event; TLS matters when your sink is reachable on the internet rather than on a private network.
 
 Swap stdout for HTTP POST to a VictoriaMetrics import endpoint:
 
