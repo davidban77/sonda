@@ -1,6 +1,6 @@
 ---
 title: Sonda — synthetic telemetry generator
-description: Synthetic metrics, logs, histograms, and summaries shaped like the real thing — in a single static binary.
+description: Sonda generates synthetic metrics and logs with realistic patterns from a single static binary.
 hide:
   - navigation
   - toc
@@ -10,13 +10,13 @@ hide:
 
 <span class="sonda-hero__badge">Synthetic telemetry · v1.9</span>
 
-<h1 class="sonda-hero__title">Telemetry that looks real, on demand.</h1>
+<h1 class="sonda-hero__title">Synthetic telemetry generator for testing observability pipelines.</h1>
 
-<p class="sonda-hero__subtitle">Metrics, logs, histograms, and summaries shaped like the production thing — in a single static binary. Test your pipelines, your alerts, and your dashboards before production tests them for you.</p>
+<p class="sonda-hero__subtitle">Sonda generates metrics and logs with realistic patterns from a single static binary. Use it to test your pipelines, alerts, and dashboards before they break in production.</p>
 
 <div class="sonda-hero__ctas" markdown>
-[Get started in 5 minutes](getting-started.md){ .md-button .md-button--primary }
-[Browse the guides](guides/index.md){ .md-button }
+[Get started in 5 minutes](get-started/quickstart.md){ .md-button .md-button--primary }
+[See what you can test](test/index.md){ .md-button }
 [See it on GitHub](https://github.com/davidban77/sonda){ .md-button }
 </div>
 
@@ -34,9 +34,9 @@ hide:
 <a href="https://github.com/davidban77/sonda/blob/main/LICENSE-MIT"><img alt="License" src="https://img.shields.io/crates/l/sonda.svg?style=for-the-badge&color=f97316"></a>
 </p>
 
-## A taste
+## Try it
 
-Two commands. No YAML to hand-author yet — `sonda new --template` scaffolds a runnable starter file, and `sonda run` plays it back.
+A Sonda **scenario** is a YAML file with three parts: a **generator** that produces values, an **encoder** that formats them, and a **sink** that sends them to a destination. Two commands set one up: `sonda new --template` creates a starter file, and `sonda run` runs it.
 
 ```bash
 sonda new --template -o hello.yaml
@@ -49,7 +49,9 @@ example_metric 1 1777243959978
 example_metric 1 1777243960981
 ```
 
-Edit `hello.yaml` to shape the signal — swap `constant` for `sine`, add labels, point the sink at a real backend:
+Each line uses the Prometheus exposition format: `metric_name value timestamp_ms`. See the [glossary](reference/glossary.md#prometheus-exposition-format) for the full definition.
+
+Edit `hello.yaml` to change the signal pattern. You can swap `constant` for `sine`, add labels, or point the sink at a real backend.
 
 ```yaml title="hello.yaml (edited)"
 version: 2
@@ -81,7 +83,7 @@ cpu_usage{host="web-01"} 100 1777243959982
 cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 ```
 
-Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployment/sonda-server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus, Loki, or OTLP backend — see [Getting Started](getting-started.md).
+Sonda includes a CLI (`sonda`) and an optional HTTP server (`sonda-server`). The CLI is enough for laptop and CI use. The server accepts scenarios over a REST API. The same scenario file runs from your laptop, from CI, or from [`sonda-server`](deploy/server.md). For a guided walkthrough that pushes to Prometheus or Loki, see [Getting Started](get-started/quickstart.md).
 
 ## Why Sonda
 
@@ -89,27 +91,30 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
 
 -   :material-flash: __Fast and self-contained__
 
-    A single 5 MB static musl binary, no runtime, no JVM, no Python. Boots in under
-    50 ms; runs anywhere a Linux container can. Same binary for your laptop, your
-    CI runner, and your Kubernetes Job.
+    A single 5 MB static binary. No runtime, no JVM, no Python. Starts in under
+    50 ms and runs anywhere a Linux container runs. The same binary works on your
+    laptop, your CI runner, and as a Kubernetes Job.
 
--   :material-shape-outline: __Signals shaped like real ones__
+-   :material-shape-outline: __Realistic signal patterns__
 
-    Metrics with sine/sawtooth/step/spike shapes; logs with bursty distributions;
-    histograms with realistic latency tails. Match the schema, the cardinality, and
-    the failure modes — not just the volume.
+    Metrics with sine, sawtooth, step, and spike value patterns. Logs with bursty
+    distributions. Histograms with realistic latency tails. Match real production
+    data on schema, [cardinality](reference/glossary.md#cardinality), and failure
+    modes. Not only on volume.
 
--   :material-connection: __Speaks your pipeline's protocols__
+-   :material-connection: __Supports your pipeline's protocols__
 
-    Prometheus text, remote-write, InfluxDB line protocol, JSON, syslog, OTLP/gRPC,
-    Kafka, Loki, raw TCP/UDP — pick the encoder and sink, point at the backend,
-    done. No custom shim per stack.
+    Encoders write formats like Prometheus text, InfluxDB line protocol, JSON,
+    syslog, OTLP, and Prometheus [remote-write](reference/glossary.md#remote_write).
+    Sinks send data to stdout, files, TCP/UDP, HTTP, Kafka, Loki, and OTLP
+    collectors. Pick an [encoder](reference/glossary.md#encoder) and a
+    [sink](reference/glossary.md#sink). No extra setup needed per stack.
 
--   :material-source-branch: __YAML-first, code-second__
+-   :material-source-branch: __Scenarios as YAML files__
 
-    Scenarios are YAML files you can check into git, diff, review, and template.
-    Override any field from the CLI or `SONDA_*` env vars when you want to without
-    forking the file.
+    Scenarios are YAML files. Check them into git, review them in pull requests,
+    and template them. Override any field with CLI flags or `SONDA_*` env vars.
+    No need to fork the file.
 
 </div>
 
@@ -117,35 +122,25 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
 
 <div class="grid cards" markdown>
 
--   :material-rocket-launch: __[Get started in 5 minutes](getting-started.md)__
+-   :material-rocket-launch: __[Get started in 5 minutes](get-started/quickstart.md)__
 
-    Install Sonda, stream your first metric, and push to a real backend.
+    Install Sonda, stream your first metric, and send it to a real backend.
 
--   :material-bookshelf: __[Author your own scenarios](guides/scenarios.md)__
+-   :material-bookshelf: __[Write your own scenarios](build/catalogs-and-packs.md)__
 
-    Organize a catalog directory of runnable scenarios and composable packs;
-    discover them with `sonda list --catalog <dir>` and run with
+    Organize runnable scenarios and composable packs in a catalog directory.
+    Discover them with `sonda list --catalog <dir>` and run them with
     `sonda run @name`.
 
--   :material-file-document-outline: __[Scenario files](configuration/scenario-files.md)__
+-   :material-bell-alert: __[Test your alert rules](test/alert-testing.md)__
 
-    The canonical file shape: `version: 2`, `kind: runnable`, shared `defaults:`,
-    inline packs, `after:` temporal chains, and env-var interpolation.
+    Trigger, resolve, and validate alert rules with realistic metric patterns.
+    Covers thresholds, correlation, cardinality, histograms, and recording rules.
 
--   :material-database-import: __[CSV import](guides/csv-import.md)__
-
-    Turn Grafana exports into portable, parameterized scenarios — one
-    `sonda new --from <csv>` away.
-
--   :material-bell-alert: __[Test your alert rules](guides/alert-testing.md)__
-
-    Trigger, resolve, and validate alert rules with the right metric shape —
-    thresholds, correlation, cardinality, histograms, recording rules.
-
--   :material-server-network: __[Run as a server](deployment/sonda-server.md)__
+-   :material-server-network: __[Run as a server](deploy/server.md)__
 
     Run `sonda-server` as a long-lived HTTP control plane and submit scenarios
-    over the REST API. Great for CI and synthetic-monitoring fleets.
+    over the REST API. Useful for CI and synthetic-monitoring fleets.
 
 </div>
 
@@ -155,11 +150,11 @@ Same file runs from your laptop, from CI, or [posted to `sonda-server`](deployme
 
 -   :material-book-open-variant: __[Modern Network Observability](https://network-observability.github.io/)__
 
-    The hub: book, workshops, lab, and the broader project Sonda plugs into.
+    The hub: book, workshops, lab, and the broader project Sonda integrates with.
 
 -   :material-school: __[The AutoCon5 workshop](https://network-observability.github.io/workshops/)__
 
-    One workday on the new on-call rotation — telemetry, dashboards, alerts,
-    AI-assisted ops, in four hours.
+    One workday on the new on-call rotation. Covers telemetry, dashboards,
+    alerts, and AI-assisted ops in four hours.
 
 </div>
