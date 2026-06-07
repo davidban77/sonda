@@ -12,6 +12,3 @@ tests/e2e/.docker-volumes/
 # MkDocs site build output and Python venv
 docs/site/.venv/
 docs/site/site/
-
-# Bench-generated baseline reports (point-in-time observations, not maintained docs)
-docs/refactor/async-scheduler-baseline-*.md

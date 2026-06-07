@@ -511,7 +511,7 @@ fn main() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crate dir must have a parent (workspace root)");
-    let out_path = workspace_root.join("docs/refactor/async-scheduler-baseline-numbers.md");
+    let out_path = workspace_root.join("target/bench-output/scheduler-baseline.md");
     if let Some(parent) = out_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
