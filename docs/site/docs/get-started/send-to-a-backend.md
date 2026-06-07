@@ -5,16 +5,25 @@ description: Point Sonda at Prometheus remote_write or Loki instead of stdout.
 
 # Send to a real backend
 
-Stdout is useful for "does this YAML work?". For "does my alert rule fire when latency crosses 200 ms?" you need data in a real backend. This page walks the two backends most readers want first — Prometheus (`remote_write`) and Loki — with a 30-second local Docker setup and a `curl` verification for each.
+This page shows how to send a Sonda scenario to Prometheus or Loki running locally in Docker.
 
-The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`) in your YAML, point it at the backend, and run.
+Stdout confirms that your YAML parses and produces data. To test an alert rule like "fire when latency crosses 200 ms", you need the data in a real backend. Two backends cover most first-time setups: Prometheus (using the `remote_write` protocol) and Loki.
 
-!!! tip "Networking gotcha"
-    The `url:` field is resolved inside the process that runs the scenario. If you POST a YAML to a containerized `sonda-server`, `http://localhost:8428` resolves to the container's loopback, not your host's. See [Networking](../deploy/server.md#networking) for the full table.
+Two Sonda fields decide where the data goes:
+
+- `encoder:` — converts values into the wire format the backend expects.
+- `sink:` — sends the encoded bytes to the backend over the network.
+
+The pattern is the same for every backend. You change the `encoder:` and `sink:` blocks in your YAML, set the `url:`, and run.
+
+!!! tip "About the `url:` field"
+    The `url:` is resolved by the process that runs the scenario. If you POST a YAML to a containerised `sonda-server`, `http://localhost:8428` resolves to the container itself, not your host machine. The loopback address `localhost` always points to the current process's own machine, so a container sees its own internal network. See [Networking](../deploy/server.md#networking) for the full table.
+
+For Kafka or other sinks, see [Sinks](../build/sinks.md). For OTLP, see [Encoders — `otlp`](../build/encoders.md#otlp); the OTLP encoder requires a Cargo feature flag and is not in the default release binary.
 
 === "Prometheus remote_write"
 
-    [VictoriaMetrics](../reference/glossary.md#victoriametrics) is the easiest Prometheus-compatible backend to spin up: single container, no config file, accepts Prometheus [`remote_write`](../reference/glossary.md#remote_write) out of the box.
+    [VictoriaMetrics](../reference/glossary.md#victoriametrics) is the easiest Prometheus-compatible backend to run locally. It is a single container with no config file. It accepts Prometheus [`remote_write`](../reference/glossary.md#remote_write) with no extra setup.
 
     Start it:
 
@@ -23,10 +32,10 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
       victoriametrics/victoria-metrics:latest
     ```
 
-    Update your scenario's encoder and sink:
+    Now update your scenario's encoder and sink.
 
     !!! info "Why both are called `remote_write`"
-        The encoder and the sink share the name `remote_write` because they are two sides of the same protocol: the encoder produces the protobuf+snappy payload, the sink delivers it over HTTP. You pick both together when targeting Prometheus's remote-write endpoint.
+        The encoder and the sink share the name because they are two sides of the same protocol. The encoder produces the payload format Prometheus expects: Protocol Buffers compressed with Snappy. The sink sends the payload to Prometheus over HTTP. You pick both together when targeting a Prometheus `remote_write` endpoint.
 
     ```yaml title="cpu-remote-write.yaml"
     version: 2
@@ -52,7 +61,7 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
           period_secs: 60
     ```
 
-    Run, then query:
+    Run the scenario, then query VictoriaMetrics:
 
     ```bash
     sonda run cpu-remote-write.yaml
@@ -61,18 +70,18 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
     curl -s "http://localhost:8428/api/v1/query?query=cpu_usage" | jq '.data.result'
     ```
 
-    See [Sinks — `remote_write`](../build/sinks.md#remote_write) for the full backend matrix (Prometheus, vmagent, Thanos, Cortex, Mimir) and [Encoders — `remote_write`](../build/encoders.md#remote_write) for the feature-flag note.
+    See [Sinks — `remote_write`](../build/sinks.md#remote_write) for the full backend matrix: Prometheus, vmagent, Thanos, Cortex, and Mimir. See [Encoders — `remote_write`](../build/encoders.md#remote_write) for the feature-flag note.
 
 === "Loki"
 
-    [Loki](../reference/glossary.md#loki) is Grafana's log aggregation backend — stores logs indexed by labels rather than full text. Start it:
+    [Loki](../reference/glossary.md#loki) is Grafana's log aggregation backend. It indexes logs by labels rather than full text. Start it:
 
     ```bash
     docker run -d --name loki -p 3100:3100 \
       grafana/loki:latest
     ```
 
-    Update your scenario to a `logs` signal with the JSON Lines encoder and Loki sink:
+    Update your scenario to a `logs` signal. Use the JSON Lines encoder and the Loki sink:
 
     ```yaml title="app-logs-loki.yaml"
     version: 2
@@ -99,7 +108,7 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
             - message: "Request handled in 47ms"
     ```
 
-    Run, then query:
+    Run the scenario, then query Loki:
 
     ```bash
     sonda run app-logs-loki.yaml
@@ -112,10 +121,9 @@ The shape is the same every time: swap the `sink:` (and sometimes the `encoder:`
 
     See [Sinks — `loki`](../build/sinks.md#loki) for the stream model, per-flush cardinality cap, and dynamic-label rotations.
 
-!!! info "What about OTLP?"
-    The OTLP encoder and `otlp_grpc` sink are gated behind a Cargo feature flag — pre-built release binaries do **not** include them. To use them you build Sonda from source with `cargo build --release --features otlp -p sonda`. See [Encoders — `otlp`](../build/encoders.md#otlp) and [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc) for the wire format, sink shape, and the compatible receiver matrix.
+## Clean up
 
-## Tear down
+Stop and remove the containers when you are done:
 
 ```bash
 docker rm -f vm loki
@@ -125,4 +133,4 @@ docker rm -f vm loki
 
 - [Run as a server](../deploy/server.md) — keep `sonda-server` running and POST scenarios over HTTP.
 - [Sinks](../build/sinks.md) — every sink type, full parameter reference.
-- [Test pipelines](../test/index.md) — exercise alert rules, recording rules, and full pipelines with the data you're now pushing.
+- [Test pipelines](../test/index.md) — test alert rules, recording rules, and full pipelines with the data you are now pushing.

@@ -1,32 +1,48 @@
 ---
 title: Alert testing patterns
-description: Test Prometheus alert rules end-to-end with the right synthetic metric shape — thresholds, resolution, correlation, cardinality, replay, and histogram-based alerts.
+description: Test Prometheus alert rules end-to-end with Sonda — thresholds, resolution, correlation, cardinality, replay, and histogram alerts.
 ---
 
 # Alert testing
 
-3 a.m. The pager goes off for `HighRequestLatency`. By the time you log in, latency is back below threshold and the alert has cleared. You spend an hour reading dashboards and find nothing -- the spike was real, but it lasted 90 seconds and your `for: 5m` clause silently swallowed it. The alert is doing exactly what you told it to. You just told it the wrong thing.
+This page covers six patterns for testing Prometheus alert rules with Sonda. Each pattern targets a bug class that is hard to reproduce in production: threshold and `for:` durations, resolution and flapping, compound rules, cardinality limits, incident replay, and histogram alerts.
 
-That whole class of problem -- `for:` durations that swallow real spikes, gap-fill rules that fire during scrape outages, compound `A AND B` rules where the two signals never overlap -- only shows up in production because nothing else generates the right metric shape. Sonda does. You write the alert, run a scenario that crosses the threshold for exactly the duration you care about, and watch whether the alert fires.
+For each pattern, Sonda generates a metric stream with the values and labels your rule expects. You define the alert, run the scenario, and check whether the alert fires.
 
-This page collects the six patterns into one place. Each tab below stands on its own — jump straight to the one that matches the rule you are testing. The table maps common alert shapes to the right tab.
+Use the table below to find the pattern that matches your rule. Each section is self-contained.
 
 ## Pick your pattern
 
-| You want to test... | Tab | Generator |
+The table maps a rule shape to the tab that covers it.
+
+| You want to test | Tab | Generator |
 |---------------------|-----|-----------|
 | A simple `> threshold` rule | [Thresholds](#thresholds) | `sine` |
 | A short `for:` clause (≤ 30s) | [Thresholds](#thresholds) | `sequence` |
 | A long `for:` clause (minutes) | [Thresholds](#thresholds) | `constant` |
-| Resolution / flapping behavior | [Resolution and recovery](#resolution-and-recovery) | any + `gaps` |
+| Resolution and flapping behaviour | [Resolution and recovery](#resolution-and-recovery) | any + `gaps` |
 | Compound `A AND B` rules | [Compound and correlated](#compound-and-correlated) | multi-scenario |
-| Cardinality guardrails | [Cardinality explosion](#cardinality-explosion) | any + `cardinality_spikes` |
-| Replaying a known incident | [Replaying incidents](#replaying-incidents) | `sequence` or `csv_replay` |
-| Latency / histogram alerts | [Histogram and summary alerts](#histogram-and-summary-alerts) | `histogram` |
+| Cardinality limits | [Cardinality explosion](#cardinality-explosion) | any + `cardinality_spikes` |
+| Replay of a known incident | [Replaying incidents](#replaying-incidents) | `sequence` or `csv_replay` |
+| Latency and histogram alerts | [Histogram and summary alerts](#histogram-and-summary-alerts) | `histogram` |
+
+!!! info "Get the example files"
+    This page uses YAML scenarios and a Compose file from the `examples/` directory in the Sonda repository. The pre-built binary does not include them. Clone the repository to get every file at once:
+
+    ```bash
+    git clone https://github.com/davidban77/sonda.git
+    cd sonda
+    ```
+
+    Or download a single file with `curl`. Replace `<filename>` with the file you need:
+
+    ```bash
+    curl -O https://raw.githubusercontent.com/davidban77/sonda/main/examples/<filename>
+    ```
 
 ## Setup
 
-Every tab below assumes a local backend is running and reachable. The bundled stack ships VictoriaMetrics, vmagent, and Grafana behind one Compose file:
+Every tab below assumes a local backend is running. Sonda includes a Compose file that starts VictoriaMetrics, vmagent, and Grafana together.
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
@@ -46,23 +62,23 @@ curl -s "http://localhost:8428/health"
 # OK
 ```
 
-After running any scenario below, query VictoriaMetrics with `curl | jq` to confirm the metric arrived (wait ~15s for ingestion):
+After running any scenario, query VictoriaMetrics to confirm the metric arrived. Wait about 15 seconds for ingestion.
 
 ```bash
 curl -s "http://localhost:8428/api/v1/query?query=<metric_name>" | jq '.data.result | length'
 ```
 
-Tear down when finished:
+Stop the stack when finished:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-See [Docker Deployment](../deploy/docker.md) for the full stack configuration. For the full alert-flow loop (vmalert + Alertmanager + webhook receiver), use the same Compose file with `--profile alerting` and walk through the [Alerting pipeline tab on End-to-end pipelines](end-to-end-pipelines.md).
+See [Docker Deployment](../deploy/docker.md) for the full stack configuration. For the full alert path (vmalert + Alertmanager + webhook receiver), use the same Compose file with `--profile alerting` and follow the [Alerting pipeline tab on End-to-end pipelines](end-to-end-pipelines.md).
 
 ## Push to a real backend
 
-The two scenarios you will reach for first when pushing data into the running VictoriaMetrics are `examples/vm-push-scenario.yaml` (Prometheus text via `http_push`) and `examples/remote-write-vm.yaml` (`remote_write` to VictoriaMetrics, vmagent, or upstream Prometheus):
+Two example scenarios send data into the running VictoriaMetrics. Use `examples/vm-push-scenario.yaml` for Prometheus text over `http_push`. Use `examples/remote-write-vm.yaml` for `remote_write` to VictoriaMetrics, vmagent, or upstream Prometheus.
 
 ```bash
 # Push test data via http_push
@@ -72,12 +88,12 @@ sonda run examples/vm-push-scenario.yaml
 curl "http://localhost:8428/api/v1/query?query=cpu_usage"
 ```
 
-!!! tip "Close the loop with Alertmanager"
-    This stack verifies that data arrives in VictoriaMetrics, but does not prove alerts fire. To add vmalert, Alertmanager, and a webhook receiver, see the [Alerting pipeline tab](end-to-end-pipelines.md) on End-to-end pipelines.
+!!! tip "Complete the alert path"
+    This stack confirms that data arrives in VictoriaMetrics. It does not confirm that alerts fire. To add vmalert, Alertmanager, and a webhook receiver, see the [Alerting pipeline tab](end-to-end-pipelines.md) on End-to-end pipelines.
 
 ## Scrape model instead of push
 
-If you prefer the Prometheus pull model, sonda-server exposes a scrape endpoint for each running scenario:
+If you prefer the Prometheus pull model, sonda-server exposes a scrape endpoint for each running scenario.
 
 ```bash
 cargo run -p sonda-server -- --port 8080
@@ -107,17 +123,19 @@ See [Server API](../deploy/server.md) for the full API reference.
 
 === "Thresholds"
 
-    The two most common alert shapes are also the two easiest to get wrong: a `> threshold` rule that never fires because the metric only breaches for 30 seconds, and a `for: 5m` clause that fires three minutes early because the test data was lumpier than expected. Sonda gives you three generators that cover both cases deterministically.
+    This tab covers three threshold-rule shapes: a bare `> threshold` rule, a short `for:` clause, and a long `for:` clause. Three generators cover them deterministically.
 
-    | Pattern | Generator | When to reach for it |
+    | Pattern | Generator | When to use it |
     |---------|-----------|----------------------|
-    | Crosses threshold predictably | `sine` | Verifying that the rule fires at all |
-    | Stays above threshold for an exact duration | `sequence` | Validating short `for:` clauses (≤ 30s) |
-    | Holds above threshold indefinitely | `constant` | Validating long `for:` clauses (minutes) |
+    | Crosses threshold at a predictable interval | `sine` | Verify the rule fires at all |
+    | Stays above threshold for an exact duration | `sequence` | Validate short `for:` clauses (≤ 30s) |
+    | Holds above threshold indefinitely | `constant` | Validate long `for:` clauses (minutes) |
 
     ### Threshold crossings with sine
 
-    The sine generator produces a smooth wave that crosses your threshold predictably. With `amplitude=50` and `offset=50` it oscillates between 0 and 100, crossing 90 for about 12 seconds per 60-second cycle -- enough to trigger a bare `> 90` rule on every period.
+    The sine generator produces a smooth wave that crosses your threshold at a known interval. With `amplitude=50` and `offset=50` the value oscillates between 0 and 100. It crosses 90 for about 12 seconds per 60-second cycle. This is enough to trigger a bare `> 90` rule on every period.
+
+    The scenario below uses `amplitude`, `period_secs`, and `offset` to set the wave. The `labels` field attaches `instance` and `job` to the series.
 
     ```bash
     sonda run examples/sine-threshold-test.yaml
@@ -148,17 +166,17 @@ See [Server API](../deploy/server.md) for the full API reference.
           job: node
     ```
 
-    The metric crosses 90 around tick 9, stays above until tick 21, then drops -- giving you roughly 12 seconds above threshold per cycle.
+    The metric crosses 90 around tick 9, stays above until tick 21, then drops. Each cycle produces about 12 seconds above threshold.
 
     ??? info "Sine wave math"
-        The formula is: `value = offset + amplitude * sin(2 * pi * tick / period_ticks)`
+        The formula is: `value = offset + amplitude * sin(2 * pi * tick / period_ticks)`.
 
-        With `amplitude=50` and `offset=50`, the threshold at 90 is crossed when `sin(x) > 0.8`:
+        With `amplitude=50` and `offset=50`, the value crosses 90 when `sin(x) > 0.8`:
 
         - `sin(x) = 0.8` at `x = arcsin(0.8) = 0.927 radians`
-        - The sine exceeds 0.8 from `x = 0.927` to `x = pi - 0.927 = 2.214`
-        - That's `1.287 / 6.283 = 20.5%` of each cycle
-        - With a 60-second period: **~12.3 seconds above 90 per cycle**
+        - The sine value exceeds 0.8 from `x = 0.927` to `x = pi - 0.927 = 2.214`
+        - That covers `1.287 / 6.283 = 20.5%` of each cycle
+        - With a 60-second period, the value is above 90 for about 12.3 seconds per cycle
 
         | Tick (sec) | sin(2*pi*t/60) | Value | Above 90? |
         |------------|----------------|-------|-----------|
@@ -169,11 +187,11 @@ See [Server API](../deploy/server.md) for the full API reference.
         | 20 | 0.866  | 93.3  | Yes |
         | 25 | 0.500  | 75.0  | No  |
 
-    Sine works for unbounded threshold rules. For a `for:` clause you need the breach to last an exact, predictable number of seconds.
+    Sine works for an unbounded threshold rule. For a `for:` clause you need the breach to last a known number of seconds.
 
     ### Exact `for:` durations with sequence
 
-    Prometheus alerts with a `for:` clause require the condition to be true for a **continuous** duration before firing. The [sequence generator](../build/generators.md#sequence) steps through an explicit list of values, one per tick, so you control the breach window down to the second:
+    A Prometheus alert with a `for:` clause requires the condition to be true for a continuous duration before firing. The [sequence generator](../build/generators.md#sequence) emits a list of values, one per tick. Each entry in `values` is the metric value at that tick. The `repeat` field controls whether the list loops.
 
     ```bash
     sonda run examples/for-duration-test.yaml
@@ -203,14 +221,14 @@ See [Server API](../deploy/server.md) for the full API reference.
           job: node
     ```
 
-    At `rate: 1`, ticks 5-9 are above 90 -- exactly 5 seconds continuous breach -- then the pattern repeats. To match a `for: 30s` alert, extend the run of `95`s to 30 entries.
+    At `rate: 1`, ticks 5 to 9 hold the value at 95. That is exactly 5 seconds of continuous breach. The pattern then repeats. To match a `for: 30s` alert, extend the run of `95` values to 30 entries.
 
-    !!! tip "When sequence stops being practical"
-        Typing 300 values to satisfy a `for: 5m` alert is no fun. Past about 30 values, switch to the constant generator below and let the runtime duration do the work.
+    !!! tip "When to switch from sequence"
+        Typing 300 values for a `for: 5m` alert is tedious. Past about 30 values, use the constant generator below and let the runtime duration do the work.
 
-    ### Constant generator shortcut
+    ### Sustained breach with constant
 
-    For sustained-breach tests longer than ~30 seconds, the [constant generator](../build/generators.md#constant) is more practical:
+    For a breach longer than 30 seconds, the [constant generator](../build/generators.md#constant) is more practical. It holds a single value for the full run duration.
 
     ```bash
     sonda run examples/constant-threshold-test.yaml
@@ -239,13 +257,15 @@ See [Server API](../deploy/server.md) for the full API reference.
           job: node
     ```
 
-    Run this for 6 minutes to test a `for: 5m` alert. The value stays at 95 for the entire duration -- the alert should fire after 5 minutes of continuous breach.
+    Run this for 6 minutes to test a `for: 5m` alert. The value stays at 95 for the full duration. The alert should fire after 5 minutes of continuous breach.
 
 <a id="resolution-and-recovery"></a>
 
 === "Resolution and recovery"
 
-    A rule that fires but never clears is a paging incident waiting to happen. When a metric goes silent during a gap, Prometheus treats it as stale and resolves the alert -- the same path a real scrape failure or restart takes. Use [gap windows](../reference/scenario-fields.md) to control when metrics disappear, so you can confirm both the firing and the resolution side of the rule.
+    This tab covers alert resolution. A rule that fires but never clears causes paging fatigue. When a metric stops arriving, Prometheus treats the series as stale and resolves the alert. That is the same path a real scrape failure or restart takes.
+
+    The `gaps` field controls when a scenario stops emitting. Use it to confirm both the firing and the resolution side of the rule. The `every` field sets the cycle length. The `for` field sets how long the gap lasts at the end of each cycle.
 
     ```text
     Time:  0s          40s         60s         100s        120s
@@ -253,7 +273,7 @@ See [Server API](../deploy/server.md) for the full API reference.
            emit events   gap (20s)  emit events   gap (20s)
     ```
 
-    Gaps occupy the **tail** of each cycle. With `every: 60s` and `for: 20s`, the gap runs from second 40 to second 60 of each cycle.
+    The gap occupies the tail of each cycle. With `every: 60s` and `for: 20s`, the gap runs from second 40 to second 60 of each cycle.
 
     ```bash
     sonda run examples/gap-alert-test.yaml
@@ -285,18 +305,20 @@ See [Server API](../deploy/server.md) for the full API reference.
           job: node
     ```
 
-    The value stays at 95 (above threshold) but goes silent for 20 seconds every 60-second cycle. The alert enters pending state during the 40-second emit window but may not reach the `for:` duration before the gap resets it -- which is exactly the flapping pattern you want to validate against.
+    The value stays at 95 during the emit window. The metric then disappears for 20 seconds every cycle. The alert may enter pending state during the 40-second emit window but reset before the `for:` duration. This is the flapping pattern you want to validate.
 
     !!! tip "Combine gaps with any generator"
-        Gaps work with any generator. A sine wave with periodic gaps creates a realistic "flapping service" pattern -- useful for testing that your alert hysteresis or `keep_firing_for` clause actually suppresses the noise.
+        The `gaps` field works with any generator. A sine wave with periodic gaps creates a flapping pattern. Use it to test that an alert hysteresis or `keep_firing_for` clause suppresses the noise.
 
-    Gaps drive recovery passively — Prometheus resolves the alert on its own once the metric goes silent for the lookback-delta window. For active recovery, where Sonda emits a stale marker or an explicit recovery value the moment a `while:`-gated entry pauses, see [Recovering Prometheus alerts on gate close](../build/scenario-files.md#recovering-prometheus-alerts-on-gate-close). Gate close clears alerts on the next scrape rather than waiting for the lookback window, at the cost of being `remote_write`-specific unless you pair it with `snap_to:`.
+    Gaps drive recovery passively. Prometheus resolves the alert once the metric is silent for the lookback-delta window. For active recovery, where Sonda emits a stale marker or an explicit recovery value the moment a `while:`-gated entry pauses, see [Recovering Prometheus alerts on gate close](../build/scenario-files.md#recovering-prometheus-alerts-on-gate-close). Gate close clears the alert on the next scrape rather than waiting for the lookback window. The cost is that it is `remote_write`-specific unless you pair it with `snap_to:`.
 
 <a id="compound-and-correlated"></a>
 
 === "Compound and correlated"
 
-    Production alerts often depend on more than one metric. Compound rules like `cpu_usage > 90 AND memory_usage_percent > 85` only fire when both conditions are true at the same moment -- which means your test data needs an overlapping window across two scenarios. Sonda gives you `phase_offset` and `clock_group` to build that overlap deterministically.
+    This tab covers compound rules like `cpu_usage > 90 AND memory_usage_percent > 85`. The rule fires only when both conditions are true at the same time. Your test data needs an overlap window across two scenarios.
+
+    Two fields produce that overlap. The `phase_offset` field delays a scenario before it starts emitting. The `clock_group` field ties scenarios to a shared reference clock.
 
     | Field | Default | Description |
     |-------|---------|-------------|
@@ -340,19 +362,21 @@ See [Server API](../deploy/server.md) for the full API reference.
 
     ### Reading the timeline
 
+    The table below shows what each scenario emits at each tick.
+
     ```text
     Wall time  cpu_usage (offset=0s)   memory_usage (offset=3s)
     --------   ---------------------   ------------------------
-    t=0s       starts: 20             sleeping
-    t=3s       95 (above threshold)   starts: 40
-    t=6s       95                     88 (above threshold)
-    t=8s       20 (drops)             88
+    t=0s       starts: 20              not started
+    t=3s       95 (above threshold)    starts: 40
+    t=6s       95                      88 (above threshold)
+    t=8s       20 (drops)              88
     ```
 
-    The overlap window -- where **both** metrics are above threshold -- runs from t=6s to t=8s (2 seconds per cycle). For a `for: 5m` compound rule, extend the above-threshold sequences or switch to constant generators with a longer overall duration.
+    Both metrics are above threshold from t=6s to t=8s. That overlap is 2 seconds per cycle. For a `for: 5m` compound rule, extend the above-threshold runs or switch to constant generators with a longer total duration.
 
     !!! info "clock_group ties scenarios to a shared timeline"
-        Without `clock_group`, every scenario starts at its own wall-clock time and the overlap drifts. With `clock_group: alert-test`, all members share a reference clock and `phase_offset` is measured against that reference. See [Scenario Fields -- Temporal fields](../reference/scenario-fields.md#temporal-fields) for the full ordering semantics.
+        Without `clock_group`, each scenario starts at its own wall-clock time and the overlap drifts. With `clock_group: alert-test`, all members share a reference clock. The `phase_offset` value is measured against that reference. See [Scenario Fields — Temporal fields](../reference/scenario-fields.md#temporal-fields) for the full ordering semantics.
 
     See [Example Scenarios](examples.md) for the full `multi-metric-correlation.yaml` file.
 
@@ -360,7 +384,9 @@ See [Server API](../deploy/server.md) for the full API reference.
 
 === "Cardinality explosion"
 
-    Many monitoring stacks page when series cardinality crosses a guardrail (`count(up) > 10000`, `prometheus_tsdb_symbol_table_size_bytes > N`, etc.). The rule fires the first time a deploy ships a label with too many distinct values -- and the only way to know it works is to push a controlled explosion through it. Sonda's [cardinality spikes](../reference/scenario-fields.md) generate a bounded burst of unique label values on a recurring schedule, so you can verify the alert fires during the spike and resolves after.
+    This tab covers cardinality alerts. Many monitoring stacks page when series count crosses a limit, for example `count(up) > 10000` or `prometheus_tsdb_symbol_table_size_bytes > N`. The rule fires the first time a deploy adds a label with too many distinct values. The only way to confirm it works is to push a controlled burst through it.
+
+    Sonda's [cardinality spikes](../reference/scenario-fields.md) emit a bounded burst of unique label values on a recurring schedule. The `label` field names the label to inject. The `cardinality` field caps the unique values per spike. The `every` and `for` fields control the schedule.
 
     ```bash
     sonda run examples/cardinality-alert-test.yaml
@@ -376,25 +402,27 @@ See [Server API](../deploy/server.md) for the full API reference.
         prefix: "pod-"
     ```
 
-    During the 10-second spike window, each tick injects a `pod_name` label drawn from a pool of up to 500 unique values (`pod-0` through `pod-499`). The actual per-spike series count is `min(cardinality, ticks_in_window)` — at `rate: 10, for: 10s` that's 100 ticks per spike, so each spike grows the visible series count by up to 100 new `pod-N` values until the 500-value pool fills across recurrences. Outside the spike window the label is absent and only one series is emitted. This on/off pattern exercises both the firing and resolution paths of the cardinality rule.
+    During the 10-second spike window, each tick attaches a `pod_name` label from a pool of up to 500 unique values (`pod-0` through `pod-499`). The actual series count per spike is `min(cardinality, ticks_in_window)`. At `rate: 10, for: 10s` that is 100 ticks per spike. Each spike adds up to 100 new `pod-N` values until the 500-value pool fills across recurrences. Outside the spike window the label is absent and only one series is emitted. This on-and-off pattern tests both the firing and resolution paths of the cardinality rule.
 
     ### Tuning the spike
 
-    Three knobs shape the explosion:
+    Three fields shape the burst.
 
     | Field | Effect |
     |-------|--------|
-    | `cardinality` | Number of unique label values per spike. Set this just above your alert threshold. |
+    | `cardinality` | Number of unique label values per spike. Set this slightly above your alert threshold. |
     | `for` | How long the spike lasts. Set this longer than your rule's `for:` clause. |
-    | `every` | How often the spike recurs. Useful for proving the rule re-fires after a quiet window. |
+    | `every` | How often the spike recurs. Useful for confirming the rule re-fires after a quiet window. |
 
-    For a rule like `ALERT HighCardinality IF count(...) > 400 FOR 5m`, set `cardinality: 500` and `for: 360s` and watch the alert pend, fire, then clear after the spike ends.
+    For a rule like `ALERT HighCardinality IF count(...) > 400 FOR 5m`, set `cardinality: 500` and `for: 360s`. The alert should pend, fire, and then clear after the spike ends.
 
 <a id="replaying-incidents"></a>
 
 === "Replaying incidents"
 
-    Synthetic shapes prove the alert path works in the abstract. Replay proves it would have caught the real incident. Two generators handle the replay case: `sequence` for short hand-crafted patterns, and `csv_replay` for long recordings exported from your TSDB.
+    This tab covers two replay generators. Synthetic shapes prove the alert path works for a class of failure. Replay confirms it would have caught the actual incident.
+
+    Use `sequence` for short hand-crafted patterns. Use `csv_replay` for long recordings exported from your TSDB.
 
     | Generator | Best for | Storage |
     |-----------|----------|---------|
@@ -403,7 +431,7 @@ See [Server API](../deploy/server.md) for the full API reference.
 
     ### Hand-crafted patterns with sequence
 
-    The [sequence generator](../build/generators.md#sequence) steps through an explicit list of values, perfect for short, deterministic threshold patterns:
+    The [sequence generator](../build/generators.md#sequence) emits an explicit list of values, one per tick. The `repeat` field controls whether the list loops.
 
     ```bash
     sonda run examples/sequence-alert-test.yaml
@@ -416,11 +444,11 @@ See [Server API](../deploy/server.md) for the full API reference.
       repeat: true
     ```
 
-    With `repeat: true`, the pattern loops continuously. With `repeat: false`, the generator holds the last value after the sequence ends -- useful for "the metric pegged at 100 and never recovered" scenarios.
+    With `repeat: true`, the pattern loops continuously. With `repeat: false`, the generator holds the last value after the sequence ends. The second mode models a metric that pegged at 100 and never recovered.
 
     ### Production replay with csv_replay
 
-    For replaying real production data, the [csv_replay generator](../build/generators.md#csv_replay) reads values from a CSV file. If you have a Grafana dashboard showing the incident, see the [Grafana CSV Replay](../import/grafana-exports.md) guide for the full export-and-replay workflow.
+    For real production data, the [csv_replay generator](../build/generators.md#csv_replay) reads values from a CSV file. The `file` field is the path. The `columns` field maps a column to a metric name. If you have a Grafana dashboard showing the incident, see the [Grafana CSV Replay](../import/grafana-exports.md) guide for the full export-and-replay workflow.
 
     ```bash
     sonda run examples/csv-replay-metrics.yaml
@@ -438,11 +466,11 @@ See [Server API](../deploy/server.md) for the full API reference.
     | Parameter | Default | Description |
     |-----------|---------|-------------|
     | `file` | (required) | Path to the CSV file |
-    | `columns` | -- | Explicit column specs. When absent, columns are auto-discovered from the header. See [Generators](../build/generators.md#csv_replay). |
+    | `columns` | — | Column-to-metric mapping. When absent, columns are auto-discovered from the header. See [Generators](../build/generators.md#csv_replay). |
     | `repeat` | `true` | Cycle back to the first value after reaching the end |
 
     !!! tip "When to use csv_replay vs sequence"
-        Use `csv_replay` over `sequence` when you have more than ~20 values. It keeps the YAML clean and makes it easy to update the data by replacing the CSV file -- the scenario stays identical.
+        Use `csv_replay` when you have more than about 20 values. The YAML stays short. You can update the data by replacing the CSV file. The scenario stays identical.
 
     ??? info "Exporting values from VictoriaMetrics"
         ```bash
@@ -459,13 +487,13 @@ See [Server API](../deploy/server.md) for the full API reference.
 
 === "Histogram and summary alerts"
 
-    Counters and gauges are straightforward: one metric, one value, one line per scrape. Histograms and summaries are different. They break a single measurement (like request latency) into multiple time series that work together. This tab explains how they work, when to use each, and how to test latency alerts.
+    This tab covers latency alerts based on histograms and summaries. A counter or gauge holds one value per series. A histogram or summary represents a distribution across many series. The sections below define each type, compare them, and walk through a `histogram_quantile()` alert test.
 
-    ### What is a histogram?
+    ### What is a histogram
 
-    A histogram tracks the **distribution** of observed values by counting how many observations fall into predefined buckets. When you instrument HTTP request latency as a histogram, Prometheus doesn't store each individual request duration. Instead, it maintains cumulative counters for each bucket boundary.
+    A histogram counts how many observations fall into predefined buckets. When you instrument HTTP request latency as a histogram, Prometheus does not store each request duration. It maintains a cumulative counter for each bucket boundary.
 
-    For a metric named `http_request_duration_seconds` with default Prometheus buckets, every scrape produces these time series:
+    For a metric named `http_request_duration_seconds` with default Prometheus buckets, every scrape produces these series.
 
     | Series | What it counts |
     |--------|----------------|
@@ -477,10 +505,10 @@ See [Server API](../deploy/server.md) for the full API reference.
     | `http_request_duration_seconds_count` | Total number of observations |
     | `http_request_duration_seconds_sum` | Sum of all observed values |
 
-    Every bucket is **cumulative** -- the `le="0.1"` bucket includes all observations that are also in `le="0.05"` and below. These are counters, so they only ever go up. Prometheus uses `rate()` to compute per-second rates, then `histogram_quantile()` to estimate percentiles from the bucket distribution.
+    Every bucket is cumulative. The `le="0.1"` bucket includes all observations also in `le="0.05"` and below. These series are counters and only increase. Prometheus uses `rate()` to compute the per-second observation rate. It then uses `histogram_quantile()` to estimate percentiles from the bucket distribution.
 
-    !!! info "Why cumulative?"
-        Cumulative counters let you use `rate()` to compute accurate per-second observation rates over any time window. If buckets were absolute counts per scrape, you couldn't aggregate across time ranges or instances.
+    !!! info "Why cumulative"
+        Cumulative counters let `rate()` compute an accurate per-second rate over any time window. If buckets were absolute counts per scrape, you could not aggregate across time ranges or instances.
 
     #### Concrete example
 
@@ -497,9 +525,9 @@ See [Server API](../deploy/server.md) for the full API reference.
 
     From this, `histogram_quantile(0.99, ...)` estimates the 99th percentile by interpolating between bucket boundaries.
 
-    ### What is a summary?
+    ### What is a summary
 
-    A summary also tracks value distributions, but instead of counting observations per bucket, it **pre-computes quantile values** on the client side. For a metric named `rpc_duration_seconds` with quantiles `[0.5, 0.9, 0.95, 0.99]`, each scrape produces:
+    A summary also tracks a value distribution. Instead of counting observations per bucket, it pre-computes quantile values on the client side. For a metric named `rpc_duration_seconds` with quantiles `[0.5, 0.9, 0.95, 0.99]`, each scrape produces:
 
     ```text
     rpc_duration_seconds{quantile="0.5"}   0.098
@@ -510,24 +538,28 @@ See [Server API](../deploy/server.md) for the full API reference.
     rpc_duration_seconds_sum               99.44
     ```
 
-    The quantile values change each scrape -- they reflect the distribution of observations in a sliding time window. `_count` and `_sum` are cumulative, just like histograms.
+    The quantile values change each scrape. They reflect the distribution of observations in a sliding time window. The `_count` and `_sum` series are cumulative, like a histogram.
 
-    ### Histogram vs. summary: when to use which
+    ### Histogram or summary: when to use which
+
+    The table below compares both types on five criteria.
 
     | | Histogram | Summary |
     |--|-----------|---------|
     | **Percentile computation** | Server-side via `histogram_quantile()` | Client-side, pre-computed |
-    | **Aggregatable across instances?** | Yes -- you can sum bucket counters | No -- you cannot average percentiles |
-    | **Choose percentile after the fact?** | Yes -- any percentile from the same data | No -- only the quantiles you configured |
+    | **Aggregatable across instances?** | Yes — you can sum bucket counters | No — you cannot average percentiles |
+    | **Choose percentile after the fact?** | Yes — any percentile from the same data | No — only the quantiles you configured |
     | **Accuracy** | Depends on bucket boundaries | Exact for the configured quantiles |
     | **Cost** | One counter per bucket per label set | One gauge per quantile per label set |
 
     !!! tip "Default to histograms"
-        In most cases, histograms are the better choice. They can be aggregated across instances (critical for Kubernetes deployments) and let you compute any percentile from a single set of buckets. Use summaries only when you need exact quantile values and aggregation across instances is not required.
+        In most cases, a histogram is the better choice. Histograms aggregate across instances, which is critical for Kubernetes deployments. They also let you compute any percentile from a single set of buckets. Use a summary only when you need exact quantile values and you do not need to aggregate across instances.
 
     ### Generate histogram data with Sonda
 
-    Sonda's histogram generator samples observations from a configurable distribution on each tick and maintains cumulative bucket counters, just like a real Prometheus client library. The output works directly with `rate()` and `histogram_quantile()`.
+    Sonda's histogram generator samples observations from a configurable distribution on each tick. It maintains cumulative bucket counters, like a real Prometheus client library. The output works directly with `rate()` and `histogram_quantile()`.
+
+    The scenario below uses `signal_type: histogram`. The `distribution` field selects the model and its parameters. The `observations_per_tick` field sets how many samples to draw per tick. The `seed` field makes the run reproducible.
 
     ```yaml title="examples/histogram.yaml"
     version: 2
@@ -574,11 +606,11 @@ See [Server API](../deploy/server.md) for the full API reference.
     http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 1775409497421
     ```
 
-    Notice the cumulative bucket counts: 3 requests were under 5ms, 11 under 10ms (which includes the 3 from the previous bucket), and so on. The `+Inf` bucket equals `_count` because every observation falls within infinity.
+    The bucket counts are cumulative: 3 requests under 5ms, 11 under 10ms (which includes the 3 from the previous bucket), and so on. The `+Inf` bucket equals `_count` because every observation falls within infinity.
 
     ### Test a histogram_quantile() alert with Sonda
 
-    This is the primary use case: you have a PromQL alert rule and you want to verify that it fires when latency degrades.
+    This is the primary use case. You have a PromQL alert rule and you want to confirm it fires when latency degrades.
 
     #### The alert rule
 
@@ -598,11 +630,11 @@ See [Server API](../deploy/server.md) for the full API reference.
               summary: "P99 latency exceeds 500ms"
     ```
 
-    This fires when the estimated 99th percentile of request latency exceeds 500ms for 2 minutes.
+    The rule fires when the estimated 99th percentile of request latency exceeds 500ms for 2 minutes.
 
     #### Simulate latency degradation
 
-    The `mean_shift_per_sec` parameter shifts the distribution's center over time. With an exponential distribution (mean = 1/rate = 0.1s) and a shift of `0.01` per second, the effective mean increases from 0.1s to 0.7s after 60 seconds -- pushing the p99 well above the 500ms threshold.
+    The `mean_shift_per_sec` field shifts the distribution's centre over time. The exponential distribution has mean `1/rate`, so `rate: 10.0` gives a starting mean of 0.1s. With a shift of 0.01 per second, the mean reaches about 0.7s after 60 seconds. That pushes the p99 well above the 500ms threshold.
 
     ```yaml title="histogram-degradation.yaml"
     version: 2
@@ -635,10 +667,10 @@ See [Server API](../deploy/server.md) for the full API reference.
     sonda run histogram-degradation.yaml
     ```
 
-    As Sonda runs, the distribution center drifts higher. After about 40 seconds, most observations land in the 0.5s+ buckets. Prometheus computes `histogram_quantile(0.99, rate(...)[5m])` and sees the p99 cross the 0.5s threshold. After 2 minutes of sustained breach, the `HighP99Latency` alert fires.
+    As Sonda runs, the distribution centre drifts higher. After about 40 seconds, most observations fall in the 0.5s and higher buckets. Prometheus computes `histogram_quantile(0.99, rate(...)[5m])` and sees the p99 cross 0.5s. After 2 minutes of sustained breach, the `HighP99Latency` alert fires.
 
     !!! tip "Choosing the shift rate"
-        A `mean_shift_per_sec` of `0.01` with an exponential distribution (rate=10, mean=0.1s) means the average latency doubles in about 10 seconds and reaches 0.5s in about 40 seconds. Adjust the shift rate to control how quickly the alert triggers.
+        With `mean_shift_per_sec: 0.01` and an exponential distribution at `rate: 10.0` (starting mean = 0.1s), the average latency doubles in about 10 seconds and reaches 0.5s in about 40 seconds. Increase the shift to trigger the alert sooner. Decrease it for a slower ramp.
 
     #### Verify the alert
 
@@ -648,7 +680,7 @@ See [Server API](../deploy/server.md) for the full API reference.
     histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{method="GET"}[5m]))
     ```
 
-    You should see the p99 value climbing steadily from ~0.2s toward and beyond 0.5s. Once the `for: 2m` condition is sustained, check the alerts endpoint:
+    The p99 value should climb steadily from about 0.2s past 0.5s. Once the `for: 2m` condition holds, check the alerts endpoint.
 
     ```bash
     # Prometheus
@@ -660,7 +692,7 @@ See [Server API](../deploy/server.md) for the full API reference.
 
     ### Summary example
 
-    Summaries are simpler to generate and query, but remember: the quantile values are computed per-tick and cannot be aggregated across instances.
+    A summary is simpler to generate and query. Remember that quantile values are computed per tick and cannot be aggregated across instances.
 
     ```yaml title="examples/summary.yaml"
     version: 2
@@ -701,19 +733,19 @@ See [Server API](../deploy/server.md) for the full API reference.
     rpc_duration_seconds_sum{method="GetUser",service="auth"} 9.802 1775409507904
     ```
 
-    The p50 is near the configured mean (0.1s), and the spread matches the configured standard deviation (0.02s). Count and sum increase cumulatively across ticks, but quantile values are fresh per-tick snapshots.
+    The p50 is near the configured mean (0.1s). The spread matches the configured standard deviation (0.02s). The `_count` and `_sum` series increase across ticks. Quantile values are fresh per-tick snapshots.
 
     !!! warning "Summaries are not aggregatable"
-        You cannot meaningfully average p99 values across multiple instances. If you need per-service percentiles across a fleet of pods, use histograms instead -- you can sum the bucket counters first, then compute `histogram_quantile()` on the aggregated data.
+        You cannot meaningfully average p99 values across instances. If you need per-service percentiles across a fleet of pods, use a histogram. Sum the bucket counters first, then compute `histogram_quantile()` on the aggregated data.
 
     ### Distribution models
 
-    Both histogram and summary generators support three distribution models. Choose the one that best matches the real-world metric you are simulating.
+    Both histogram and summary generators support three distribution models. Choose the one that matches the metric you are simulating.
 
     | Distribution | YAML | Typical use | Parameters |
     |-------------|------|-------------|------------|
-    | Exponential | `type: exponential` | Request latency (long tail) | `rate` -- lambda; mean = 1/rate |
-    | Normal | `type: normal` | Symmetric around a center value | `mean`, `stddev` |
+    | Exponential | `type: exponential` | Request latency (long tail) | `rate` (lambda); mean = 1/rate |
+    | Normal | `type: normal` | Symmetric around a centre value | `mean`, `stddev` |
     | Uniform | `type: uniform` | Even spread across a range | `min`, `max` |
 
     ```yaml title="Exponential distribution (mean = 100ms)"
@@ -731,7 +763,7 @@ See [Server API](../deploy/server.md) for the full API reference.
       stddev: 0.02
     ```
 
-    Symmetric bell curve. Good for metrics with a known center and consistent spread, like RPC durations in a healthy service.
+    Symmetric bell curve. Good for a metric with a known centre and a consistent spread, like RPC durations in a healthy service.
 
     ```yaml title="Uniform distribution (50ms to 150ms)"
     distribution:
@@ -742,9 +774,11 @@ See [Server API](../deploy/server.md) for the full API reference.
 
     Every value in the range is equally likely. Useful for stress-testing bucket boundaries.
 
-    For full parameter reference, see [Generators -- histogram](../build/generators.md#histogram) and [Generators -- summary](../build/generators.md#summary).
+    For the full parameter reference, see [Generators — histogram](../build/generators.md#histogram) and [Generators — summary](../build/generators.md#summary).
 
 ## Quick reference
+
+The table below maps every pattern on this page to its generator and example file.
 
 | Pattern | Generator | Example file |
 |---------|-----------|--------------|
@@ -753,8 +787,8 @@ See [Server API](../deploy/server.md) for the full API reference.
 | Alert resolution via gap | `constant` + `gaps` | `gap-alert-test.yaml` |
 | Precise `for:` duration | `sequence` | `for-duration-test.yaml` |
 | Compound alert | multi-scenario | `multi-metric-correlation.yaml` |
-| Cardinality explosion | any + `cardinality_spikes` | `cardinality-alert-test.yaml` |
-| Periodic spike / anomaly | `spike` | `spike-alert-test.yaml` |
+| Cardinality burst | any + `cardinality_spikes` | `cardinality-alert-test.yaml` |
+| Periodic spike or anomaly | `spike` | `spike-alert-test.yaml` |
 | Incident replay (inline) | `sequence` | `sequence-alert-test.yaml` |
 | Incident replay (file) | `csv_replay` | `csv-replay-metrics.yaml` |
 | Histogram latency degradation | `histogram` + `mean_shift_per_sec` | `histogram-degradation.yaml` |
@@ -763,8 +797,7 @@ See [Server API](../deploy/server.md) for the full API reference.
 
 ## Where to next
 
-- [End-to-end pipelines](end-to-end-pipelines.md) — verify alerts fire all the way through vmalert, Alertmanager, and a webhook, in dev or CI.
-- [Recording rules](recording-rules.md) — validate that aggregations land before the alert rule queries them.
-- [Generators](../build/generators.md) — pick the right generator for the pattern you're testing.
+- [End-to-end pipelines](end-to-end-pipelines.md) — confirm alerts fire through vmalert, Alertmanager, and a webhook receiver.
+- [Recording rules](recording-rules.md) — confirm that aggregations arrive before the alert rule queries them.
+- [Generators](../build/generators.md) — choose the generator for the pattern you are testing.
 - [Example Scenarios](examples.md) — every example scenario file with its purpose.
-- [Troubleshooting](../reference/troubleshooting.md) — diagnostics when the alert isn't firing.

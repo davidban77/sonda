@@ -46,7 +46,7 @@ this field do" and "what are the valid values."
 -   :material-sine-wave: __[Generators](../build/generators.md)__
 
     Value shapes: `constant`, `sine`, `sawtooth`, `sequence`, `step`, `spike`,
-    `csv_replay`, plus operational aliases and histogram/summary generators.
+    `csv_replay`, plus shortcuts for common combinations and histogram/summary generators.
 
 -   :material-code-braces: __[Encoders](../build/encoders.md)__
 

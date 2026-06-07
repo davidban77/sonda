@@ -1,6 +1,6 @@
 ---
 title: Sonda — synthetic telemetry generator
-description: Synthetic metrics, logs, histograms, and summaries shaped like real telemetry — in a single static binary.
+description: Sonda generates synthetic metrics and logs with realistic patterns from a single static binary.
 hide:
   - navigation
   - toc
@@ -10,9 +10,9 @@ hide:
 
 <span class="sonda-hero__badge">Synthetic telemetry · v1.9</span>
 
-<h1 class="sonda-hero__title">Telemetry that looks real, on demand.</h1>
+<h1 class="sonda-hero__title">Synthetic telemetry generator for testing observability pipelines.</h1>
 
-<p class="sonda-hero__subtitle">Metrics, logs, histograms, and summaries shaped like real telemetry — in a single static binary. Test your pipelines, your alerts, and your dashboards before they break in production.</p>
+<p class="sonda-hero__subtitle">Sonda generates metrics and logs with realistic patterns from a single static binary. Use it to test your pipelines, alerts, and dashboards before they break in production.</p>
 
 <div class="sonda-hero__ctas" markdown>
 [Get started in 5 minutes](get-started/quickstart.md){ .md-button .md-button--primary }
@@ -36,7 +36,7 @@ hide:
 
 ## Try it
 
-Two commands. No YAML to write yourself yet — `sonda new --template` generates a runnable starter file, and `sonda run` runs it.
+Two commands. `sonda new --template` creates a runnable starter file, and `sonda run` runs it.
 
 ```bash
 sonda new --template -o hello.yaml
@@ -49,9 +49,9 @@ example_metric 1 1777243959978
 example_metric 1 1777243960981
 ```
 
-Each line is Prometheus exposition format (Prometheus's plain-text format for emitting metrics — see the [glossary](reference/glossary.md#prometheus-exposition-format)): `metric_name value timestamp_ms`.
+Each line uses the Prometheus exposition format: `metric_name value timestamp_ms`. See the [glossary](reference/glossary.md#prometheus-exposition-format) for the full definition.
 
-Edit `hello.yaml` to shape the signal — swap `constant` for `sine`, add labels, point the sink at a real backend:
+Edit `hello.yaml` to change the signal pattern. You can swap `constant` for `sine`, add labels, or point the sink at a real backend.
 
 ```yaml title="hello.yaml (edited)"
 version: 2
@@ -83,7 +83,7 @@ cpu_usage{host="web-01"} 100 1777243959982
 cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 ```
 
-Sonda ships as both a CLI (`sonda`) and an optional long-running HTTP server (`sonda-server`). The CLI is enough for laptop and CI use; the server lets you POST scenarios over a REST API. The same file runs from your laptop, from CI, or [posted to `sonda-server`](deploy/server.md) over HTTP. For a guided walkthrough — including pushing to a real Prometheus or Loki backend — see [Getting Started](get-started/quickstart.md).
+Sonda includes a CLI (`sonda`) and an optional HTTP server (`sonda-server`). The CLI is enough for laptop and CI use. The server accepts scenarios over a REST API. The same scenario file runs from your laptop, from CI, or from [`sonda-server`](deploy/server.md). For a guided walkthrough that pushes to Prometheus or Loki, see [Getting Started](get-started/quickstart.md).
 
 ## Why Sonda
 
@@ -91,31 +91,30 @@ Sonda ships as both a CLI (`sonda`) and an optional long-running HTTP server (`s
 
 -   :material-flash: __Fast and self-contained__
 
-    A single 5 MB static musl binary, no runtime, no JVM, no Python. Boots in under
-    50 ms; runs anywhere a Linux container can. Same binary for your laptop, your
-    CI runner, and your Kubernetes Job.
+    A single 5 MB static binary. No runtime, no JVM, no Python. Starts in under
+    50 ms and runs anywhere a Linux container runs. The same binary works on your
+    laptop, your CI runner, and as a Kubernetes Job.
 
--   :material-shape-outline: __Signals shaped like real ones__
+-   :material-shape-outline: __Realistic signal patterns__
 
-    Metrics with sine/sawtooth/step/spike shapes; logs with bursty distributions;
-    histograms (distributions across buckets) with realistic latency tails. Match
-    the schema, the cardinality (the number of unique label-value combinations —
-    see the [glossary](reference/glossary.md#cardinality)), and the failure modes —
-    not just the volume.
+    Metrics with sine, sawtooth, step, and spike value patterns. Logs with bursty
+    distributions. Histograms with realistic latency tails. Match real production
+    data on schema, [cardinality](reference/glossary.md#cardinality), and failure
+    modes. Not only on volume.
 
--   :material-connection: __Speaks your pipeline's protocols__
+-   :material-connection: __Supports your pipeline's protocols__
 
-    Encoders translate to formats like Prometheus text, InfluxDB line protocol,
-    JSON, syslog, OTLP, and Prometheus [remote-write](reference/glossary.md#remote_write).
-    Sinks deliver to destinations like stdout, files, TCP/UDP, HTTP, Kafka, Loki,
-    and OTLP collectors. Pick an [encoder](reference/glossary.md#encoder) and a
-    [sink](reference/glossary.md#sink) — no custom shim per stack.
+    Encoders write formats like Prometheus text, InfluxDB line protocol, JSON,
+    syslog, OTLP, and Prometheus [remote-write](reference/glossary.md#remote_write).
+    Sinks send data to stdout, files, TCP/UDP, HTTP, Kafka, Loki, and OTLP
+    collectors. Pick an [encoder](reference/glossary.md#encoder) and a
+    [sink](reference/glossary.md#sink). No extra setup needed per stack.
 
--   :material-source-branch: __YAML-first, code-second__
+-   :material-source-branch: __Scenarios as YAML files__
 
-    Scenarios are YAML files you can check into git, diff, review, and template.
-    Override any field from the CLI or `SONDA_*` env vars when you want to without
-    forking the file.
+    Scenarios are YAML files. Check them into git, review them in pull requests,
+    and template them. Override any field with CLI flags or `SONDA_*` env vars.
+    No need to fork the file.
 
 </div>
 
@@ -125,23 +124,23 @@ Sonda ships as both a CLI (`sonda`) and an optional long-running HTTP server (`s
 
 -   :material-rocket-launch: __[Get started in 5 minutes](get-started/quickstart.md)__
 
-    Install Sonda, stream your first metric, and push to a real backend.
+    Install Sonda, stream your first metric, and send it to a real backend.
 
--   :material-bookshelf: __[Author your own scenarios](build/catalogs-and-packs.md)__
+-   :material-bookshelf: __[Write your own scenarios](build/catalogs-and-packs.md)__
 
-    Organize a catalog directory of runnable scenarios and composable packs;
-    discover them with `sonda list --catalog <dir>` and run with
+    Organize runnable scenarios and composable packs in a catalog directory.
+    Discover them with `sonda list --catalog <dir>` and run them with
     `sonda run @name`.
 
 -   :material-bell-alert: __[Test your alert rules](test/alert-testing.md)__
 
-    Trigger, resolve, and validate alert rules with the right metric shape —
-    thresholds, correlation, cardinality, histograms, recording rules.
+    Trigger, resolve, and validate alert rules with realistic metric patterns.
+    Covers thresholds, correlation, cardinality, histograms, and recording rules.
 
 -   :material-server-network: __[Run as a server](deploy/server.md)__
 
     Run `sonda-server` as a long-lived HTTP control plane and submit scenarios
-    over the REST API. Great for CI and synthetic-monitoring fleets.
+    over the REST API. Useful for CI and synthetic-monitoring fleets.
 
 </div>
 
@@ -151,11 +150,11 @@ Sonda ships as both a CLI (`sonda`) and an optional long-running HTTP server (`s
 
 -   :material-book-open-variant: __[Modern Network Observability](https://network-observability.github.io/)__
 
-    The hub: book, workshops, lab, and the broader project Sonda plugs into.
+    The hub: book, workshops, lab, and the broader project Sonda integrates with.
 
 -   :material-school: __[The AutoCon5 workshop](https://network-observability.github.io/workshops/)__
 
-    One workday on the new on-call rotation — telemetry, dashboards, alerts,
-    AI-assisted ops, in four hours.
+    One workday on the new on-call rotation. Covers telemetry, dashboards,
+    alerts, and AI-assisted ops in four hours.
 
 </div>

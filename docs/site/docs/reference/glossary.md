@@ -5,17 +5,17 @@ description: Definitions for Sonda-specific terms and the observability jargon u
 
 # Glossary
 
-If you're new to observability or to Sonda, start here. Every term the docs assume you know is defined below, with a link to where it's used in depth. Skim the headings; come back when you hit an unfamiliar word.
+If you're new to observability or to Sonda, start here. Every term the docs assume you know is defined below, with a link to where it's used in depth. Skim the headings and come back when you find an unfamiliar word.
 
 ## A
 
 ### `after:` clause
 
-A scenario field that fires a one-shot trigger when a referenced upstream scenario's value crosses a threshold. The downstream scenario waits in `pending`, then runs to completion once the upstream condition holds. Use `after:` for "the alert fires once the breach starts" patterns. See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
+A scenario field that starts the downstream scenario once the upstream scenario's value crosses a threshold. The downstream scenario waits (in the `pending` lifecycle state) until the trigger fires, then runs to completion. Use `after:` for one-shot triggers. For ongoing gating that pauses and resumes as the upstream value changes, use [`while:`](#while-clause). See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
 
 ### Alert rule
 
-A [PromQL](#promql) expression that the alert evaluator ([Alertmanager](#alertmanager), [vmalert](#vmalert)) re-checks on every [evaluation tick](#evaluation-tick). When the expression returns a non-empty result for the rule's `for:` window, the alert fires. Sonda's alert-testing patterns shape synthetic metrics to exercise these rules deterministically. See [Alert testing](../test/alert-testing.md).
+A query expression that an alert evaluator re-checks on a fixed interval. When the expression returns a non-empty result for the rule's `for:` window, the alert fires. Sonda drives synthetic metrics to test these rules. The query language is [PromQL](#promql). The evaluator is [Alertmanager](#alertmanager) or [vmalert](#vmalert). The interval is the [evaluation tick](#evaluation-tick). See [Alert testing](../test/alert-testing.md).
 
 ### Alertmanager
 
@@ -31,27 +31,27 @@ A recurring time window during which a scenario emits at an elevated rate, mimic
 
 ### Cardinality
 
-The number of unique label-value combinations a metric has. A metric `http_requests_total` with two labels — `method` (5 values) and `status_code` (10 values) — has cardinality 50. High cardinality rapidly grows [TSDB](#tsdb) memory and index size; low cardinality limits the dimensions you can slice on. See [Capacity planning](../test/capacity-planning.md).
+The number of unique label-value combinations a metric has. For example, `http_requests_total` with a `method` label of 5 values and a `status_code` label of 10 values has cardinality 50. High cardinality grows [TSDB](#tsdb) memory and index size. Low cardinality limits the dimensions you can slice on. See [Capacity planning](../test/capacity-planning.md).
 
 ### Cardinality spike
 
-A sudden burst of new label combinations on a metric, often caused by a buggy deployment, a runaway user-generated label, or a misbehaving scraper. A common cause of TSDB ingester failures. Sonda's `cardinality_spikes:` field models the pattern deterministically. See [Scheduling — Cardinality spikes](../build/scheduling.md#cardinality-spikes).
+A sudden burst of new label combinations on a metric. Common causes are a buggy deployment, a runaway user-generated label, or a misbehaving scraper. The [TSDB](#tsdb) [ingester](#ingester) — the component that writes incoming samples to storage — can run out of memory when the burst is large enough. Sonda's `cardinality_spikes:` field reproduces the pattern. See [Scheduling — Cardinality spikes](../build/scheduling.md#cardinality-spikes).
 
 ### Catalog
 
-A directory of scenario YAML files. Sonda walks it with `--catalog <dir>` and indexes each file by name so you can run any entry with `sonda run @name`. Runnable scenarios and composable [packs](#pack) live side by side. See [Catalogs and packs](../build/catalogs-and-packs.md).
+A directory of scenario YAML files. Sonda walks it with `--catalog <dir>` and indexes each file by name. You can then run any entry with `sonda run @name`. Runnable scenarios and composable [packs](#pack) live side by side. See [Catalogs and packs](../build/catalogs-and-packs.md).
 
 ## D
 
 ### Dynamic labels
 
-Labels whose values rotate per tick across a bounded, predictable set. Use them when one scenario entry needs to stand in for a fleet — 10 hostnames, 3 regions, 20 BGP peers — without copy-pasting the entry. Always-on (unlike [cardinality spikes](#cardinality-spike), which are time-windowed). See [Scheduling — Dynamic labels](../build/scheduling.md#dynamic-labels).
+Labels whose values rotate per tick across a bounded, predictable set. Use them when one scenario entry needs to represent many sources: 10 hostnames, 3 regions, or 20 BGP peers. Dynamic labels are always on. [Cardinality spikes](#cardinality-spike) are limited to a configured time window. See [Scheduling — Dynamic labels](../build/scheduling.md#dynamic-labels).
 
 ## E
 
 ### Encoder
 
-The Sonda component that serializes events into a wire format before a [sink](#sink) writes them out — Prometheus text, JSON Lines, InfluxDB line protocol, syslog, remote-write protobuf, OTLP. Pick the encoder that matches what the receiving backend expects. See [Encoders](../build/encoders.md).
+The Sonda component that serializes events into a wire format before a [sink](#sink) writes them out. Supported formats include Prometheus text, JSON Lines, InfluxDB line protocol, syslog, remote-write protobuf, and OTLP. Pick the encoder that matches what the receiving backend expects. See [Encoders](../build/encoders.md).
 
 ### Entry
 
@@ -59,7 +59,7 @@ One item under a scenario file's `scenarios:` list. Each entry emits exactly one
 
 ### Evaluation tick
 
-The interval at which an alert evaluator ([Alertmanager](#alertmanager), [vmalert](#vmalert)) re-checks every rule's PromQL expression — usually 15–60 seconds, set per evaluator. Distinct from Sonda's per-tick emission cadence (set on the scenario's `rate:`): one is the rate Sonda produces samples, the other is how often the evaluator queries them.
+The interval at which an alert evaluator re-checks every rule's PromQL expression. Usually 15–60 seconds, set per evaluator ([Alertmanager](#alertmanager) or [vmalert](#vmalert)). This is not the same as Sonda's emission rate. The evaluation tick is how often the evaluator queries samples; the scenario `rate:` is how often Sonda produces them.
 
 ### Exposition format
 
@@ -79,7 +79,7 @@ The Sonda component that produces values for each tick of a scenario. For metric
 
 ### Histogram
 
-A signal type that records the distribution of observations across pre-defined buckets, with cumulative counts per bucket plus `_sum` and `_count` series. Use histograms for latency, request size, or any metric where you care about percentiles across the population. See [Generators — Histograms](../build/generators.md#histogram-and-summary-generators).
+A signal type that records the distribution of observations across pre-defined buckets. Each bucket carries a cumulative count, plus `_sum` and `_count` series. Use histograms for latency, request size, or any metric where you care about percentiles across the population. See [Generators — Histograms](../build/generators.md#histogram-and-summary-generators).
 
 ## I
 
@@ -89,7 +89,7 @@ InfluxDB's text format for metrics: `measurement,tag=v field=v timestamp`. Used 
 
 ### Ingester
 
-The component of a [TSDB](#tsdb) (Prometheus, VictoriaMetrics, etc.) that receives incoming samples and writes them to storage. Sonda's cardinality patterns are designed to stress-test ingesters before they fall over in production. See [Capacity planning](../test/capacity-planning.md).
+The component of a [TSDB](#tsdb) (Prometheus, VictoriaMetrics, etc.) that receives incoming samples and writes them to storage. Sonda's cardinality patterns are designed to stress-test ingesters before they fail in production. See [Capacity planning](../test/capacity-planning.md).
 
 ## K
 
@@ -101,7 +101,7 @@ A distributed event streaming platform. Sonda's `kafka` sink publishes encoded e
 
 ### Label
 
-A key-value tag attached to a metric or log event. Labels are the dimension you slice on in queries: `cpu_usage{host="web-01",region="eu1"}` has two labels. Labels are the fuel for [cardinality](#cardinality) — too many label values per metric and your [TSDB](#tsdb) struggles. See [Concepts](../build/concepts.md).
+A key-value tag attached to a metric or log event. Labels are the dimension you slice on in queries: `cpu_usage{host="web-01",region="eu1"}` has two labels. Each new label value increases [cardinality](#cardinality). When cardinality grows too large, the [TSDB](#tsdb) runs out of memory. See [Concepts](../build/concepts.md).
 
 ### Line protocol
 
@@ -129,13 +129,13 @@ Short for OpenTelemetry — the CNCF observability framework for traces, metrics
 
 ### OTLP
 
-OpenTelemetry Protocol. The wire format used by OpenTelemetry collectors and SDKs to ship traces, metrics, and logs. Sonda's `otlp` encoder + `otlp_grpc` sink push to an OpenTelemetry Collector over gRPC. See [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc).
+OpenTelemetry Protocol. The wire format used by OpenTelemetry collectors and SDKs to send traces, metrics, and logs. Sonda's `otlp` encoder + `otlp_grpc` sink push to an OpenTelemetry Collector over gRPC. See [Sinks — `otlp_grpc`](../build/sinks.md#otlp_grpc).
 
 ## P
 
 ### Pack
 
-A reusable bundle of metric names, label schemas, and sensible default generators per metric. You author a pack as a `kind: composable` file in your catalog, then reference it from any runnable scenario with `pack: <name>`. The compiler expands the reference at parse time into one prepared entry per metric in the pack. See [Catalogs and packs — Packs](../build/catalogs-and-packs.md#packs).
+A reusable bundle of metric names, label schemas, and useful default generators per metric. You write a pack as a `kind: composable` file in your catalog. Any runnable scenario can then reference it with `pack: <name>`. The compiler expands the reference at parse time into one prepared entry per metric in the pack. See [Catalogs and packs — Packs](../build/catalogs-and-packs.md#packs).
 
 ### PromQL
 
@@ -167,7 +167,7 @@ Prometheus's protocol for pushing samples from a producer to a [TSDB](#tsdb) ove
 
 ### SASL
 
-Simple Authentication and Security Layer. A pluggable authentication framework used by Kafka brokers. Sonda's `kafka` sink supports SASL PLAIN, SCRAM-SHA-256, and SCRAM-SHA-512. See [Sinks — Kafka SASL](../build/sinks.md#kafka-sasl).
+Simple Authentication and Security Layer. A modular authentication framework used by Kafka brokers. Sonda's `kafka` sink supports SASL PLAIN, SCRAM-SHA-256, and SCRAM-SHA-512. See [Sinks — Kafka SASL](../build/sinks.md#kafka-sasl).
 
 ### Scenario
 
@@ -185,6 +185,10 @@ The category of telemetry a scenario entry emits: `metrics`, `logs`, `histogram`
 
 The Sonda component that delivers encoded bytes to a destination: stdout, file, TCP/UDP socket, HTTP POST, Prometheus remote_write, Loki, Kafka, OTLP gRPC. Configure with the `sink:` block. See [Sinks](../build/sinks.md).
 
+### Sink-error policy
+
+What the runner does when a sink write fails mid-run (a Loki `500`, a TCP reset, an HTTP timeout). Set with the `on_sink_error:` field at the `defaults:` or per-entry level: `warn` logs the error and keeps running; `fail` exits the runner. See [Scenario files — Sink-error policy](../build/scenario-files.md#sink-error-policy).
+
 ### SLI
 
 Service Level Indicator. The measured value (latency, error rate, availability) used to evaluate a Service Level Objective.
@@ -195,7 +199,7 @@ Service Level Objective. A target reliability level — e.g., "99.9% of requests
 
 ### Stream
 
-In Loki, the smallest unit Loki indexes by, identified by its label set. Two log lines with the same labels go to the same stream; one label differs and they're separate streams. Sonda's per-event `dynamic_labels` produce one Loki stream per rotating value. See [Sinks — Loki](../build/sinks.md#loki).
+In Loki, the index unit identified by a unique label set. Two log lines with the same labels go to the same stream. If one label value differs, they go to separate streams. Sonda's per-event `dynamic_labels` produce one Loki stream per rotating value. See [Sinks — Loki](../build/sinks.md#loki).
 
 ### Summary
 
@@ -209,11 +213,11 @@ The RFC 5424 log format. Sonda's `syslog` encoder emits log events as syslog lin
 
 ### Threshold
 
-In `while:` and `after:` clauses, the numeric value the upstream scenario's emission must cross to open the gate or fire the trigger. See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
+A numeric boundary that a value must cross to trigger an action. In alerting, an alert fires when the metric crosses the threshold. In Sonda's [`while:`](#while-clause) and [`after:`](#after-clause) clauses, crossing the threshold activates the downstream scenario. See [Scheduling — Dependencies](../build/scheduling.md#dependencies-after-and-while).
 
 ### Telegraf
 
-InfluxData's plugin-driven agent for collecting and shipping telemetry. Sonda's built-in SNMP and node packs match Telegraf's metric names and labels, so synthetic data slots into dashboards and alert rules built against Telegraf output.
+InfluxData's plugin-driven agent for collecting and sending telemetry. Sonda's built-in SNMP and node packs match Telegraf's metric names and labels. Synthetic data then works with dashboards and alert rules built against Telegraf output.
 
 ### TSDB
 

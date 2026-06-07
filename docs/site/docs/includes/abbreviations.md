@@ -21,7 +21,7 @@
 *[metric pack]: Reusable bundle of metric names, label schemas, and default generators per metric.
 *[Telegraf]: InfluxData's plugin-driven agent for collecting and shipping telemetry.
 *[Containerlab]: Tool for spinning up multi-vendor network topologies as containers.
-*[SASL]: Simple Authentication and Security Layer -- pluggable auth framework used by Kafka brokers.
+*[SASL]: Simple Authentication and Security Layer -- modular auth framework used by Kafka brokers.
 *[mTLS]: Mutual TLS -- both client and server present certificates to authenticate each other.
 *[MSRV]: Minimum Supported Rust Version -- oldest toolchain the codebase compiles on.
 *[catalog]: Directory of scenario YAML files Sonda walks with --catalog <dir>.

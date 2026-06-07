@@ -1,17 +1,28 @@
 ---
 title: Your first scenario
-description: The four moving parts of a Sonda scenario — scenario file, generator, encoder, sink — with examples.
+description: The four parts of a Sonda scenario — scenario file, generator, encoder, sink — with examples.
 ---
 
 # Your first scenario
 
-A Sonda scenario is a YAML file describing what to emit, how to shape it, what format to write it in, and where to send it. Four moving parts; one file. This page walks each one in order, with the smallest working example for each.
+## How Sonda works
 
-You've already seen the four parts in passing if you ran through the [Quickstart](quickstart.md). Now you'll learn the names for them and what each one lets you change.
+A Sonda **scenario** is a YAML file that describes the telemetry you want to generate. For example: a CPU metric that oscillates between 40% and 80%, a router emitting interface counters, or an application emitting JSON logs at 100 messages per second. Sonda reads the file and sends realistic data to the destinations you choose: stdout, a file, Prometheus remote-write, Loki, Kafka, or OTLP.
+
+You point your dashboards, alert rules, and ingestion pipelines at this synthetic data and test them without production traffic.
+
+A scenario has four parts:
+
+- A **scenario file** — the YAML document `sonda run` reads.
+- One or more **generators** — each one produces a value pattern.
+- An **encoder** — converts values into the wire format (Prometheus text, JSON Lines, OTLP, and so on).
+- A **sink** — the destination that receives the encoded data.
+
+The next sections cover each part, starting with the minimal example.
 
 ## Scenario file
 
-A **scenario file** is the YAML unit `sonda run` consumes. It declares its format with `version: 2`, marks itself as runnable with `kind: runnable`, sets shared defaults (rate, duration, encoder, sink) under `defaults:`, and lists one or more entries under `scenarios:`. Each entry emits exactly one signal — one metric series, one log stream — and shares the `defaults:` unless it overrides them.
+A **scenario file** is the YAML document `sonda run` reads. The file declares its format with `version: 2` and marks itself as runnable with `kind: runnable`. Shared values like rate, duration, encoder, and sink go under `defaults:`. One or more entries go under `scenarios:`, and each entry emits a single signal — one metric series or one log stream.
 
 ```yaml title="hello.yaml"
 version: 2
@@ -32,15 +43,20 @@ scenarios:
       value: 42
 ```
 
-That file emits a metric named `demo_cpu`, value `42`, once per second, for thirty seconds, in Prometheus exposition format (Prometheus's plain-text metric format — see the [glossary](../reference/glossary.md#prometheus-exposition-format)), printed to stdout.
+This file emits a metric named `demo_cpu` with value `42`, once per second, for thirty seconds. The output uses the Prometheus text exposition format and prints to stdout.
 
-For the full file reference — `defaults:`, multi-entry layouts, environment variable interpolation, `after:` chains — see [Scenario file format](../build/scenario-files.md).
+For the full file reference — `defaults:`, multi-entry layouts, environment variable interpolation, and `after:` chains — see [Scenario file format](../build/scenario-files.md).
 
 ## Generator
 
-A **generator** produces the value for each tick of a scenario. Sonda ships eight core metric generators (`constant`, `sine`, `sawtooth`, `uniform`, `sequence`, `step`, `spike`, `csv_replay`) and a handful of operational aliases (`steady`, `flap`, `saturation`, `leak`, `degradation`, `spike_event`) that translate into the core eight at config load time. For logs, the `template` generator builds messages from templates and field pools. Pick the generator that matches the shape you're modelling.
+A **generator** produces the value for each tick of a scenario. Sonda includes eight numeric generators: `constant`, `sine`, `sawtooth`, `uniform`, `sequence`, `step`, `spike`, and `csv_replay`. Each one produces a different pattern. For example, `sine` produces cyclical signals, `step` produces level changes, and `spike` produces transient anomalies.
 
-A sine wave between 0 and 100, period of 10 seconds:
+For logs, the `template` generator builds messages from templates and field pools. Choose the generator that matches the pattern you want to model.
+
+!!! info "Shortcut generator names"
+    Sonda also recognises six shortcut names for common combinations: `steady`, `flap`, `saturation`, `leak`, `degradation`, and `spike_event`. Each one is equivalent to one of the eight generators above with preset defaults. See [Generators — shortcuts](../build/generators.md#operational-aliases) for the mapping.
+
+The example below produces a sine wave between 0 and 100, with a period of 10 seconds:
 
 ```yaml title="cpu-sine.yaml"
 version: 2
@@ -70,13 +86,13 @@ cpu_usage 79.38926261462366 1774277939580
 cpu_usage 90.45084971874738 1774277940081
 ```
 
-For the full generator catalog with parameter tables and shape diagrams, see [Generators](../build/generators.md).
+For the full generator catalog with parameter tables and value-pattern diagrams, see [Generators](../build/generators.md).
 
 ## Encoder
 
-An **encoder** turns the value the generator produced into bytes on the wire. The same `cpu_usage` metric can land in your backend as Prometheus text, JSON Lines, InfluxDB line protocol, OTLP protobuf, or syslog — only the encoder changes. Default for metrics is `prometheus_text`; default for logs is `json_lines`.
+An **encoder** converts the value the generator produced into bytes on the wire. You can send the same `cpu_usage` metric as Prometheus text, JSON Lines, InfluxDB line protocol, OTLP protobuf, or syslog text. Only the encoder changes. JSON Lines means one JSON object per line. The default encoder for metrics is `prometheus_text`. The default for logs is `json_lines`.
 
-Swap the encoder to JSON Lines:
+The example below replaces the encoder with JSON Lines:
 
 ```yaml title="cpu-json.yaml (encoder block)"
 defaults:
@@ -93,9 +109,12 @@ For the full encoder catalog including precision rules, feature flags, and `Cont
 
 ## Sink
 
-A **sink** delivers the encoded bytes to a destination. `stdout` is the default; `file` writes to disk; `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, and `udp` ship to real backends. Each sink has its own parameter shape — batching thresholds, URLs, headers, TLS, SASL. Batching matters at high event rates so you don't open one HTTP call per event; TLS matters when your sink is reachable on the internet rather than on a private network.
+A **sink** delivers the encoded bytes to a destination. `stdout` is the default. `file` writes to disk. The `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`, and `udp` sinks send data to real backends. Each sink has its own parameters:
 
-Swap stdout for HTTP POST to a VictoriaMetrics import endpoint:
+- **Batching** groups many events into one request. Tune it when the event rate is high enough that one HTTP call per event becomes expensive.
+- **TLS and SASL** secure the connection. Configure them when the sink is reachable over the internet or requires broker authentication.
+
+The example below replaces stdout with HTTP POST to a VictoriaMetrics import endpoint:
 
 ```yaml title="cpu-push.yaml (sink block)"
 defaults:
@@ -105,17 +124,17 @@ defaults:
     content_type: "text/plain"
 ```
 
-`sonda run` accepts `--sink`, `--endpoint`, and `--encoder` flags so you can repoint the same YAML at a different destination without editing the file. For the full sink catalog including retry, batching, TLS and SASL, see [Sinks](../build/sinks.md).
+`sonda run` accepts `--sink`, `--endpoint`, and `--encoder` flags. You can use them to send the same YAML to a different destination without editing the file. For the full sink catalog including retry, batching, TLS, and SASL, see [Sinks](../build/sinks.md).
 
 ## Putting it together
 
-Each concept stands on its own; combine them and you have everything Sonda does. The same `hello.yaml` you started with mixes all four:
+The four parts are independent. Combine them and you have everything Sonda does. The same `hello.yaml` you started with uses all four:
 
-| Concept | `hello.yaml` field | What you change to alter behavior |
-|---------|--------------------|------------------------------------|
+| Concept | `hello.yaml` field | What to change |
+|---------|--------------------|----------------|
 | Scenario file | `version`, `kind`, `defaults`, `scenarios` | Add entries, share defaults |
-| Generator | `generator.type` | Shape of the value over time |
+| Generator | `generator.type` | Value pattern over time |
 | Encoder | `encoder.type` | Wire format |
 | Sink | `sink.type`, `sink.url` | Destination |
 
-Now you know enough to read the rest of the docs. Next up: [send your scenario to a real backend](send-to-a-backend.md) — Prometheus remote-write, Loki, or OTLP — without leaving your laptop.
+You now know enough to read the rest of the docs. Next: [send your scenario to a real backend](send-to-a-backend.md) — Prometheus remote-write, Loki, or OTLP — without leaving your laptop.

@@ -1,43 +1,10 @@
 # Concepts
 
-## What Sonda is
+This page covers how Sonda's four parts nest, how packs let you reuse metric definitions, and what a multi-scenario run looks like. It assumes you have read [Your first scenario](../get-started/your-first-scenario.md), which introduces the scenario file, generator, encoder, and sink.
 
-Sonda is a synthetic telemetry generator. You write a YAML recipe that says *"pretend to be a CPU metric that oscillates between 40% and 80%"* or *"pretend to be a router emitting interface counters"* or *"pretend to be an application emitting JSON logs at 100/sec"* — Sonda produces realistic-looking data shaped exactly like the real thing and ships it to your sinks (stdout, a file, Prometheus remote write, Loki, Kafka, OTLP). You point your dashboards, alert rules, and ingestion pipelines at the synthetic stream and exercise them without needing real production traffic.
+## How the parts nest
 
-The mental model in one sentence: **Sonda turns YAML recipes into telemetry streams.**
-
-## A first example
-
-A scenario is a YAML file you hand to `sonda run`. The smallest useful one is six lines of substance:
-
-```yaml title="hello.yaml"
-version: 2
-kind: runnable
-defaults:
-  rate: 1
-  duration: 30s
-  encoder:
-    type: prometheus_text
-  sink:
-    type: stdout
-scenarios:
-  - id: cpu
-    signal_type: metrics
-    name: demo_cpu
-    generator:
-      type: constant
-      value: 42
-```
-
-```bash
-sonda run hello.yaml
-```
-
-That file emits one Prometheus-formatted metric named `demo_cpu` with a constant value of `42`, once per second, for thirty seconds, printed to stdout. Reading top to bottom: `version: 2` and `kind: runnable` mark this as a scenario file Sonda can run. The `defaults:` block sets the cadence (`rate: 1`), how long to run (`duration: 30s`), the wire format — Prometheus exposition format (Prometheus's plain-text metric format; see the [glossary](../reference/glossary.md#prometheus-exposition-format)) via `prometheus_text` — and the [sink](../reference/glossary.md#sink) (`stdout`). The `scenarios:` block lists what to emit — here, exactly one item, a constant-valued metric.
-
-That one YAML file demonstrates two of the four concepts Sonda is built around. The whole picture is four nouns, each one solving a problem the previous one creates.
-
-## The four pieces
+A catalog is a directory of scenario files. Each scenario file lists one or more entries. Each entry either declares its own generator, encoder, and sink, or references a pack. A pack is a separate file that holds a reusable bundle of metric definitions.
 
 ```
 catalog/                       <-- a directory of YAML files you point sonda at
@@ -54,26 +21,34 @@ catalog/                       <-- a directory of YAML files you point sonda at
         - name: ifHCOutOctets    referenced from other scenarios by name
 ```
 
-The pieces nest. A catalog directory contains scenario files. Each scenario file contains one or more entries. An entry either declares its own generator/encoder/sink or references a pack. The four sections below introduce each concept in order, starting from what `hello.yaml` already showed.
+The next sections cover each part, starting from what `hello.yaml` in the get-started guide already showed.
 
 ## Scenario
 
-A **scenario file** (see the [glossary](../reference/glossary.md#scenario)) is the YAML unit `sonda run` consumes. `hello.yaml` above is a complete one. Every scenario file declares two top-level fields:
+A **scenario file** (see the [glossary](../reference/glossary.md#scenario)) is the YAML unit `sonda run` consumes. Every scenario file declares two top-level fields:
 
 - `version: 2` — the format version.
-- `kind: runnable` — a file you can execute. `kind: composable` marks a file as a pack instead (see [Pack](#pack) below).
+- `kind: runnable` — a file you can execute. `kind: composable` marks the file as a pack instead (see [Pack](#pack) below).
 
-The other top-level fields are `defaults:` (shared settings) and `scenarios:` (the list of entries). The `kind:` distinction is the rule of thumb: `kind: runnable` makes the file executable; `kind: composable` makes it a pack you reference from other files. For the full top-level field reference — catalog metadata, environment-variable interpolation, sink-error policy — see [Scenario Files](scenario-files.md).
+The other top-level fields are `defaults:` (shared settings) and `scenarios:` (the list of entries). The rule is simple: `kind: runnable` makes the file executable; `kind: composable` makes it a pack you reference from other files. For the full top-level field reference, including catalog metadata, environment-variable interpolation, and [sink-error policy](../reference/glossary.md#sink-error-policy), see [Scenario Files](scenario-files.md).
 
 ## Entry
 
-An **entry** is one item under the `scenarios:` list. Each entry emits exactly one signal — one metric series, one log stream, one histogram (distribution across buckets — see the [glossary](../reference/glossary.md#histogram)), one summary (distribution observed via quantile sampling — see the [glossary](../reference/glossary.md#summary)). `hello.yaml` had one entry; that is the floor, not the ceiling.
+An **entry** is one item under the `scenarios:` list. Each entry emits exactly one signal. The signal can be a metric series, a log stream, a histogram, or a summary. Histograms and summaries are different ways of representing distributions. See the glossary entries for [histogram](../reference/glossary.md#histogram) and [summary](../reference/glossary.md#summary) for the details.
 
-Why scenario files have multiple entries: production systems emit many signals at once. A single process typically exposes dozens of metrics in parallel (CPU, memory, request rate, error rate, queue depth, ...). To model that realistically, the scenario file declares one entry per metric and they all run together on shared defaults. Each entry needs at minimum a `signal_type:` (the category — `metrics`, `logs`, `histogram`, or `summary`), a `name:` (or a `pack:` reference), and the [generator](../reference/glossary.md#generator) block that matches its signal type: `generator:` for metrics, `log_generator:` for logs, `distribution:` for histograms and summaries. Everything else — `rate`, `duration`, [`encoder`](../reference/glossary.md#encoder), [`sink`](../reference/glossary.md#sink), `labels` — inherits from `defaults:` unless the entry overrides it.
+A scenario file can hold one entry or many. Real systems emit many signals at once. A single process exposes CPU, memory, request rate, error rate, and queue depth in parallel. To model that, the scenario file declares one entry per metric and they all run together on shared defaults.
 
-A four-entry node-exporter-shaped file:
+Each entry needs at minimum:
 
-```yaml title="node-exporter-shape.yaml"
+- `signal_type:` — the category: `metrics`, `logs`, `histogram`, or `summary`.
+- `name:` (or a `pack:` reference).
+- The [generator](../reference/glossary.md#generator) block for the signal type: `generator:` for metrics, `log_generator:` for logs, `distribution:` for histograms and summaries.
+
+Everything else — `rate`, `duration`, [`encoder`](../reference/glossary.md#encoder), [`sink`](../reference/glossary.md#sink), `labels` — comes from `defaults:` unless the entry overrides it.
+
+The example below declares four entries that imitate a node exporter. Node Exporter is the Prometheus agent that exposes host metrics like CPU, memory, disk, and network as a single HTTP endpoint.
+
+```yaml title="node-exporter-style.yaml"
 version: 2
 kind: runnable
 defaults:
@@ -125,15 +100,15 @@ scenarios:
       interval_secs: 45
 ```
 
-Four metrics, four generators, one shared encoder + sink + labels block — all four series scrape together as if they came from a single exporter. For the per-entry field reference (generators, schedules, labels, encoders, sinks, `after:` / `while:`) see [Scenario Fields](../reference/scenario-fields.md).
+The four entries share one encoder, one sink, and one `labels` block. To a Prometheus scrape, the four series appear as if they came from a single endpoint. For the per-entry field reference covering generators, schedules, labels, encoders, sinks, `after:`, and `while:`, see [Scenario Fields](../reference/scenario-fields.md).
 
 ## Pack
 
-The node-exporter file above declared four entries by hand. That is fine for four metrics. It gets old when you want to simulate a real exporter that exposes thirty metrics, and worse when you want twenty instances of that exporter across a fleet. Copy-pasting metric names is a recipe for typos and drift.
+The file above declared four entries by hand. That is fine for four metrics. Writing every metric by hand becomes tedious when a real exporter exposes thirty metrics. It is worse when you want twenty copies of that exporter across a fleet. Copy-pasting metric names causes typos and drift between files over time.
 
-A **pack** (see the [glossary](../reference/glossary.md#pack)) is a reusable bundle of metric names, label schemas, and sensible default generators per metric. You express a pack as a file with `kind: composable` and store it in the same directory as your runnable scenarios. A runnable entry references a pack with `pack: <name>`, and `sonda run` expands the reference at parse time into one entry per metric in the pack. Author the pack once; reference it from every scenario that uses that shape.
+A **pack** (see the [glossary](../reference/glossary.md#pack)) is a reusable bundle of metric names, label schemas, and default generators per metric. You define a pack as a file with `kind: composable` and store it in the same directory as your runnable scenarios. A runnable entry references a pack with `pack: <name>`. Sonda then expands the reference into one entry per metric in the pack. Define the pack once; reference it from every scenario that needs that pattern.
 
-Side-by-side — writing five SNMP interface entries by hand versus referencing one pack:
+The tabs below show the same five-metric SNMP interface entry written two ways. The "By hand" tab repeats the metric names, generators, and labels for every entry. The "With a pack" tab declares one entry that references a pack.
 
 === "By hand"
 
@@ -196,11 +171,11 @@ Side-by-side — writing five SNMP interface entries by hand versus referencing 
           ifName: Gi0/0/0
     ```
 
-The pack file sits in the same directory as the runnable file. At parse time, `sonda run` reads `pack: telegraf_snmp_interface`, looks it up, and produces one prepared entry per metric — same names, same shared labels, ready to scrape. To author your own pack and read the full field reference, see [Metric Packs](catalogs-and-packs.md).
+The pack file sits in the same directory as the runnable file. When `sonda run` reads `pack: telegraf_snmp_interface`, it looks up the pack and produces one entry per metric. The metric names and shared labels match the by-hand version. To write your own pack and read the full field reference, see [Metric Packs](catalogs-and-packs.md).
 
 ## Catalog
 
-Once you have more than one scenario file — and especially once packs enter the picture — Sonda needs to know where to look. A **catalog** (see the [glossary](../reference/glossary.md#catalog)) is a directory of scenario files you point `sonda` at with `--catalog <dir>`. Sonda walks the directory, indexes each file by its `name:` (or by filename if `name:` is omitted), and lets you run anything in it with `sonda run @name`. Runnable files and packs live side by side — the `kind:` field tells Sonda which is which.
+Once you have more than one scenario file, Sonda needs to know where to look. A **catalog** (see the [glossary](../reference/glossary.md#catalog)) is a directory of scenario files you point `sonda` at with `--catalog <dir>`. Sonda walks the directory, indexes each file by its `name:` field, or by filename when `name:` is missing. You can then run any file with `sonda run @name`. Runnable files and packs live side by side; the `kind:` field tells Sonda which is which.
 
 ```
 ~/sonda-catalog/
@@ -214,11 +189,11 @@ sonda --catalog ~/sonda-catalog list
 sonda --catalog ~/sonda-catalog run @cpu-spike
 ```
 
-Packs live in the catalog but you do not run them directly — they are only meaningful when a runnable entry references them by name. The catalog is yours: keep it in the same git repo as your alert rules and dashboards, so the scenarios that exercise those rules ship alongside them. You can keep the catalog flat or nest subdirectories — Sonda walks the tree. For the discovery rules, `sonda list` / `sonda show` output, and the full directory contract, see [Catalogs](catalogs-and-packs.md).
+Packs live in the catalog but you do not run them directly. They only take effect when a runnable entry references them by name. The catalog is yours: keep it in the same git repo as your alert rules and dashboards. Scenarios then version alongside the rules they test. The catalog can be flat or nested into subdirectories; Sonda walks the tree. For the discovery rules, `sonda list` and `sonda show` output, and the full directory contract, see [Catalogs](catalogs-and-packs.md).
 
-## Defaults & overrides
+## Defaults and overrides
 
-The `defaults:` block factors out fields that would otherwise repeat on every entry — `rate`, `duration`, `encoder`, `sink`, `labels`, `on_sink_error`. Each `scenarios:` entry only declares what differs.
+The `defaults:` block factors out fields that would otherwise repeat on every entry: `rate`, `duration`, `encoder`, `sink`, `labels`, and `on_sink_error`. Each `scenarios:` entry then only declares what differs from the defaults.
 
 ```yaml title="defaults-and-overrides.yaml"
 version: 2
@@ -250,11 +225,11 @@ scenarios:
     generator: { type: constant, value: 1 }
 ```
 
-Two entries inherit `rate: 10`; the third overrides to `rate: 1`. Every entry shares the same encoder, sink, and `job` label. This is the everyday convenience once a scenario file has more than one entry.
+Two entries inherit `rate: 10`. The third overrides to `rate: 1`. Every entry shares the same encoder, sink, and `job` label. This is the everyday convenience once a scenario file has more than one entry.
 
 ## Multi-scenario runs
 
-When a scenario file has multiple entries, every entry runs on its own thread, concurrently, each on its own clock. They share `defaults:` by default but can override anything per entry. A common pattern: every entry pushes to the same Prometheus remote-write sink, so one `sonda run` populates a backend with a realistic mix of metrics + logs + histograms from one process.
+A scenario file can mix signal types. The example below declares one metric, one histogram, and one log stream in the same file. The metric and histogram share a Prometheus remote-write sink. The log stream sends to Loki instead.
 
 ```yaml title="mixed-signals.yaml"
 version: 2
@@ -290,12 +265,17 @@ scenarios:
         - message: "request handled"
 ```
 
-Three signal types, three threads, two sinks — metrics + histogram go to Prometheus, logs go to Loki. For entries that depend on each other in time (one starts only after another crosses a threshold; one emits only while another is in a given state), see `after:` and `while:` on the [Scenario Files](scenario-files.md#temporal-chains-with-after) page. When the upstream signal is itself driven by a separate POST to a running [`sonda-server`](../deploy/server.md), the `while:` clause supports cross-POST refs — see [Cross-POST `while:` refs](scenario-files.md#cross-post-while-refs). For a hands-on walkthrough, see the [Multi-Scenario Runs](scenario-files.md) tutorial.
+Three signal types and two sinks, all from one `sonda run`. The metric and histogram reach Prometheus; the logs reach Loki.
+
+For entries that depend on each other in time, see `after:` and `while:` on the [Scenario Files](scenario-files.md#temporal-chains-with-after) page. The `after:` clause starts an entry once another crosses a threshold. The `while:` clause emits only while another entry is in a given state.
+
+!!! info "Advanced: upstream lives in a different POST"
+    When you run Sonda as an HTTP server, the upstream a `while:` clause depends on can arrive in a separate POST request. The clause then references the upstream by name across requests. See [Cross-POST `while:` refs](scenario-files.md#cross-post-while-refs).
 
 ## What next
 
-- [**Scenario Files**](scenario-files.md) — the full file-format reference: every top-level field, `defaults:`, `after:` / `while:` temporal chains, environment variable interpolation, sink-error policy.
-- [**Scenario Fields**](../reference/scenario-fields.md) — per-entry field reference: generators, schedules, labels, encoders, sinks.
-- [**Catalogs**](catalogs-and-packs.md) — directory layout, `sonda list`, `sonda show`.
-- [**Metric Packs**](catalogs-and-packs.md) — authoring composable packs.
-- [**Multi-Scenario Runs**](scenario-files.md) — walkthrough of a file with several signals running concurrently.
+- [**Scenario Files**](scenario-files.md) — full file-format reference, including `defaults:`, `after:` and `while:` chains, and [sink-error policy](../reference/glossary.md#sink-error-policy).
+- [**Scenario Fields**](../reference/scenario-fields.md) — per-entry fields: generators, schedules, labels, encoders, sinks.
+- [**Catalogs and packs**](catalogs-and-packs.md) — directory layout, `sonda list`, `sonda show`, and how to write your own packs.
+</content>
+</invoke>

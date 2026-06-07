@@ -1,6 +1,6 @@
 ---
 title: Getting started with Sonda
-description: Install Sonda, stream your first synthetic metric, and send it to a real backend in under five minutes.
+description: Install Sonda, stream your first synthetic metric to stdout in under five minutes.
 hide:
   - toc
 ---
@@ -11,11 +11,13 @@ hide:
 
 <h1 class="sonda-section-hero__title">Get started with Sonda</h1>
 
-<p class="sonda-section-hero__subtitle">Install Sonda, stream your first synthetic metric to stdout, then point the sink at a real Prometheus or Loki backend. No YAML to write yourself — <code>sonda new</code> generates a starter file.</p>
+<p class="sonda-section-hero__subtitle">Install Sonda, generate a starter YAML file with <code>sonda new</code>, and stream a synthetic metric to stdout. You do not need to write YAML by hand.</p>
 
 </div>
 
 ## Installation
+
+Pick the option that matches your environment. Each tab shows a single command.
 
 === "Install script (Linux/macOS)"
 
@@ -23,7 +25,7 @@ hide:
     curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
     ```
 
-    Pin a version with `SONDA_VERSION=v1.9.0` before the pipe.
+    Set a specific version with `SONDA_VERSION=v1.9.0` before the `| sh`.
 
 === "Cargo"
 
@@ -41,10 +43,8 @@ hide:
       run my-scenario.yaml
     ```
 
-    The image's entrypoint runs `sonda-server` by default. When you pass a CLI
-    subcommand as the first argument (`run`, `list`, `show`, `new`), it dispatches
-    to the `sonda` CLI instead — which is what the example above does, since the
-    first argument is `run`.
+    ??? note "What the image runs"
+        The image starts `sonda-server` by default. When the first argument is a CLI subcommand (`run`, `list`, `show`, `new`), the image runs the `sonda` CLI instead. The example above uses `run`, so it runs the CLI. See [Docker](../deploy/docker.md) for details.
 
 === "From source"
 
@@ -54,22 +54,26 @@ hide:
     cargo build --release -p sonda
     ```
 
-    Binary lands at `target/release/sonda`.
+    The binary is at `target/release/sonda`.
 
-Check it works: `sonda --version` should print the installed version.
+Check the install: `sonda --version` should print the installed version.
 
 ## Your first metric
 
-Sonda runs YAML scenario files. A scenario file is the unit `sonda run` consumes — see the [glossary](../reference/glossary.md#scenario). Generate one with `sonda new --template`, save it, and run it:
+Sonda reads YAML files called **scenarios**. A scenario describes the telemetry you want to generate. You do not need to write one by hand — `sonda new --template` generates a starter file.
 
-!!! info "Terminology"
-    The YAML file is a **scenario file**. Each item under `scenarios:` is an **entry**. We use both terms throughout the docs — "scenario file" when we mean the whole document, "entry" when we mean one item in the list. Plain "scenario" appears when the meaning is clear from context.
+Generate the file:
 
 ```bash
 sonda new --template -o hello.yaml
 ```
 
-The generated file declares the file `version` (use `2`), the `kind` (`runnable` means you can `sonda run` it), shared `defaults` (rate, duration, encoder, sink — applied to every entry), and one `scenarios:` entry that emits a metric called `example_metric` at value `1`. We walk through what each field does in [Your first scenario](your-first-scenario.md).
+The file is short. The four field names you will see are:
+
+- `version: 2` — the scenario file format Sonda reads.
+- `kind: runnable` — marks the file as something you can run with `sonda run`. Other kinds exist for reusable bundles, but you do not need them yet.
+- `defaults:` — shared settings (rate, duration, encoder, sink) for every entry below.
+- `scenarios:` — the list of entries. The starter file has one entry that emits a metric called `example_metric` at value `1.0`.
 
 ```yaml title="hello.yaml"
 version: 2
@@ -91,9 +95,16 @@ scenarios:
       value: 1.0
 ```
 
+Run it for five seconds:
+
 ```bash
 sonda run hello.yaml --duration 5s
 ```
+
+Sonda prints two kinds of output:
+
+- **Status lines** on stderr. They start with `▶` when the scenario starts and `■` when it finishes. They report rate, encoder, sink, event count, and bytes sent.
+- **Data lines** on stdout. They contain the actual metric samples.
 
 ```text title="stderr"
 ▶ example_metric  signal_type: metrics | rate: 1/s | encoder: prometheus_text | sink: stdout | duration: 5s
@@ -108,186 +119,18 @@ example_metric 1 1774277937023
 ■ example_metric  completed in 5.0s | events: 5 | bytes: 130 B | errors: 0
 ```
 
-Each stdout line is Prometheus exposition format (Prometheus's plain-text metric format — see the [glossary](../reference/glossary.md#prometheus-exposition-format)): `metric_name value timestamp_ms`.
-Banners go to stderr; pipe stdout and only data flows through. Long runs show a live
-progress line between the banners (see
-[CLI Reference -- Live progress](../reference/cli-flags.md#live-progress)).
+Each data line is in Prometheus exposition format: `metric_name value timestamp_ms`. See the [glossary](../reference/glossary.md#prometheus-exposition-format) for the format reference.
 
-!!! tip "Suppress banners"
-    `sonda -q run hello.yaml` (or `--quiet`) silences the banners.
+Because the status lines go to stderr, you can pipe stdout to another process and receive only the data.
 
-Shape the signal by swapping the `generator:` block — the producer of the value emitted on every tick — for a sine wave, and add a few labels (key-value tags attached to each event):
+!!! tip "Hide the status lines"
+    `sonda -q run hello.yaml` (or `--quiet`) removes the status lines on stderr.
 
-```yaml title="cpu-sine.yaml"
-version: 2
-kind: runnable
-defaults:
-  rate: 2
-  duration: 5s
-  encoder:
-    type: prometheus_text
-  sink:
-    type: stdout
-  labels:
-    host: web-01
-scenarios:
-  - id: cpu_usage
-    signal_type: metrics
-    name: cpu_usage
-    generator:
-      type: sine
-      amplitude: 50.0
-      offset: 50.0
-      period_secs: 10
-```
+## Where to next
 
-```bash
-sonda run cpu-sine.yaml
-```
+You have a metric streaming. The next pages take this further, one topic at a time.
 
-```text title="Output"
-cpu_usage{host="web-01"} 50 1774277938576
-cpu_usage{host="web-01"} 65.45084971874736 1774277939081
-cpu_usage{host="web-01"} 79.38926261462366 1774277939580
-cpu_usage{host="web-01"} 90.45084971874738 1774277940081
-...
-```
-
-The wave oscillates between 0 and 100 with a 10-second period. The
-[Tutorial -- Generators](../build/generators.md) covers all eight generators.
-
-## A larger scenario file
-
-The same shape lets you share defaults across many entries and add scheduling like
-gaps and bursts:
-
-```yaml title="basic-metrics.yaml"
-version: 2
-kind: runnable
-
-defaults:
-  rate: 1000
-  duration: 30s
-  encoder:
-    type: prometheus_text
-  sink:
-    type: stdout
-  labels:
-    hostname: t0-a1
-    zone: eu1
-
-scenarios:
-  - id: interface_oper_state
-    signal_type: metrics
-    name: interface_oper_state
-    generator:
-      type: sine
-      amplitude: 5.0
-      period_secs: 30
-      offset: 10.0
-    gaps:
-      every: 2m
-      for: 20s
-```
-
-```bash
-sonda run basic-metrics.yaml --duration 3s
-```
-
-```text title="Output"
-interface_oper_state{hostname="t0-a1",zone="eu1"} 10 1774277944133
-interface_oper_state{hostname="t0-a1",zone="eu1"} 10.00104719754354 1774277944134
-interface_oper_state{hostname="t0-a1",zone="eu1"} 10.002094395041146 1774277944135
-...
-```
-
-## Generating logs
-
-Structured log events live on a `signal_type: logs` entry with a `log_generator:` block:
-
-```yaml title="hello-logs.yaml"
-version: 2
-kind: runnable
-defaults:
-  rate: 2
-  duration: 3s
-  encoder:
-    type: json_lines
-  sink:
-    type: stdout
-scenarios:
-  - id: app_logs
-    signal_type: logs
-    name: app_logs
-    log_generator:
-      type: template
-      templates:
-        - message: "synthetic log event"
-```
-
-```bash
-sonda run hello-logs.yaml
-```
-
-```json title="Output"
-{"timestamp":"2026-03-23T14:59:04.840Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
-{"timestamp":"2026-03-23T14:59:05.345Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
-{"timestamp":"2026-03-23T14:59:05.845Z","severity":"info","message":"synthetic log event","labels":{},"fields":{}}
-...
-```
-
-Field pools, severity weights, and multiple templates are in the
-[Tutorial -- Generating logs](../build/generators.md).
-
-## Sending to a backend
-
-Sonda delivers events through a **sink** — the destination component. Edit the `sink:` block in your YAML to push data somewhere other than stdout, or override it from the CLI with `--sink`, `--endpoint`, and `--encoder`. The example below targets a [Prometheus remote-write](../reference/glossary.md#remote_write) endpoint, which expects the `remote_write` encoder and the `remote_write` sink together (the encoder produces Prometheus's protobuf+snappy payload, the sink delivers it over HTTP):
-
-```yaml title="cpu-remote-write.yaml"
-encoder:
-  type: remote_write
-sink:
-  type: remote_write
-  url: "http://localhost:8428/api/v1/write"
-```
-
-```bash
-# Send the same scenario to a different remote-write endpoint without editing the file
-sonda run cpu-remote-write.yaml \
-  --endpoint http://victoriametrics:8428/api/v1/write
-```
-
-See [Tutorial -- Sinks](../build/sinks.md) for every sink type.
-
-## Catalogs and `@name`
-
-A **catalog** is a directory of scenario files. Point `--catalog <dir>` at it and you can run, list, or show any file in the catalog by name with `@name`:
-
-```bash title="./my-catalog"
-sonda list --catalog ./my-catalog
-sonda show @cpu-spike --catalog ./my-catalog
-sonda run @cpu-spike --catalog ./my-catalog
-```
-
-Packs — reusable bundles of metric specs — also live in a catalog, but you don't run them directly. See [Catalogs and packs](../build/catalogs-and-packs.md) for the full mechanics: directory layout, the `kind: composable` shape, and how a runnable entry references a pack with `pack: <name>`.
-
-## What next
-
-**[Your first scenario](your-first-scenario.md)** walks through every generator, encoder, sink, and advanced feature step by step. Skip writing YAML from scratch:
-
-- **`sonda new`** -- interactive starter for a scenario file; non-interactive with
-  `--template` or `--from <csv>` ([CLI Reference](../reference/cli-flags.md#sonda-new)).
-- **[Author your own catalog](../build/catalogs-and-packs.md)** -- organize scenarios and composable
-  packs so you can reference them with `@name`.
-- **[Metric Packs](../build/catalogs-and-packs.md)** -- composable bundles for Telegraf SNMP and
-  node_exporter that match real-world schemas.
-- **[CSV Import](../import/from-csv.md)** -- turn existing CSV data into a portable scenario
-  with `sonda new --from <csv>`.
-
-Reference pages:
-
-- [**Scenario Files**](../build/scenario-files.md) -- file shape, defaults, `after:` chains
-- [**Scenario Fields**](../reference/scenario-fields.md) -- per-entry field reference
-- [**CLI Reference**](../reference/cli-flags.md) -- every flag for `run`, `list`, `show`, `new`
-- [**Docker**](../deploy/docker.md) -- containers and Compose
-- [**Troubleshooting**](../reference/troubleshooting.md) -- common issues
+- **[Your first scenario](your-first-scenario.md)** — the four parts of a scenario (file, generator, encoder, sink) with small YAML examples for each.
+- **[Send to a real backend](send-to-a-backend.md)** — change the `sink:` block to reach Prometheus `remote_write` or Loki. Includes `docker run` commands for each backend.
+- **[Generators](../build/generators.md)** — the eight value patterns (`sine`, `step`, `spike`, and others), with parameters for each.
+- **[CLI Reference](../reference/cli-flags.md)** — every flag for `run`, `list`, `show`, and `new`.
