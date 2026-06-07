@@ -450,7 +450,7 @@ When `columns` is omitted, Sonda reads the CSV header and auto-discovers column 
 
 ## Operational aliases
 
-Writing `type: sawtooth` with `min`, `max`, and `period_secs` works, but it forces you to think in signal-processing terms. Operational aliases let you describe *what is happening* — a memory leak, a flapping interface, a healthy baseline — and Sonda translates that into the right generator with reasonable defaults.
+Writing `type: sawtooth` with `min`, `max`, and `period_secs` works, but you have to translate operational behaviour into mathematical parameters. Operational aliases let you describe *what is happening* — a memory leak, a flapping interface, a healthy baseline — and Sonda translates that into the right generator with reasonable defaults.
 
 Aliases are shortcuts. At config load time, each alias is translated into a concrete generator (and optionally jitter settings). The runtime never sees aliases; everything runs through the same generator engine. Every existing generator type still works unchanged.
 
@@ -513,7 +513,7 @@ At `rate: 1`, this produces 10 ticks of `1.0` followed by 5 ticks of `0.0`, then
 
 #### `enum:` shortcut
 
-For operator-facing metrics, use the `enum:` shortcut over hand-tuned values. It selects a `(up_value, down_value)` pair aligned with gNMI / openconfig conventions, so dashboards and alert rules built around standard state codes (UP=1, DOWN=2, ESTABLISHED=6, IDLE=1) keep working unchanged. `enum: oper_state` is the recommended starting point for any interface-state or operational-status metric.
+For metrics that operators read directly, use the `enum:` shortcut over hand-tuned values. It selects a `(up_value, down_value)` pair aligned with gNMI / openconfig conventions, so dashboards and alert rules built around standard state codes (UP=1, DOWN=2, ESTABLISHED=6, IDLE=1) keep working unchanged. `enum: oper_state` is the recommended starting point for any interface-state or operational-status metric.
 
 | `enum:` value | `up_value` | `down_value` | Use case |
 |---|---|---|---|
@@ -531,7 +531,7 @@ generator:
   enum: oper_state    # up_value=1.0, down_value=2.0 -- no need to spell them out
 ```
 
-`enum:` is mutually exclusive with explicit `up_value` / `down_value`. Combining them is rejected at compile time with the message `flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one`.
+`enum:` is mutually exclusive with explicit `up_value` / `down_value`. Combining them is rejected when the scenario is loaded, with the message `flap: 'enum' is mutually exclusive with explicit 'up_value'/'down_value' — pick one`.
 
 ??? tip "Custom values"
     When the metric does not match a documented enum, use explicit `up_value` and `down_value` instead. For example, a link that alternates between full speed and degraded throughput:

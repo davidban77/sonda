@@ -36,7 +36,7 @@ hide:
 
 ## Try it
 
-Two commands. `sonda new --template` creates a runnable starter file, and `sonda run` runs it.
+A Sonda **scenario** is a YAML file with three parts: a **generator** that produces values, an **encoder** that formats them, and a **sink** that sends them to a destination. Two commands set one up: `sonda new --template` creates a starter file, and `sonda run` runs it.
 
 ```bash
 sonda new --template -o hello.yaml
