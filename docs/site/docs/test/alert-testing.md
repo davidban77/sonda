@@ -93,10 +93,10 @@ curl "http://localhost:8428/api/v1/query?query=cpu_usage"
 
 ## Scrape model instead of push
 
-If you prefer the Prometheus pull model, sonda-server exposes a scrape endpoint for each running scenario.
+If you prefer the Prometheus pull model, `sonda-server` exposes a scrape endpoint for each running scenario. The install script and Docker image both include the `sonda-server` binary.
 
 ```bash
-cargo run -p sonda-server -- --port 8080
+sonda-server --port 8080
 
 # In another terminal:
 curl -X POST -H "Content-Type: text/yaml" \

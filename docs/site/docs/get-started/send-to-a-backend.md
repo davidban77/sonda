@@ -19,7 +19,7 @@ The pattern is the same for every backend. You change the `encoder:` and `sink:`
 !!! tip "About the `url:` field"
     The `url:` is resolved by the process that runs the scenario. If you POST a YAML to a containerised `sonda-server`, `http://localhost:8428` resolves to the container itself, not your host machine. The loopback address `localhost` always points to the current process's own machine, so a container sees its own internal network. See [Networking](../deploy/server.md#networking) for the full table.
 
-For Kafka or other sinks, see [Sinks](../build/sinks.md). For OTLP, see [Encoders — `otlp`](../build/encoders.md#otlp); the OTLP encoder requires a Cargo feature flag and is not in the default release binary.
+For Kafka or other sinks, see [Sinks](../build/sinks.md). The OTLP encoder is not included in the pre-built binaries from the install script or Docker image. To use OTLP, you need a custom build of Sonda — see [Encoders — `otlp`](../build/encoders.md#otlp) for the details.
 
 === "Prometheus remote_write"
 

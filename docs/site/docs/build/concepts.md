@@ -25,12 +25,9 @@ The next sections cover each part, starting from what `hello.yaml` in the get-st
 
 ## Scenario
 
-A **scenario file** (see the [glossary](../reference/glossary.md#scenario)) is the YAML unit `sonda run` consumes. Every scenario file declares two top-level fields:
+A **scenario file** (see the [glossary](../reference/glossary.md#scenario)) is the YAML unit `sonda run` consumes. [Your first scenario](../get-started/your-first-scenario.md#scenario-file) covers the four top-level fields (`version`, `kind`, `defaults`, `scenarios`).
 
-- `version: 2` — the format version.
-- `kind: runnable` — a file you can execute. `kind: composable` marks the file as a pack instead (see [Pack](#pack) below).
-
-The other top-level fields are `defaults:` (shared settings) and `scenarios:` (the list of entries). The rule is simple: `kind: runnable` makes the file executable; `kind: composable` makes it a pack you reference from other files. For the full top-level field reference, including catalog metadata, environment-variable interpolation, and [sink-error policy](../reference/glossary.md#sink-error-policy), see [Scenario Files](scenario-files.md).
+Two values for `kind:` exist. `kind: runnable` makes the file executable. `kind: composable` makes it a pack you reference from other files (see [Pack](#pack) below). For the full top-level field reference, including catalog metadata, environment-variable interpolation, and [sink-error policy](../reference/glossary.md#sink-error-policy), see [Scenario Files](scenario-files.md).
 
 ## Entry
 

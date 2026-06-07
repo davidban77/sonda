@@ -22,7 +22,12 @@ The next sections cover each part, starting with the minimal example.
 
 ## Scenario file
 
-A **scenario file** is the YAML document `sonda run` reads. The file declares its format with `version: 2` and marks itself as runnable with `kind: runnable`. Shared values like rate, duration, encoder, and sink go under `defaults:`. One or more entries go under `scenarios:`, and each entry emits a single signal — one metric series or one log stream.
+A **scenario file** is the YAML document `sonda run` reads. Every scenario file uses the same four top-level fields:
+
+- `version: 2` — the scenario file format Sonda reads.
+- `kind: runnable` — marks the file as one you can run with `sonda run`. Other kinds exist for reusable bundles, covered in [Concepts](../build/concepts.md).
+- `defaults:` — shared settings like rate, duration, encoder, and sink.
+- `scenarios:` — the list of entries. Each entry emits one signal, such as a metric series or a log stream.
 
 ```yaml title="hello.yaml"
 version: 2

@@ -68,12 +68,7 @@ Generate the file:
 sonda new --template -o hello.yaml
 ```
 
-The file is short. The four field names you will see are:
-
-- `version: 2` — the scenario file format Sonda reads.
-- `kind: runnable` — marks the file as something you can run with `sonda run`. Other kinds exist for reusable bundles, but you do not need them yet.
-- `defaults:` — shared settings (rate, duration, encoder, sink) for every entry below.
-- `scenarios:` — the list of entries. The starter file has one entry that emits a metric called `example_metric` at value `1.0`.
+The file uses Sonda's YAML format. [Your first scenario](your-first-scenario.md) explains each field. For now, you can run the file as is.
 
 ```yaml title="hello.yaml"
 version: 2
