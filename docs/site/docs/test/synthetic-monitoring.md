@@ -1,44 +1,44 @@
-# Synthetic Monitoring
+---
+title: Synthetic monitoring
+description: Run Sonda as a long-lived Kubernetes deployment that emits a known baseline so you can tell "no data" from "data stopped arriving".
+---
 
-Your dashboards look great -- until the data source goes quiet and you stare at flat lines
-wondering if it's a real outage or a broken scrape config. Long-running synthetic monitoring
-gives you a persistent baseline of known metrics flowing through your stack, so you can tell
-"no data" from "data stopped arriving" at a glance.
+# Synthetic monitoring
 
-This guide walks you through deploying `sonda-server` on Kubernetes, submitting scenarios that
-run for hours or days, scraping the generated metrics with Prometheus, and building Grafana
-dashboards to monitor both the synthetic data and Sonda itself.
+This page shows how to run `sonda-server` as a long-lived synthetic monitoring source on Kubernetes. The server emits a known baseline of metrics that Prometheus scrapes. The result lets you distinguish "no data" from "data stopped arriving".
+
+The page covers four tasks:
+
+- Deploy `sonda-server` with the included Helm chart.
+- Submit scenarios that run for hours or days.
+- Scrape the generated metrics with Prometheus.
+- Build Grafana dashboards and watchdog alerts that monitor both the data and Sonda itself.
 
 **What you need:**
 
-- A Kubernetes cluster (local or remote)
-- `kubectl` and `helm` CLI tools installed
-- `curl` and `jq` for API calls
-- Familiarity with Prometheus scraping and Grafana dashboards
-
----
+- A Kubernetes cluster, local or remote.
+- `kubectl` and `helm` installed.
+- `curl` and `jq` for API calls.
+- Familiarity with Prometheus scraping and Grafana dashboards.
 
 ## Set up a local Kubernetes cluster
 
-If you already have a cluster (EKS, GKE, AKS, or an existing local one), skip to
-[Deploy sonda-server](#deploy-sonda-server).
+If you already have a cluster (EKS, GKE, AKS, or a local one), skip to [Deploy sonda-server](#deploy-sonda-server).
 
-For local development and testing, you need a lightweight Kubernetes distribution that runs
-on your workstation. Here are the most practical options:
+For local testing, you need a small Kubernetes distribution. The table lists the common options:
 
 | Tool | Best for | Runs on |
 |------|----------|---------|
-| [kind](https://kind.sigs.k8s.io/) | CI pipelines, fast throwaway clusters | Linux, macOS, Windows (WSL2) |
+| [kind](https://kind.sigs.k8s.io/) | CI pipelines, fast disposable clusters | Linux, macOS, Windows (WSL2) |
 | [k3d](https://k3d.io/) | k3s in Docker, built-in registry support | Linux, macOS, Windows (WSL2) |
 | [minikube](https://minikube.sigs.k8s.io/) | Broad driver support, add-on ecosystem | Linux, macOS, Windows (WSL2) |
 | [OrbStack](https://orbstack.dev/) | Native macOS experience, low resource usage | macOS only |
 
-All four require Docker (or a compatible container runtime) installed and running.
+All four need Docker or a compatible container runtime installed and running.
 
 === "kind"
 
-    [kind](https://kind.sigs.k8s.io/) runs Kubernetes nodes as Docker containers. It starts
-    in under 30 seconds and is the lightest option.
+    [kind](https://kind.sigs.k8s.io/) runs Kubernetes nodes as Docker containers. It starts in under 30 seconds and is the lightest option.
 
     ```bash
     # Install (macOS/Linux)
@@ -55,9 +55,7 @@ All four require Docker (or a compatible container runtime) installed and runnin
     ```
 
     !!! tip "Port mapping for kind"
-        kind clusters don't expose container ports to the host by default. If you need
-        NodePort access (for Prometheus or Grafana outside the cluster), create the cluster
-        with a config:
+        kind does not expose container ports to the host by default. If you need NodePort access (for example, Prometheus or Grafana outside the cluster), create the cluster with a config:
 
         ```yaml title="kind-config.yaml"
         kind: Cluster
@@ -76,8 +74,7 @@ All four require Docker (or a compatible container runtime) installed and runnin
 
 === "k3d"
 
-    [k3d](https://k3d.io/) wraps k3s (Rancher's lightweight Kubernetes) inside Docker. It
-    supports built-in port mapping and a local image registry out of the box.
+    [k3d](https://k3d.io/) wraps k3s (Rancher's lightweight Kubernetes) inside Docker. It supports port mapping and a local image registry by default.
 
     ```bash
     # Install (macOS/Linux)
@@ -92,8 +89,7 @@ All four require Docker (or a compatible container runtime) installed and runnin
 
 === "minikube"
 
-    [minikube](https://minikube.sigs.k8s.io/) is the most established option. It supports
-    Docker, Hyperkit, Hyper-V, and other drivers.
+    [minikube](https://minikube.sigs.k8s.io/) is the most established option. It supports Docker, Hyperkit, Hyper-V, and other drivers.
 
     ```bash
     # Install (macOS/Linux)
@@ -107,31 +103,25 @@ All four require Docker (or a compatible container runtime) installed and runnin
     ```
 
     !!! info "Windows WSL2"
-        On Windows, install minikube inside your WSL2 distribution and use the Docker
-        driver. Make sure Docker Desktop's WSL2 backend is enabled. The same commands
-        apply inside the WSL2 terminal.
+        On Windows, install minikube inside your WSL2 distribution and use the Docker driver. Make sure Docker Desktop's WSL2 backend is enabled. The same commands apply inside the WSL2 terminal.
 
 === "OrbStack (macOS)"
 
-    [OrbStack](https://orbstack.dev/) provides a native macOS Kubernetes experience with
-    minimal resource usage. It runs a single-node k8s cluster that starts automatically.
+    [OrbStack](https://orbstack.dev/) provides a native macOS Kubernetes experience with low resource usage. It runs a single-node cluster that starts automatically.
 
     ```bash
     # Install
     brew install orbstack
 
-    # Kubernetes is enabled by default -- just verify
+    # Kubernetes is enabled by default — verify it
     kubectl cluster-info
     ```
 
-Once your cluster is running and `kubectl get nodes` shows a `Ready` node, you're set.
-
----
+When `kubectl get nodes` shows a `Ready` node, the cluster is ready.
 
 ## Deploy sonda-server
 
-Sonda includes a Helm chart that deploys `sonda-server` as a Kubernetes Deployment with health
-probes, a ClusterIP Service, and optional scenario injection via ConfigMap.
+Sonda includes a Helm chart that deploys `sonda-server` as a Kubernetes Deployment. The chart configures health probes, a ClusterIP Service, and optional scenario injection through a ConfigMap.
 
 ```bash
 helm install sonda ./helm/sonda
@@ -143,9 +133,7 @@ Wait for the pod to become ready:
 kubectl get pods -l app.kubernetes.io/name=sonda -w
 ```
 
-You should see `1/1 Running` within 15--20 seconds. The Deployment configures liveness and
-readiness probes against `GET /health`, so Kubernetes restarts the pod automatically if the
-server becomes unresponsive.
+You should see `1/1 Running` within 15 to 20 seconds. The Deployment configures liveness and readiness probes against `GET /health`. Kubernetes restarts the pod automatically if the server stops responding.
 
 ??? info "Customizing the deployment"
     Override common settings with `--set`:
@@ -171,14 +159,11 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
-Now let's submit some long-running scenarios.
-
----
+The server is ready to accept scenarios.
 
 ## Submit long-running scenarios
 
-A long-running scenario is simply a scenario YAML **without a `duration` field**. It runs
-indefinitely until you stop it with `DELETE /scenarios/{id}`.
+A long-running scenario is a scenario YAML without a `duration` field. It runs until you stop it with `DELETE /scenarios/{id}`.
 
 ```yaml title="examples/long-running-metrics.yaml"
 version: 2
@@ -214,16 +199,12 @@ ID=$(curl -s -X POST -H "Content-Type: text/yaml" \
 echo "Scenario started: $ID"
 ```
 
-The scenario runs in a background thread inside the server. Submit as many as you need --
-each gets its own thread and scrape endpoint.
+The scenario runs on a background thread inside the server. You can submit many scenarios. Each one gets its own thread and scrape endpoint.
 
 !!! tip "Multiple scenarios for richer coverage"
-    Submit several scenarios with different shapes to simulate a realistic environment:
-    a sine wave for CPU, a step counter for requests, a constant for an `up` gauge.
-    Each scenario gets its own `/scenarios/{id}/metrics` endpoint that Prometheus can
-    scrape independently.
+    Submit several scenarios with different patterns to simulate a realistic environment. For example: a sine wave for CPU, a step counter for requests, and a constant for an `up` gauge. Prometheus can scrape each `/scenarios/{id}/metrics` endpoint independently.
 
-To verify it's running:
+To verify the scenario is running:
 
 ```bash
 # List all running scenarios
@@ -235,11 +216,16 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 
 For the full API reference, see [Server API](../deploy/server.md).
 
----
-
 ## Scrape metrics with Prometheus
 
-`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one Prometheus text response, with `?label=k:v` to slice by the labels you set on each scenario. `GET /scenarios/{id}/metrics` is the per-scenario view — the current value of every series for one scenario. Both endpoints are idempotent snapshots: one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape. For Prometheus / vmagent / VictoriaMetrics jobs, the aggregate endpoint is the right call: one job covers every scenario without knowing IDs ahead of time, and it behaves like a normal exporter. See [Aggregate Prometheus scrape](../deploy/http-api.md#aggregate-prometheus-scrape) for the full reference.
+`sonda-server` exposes two scrape endpoints.
+
+- `GET /metrics` is the aggregate view. Every running scenario appears in one Prometheus text response. Use `?label=k:v` to filter by labels set on each scenario.
+- `GET /scenarios/{id}/metrics` is the per-scenario view. It returns the current value of every series for one scenario.
+
+Both endpoints are idempotent snapshots. They return one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape.
+
+For Prometheus, vmagent, and VictoriaMetrics jobs, use the aggregate endpoint. One job covers every scenario without knowing IDs in advance, and the endpoint behaves like a normal exporter. See [Aggregate Prometheus scrape](../deploy/http-api.md#aggregate-prometheus-scrape) for the full reference.
 
 ### Aggregate scrape config
 
@@ -252,11 +238,11 @@ scrape_configs:
       - targets: ["sonda.default.svc:8080"]
 ```
 
-The target address uses the Kubernetes Service DNS name (`sonda.<namespace>.svc`). Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics; repeat the `label` value to AND-combine selectors.
+The target address uses the Kubernetes Service DNS name (`sonda.<namespace>.svc`). Add `params: {label: ["device:srl1"]}` to filter the job to one device's metrics. Repeat the `label` value to AND-combine selectors.
 
 ### Per-scenario scrape config
 
-If you want one scrape job per scenario — typically when each scenario is its own logical target — point `metrics_path` at the scenario ID:
+If you want one scrape job per scenario, point `metrics_path` at the scenario ID. This works when each scenario is its own logical target:
 
 ```yaml title="prometheus-scrape.yaml"
 scrape_configs:
@@ -271,9 +257,7 @@ Replace `<SCENARIO_ID>` with the UUID returned by `POST /scenarios`.
 
 ### Prometheus ServiceMonitor
 
-If you run the [Prometheus Operator](https://prometheus-operator.dev/) (kube-prometheus-stack),
-you can create a `ServiceMonitor` to auto-discover sonda-server. The Sonda Helm chart does
-not include a ServiceMonitor template today, so create one manually:
+If you use the [Prometheus Operator](https://prometheus-operator.dev/) (kube-prometheus-stack), create a `ServiceMonitor` to auto-discover sonda-server. The Sonda Helm chart does not include a ServiceMonitor template today. Create one manually:
 
 ```yaml title="sonda-servicemonitor.yaml"
 apiVersion: monitoring.coreos.com/v1
@@ -297,39 +281,27 @@ kubectl apply -f sonda-servicemonitor.yaml
 ```
 
 !!! warning "One path per ServiceMonitor endpoint"
-    Each ServiceMonitor endpoint scrapes a single `path`. If you have multiple running
-    scenarios, you need one `endpoints` entry per scenario ID (each with a different
-    `path`). For dynamic discovery, consider using a relabeling rule or a script that
-    queries `GET /scenarios` and updates the scrape config.
+    Each ServiceMonitor endpoint scrapes a single `path`. With multiple running scenarios, you need one `endpoints` entry per scenario ID, each with a different `path`. For dynamic discovery, use a relabeling rule or a script that reads `GET /scenarios` and updates the scrape config.
 
 ??? tip "Using vmagent instead of Prometheus"
-    vmagent supports the same `scrape_configs` format. Point it at sonda-server using
-    a standard static scrape config. If you're already running the
-    [VictoriaMetrics Docker Compose stack](../deploy/docker.md#victoriametrics-stack),
-    add sonda-server as a scrape target in the vmagent config.
-
----
+    vmagent supports the same `scrape_configs` format. Point it at sonda-server with a static scrape config. If you already run the [VictoriaMetrics Docker Compose stack](../deploy/docker.md#victoriametrics-stack), add sonda-server as a scrape target in the vmagent config.
 
 ## Build Grafana dashboards
 
-Once Prometheus is scraping your synthetic metrics, you can visualize them in Grafana.
+When Prometheus is scraping the synthetic metrics, you can visualize them in Grafana.
 
-Sonda ships with a **Sonda Overview** dashboard (`docker/grafana/dashboards/sonda-overview.json`)
-that shows metric values, event rates, and gap/burst indicators. You can import it directly
-into any Grafana instance connected to a Prometheus-compatible datasource.
+Sonda includes a **Sonda Overview** dashboard at `docker/grafana/dashboards/sonda-overview.json`. It shows metric values, event rates, and gap or burst indicators. Import it into any Grafana instance connected to a Prometheus-compatible datasource.
 
-### Import the shipped dashboard
+### Import the included dashboard
 
 1. Open Grafana and go to **Dashboards > Import**.
 2. Upload `docker/grafana/dashboards/sonda-overview.json` or paste its contents.
 3. Select your Prometheus datasource when prompted.
-4. The dashboard uses template variables `$datasource` and `$job` -- set `$job` to `sonda`
-   (or whatever `job` label your scenarios use).
+4. The dashboard uses template variables `$datasource` and `$job`. Set `$job` to `sonda` or the `job` label your scenarios use.
 
 ### Build a custom panel
 
-For a focused monitoring panel, create a new dashboard with a time series visualization
-and query your synthetic metric directly:
+For a focused monitoring panel, create a new dashboard with a time series visualization. Query your synthetic metric directly:
 
 ```promql
 continuous_cpu{job="sonda", instance="api-server-01"}
@@ -342,23 +314,17 @@ rate(continuous_cpu{job="sonda"}[1m])
 ```
 
 !!! tip "Threshold lines"
-    Add a fixed threshold line in the Grafana panel options (e.g., at 90 for a CPU alert
-    threshold). This gives you a visual reference for when the sine wave crosses your alert
-    boundary.
+    Add a fixed threshold line in the Grafana panel options. For example, set it to 90 for a CPU alert threshold. This gives you a visual reference for when the sine wave crosses the alert boundary.
 
-With dashboards in place, you can see your synthetic data flowing at a glance. Next, let's
-make sure Sonda itself stays healthy.
-
----
+With dashboards in place, you can see the synthetic data flowing. The next section covers how to monitor Sonda itself.
 
 ## Monitor sonda-server health
 
-The stats API tells you whether each scenario is emitting as expected. Poll it periodically
-or build monitoring around it.
+The stats API tells you whether each scenario is emitting as expected. Poll it periodically or build monitoring around it.
 
 ### Health endpoint
 
-The simplest check -- Kubernetes already uses this for liveness and readiness probes:
+This is the simplest check. Kubernetes already uses it for liveness and readiness probes:
 
 ```bash
 curl http://localhost:8080/health
@@ -367,8 +333,7 @@ curl http://localhost:8080/health
 
 ### Per-scenario stats
 
-The `/scenarios/{id}/stats` endpoint returns live stats including event counts, current
-emission rate, bytes emitted, error counts, and gap/burst state:
+`GET /scenarios/{id}/stats` returns live stats. Fields include event counts, current emission rate, bytes emitted, error counts, and gap or burst state:
 
 ```bash
 curl -s http://localhost:8080/scenarios/$ID/stats | jq .
@@ -378,30 +343,30 @@ Key fields to watch:
 
 | Field | What it tells you |
 |-------|-------------------|
-| `total_events` | Running count of emitted events. Should increase steadily. For batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) this counts *buffered* writes, not deliveries — pair it with the fields below to confirm data is actually landing. |
-| `current_rate` | Actual emission rate. Compare against your scenario's `rate`. |
+| `total_events` | Running count of emitted events. Should increase steadily. For batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) this counts *buffered* writes, not deliveries. Use the fields below to confirm data is actually arriving. |
+| `current_rate` | Actual emission rate. Compare against the scenario's `rate`. |
 | `errors` | Error count. Should be 0 for healthy scenarios. |
-| `uptime` | Time since scenario started. Confirms it hasn't restarted. |
-| `last_successful_write_at` | Wall-clock time (Unix nanos) of the most recent successful delivery. `null` means nothing has ever landed; a stale value means the sink is wedged. |
-| `consecutive_failures` | Failure streak since the last successful delivery. Resets to `0` on the next successful flush. Non-zero with a stale `last_successful_write_at` is the wedged-sink signature. |
+| `uptime` | Time since the scenario started. Confirms it has not restarted. |
+| `last_successful_write_at` | Wall-clock time (Unix nanoseconds) of the most recent successful delivery. `null` means nothing has ever arrived. A stale value means the sink is stuck. |
+| `consecutive_failures` | Failure streak since the last successful delivery. Resets to `0` on the next successful flush. A non-zero value with a stale `last_successful_write_at` is the stuck-sink signature. |
 | `total_sink_failures` | Lifetime sink-error count. Monotonic. Useful as a Prometheus alert input (`increase(...)[5m]`). |
 
-The full reference for these fields, including the `last_sink_error` text and the `state`/gap/burst flags, lives in [Self-observability via /stats](../deploy/http-api.md#self-observability-via-stats).
+The full reference for these fields, including `last_sink_error` text and the `state`, gap, and burst flags, is in [Self-observability via /stats](../deploy/http-api.md#self-observability-via-stats).
 
-If you only check one signal across the whole server, check `degraded` on `GET /scenarios` — it combines the three sink-failure fields above into a single boolean per scenario, true when delivery has stalled for more than 30 seconds. The scripted health check below uses it directly.
+If you only check one signal across the whole server, check `degraded` on `GET /scenarios`. It combines the three sink-failure fields above into a single boolean per scenario. The value is true when delivery has stalled for more than 30 seconds. The script below uses it directly.
 
 ### List all scenarios
 
-Check that all your submitted scenarios are still running:
+Check that all submitted scenarios are still running:
 
 ```bash
 curl -s http://localhost:8080/scenarios | jq '.[] | {name, status}'
 ```
 
-If a scenario shows `status: "stopped"` unexpectedly, re-submit it.
+If a scenario shows `status: "stopped"` unexpectedly, submit it again.
 
 ??? tip "Scripting a health check"
-    Wrap the check in a script that fails loudly when any scenario stops delivering. Read `degraded` from `GET /scenarios` — totalling `total_events` would silently miss a wedged batching sink, because buffered writes still increment the counter while nothing reaches the backend.
+    Wrap the check in a script that fails when any scenario stops delivering. Read `degraded` from `GET /scenarios`. A total of `total_events` would miss a stuck batching sink, because buffered writes still increment the counter while nothing reaches the backend.
 
     ```bash title="check-sonda.sh"
     #!/bin/bash
@@ -421,15 +386,11 @@ If a scenario shows `status: "stopped"` unexpectedly, re-submit it.
     echo "All scenarios delivering."
     ```
 
-    Exit code `1` makes this drop-in for a Kubernetes readiness probe, a cron alert, or a CI smoke step. If you need the raw counters (per-scenario rate, failure streak, last delivery timestamp) for a richer report, follow up with `GET /scenarios/$id/stats` on each degraded ID.
-
----
+    Exit code `1` makes this drop-in for a Kubernetes readiness probe, a cron alert, or a CI smoke step. If you need the raw counters (per-scenario rate, failure streak, last delivery timestamp), follow up with `GET /scenarios/$id/stats` for each degraded ID.
 
 ## Rotate scenarios
 
-Test patterns change over time. You might start with a sine wave to validate dashboards, then
-switch to a sequence generator to test alert thresholds. Scenario rotation is straightforward:
-stop the old scenario and start a new one.
+Test patterns change over time. You might start with a sine wave to validate dashboards, then switch to a sequence generator to test alert thresholds. Scenario rotation is direct: stop the old scenario and start a new one.
 
 ### Stop and replace
 
@@ -447,14 +408,11 @@ echo "New scenario: $NEW_ID"
 ```
 
 !!! warning "Scrape config update required"
-    When you replace a scenario, the new scenario gets a different UUID. If your Prometheus
-    scrape config uses the scenario ID in the `metrics_path`, you need to update it to
-    point at the new ID.
+    When you replace a scenario, the new scenario gets a different UUID. If your Prometheus scrape config uses the scenario ID in `metrics_path`, update it to the new ID.
 
 ### Scripted rotation
 
-For scheduled rotations (e.g., different patterns during business hours vs. overnight),
-wrap the stop-and-start sequence in a cron job or Kubernetes CronJob:
+For scheduled rotations, wrap the stop-and-start sequence in a cron job or Kubernetes CronJob. For example: different patterns during business hours versus overnight.
 
 ```bash title="rotate-scenario.sh"
 #!/bin/bash
@@ -477,17 +435,13 @@ curl -s -X POST -H "Content-Type: text/yaml" \
 ./rotate-scenario.sh examples/long-running-metrics.yaml
 ```
 
----
-
 ## Alert on Sonda itself
 
-Synthetic monitoring is only useful if you know when it breaks. If Sonda stops emitting,
-your dashboards go silent, and you need to distinguish "Sonda died" from "real outage."
+Synthetic monitoring is only useful if you know when it breaks. If Sonda stops emitting, your dashboards go silent. You need to tell "Sonda died" from "real outage".
 
 ### Detect missing synthetic data
 
-Create an alert rule that fires when your synthetic metric disappears. This uses the
-`absent()` function in PromQL:
+Create an alert rule that fires when the synthetic metric disappears. The rule uses the `absent()` function in PromQL:
 
 ```yaml title="sonda-watchdog-rules.yaml"
 groups:
@@ -506,13 +460,11 @@ groups:
             Either sonda-server is down or the scenario has stopped.
 ```
 
-This fires if `continuous_cpu{job="sonda"}` hasn't been scraped for 2 minutes. Adjust the
-`for:` duration based on your scrape interval and tolerance for gaps.
+The rule fires if `continuous_cpu{job="sonda"}` has not been scraped for 2 minutes. Adjust the `for:` duration to match your scrape interval and tolerance for gaps.
 
-### Monitor the pod itself
+### Monitor the pod
 
-Since sonda-server runs as a Kubernetes Deployment with health probes, standard kube-state-metrics
-alerts cover pod-level failures:
+`sonda-server` runs as a Kubernetes Deployment with health probes. Standard kube-state-metrics alerts cover pod-level failures:
 
 ```yaml
 - alert: SondaPodNotReady
@@ -533,17 +485,10 @@ A robust setup uses both layers:
 | Pod health | Server crash, OOM kill, image pull failure | `SondaPodNotReady` |
 | Metric presence | Scenario stopped, scrape misconfigured, data pipeline broken | `SondaSyntheticDataMissing` |
 
-The pod alert fires fast (infrastructure issue). The metric-absent alert fires when the data
-pipeline is broken anywhere between Sonda and Prometheus -- which is exactly the kind of
-problem synthetic monitoring exists to catch.
+The pod alert fires fast and signals an infrastructure issue. The metric-absent alert fires when the data pipeline is broken anywhere between Sonda and Prometheus. This is the case synthetic monitoring exists to detect.
 
 !!! info "Testing these alerts with Sonda"
-    You can validate these watchdog rules using the same patterns from the
-    [Alert Testing](alert-testing.md) and [Alerting Pipeline](end-to-end-pipelines.md) guides.
-    Submit a scenario, verify the alert stays silent, then `DELETE` the scenario and watch
-    the `absent()` alert fire.
-
----
+    You can validate these watchdog rules using the patterns from [Alert Testing](alert-testing.md) and [Alerting Pipeline](end-to-end-pipelines.md). Submit a scenario, verify the alert stays silent, then `DELETE` the scenario and watch the `absent()` alert fire.
 
 ## Quick reference
 
@@ -557,9 +502,9 @@ problem synthetic monitoring exists to catch.
 | Stop a scenario | `curl -X DELETE http://localhost:8080/scenarios/<id>` |
 | Health check | `curl http://localhost:8080/health` |
 
-**Related pages:**
+## Related pages
 
-- [Kubernetes deployment](../deploy/kubernetes.md) -- Helm chart values and configuration
-- [Server API](../deploy/server.md) -- full endpoint reference
-- [Alert Testing](alert-testing.md) -- generator patterns for alert threshold testing
-- [Alerting Pipeline](end-to-end-pipelines.md) -- end-to-end alerting with vmalert and Alertmanager
+- [Kubernetes deployment](../deploy/kubernetes.md) — Helm chart values and configuration.
+- [Server API](../deploy/server.md) — full endpoint reference.
+- [Alert Testing](alert-testing.md) — generator patterns for alert threshold testing.
+- [Alerting Pipeline](end-to-end-pipelines.md) — full alerting path with vmalert and Alertmanager.

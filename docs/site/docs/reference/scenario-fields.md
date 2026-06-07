@@ -1,13 +1,18 @@
+---
+title: Scenario Fields
+description: Every field you can set on a scenarios entry, with examples and defaults.
+---
+
 # Scenario Fields
 
-This page is the per-entry field reference. It describes every field you can set on a `scenarios:` entry inside a [scenario file](../build/scenario-files.md) -- generators, schedules, labels, encoders, sinks, and multi-scenario timing controls.
+This page is the per-entry field reference. Every field you can set on a `scenarios:` entry inside a [scenario file](../build/scenario-files.md) is listed below, with examples and defaults. The fields cover generators, schedules, labels, encoders, sinks, and multi-scenario timing controls.
 
 !!! info "Start with the file guide"
     For the file shape (`version: 2`, `defaults:`, `scenarios:`), catalog metadata, pack-backed entries, and `after:` temporal chains, see [**Scenario Files**](../build/scenario-files.md). Every field below sits inside a `scenarios:` entry.
 
 ## Complete example
 
-A single entry touching every available field:
+A single entry that uses every available field:
 
 ```yaml title="full-example.yaml"
 version: 2
@@ -76,10 +81,12 @@ sonda run full-example.yaml
 
 ### Core fields
 
+The fields below appear on every `scenarios:` entry, regardless of signal type.
+
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | yes | -- | Metric name. Must match `[a-zA-Z_:][a-zA-Z0-9_:]*`. |
-| `rate` | float | yes | -- | Events per second. Must be positive. Fractional values allowed (e.g. `0.5`). |
+| `rate` | float | yes | -- | Events per second. Must be positive. Fractional values are allowed (e.g. `0.5`). |
 | `duration` | string | no | runs forever | Total run time. Supports `ms`, `s`, `m`, `h` units. |
 | `start_time` | string | no | `now` | Timestamp anchor written on every emitted event. Accepts an absolute RFC 3339 timestamp, a signed relative offset (`+24h`, `-7d`), or `now`. See [Timestamp anchor](#timestamp-anchor). |
 | `generator` | object | yes | -- | Value generator configuration. Core types and [operational aliases](../build/generators.md#operational-aliases). See [Generators](../build/generators.md). |
@@ -89,13 +96,15 @@ sonda run full-example.yaml
 | `labels` | map | no | none | Static key-value labels attached to every event. |
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](../build/generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
-| `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run: `warn` (log + drop batch + keep running) or `fail` (propagate and exit the runner). Overrides `defaults.on_sink_error`. See [Sink-error policy](../build/scenario-files.md#sink-error-policy). |
-| `metric_type` | string | no | derived | Prometheus exposition type: `gauge`, `counter`, `histogram`, `summary`, or `untyped`. Surfaces on the `sonda-server` [`/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape) as the `# TYPE` line. See [Prometheus exposition fields](#prometheus-exposition-fields). |
+| `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run. `warn` logs the error, drops the batch, and keeps running. `fail` propagates the error and exits the runner. Overrides `defaults.on_sink_error`. See [Sink-error policy](../build/scenario-files.md#sink-error-policy). |
+| `metric_type` | string | no | derived | Prometheus exposition type: `gauge`, `counter`, `histogram`, `summary`, or `untyped`. Appears on the `sonda-server` [`/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape) as the `# TYPE` line. See [Prometheus exposition fields](#prometheus-exposition-fields). |
 | `help` | string | no | none | Free-text description emitted as the `# HELP` line on the `sonda-server` [`/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape). Omitted when unset. See [Prometheus exposition fields](#prometheus-exposition-fields). |
 
 ### Prometheus exposition fields
 
-`metric_type` and `help` annotate a scenario's metric so the `sonda-server` `/metrics` endpoints emit Prometheus `# TYPE` and `# HELP` lines. Both fields apply to `metrics`, `histogram`, and `summary` entries. Log entries ignore them. They are also a no-op for the per-event sinks that the `sonda run` CLI uses (`stdout`, `file`, `tcp`, etc.) — these annotations exist for scrape-based delivery via [`sonda-server`](../deploy/server.md).
+`metric_type` and `help` annotate a scenario's metric so the `sonda-server` `/metrics` endpoints emit Prometheus `# TYPE` and `# HELP` lines. Both fields apply to `metrics`, `histogram`, and `summary` entries. Log entries ignore them.
+
+These annotations have no effect for the per-event sinks that the `sonda run` CLI uses (`stdout`, `file`, `tcp`, and so on). They exist for scrape-based delivery through [`sonda-server`](../deploy/server.md).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -134,15 +143,14 @@ memory_utilization{device="srl1"} 41.5
 ```
 
 !!! info "Why declare `metric_type`?"
-    Prometheus-text consumers (Prometheus, VictoriaMetrics, Telegraf, vmagent) treat unannotated metrics as `untyped`. Downstream tooling can rename or special-case untyped samples — for example, an untyped metric named `bgp_oper_state` may surface as `bgp_oper_state_value` after a hop through a Telegraf-style relay. Declaring `metric_type:` keeps the metric name stable across every scraping consumer in the chain.
+    Prometheus-text consumers (Prometheus, VictoriaMetrics, Telegraf, vmagent) treat unannotated metrics as `untyped`. Some downstream tooling renames untyped samples. For example, an untyped metric named `bgp_oper_state` may become `bgp_oper_state_value` after a Telegraf-style relay. Declaring `metric_type:` keeps the metric name stable across every scraping consumer in the chain.
 
 !!! warning "Mixed-type collisions become `untyped`"
-    Prometheus permits only one `# TYPE` line per metric name. When two scenarios share a `name:` but declare different `metric_type` values (one `gauge`, one `counter`), the aggregate [`GET /metrics`](../deploy/http-api.md#aggregate-prometheus-scrape) emits a single `# TYPE <name> untyped` block containing samples from both, and logs a server-side warning. Pick a consistent `metric_type` per metric name to avoid the demotion.
+    Prometheus allows only one `# TYPE` line per metric name. Suppose two scenarios share a `name:` but declare different `metric_type` values, one `gauge` and one `counter`. The aggregate [`GET /metrics`](../deploy/http-api.md#aggregate-prometheus-scrape) emits a single `# TYPE <name> untyped` block containing samples from both, and logs a server-side warning. Use a consistent `metric_type` per metric name to avoid this.
 
 ### Gap window
 
-Gaps create recurring silent periods where no events are emitted. Both fields must be provided
-together.
+Gaps create recurring silent periods where no events are emitted. Both fields must be provided together.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -155,15 +163,15 @@ gaps:
   for: 20s
 ```
 
-This emits events for 1m40s, then goes silent for 20s, then repeats.
+This emits events for 1m40s, then is silent for 20s, then repeats.
 
-!!! tip "Verifying gaps live in Prometheus / Grafana"
-    Gaps are visually unintuitive at default settings. Two common pitfalls trip up first-time users:
+!!! tip "Checking gaps in Prometheus or Grafana"
+    Gaps are visually hard to see at default settings. Two common pitfalls catch first-time users:
 
-    - **Instant queries**: `interface_oper_state` in the Prometheus expression bar uses a 5-minute `lookback_delta`. A series that stopped emitting 10 seconds ago still appears "live" for up to 5 minutes — so a 20-second gap is *invisible* at the default settings.
-    - **Auto step size**: `present_over_time(interface_oper_state[5s])` over a 5-minute range gets evaluated at ~30-second steps in Grafana Explore. A 4-minute run with 240k samples collapses to ~7 dots on the graph. The data is there; the *evaluation cadence* hid it.
+    - **Instant queries**: `interface_oper_state` in the Prometheus expression bar uses a 5-minute `lookback_delta`. A series that stopped emitting 10 seconds ago still appears "live" for up to 5 minutes. A 20-second gap is *invisible* at the default settings.
+    - **Auto step size**: `present_over_time(interface_oper_state[5s])` over a 5-minute range is evaluated at ~30-second steps in Grafana Explore. A 4-minute run with 240k samples collapses to ~7 dots on the graph. The data is there. The *evaluation cadence* hid it.
 
-    To see the duty cycle with your own eyes, use this query in **Grafana Explore**:
+    To see the duty cycle, use this query in **Grafana Explore**:
 
     ```promql
     count_over_time(interface_oper_state[1s])
@@ -171,22 +179,21 @@ This emits events for 1m40s, then goes silent for 20s, then repeats.
 
     With these panel settings:
 
-    - **Min step**: `1s` (otherwise Grafana picks a larger step and smears the gaps)
-    - **Time range**: `Last 5 minutes` (shows two-plus full cycles of the example below)
+    - **Min step**: `1s` (otherwise Grafana picks a larger step and the gaps blur together)
+    - **Time range**: `Last 5 minutes` (shows two full cycles of the example below)
     - **View**: Time series (default)
 
     ![Gap duty cycle in Grafana Explore](img/gap-duty-cycle.svg)
 
-    *Above: `count_over_time(interface_oper_state[1s])` against [`examples/basic-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/basic-metrics.yaml) — which declares `rate: 1000` and `gaps: every: 2m for: 20s`. You see ~100s of ~1000 samples/sec, then 20s of zero, repeating.*
+    *Above: `count_over_time(interface_oper_state[1s])` against [`examples/basic-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/basic-metrics.yaml). The example declares `rate: 1000` and `gaps: every: 2m for: 20s`. You see ~100s of ~1000 samples/sec, then 20s of zero, repeating.*
 
-    Why every x-axis point is honest data: `count_over_time(...[1s])` buckets samples into 1-second windows and returns `0` for empty buckets (not null) — no connect-null-values toggle needed. With a 1-second min step Grafana evaluates once per second, so one bucket maps to one x-axis point. What you see is what landed.
+    Why every x-axis point is honest data: `count_over_time(...[1s])` groups samples into 1-second windows and returns `0` for empty windows (not null). No connect-null-values toggle is needed. With a 1-second min step, Grafana evaluates once per second, so one window maps to one x-axis point. What you see is what arrived.
 
-    The same trick works for `bursts:` (the rate rises during a burst window) and for any other rate-shaping field. The recurring lesson: when verifying short-window behavior, push your evaluation step *below* the window you're trying to see.
+    The same approach works for `bursts:` (the rate rises during a burst window) and for any other rate-shaping field. The rule: when checking short-window behavior, set your evaluation step *below* the window you want to see.
 
 ### Burst window
 
-Bursts create recurring high-rate periods. All three fields must be provided together. If a gap
-and burst overlap, the gap takes priority.
+Bursts create recurring high-rate periods. All three fields must be provided together. If a gap and a burst overlap, the gap takes priority.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -205,9 +212,7 @@ At a base rate of 100 events/sec, this produces 500 events/sec for 2 seconds out
 
 ### Cardinality spike window
 
-Cardinality spikes create recurring windows that inject dynamic label values, simulating the label
-explosions that break real pipelines. During a spike window, a configured label key is added with
-one of `cardinality` unique values. Outside the window, the label is absent.
+Cardinality spikes inject dynamic label values during recurring windows. They reproduce the label explosions that break real pipelines. During a spike window, a configured label key is added with one of `cardinality` unique values. Outside the window, the label is absent.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -231,27 +236,22 @@ cardinality_spikes:
 
 **Strategies:**
 
-- **`counter`** -- Generates sequential values: `{prefix}0`, `{prefix}1`, ..., `{prefix}{cardinality-1}`, then wraps around. Deterministic without a seed.
-- **`random`** -- Generates hash-like hex values via SplitMix64: `{prefix}{hex}`. Produces exactly `cardinality` unique values. Requires a `seed` for reproducibility.
+- **`counter`** — Generates sequential values: `{prefix}0`, `{prefix}1`, ..., `{prefix}{cardinality-1}`, then wraps around. Deterministic without a seed.
+- **`random`** — Generates hash-like hex values via SplitMix64: `{prefix}{hex}`. Produces exactly `cardinality` unique values. Requires a `seed` for reproducibility.
 
 !!! note
-    Gap windows take priority over spikes. If a gap and spike overlap, the gap suppresses all
-    output including spike labels.
+    Gap windows take priority over spikes. If a gap and a spike overlap, the gap suppresses all output, including spike labels.
 
 ### Dynamic labels
 
-Dynamic labels attach a rotating label value to **every** emitted event. They simulate a stable
-fleet of N distinct sources -- hostnames, pod names, regions -- without a time window. Unlike
-[cardinality spikes](#cardinality-spike-window), the label is always present, not just during a
-spike window.
+Dynamic labels attach a rotating label value to **every** emitted event. They simulate a stable fleet of N distinct sources, such as hostnames, pod names, or regions, without a time window. Unlike [cardinality spikes](#cardinality-spike-window), the label is always present, not only during a spike window.
 
-This lets you test dashboards that aggregate by label (e.g., `sum by (hostname)`) and exercise
-high-cardinality query paths in Prometheus or VictoriaMetrics.
+This lets you test dashboards that aggregate by label (for example, `sum by (hostname)`) and exercise high-cardinality query paths in Prometheus or VictoriaMetrics.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `dynamic_labels[].key` | string | yes | -- | Label key to attach. Must be a valid Prometheus label key. |
-| `dynamic_labels[].prefix` | string | no | `"{key}_"` | Prefix for counter strategy values (e.g., `"host-"` produces `host-0`, `host-1`). |
+| `dynamic_labels[].prefix` | string | no | `"{key}_"` | Prefix for counter strategy values (for example, `"host-"` produces `host-0`, `host-1`). |
 | `dynamic_labels[].cardinality` | integer | yes (counter) | -- | Number of unique values in the cycle. Must be > 0. |
 | `dynamic_labels[].values` | list | yes (values list) | -- | Explicit list of label values to cycle through. |
 
@@ -259,8 +259,7 @@ high-cardinality query paths in Prometheus or VictoriaMetrics.
 
 === "Counter"
 
-    Provide `prefix` and `cardinality`. Values cycle as `{prefix}0`, `{prefix}1`, ...,
-    `{prefix}{cardinality-1}`, then wrap around.
+    Provide `prefix` and `cardinality`. Values cycle as `{prefix}0`, `{prefix}1`, ..., `{prefix}{cardinality-1}`, then wrap around.
 
     ```yaml title="examples/dynamic-labels-fleet.yaml"
     dynamic_labels:
@@ -277,11 +276,11 @@ high-cardinality query paths in Prometheus or VictoriaMetrics.
     node_cpu_usage{hostname="host-0",...} 54.1 1712345679000
     ```
 
-    If you omit `prefix`, it defaults to `"{key}_"` (e.g., `hostname_0`, `hostname_1`).
+    If you omit `prefix`, it defaults to `"{key}_"` (for example, `hostname_0`, `hostname_1`).
 
 === "Values list"
 
-    Provide `values` -- an explicit list of strings. The label cycles through the list in order.
+    Provide `values`, an explicit list of strings. The label cycles through the list in order.
 
     ```yaml title="examples/dynamic-labels-regions.yaml"
     dynamic_labels:
@@ -296,8 +295,7 @@ high-cardinality query paths in Prometheus or VictoriaMetrics.
     api_latency{region="us-east-1",...} 0.31 1712345678600
     ```
 
-You can combine multiple dynamic labels in the same scenario. Each label cycles independently
-based on the tick counter:
+You can combine multiple dynamic labels in the same scenario. Each label cycles independently based on the tick counter:
 
 ```yaml title="examples/dynamic-labels-multi.yaml"
 dynamic_labels:
@@ -316,21 +314,17 @@ request_count{hostname="web-0",region="eu-west-1",...} 3
 ```
 
 !!! tip "Dynamic labels vs. cardinality spikes"
-    Use **dynamic labels** when you want a label to be present on every event (fleet simulation,
-    multi-region testing). Use **cardinality spikes** when you want a label to appear only during
-    recurring time windows (simulating label explosions that come and go).
+    Use **dynamic labels** when you want a label to be present on every event (fleet simulation, multi-region testing). Use **cardinality spikes** when you want a label to appear only during recurring time windows (label explosions that come and go).
 
 !!! info "Label merge behavior"
-    Dynamic labels are merged with static `labels:` on every tick. If a dynamic label key
-    collides with a static label key, the dynamic value wins. Dynamic labels work identically
-    for both metric and log scenarios.
+    Dynamic labels are merged with static `labels:` on every tick. If a dynamic label key collides with a static label key, the dynamic value wins. Dynamic labels work the same way for both metric and log scenarios.
 
 !!! info "Loki sinks turn dynamic labels into separate streams"
-    A Loki **stream** is the unit Loki indexes by — identified by its label set. When a `logs` scenario uses a `loki` sink, each unique `dynamic_labels` combination becomes its own stream. A rotation through `peer_address: [10.1.2.2, 10.1.7.2]` produces two streams (`{peer_address="10.1.2.2"}` and `{peer_address="10.1.7.2"}`) — both queryable in Grafana by label. The Loki sink caps unique streams per push at [`max_streams_per_push`](../build/sinks.md#loki) (default 128); raise the cap if a rotation needs more. See [Dynamic Labels — Loki sinks](../build/scheduling.md#dynamic-labels-with-the-loki-sink) for a worked BGP-peers example.
+    A Loki **stream** is the unit Loki indexes by. It is identified by its label set. When a `logs` scenario uses a `loki` sink, each unique `dynamic_labels` combination becomes its own stream. A rotation through `peer_address: [10.1.2.2, 10.1.7.2]` produces two streams (`{peer_address="10.1.2.2"}` and `{peer_address="10.1.7.2"}`). Both are queryable in Grafana by label. The Loki sink limits unique streams per push at [`max_streams_per_push`](../build/sinks.md#loki) (default 128). Raise the limit if a rotation needs more. See [Dynamic Labels — Loki sinks](../build/scheduling.md#dynamic-labels-with-the-loki-sink) for a worked BGP-peers example.
 
 ### Temporal fields
 
-These fields control when and how entries coordinate inside a multi-entry scenario file (including bodies POSTed to [`POST /scenarios`](../deploy/http-api.md#post-scenarios)).
+These fields control when and how entries coordinate inside a multi-entry scenario file. They also apply to bodies sent to [`POST /scenarios`](../deploy/http-api.md#post-scenarios).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -343,8 +337,7 @@ See [Multi-signal files](#multi-signal-files) below for a working example.
 
 ### Duration format
 
-All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `bursts.for`,
-`phase_offset`) accept the same format:
+All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `bursts.for`, `phase_offset`) accept the same format:
 
 | Unit | Example | Description |
 |------|---------|-------------|
@@ -353,12 +346,13 @@ All duration fields (`duration`, `gaps.every`, `gaps.for`, `bursts.every`, `burs
 | `m` | `5m` | Minutes |
 | `h` | `1h` | Hours |
 
-Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds
-and `0.5m` means 30 seconds.
+Fractional values are supported in all units. For example, `1.5s` means 1500 milliseconds and `0.5m` means 30 seconds.
 
 ### Timestamp anchor
 
-`start_time` sets the timestamp anchor written on every emitted event. It shifts only the *timestamp* on each event — the scenario still runs for its real wall-clock `duration`, emitting the same events, with the same values, at the same spacing. Only the anchor moves. It applies to all four signal types (metrics, logs, histograms, summaries) and every exposition format. Set it on `defaults:` to anchor the whole file, or on an individual entry to anchor just that scenario.
+`start_time` sets the timestamp anchor written on every emitted event. It shifts only the *timestamp* on each event. The scenario still runs for its real wall-clock `duration`, emits the same events, with the same values, at the same spacing. Only the anchor moves.
+
+It applies to all four signal types (metrics, logs, histograms, summaries) and every exposition format. Set it on `defaults:` to anchor the whole file, or on an individual entry to anchor only that scenario.
 
 It accepts three forms:
 
@@ -372,7 +366,7 @@ It accepts three forms:
 
 === "Relative offset"
 
-    A signed offset from scenario start — `+` shifts forward, `-` shifts backward. The grammar matches `duration:` (`ms`, `s`, `m`, `h`) plus `d` for days.
+    A signed offset from scenario start. `+` shifts forward, `-` shifts backward. The grammar matches `duration:` (`ms`, `s`, `m`, `h`) plus `d` for days.
 
     ```yaml
     start_time: -7d
@@ -380,7 +374,7 @@ It accepts three forms:
 
 === "now"
 
-    Wall-clock now. This is the default — identical to omitting the field.
+    Wall-clock now. This is the default. Identical to omitting the field.
 
     ```yaml
     start_time: now
@@ -388,17 +382,15 @@ It accepts three forms:
 
 Two use cases motivate it:
 
-- **Replaying a historical incident into its real dashboard window.** Anchor the run to a past time so the emitted samples land in the time range where the incident actually happened — useful for postmortems and for tuning alert rules against the data as it looked on the day.
+- **Replaying a historical incident into its real dashboard window.** Anchor the run to a past time so the emitted samples appear in the time range where the incident actually happened. This helps with postmortems and with tuning alert rules against the data as it looked on the day.
 - **Projecting load into a future window.** Anchor the run forward to rehearse capacity headroom or forecast-driven alerts against a window that has not arrived yet.
 
 !!! warning "Future timestamps are backend-dependent"
-    Anchoring into the *past* works universally. Anchoring into the *future* does not: stock Prometheus enforces a future-sample tolerance and **drops samples timestamped too far ahead**. VictoriaMetrics is lenient and accepts them. If you need the forecasting use case, send to VictoriaMetrics or a Prometheus tuned for far-future samples — plain Prometheus will reject them.
+    Anchoring into the *past* works universally. Anchoring into the *future* does not. Stock Prometheus enforces a future-sample tolerance and **drops samples timestamped too far ahead**. VictoriaMetrics is lenient and accepts them. If you need the forecasting use case, send to VictoriaMetrics or to a Prometheus tuned for far-future samples. Plain Prometheus rejects them.
 
 ## Log entries
 
-A log entry uses `signal_type: logs` and puts the generator configuration under `log_generator:`
-(not `generator:`). The default encoder is `json_lines`, but any encoder that accepts log events
-works.
+A log entry uses `signal_type: logs` and puts the generator configuration under `log_generator:` (not `generator:`). The default encoder is `json_lines`. Any encoder that accepts log events also works.
 
 ```yaml title="log-scenario.yaml"
 version: 2
@@ -437,9 +429,7 @@ scenarios:
 sonda run log-scenario.yaml
 ```
 
-The `labels` / `dynamic_labels` fields work the same way as for metric entries. Static labels
-attach a fixed key-value to every event; dynamic labels rotate values per tick. Both appear in
-JSON Lines output and become Loki stream labels when the sink is `loki`.
+The `labels` and `dynamic_labels` fields work the same way as for metric entries. Static labels attach a fixed key-value to every event. Dynamic labels rotate values per tick. Both appear in JSON Lines output and become Loki stream labels when the sink is `loki`.
 
 ## Multi-signal files
 
@@ -452,7 +442,7 @@ Each entry in a `scenarios:` list declares its own `signal_type`. The compiler r
 | `histogram` | Prometheus-style histogram (bucket, count, sum) | `distribution:` + histogram fields |
 | `summary` | Prometheus-style summary (quantile, count, sum) | `distribution:` + summary fields |
 
-Two metric entries correlated with `phase_offset` + a shared `clock_group:`:
+Two metric entries correlated with `phase_offset` and a shared `clock_group:`:
 
 ```yaml title="multi-scenario.yaml"
 version: 2
@@ -495,7 +485,7 @@ scenarios:
 sonda run multi-scenario.yaml
 ```
 
-The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU spikes first and memory follows. Both entries share the `alert-test` clock group for synchronized timing. For declarative chains, use [`after:`](../build/scenario-files.md#temporal-chains-with-after) instead of hand-tuned offsets.
+The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU rises first and memory follows. Both entries share the `alert-test` clock group for synchronized timing. For declarative chains, use [`after:`](../build/scenario-files.md#temporal-chains-with-after) instead of hand-tuned offsets.
 
 ### Mixing all four signal types
 
@@ -564,16 +554,11 @@ sonda run mixed-signals.yaml
 ```
 
 !!! info "Histogram and summary entries use different fields"
-    Histogram and summary entries do not have a `generator:` block. Instead, they use
-    `distribution:`, `buckets:` / `quantiles:`, and `observations_per_tick:` on the entry.
-    See [Generators -- histogram and summary](../build/generators.md#histogram-and-summary-generators)
-    for the full field reference.
+    Histogram and summary entries do not have a `generator:` block. They use `distribution:`, `buckets:` / `quantiles:`, and `observations_per_tick:` on the entry. See [Generators — histogram and summary](../build/generators.md#histogram-and-summary-generators) for the full field reference.
 
 ## Pack-backed entries
 
-A `scenarios:` entry with `pack: <name>` replaces the `name:` + `generator:` combo with a
-reference to a [metric pack](../build/catalogs-and-packs.md). The compiler expands the pack into
-one entry per metric at compile time:
+A `scenarios:` entry with `pack: <name>` replaces the `name:` + `generator:` pair with a reference to a [metric pack](../build/catalogs-and-packs.md). The compiler expands the pack into one entry per metric at compile time:
 
 ```yaml title="pack-scenario.yaml"
 version: 2
@@ -601,26 +586,20 @@ scenarios:
 sonda run pack-scenario.yaml
 ```
 
-Any `labels`, `rate`, `duration`, `encoder`, or `sink` you set on the entry applies to every
-expanded metric. Per-metric `overrides:` let you tune individual metrics inside the pack --
-see the [Metric Packs guide](../build/catalogs-and-packs.md) for the full reference.
+Any `labels`, `rate`, `duration`, `encoder`, or `sink` you set on the entry applies to every expanded metric. Per-metric `overrides:` let you tune individual metrics inside the pack. See the [Metric Packs guide](../build/catalogs-and-packs.md) for the full reference.
 
 ## CLI overrides
 
-Any of the common knobs (`rate`, `duration`, `sink`, `endpoint`, `encoder`, `label`,
-`on-sink-error`) can be overridden from the command line. CLI flags always take precedence
-over YAML values:
+Any of the common settings (`rate`, `duration`, `sink`, `endpoint`, `encoder`, `label`, `on-sink-error`) can be overridden from the command line. CLI flags always take precedence over YAML values:
 
 ```bash title="scenario.yaml"
 sonda run scenario.yaml --duration 5s --rate 2
 ```
 
-This loads the file but overrides `duration` and `rate` (applied to every entry) with the CLI
-values. Encoder-specific knobs like `precision` and pack-specific overrides live in the YAML —
-see [CLI Reference: sonda run](cli-flags.md#sonda-run) for the full override list.
+This loads the file and overrides `duration` and `rate` for every entry. Encoder-specific settings like `precision` and pack-specific overrides live in the YAML. See [CLI Reference: sonda run](cli-flags.md#sonda-run) for the full override list.
 
 ## What next
 
-- [**Scenario Files**](../build/scenario-files.md) -- file shape, `defaults:`, `after:` chains, and catalog metadata.
-- [**CLI Reference -- sonda run**](cli-flags.md#sonda-run) -- the unified entry point for scenario files.
-- [**Metric Packs**](../build/catalogs-and-packs.md) -- reusable metric name + label schemas you can reference via `pack:`.
+- [**Scenario Files**](../build/scenario-files.md) — file shape, `defaults:`, `after:` chains, and catalog metadata.
+- [**CLI Reference — sonda run**](cli-flags.md#sonda-run) — the entry point for scenario files.
+- [**Metric Packs**](../build/catalogs-and-packs.md) — reusable metric name and label schemas you can reference via `pack:`.

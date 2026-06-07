@@ -1,8 +1,6 @@
 # Encoders
 
-Encoders serialize events into a wire format before writing them to a sink. You select an encoder
-with the `encoder.type` field. If omitted, metrics default to `prometheus_text` and logs default
-to `json_lines`.
+An encoder serializes events into a wire format before a sink writes them. Set the format with the `encoder.type` field. Metric scenarios default to `prometheus_text`; log scenarios default to `json_lines`.
 
 ## prometheus_text
 
@@ -31,15 +29,13 @@ encoder:
 cpu_usage{host="web-01"} 99.61 1774279696105
 ```
 
-Text-based formats preserve trailing zeros: a value of `100.0` with `precision: 2` renders
-as `100.00`.
+Text formats keep trailing zeros. A value of `100.0` with `precision: 2` renders as `100.00`.
 
-This encoder supports metrics only. It does not support log events.
+This encoder accepts metrics only. Log events are not supported.
 
 ## influx_lp
 
-InfluxDB line protocol. Each event becomes one line with tags, a field, and a nanosecond
-timestamp:
+InfluxDB line protocol. Each event becomes one line with tags, a field, and a nanosecond timestamp:
 
 ```
 metric_name,tag=value field_key=42.0 1700000000000000000
@@ -66,7 +62,7 @@ encoder:
 test_influx,host=web-01 value=99.6057 1774279709667342000
 ```
 
-This encoder supports metrics only. It does not support log events.
+This encoder accepts metrics only. Log events are not supported.
 
 ## json_lines
 
@@ -98,9 +94,7 @@ For metrics:
 ```
 
 !!! note
-    JSON has no trailing-zero concept. With `precision: 2`, a value of `100.0` still renders
-    as `100.0` in JSON output (not `100.00`). The rounding is still applied -- it just does not
-    add trailing zeros that JSON would strip.
+    JSON has no trailing-zero concept. With `precision: 2`, a value of `100.0` still renders as `100.0` in JSON output, not `100.00`. The rounding still applies; JSON simply does not add trailing zeros.
 
 For logs:
 
@@ -132,16 +126,14 @@ encoder:
 <14>1 2026-03-23T15:29:02.483Z sonda sonda - - - test log
 ```
 
-This encoder supports logs only. It does not support metric events.
+This encoder accepts logs only. Metric events are not supported.
 
 ## remote_write
 
-Prometheus remote write protobuf format. Encodes metrics as length-prefixed protobuf
-`TimeSeries` messages.
+Prometheus remote write protobuf format. Encodes metrics as length-prefixed protobuf `TimeSeries` messages.
 
 !!! note
-    This encoder requires the `remote-write` Cargo feature flag. Pre-built release binaries
-    include this feature. If building from source: `cargo build --features remote-write -p sonda`.
+    This encoder requires the `remote-write` Cargo feature flag. Pre-built release binaries include this feature. To build from source: `cargo build --features remote-write -p sonda`.
 
 No additional parameters.
 
@@ -150,19 +142,14 @@ encoder:
   type: remote_write
 ```
 
-This encoder must be paired with the `remote_write` sink, which handles batching, snappy
-compression, and HTTP POSTing with the correct protocol headers. See
-[Sinks - remote_write](sinks.md#remote_write) for details.
+Pair this encoder with the `remote_write` sink. The sink handles batching, snappy compression, and the HTTP POST with the correct protocol headers. See [Sinks — remote_write](sinks.md#remote_write) for details.
 
 ## otlp
 
-OTLP protobuf format. Encodes metrics as OTLP `Gauge` data points and logs as OTLP
-`LogRecord` messages, using length-prefixed protobuf serialization.
+OTLP protobuf format. Encodes metrics as OTLP `Gauge` data points and logs as OTLP `LogRecord` messages, using length-prefixed protobuf serialization.
 
 !!! warning "Feature flag and build requirement"
-    This encoder requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker
-    images do **not** include this feature. You must build from source:
-    `cargo build --features otlp -p sonda`.
+    This encoder requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker images do **not** include this feature. Build from source: `cargo build --features otlp -p sonda`.
 
 No additional parameters.
 
@@ -171,18 +158,15 @@ encoder:
   type: otlp
 ```
 
-This encoder must be paired with the `otlp_grpc` sink, which handles batching and gRPC delivery
-to an OpenTelemetry Collector. See [Sinks - otlp_grpc](sinks.md#otlp_grpc) for details.
+Pair this encoder with the `otlp_grpc` sink. The sink handles batching and gRPC delivery to an OpenTelemetry Collector. See [Sinks — otlp_grpc](sinks.md#otlp_grpc) for details.
 
-The encoder supports both metrics and logs. Set the sink's `signal_type` to match your scenario
-type (`metrics` or `logs`).
+The encoder supports both metrics and logs. Set the sink's `signal_type` to match your scenario type (`metrics` or `logs`).
 
 ## Value precision
 
-The `prometheus_text`, `influx_lp`, and `json_lines` encoders accept an optional `precision`
-field that controls how many decimal places appear in metric values.
+The `prometheus_text`, `influx_lp`, and `json_lines` encoders accept an optional `precision` field that controls how many decimal places appear in metric values.
 
-- **Range**: 0 to 17 (an f64 has approximately 15--17 significant digits).
+- **Range**: 0 to 17. An f64 carries roughly 15--17 significant digits.
 - **Default**: omit the field to keep full f64 precision.
 - **Effect**: values are rounded to the specified number of decimal places using standard rounding.
 
@@ -194,11 +178,9 @@ encoder:
   precision: 2    # 99.60573 becomes 99.61
 ```
 
-The `syslog`, `remote_write`, and `otlp` encoders do not support `precision`. Syslog encodes log
-events only (no numeric values), and remote write and OTLP use binary protobuf encoding.
+The `syslog`, `remote_write`, and `otlp` encoders do not support `precision`. Syslog encodes log events only, with no numeric values; remote write and OTLP use binary protobuf encoding.
 
-See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml)
-for a complete scenario that demonstrates precision with multiple encoders.
+See [`examples/precision-formatting.yaml`](https://github.com/davidban77/sonda/blob/main/examples/precision-formatting.yaml) for a complete scenario that uses precision with several encoders.
 
 ## Encoder compatibility
 

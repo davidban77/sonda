@@ -1,18 +1,21 @@
+---
+title: Troubleshooting
+description: Common symptoms, causes, and fixes for Sonda runs, sinks, and deployments.
+---
+
 # Troubleshooting
 
-When Sonda isn't behaving as expected, start here. This guide covers the most common issues
-and how to resolve them, organized from general diagnostics to specific sink and deployment
-problems.
+When Sonda is not working as expected, start here. This page covers the most common issues and how to resolve them. The order goes from general diagnostics to specific sink and deployment problems.
 
 ---
 
 ## First steps
 
-Before diving into specific issues, run these quick checks.
+Before looking at specific issues, run these quick checks.
 
 ### Validate your configuration
 
-Use `--dry-run` to parse and validate a scenario without emitting any events:
+Use `--dry-run` to parse and validate a scenario without emitting events:
 
 === "Scenario file"
 
@@ -26,13 +29,11 @@ Use `--dry-run` to parse and validate a scenario without emitting any events:
     sonda --dry-run --catalog ./my-catalog run @cpu-spike
     ```
 
-If the config is valid, Sonda prints the resolved settings and exits with code `0`. If there's
-an error, it prints the problem to stderr and exits with code `1`.
+If the config is valid, Sonda prints the resolved settings and exits with code `0`. If there is an error, it prints the problem to stderr and exits with code `1`.
 
 ### Get diagnostic output
 
-Use `--verbose` to print the resolved config at startup, then run normally. This shows exactly
-what Sonda parsed before it starts emitting events:
+Use `--verbose` to print the resolved config at startup, then run normally. This shows exactly what Sonda parsed before it starts emitting events:
 
 ```bash title="my-scenario.yaml"
 sonda --verbose run my-scenario.yaml \
@@ -43,23 +44,25 @@ sonda --verbose run my-scenario.yaml \
 
 | Code | Meaning |
 |------|---------|
-| `0` | Success -- scenario completed or `--dry-run` validation passed |
-| `1` | Runtime error -- invalid config, sink unreachable, scenario validation failure |
-| `2` | Argument parse error -- unknown flag, unrecognized subcommand |
+| `0` | Success. Scenario completed or `--dry-run` validation passed. |
+| `1` | Runtime error. Invalid config, sink unreachable, or scenario validation failure. |
+| `2` | Argument parse error. Unknown flag or unrecognized subcommand. |
 
 ### A scenario stopped emitting silently
 
-A scenario looks alive (the process is running, no error in the foreground) but no data is reaching the backend. This typically means the sink is failing on every write. Sonda's default [`on_sink_error: warn`](../build/scenario-files.md#sink-error-policy) policy keeps the runner alive through transient sink errors, so the symptom is degradation rather than a crash. Confirm the diagnosis from three places:
+A scenario looks alive (the process is running, no error in the foreground) but no data reaches the backend. This usually means the sink is failing on every write. Sonda's default [`on_sink_error: warn`](../build/scenario-files.md#sink-error-policy) policy keeps the runner alive through transient sink errors. The symptom is degradation rather than a crash.
 
-- **Stderr `[progress]` banner** -- when a runner exits, the progress reporter prints a one-shot `STOPPED` line that includes the last sink error:
+Confirm the diagnosis from three places:
+
+- **Stderr `[progress]` banner**. When a runner exits, the progress reporter prints a one-shot `STOPPED` line that includes the last sink error:
 
     ```text
     [progress] my_scenario  STOPPED (sink: HTTP 500 from 'http://loki:3100/loki/api/v1/push') | events: 3359 | bytes: 1.0 MB | elapsed: 18h59m
     ```
 
-    No parenthetical means the scenario stopped cleanly (duration expired, Ctrl+C, etc.) and the sink was healthy.
+    No parenthetical means the scenario stopped cleanly (duration expired, Ctrl+C, and so on) and the sink was healthy.
 
-- **`GET /scenarios/{id}/stats`** -- a non-zero `consecutive_failures` with a stale `last_successful_write_at` confirms the sink is wedged. `last_sink_error` carries the message:
+- **`GET /scenarios/{id}/stats`**. A non-zero `consecutive_failures` with an old `last_successful_write_at` confirms the sink is stuck. `last_sink_error` carries the message:
 
     ```bash
     curl -s http://localhost:8080/scenarios/$ID/stats | jq '.consecutive_failures, .last_sink_error'
@@ -68,17 +71,17 @@ A scenario looks alive (the process is running, no error in the foreground) but 
     See [Self-observability via /stats](../deploy/http-api.md#self-observability-via-stats).
 
     !!! warning "`total_events` is not a delivery signal for batching sinks"
-        Batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) buffer events and only deliver in bursts. `total_events` increments on every *buffered* write, so a rising counter is **not** proof that anything is reaching the backend. Read the delivery-health fields instead: `last_successful_write_at` (stale or `null` means nothing has landed) and `consecutive_failures` (non-zero means a wedged buffer). See [What a wedged batching sink looks like](../deploy/http-api.md#what-a-wedged-batching-sink-looks-like) for the full timeline.
+        Batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) buffer events and deliver them in groups. `total_events` increases on every *buffered* write, so a rising counter is **not** proof that data reaches the backend. Read the delivery-health fields instead: `last_successful_write_at` (old or `null` means nothing has arrived) and `consecutive_failures` (non-zero means a stuck buffer). See [What a stuck batching sink looks like](../deploy/http-api.md#what-a-stuck-batching-sink-looks-like) for the full timeline.
 
-- **Use the `degraded` field for monitoring** -- `GET /scenarios` ships a precomputed `degraded: bool` per scenario, true when the scenario has had sink failures and has not delivered in the last 30 seconds. Use it directly for a readiness probe or alert:
+- **Use the `degraded` field for monitoring**. `GET /scenarios` returns a precomputed `degraded: bool` per scenario. It is true when the scenario has had sink failures and has not delivered in the last 30 seconds. Use it directly for a readiness probe or alert:
 
     ```bash
     curl -sS http://localhost:8080/scenarios | jq '.scenarios[] | select(.degraded)'
     ```
 
-    A non-empty result means at least one scenario has stopped delivering. The same expression works as a Kubernetes readiness probe or a Prometheus alert input. If you need a different staleness window than 30 seconds, you can still threshold the raw fields from the per-scenario `/stats` endpoint -- combine `total_sink_failures > 0` with your own staleness check on `last_successful_write_at`.
+    A non-empty result means at least one scenario has stopped delivering. The same expression works as a Kubernetes readiness probe or a Prometheus alert input. If you need a different staleness window than 30 seconds, threshold the raw fields from the per-scenario `/stats` endpoint. Combine `total_sink_failures > 0` with your own staleness check on `last_successful_write_at`.
 
-The recovery is the default behavior: under `on_sink_error: warn`, the runner keeps ticking while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances, so any threshold you set clears automatically. If you want a sink failure to hard-fail the run instead, set `on_sink_error: fail` -- see [Sink-error policy](../build/scenario-files.md#sink-error-policy).
+Recovery is the default behavior. Under `on_sink_error: warn`, the runner keeps emitting while you fix the sink (restart Loki, repair DNS, restore the network path). Once the sink accepts a write, `consecutive_failures` resets to `0` and `last_successful_write_at` advances. Any threshold you set clears automatically. If you want a sink failure to hard-fail the run, set `on_sink_error: fail`. See [Sink-error policy](../build/scenario-files.md#sink-error-policy).
 
 ---
 
@@ -90,43 +93,38 @@ You configured a network sink but Sonda reports a connection error.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `connection refused` on HTTP/TCP sink | Backend is not running or not listening on expected port | Verify the backend is up: `curl -s http://host:port/health` |
-| `connection refused` on gRPC (OTLP) | Collector not running, or wrong port (HTTP vs gRPC) | OTLP gRPC uses port `4317`, not `4318` (HTTP). Check collector status |
-| DNS resolution failure | Hostname typo or DNS not configured | Test with `dig` or `nslookup`. Use IP address to isolate DNS |
+| `connection refused` on HTTP/TCP sink | Backend is not running or not listening on the expected port | Verify the backend is up: `curl -s http://host:port/health` |
+| `connection refused` on gRPC (OTLP) | Collector not running, or wrong port (HTTP vs gRPC) | OTLP gRPC uses port `4317`, not `4318` (HTTP). Check the collector status |
+| DNS resolution failure | Hostname typo or DNS not configured | Test with `dig` or `nslookup`. Use the IP address to isolate DNS |
 | Timeout with no error | Firewall blocking the port | Check firewall rules. Try `nc -zv host port` to test connectivity |
 
 !!! tip
-    Test connectivity to your backend *before* running Sonda. A quick
-    `curl -s http://localhost:8428/health` for VictoriaMetrics or
-    `curl -s http://localhost:3100/ready` for Loki confirms the backend is reachable.
+    Test connectivity to your backend *before* running Sonda. A quick `curl -s http://localhost:8428/health` for VictoriaMetrics or `curl -s http://localhost:3100/ready` for Loki confirms the backend is reachable.
 
 ### Data not appearing at the destination
 
-Sonda runs without errors but you don't see data in your backend.
+Sonda runs without errors but you do not see data in your backend.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | No data in VictoriaMetrics | Wrong endpoint path | Use `/api/v1/import/prometheus` for `http_push`, `/api/v1/write` for `remote_write` |
-| No data in Prometheus | Prometheus needs remote write receiver enabled | Start Prometheus with `--web.enable-remote-write-receiver` |
+| No data in Prometheus | Prometheus needs the remote-write receiver enabled | Start Prometheus with `--web.enable-remote-write-receiver` |
 | Encoder/sink mismatch | Using `prometheus_text` encoder with `remote_write` sink (or vice versa) | Match encoder to sink: `remote_write` encoder with `remote_write` sink, `otlp` encoder with `otlp_grpc` sink |
-| HTTP 400 Bad Request | Wrong `content_type` for the endpoint | Use `text/plain` for VictoriaMetrics import endpoint |
-| POST to `sonda-server` succeeds but no data in backend | Sink `url: http://localhost:<port>` resolves inside the server container | Use the in-network address (Compose service name `http://victoriametrics:8428`, or Kubernetes Service DNS), or write the URL with [`${VAR:-default}`](../build/scenario-files.md#environment-variable-interpolation) so one file works from both paths. See [Endpoints & networking](../deploy/server.md) |
+| HTTP 400 Bad Request | Wrong `content_type` for the endpoint | Use `text/plain` for the VictoriaMetrics import endpoint |
+| POST to `sonda-server` succeeds but no data in the backend | Sink `url: http://localhost:<port>` resolves inside the server container | Use the in-network address (Compose service name `http://victoriametrics:8428`, or Kubernetes Service DNS), or write the URL with [`${VAR:-default}`](../build/scenario-files.md#environment-variable-interpolation) so one file works from both paths. See [Endpoints & networking](../deploy/server.md) |
 
 ### Batching delays
 
-Data arrives in chunks or only appears when the scenario ends.
+Data arrives in groups, or only appears when the scenario ends.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Stdout output appears in bursts | Normal OS-level buffering (~8 KB) | Expected behavior. Data flushes when the buffer fills or the scenario ends |
-| No HTTP POST until scenario ends | Batch threshold not reached at low rates | Lower `batch_size` (e.g., `512` for `http_push`) or increase the rate. See [Sink Batching](../build/sink-batching.md) |
-| Short scenario sends only one batch | Total data smaller than batch threshold | All data flushes on exit. This is correct behavior for short runs |
+| Stdout output appears in groups | Normal OS-level buffering (~8 KB) | Expected behavior. Data flushes when the buffer fills or the scenario ends |
+| No HTTP POST until the scenario ends | Batch threshold not reached at low rates | Lower `batch_size` (e.g., `512` for `http_push`) or increase the rate. See [Sink Batching](../build/sink-batching.md) |
+| Short scenario sends only one batch | Total data smaller than the batch threshold | All data flushes on exit. This is correct behavior for short runs |
 
 !!! info
-    At 10 events/sec with `http_push` at the default 4 KiB threshold, ~40 events
-    (~4 seconds) must accumulate before the first POST. Set `batch_size: 512` for
-    faster feedback. Time-based flushing is tracked in
-    [#266](https://github.com/davidban77/sonda/issues/266).
+    At 10 events/sec with `http_push` at the default 4 KiB threshold, around 40 events must accumulate before the first POST. That is about 4 seconds. Set `batch_size: 512` for faster feedback. Time-based flushing is tracked in [#266](https://github.com/davidban77/sonda/issues/266).
 
 ---
 
@@ -141,21 +139,19 @@ Data arrives in chunks or only appears when the scenario ends.
 | No logs visible in Grafana | Wrong label selector in Explore | Check that your Grafana query matches the labels you set in the scenario |
 
 !!! tip
-    Sonda sends logs to `{url}/loki/api/v1/push`. You only configure the base URL
-    (e.g., `http://localhost:3100`), not the full push path.
+    Sonda sends logs to `{url}/loki/api/v1/push`. You configure only the base URL (for example, `http://localhost:3100`), not the full push path.
 
 ### Kafka
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Broker connection timeout | Wrong broker address or port | Verify broker is reachable: `nc -zv broker-host 9092`. Check for TLS port (`9093`) vs plaintext (`9092`) |
-| `UnknownTopicOrPartition` | Topic doesn't exist and auto-creation is off | Set `auto.create.topics.enable=true` on the broker, or create the topic before running Sonda |
-| Authentication failure with SASL | Wrong mechanism, username, or password | Double-check `sasl.mechanism` matches your broker config. Confluent Cloud uses `PLAIN`, AWS MSK uses `SCRAM-SHA-256` |
-| Data sent but unreadable | Consumer expects a different encoding | Ensure the consumer's deserializer matches Sonda's encoder (e.g., `prometheus_text` produces plain text) |
+| Broker connection timeout | Wrong broker address or port | Verify the broker is reachable: `nc -zv broker-host 9092`. Check for TLS port (`9093`) vs plaintext (`9092`) |
+| `UnknownTopicOrPartition` | Topic does not exist and auto-creation is off | Set `auto.create.topics.enable=true` on the broker, or create the topic before running Sonda |
+| Authentication failure with SASL | Wrong mechanism, username, or password | Confirm `sasl.mechanism` matches your broker config. Confluent Cloud uses `PLAIN`, AWS MSK uses `SCRAM-SHA-256` |
+| Data sent but unreadable | Consumer expects a different encoding | Ensure the consumer's deserializer matches Sonda's encoder (for example, `prometheus_text` produces plain text) |
 
 !!! warning
-    SASL credentials are sent in plaintext if TLS is not enabled. Sonda warns about this at
-    startup, but always enable `tls.enabled: true` alongside SASL in production.
+    SASL credentials are sent in plaintext if TLS is not enabled. Sonda warns about this at startup. Always enable `tls.enabled: true` alongside SASL in production.
 
 ### Remote write
 
@@ -170,7 +166,7 @@ Data arrives in chunks or only appears when the scenario ends.
 |---------|-------------|-----|
 | gRPC `INVALID_ARGUMENT` | Signal type mismatch between encoder and sink | Set `signal_type` in the sink to match your scenario: `metrics` for metric scenarios, `logs` for log scenarios |
 | Connection refused on port 4318 | Using the HTTP port instead of gRPC | OTLP gRPC uses port `4317`. Port `4318` is for OTLP HTTP |
-| `UNAUTHENTICATED` | Collector requires auth token | Configure the collector to accept unauthenticated connections, or use an `http_push` sink with auth headers instead |
+| `UNAUTHENTICATED` | Collector requires an auth token | Configure the collector to accept unauthenticated connections, or use an `http_push` sink with auth headers instead |
 
 ---
 
@@ -180,14 +176,12 @@ Data arrives in chunks or only appears when the scenario ends.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| Memory grows during cardinality spikes | Each unique label combination creates a new series in memory | Reduce `cardinality` in spike config, or use shorter `for` windows |
-| Memory spikes during CSV replay | Large CSV file loaded into memory | Use smaller CSV files, or split large files into chunks |
+| Memory grows during cardinality spikes | Each unique label combination creates a new series in memory | Reduce `cardinality` in the spike config, or use shorter `for` windows |
+| Memory grows during CSV replay | Large CSV file loaded into memory | Use smaller CSV files, or split large files into chunks |
 | Steady memory growth over long runs | Large label sets with many static labels | Reduce the number of labels per metric. Each label adds memory per series |
 
 !!! info
-    Sonda's baseline memory footprint is roughly 5 MB. Memory scales with the number of
-    unique series being generated simultaneously. For sizing guidance, see
-    [Capacity Planning -- Performance baselines](../test/capacity-planning.md#performance-baselines).
+    Sonda's baseline memory footprint is roughly 5 MB. Memory scales with the number of unique series generated at the same time. For sizing guidance, see [Capacity Planning — Performance baselines](../test/capacity-planning.md#performance-baselines).
 
 ---
 
@@ -199,14 +193,13 @@ Data arrives in chunks or only appears when the scenario ends.
 |---------|-------------|-----|
 | `v2 scenario file requires a top-level 'kind:' field` | The file is missing the `kind:` declaration | Add `kind: runnable` (for files you run) or `kind: composable` (for [metric packs](../build/catalogs-and-packs.md)) at the top of the file, alongside `version: 2`. See [Scenario Files](../build/scenario-files.md). |
 | `unknown kind '<value>': must be 'runnable' or 'composable'` | `kind:` is set to a typo or unsupported value | Use exactly `runnable` or `composable`. |
-| `invalid type` error on a numeric field | Value is quoted as a string in YAML (e.g., `rate: "10"`) | Remove quotes from numeric fields: `rate: 10` |
+| `invalid type` error on a numeric field | Value is quoted as a string in YAML (for example, `rate: "10"`) | Remove quotes from numeric fields: `rate: 10` |
 | `unknown field` error | Typo in a field name, or field placed at the wrong nesting level | Check indentation. `labels` goes at the scenario level, not inside `sink` |
 | `missing field` error | Required field omitted | Run `sonda --dry-run` to see which field is missing |
 
 ### Feature flag errors
 
-Some sinks and encoders require Cargo feature flags when building from source. Pre-built
-release binaries include all features.
+Some sinks and encoders require Cargo feature flags when building from source. Pre-built release binaries include all features.
 
 | Feature | Required for | Build command |
 |---------|-------------|---------------|
@@ -222,18 +215,16 @@ release binaries include all features.
 
 ## Container and signal handling
 
-Sonda flushes all buffered data on clean shutdown (SIGTERM or SIGINT). If the process is killed
-with SIGKILL, any data still in the buffer is lost.
+Sonda flushes all buffered data on clean shutdown (SIGTERM or SIGINT). If the process is killed with SIGKILL, any data still in the buffer is lost.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Partial data loss in Docker | Container stopped with `docker kill` (sends SIGKILL) | Use `docker stop` instead, which sends SIGTERM and waits for graceful shutdown |
 | Data loss in Kubernetes | Pod killed before flush completes | Set `terminationGracePeriodSeconds` to at least 5 seconds in your pod spec |
-| No data flushed on Ctrl+C in script | Script traps signals before Sonda receives them | Ensure SIGTERM/SIGINT propagate to the Sonda process |
+| No data flushed on Ctrl+C in script | Script traps signals before Sonda receives them | Ensure SIGTERM/SIGINT reach the Sonda process |
 
 !!! warning "SIGKILL bypasses flush"
-    `kill -9` (SIGKILL) terminates Sonda immediately with no chance to flush buffered data.
-    Always use `kill` (SIGTERM) or Ctrl+C (SIGINT) for a clean shutdown.
+    `kill -9` (SIGKILL) terminates Sonda immediately with no chance to flush buffered data. Use `kill` (SIGTERM) or Ctrl+C (SIGINT) for a clean shutdown.
 
 ```yaml title="Kubernetes: ensure graceful shutdown"
 spec:
@@ -247,7 +238,7 @@ spec:
 services:
   sonda:
     image: ghcr.io/davidban77/sonda:latest
-    # docker compose stop sends SIGTERM by default -- no special config needed
+    # docker compose stop sends SIGTERM by default. No special config needed
     stop_grace_period: 10s
 ```
 
@@ -255,7 +246,7 @@ services:
 
 **Related pages:**
 
-- [Sinks](../build/sinks.md) -- sink types, parameters, and retry configuration
-- [Sink Batching](../build/sink-batching.md) -- how batching affects data delivery
-- [CLI Reference](cli-flags.md) -- all flags for `--dry-run`, `--verbose`, and sink options
-- [Capacity Planning](../test/capacity-planning.md) -- performance baselines and infrastructure sizing
+- [Sinks](../build/sinks.md) — sink types, parameters, and retry configuration
+- [Sink Batching](../build/sink-batching.md) — how batching affects data delivery
+- [CLI Reference](cli-flags.md) — all flags for `--dry-run`, `--verbose`, and sink options
+- [Capacity Planning](../test/capacity-planning.md) — performance baselines and infrastructure sizing

@@ -1,6 +1,6 @@
 # Scenario Files
 
-The scenario file format is Sonda's way to describe one or many signals in a single YAML file. One top-level block declares shared defaults; another lists the scenarios. Packs, `after:` temporal dependencies, and clock groups all compose inside the same file.
+A scenario file is a YAML document that describes one or many signals. One top-level block declares shared defaults; another lists the scenarios. Packs, `after:` temporal dependencies, and clock groups all compose inside the same file.
 
 Every scenario file declares two top-level fields:
 
@@ -49,18 +49,15 @@ demo_cpu 42 1776090152619
 
 ## What this format gives you
 
-- **Shared defaults** -- put `rate`, `duration`, `encoder`, `sink`, and `labels` in one place.
-- **Temporal chains** -- link scenarios with `after:` clauses (`this starts when that crosses a threshold`).
-- **Automatic clock groups** -- scenarios linked by `after:` share a clock so they stay in sync.
-- **Pack-backed entries** -- reference a [metric pack](catalogs-and-packs.md) inline, alongside regular metrics and logs.
-- **Richer validation** -- the compiler catches missing fields, cycles in `after:` chains, and
-  pack references to unknown names at parse time.
+- **Shared defaults** — put `rate`, `duration`, `encoder`, `sink`, and `labels` in one place.
+- **Temporal chains** — link scenarios with `after:` clauses (`this starts when that crosses a threshold`).
+- **Automatic clock groups** — scenarios linked by `after:` share a clock so they stay in sync.
+- **Pack-backed entries** — reference a [metric pack](catalogs-and-packs.md) inline, alongside regular metrics and logs.
+- **Richer validation** — the compiler catches missing fields, cycles in `after:` chains, and pack references to unknown names at parse time.
 
 ## Catalog metadata
 
-A scenario file can carry optional top-level metadata that powers the catalog views --
-`sonda list` and `sonda show` against a `--catalog <dir>`. The fields sit at the root,
-alongside `version:`, `kind:`, and `defaults:`:
+A scenario file can carry optional top-level metadata that drives the catalog views — `sonda list` and `sonda show` against a `--catalog <dir>`. The fields sit at the root, alongside `version:`, `kind:`, and `defaults:`:
 
 ```yaml title="my-catalog/steady-state.yaml"
 version: 2
@@ -89,14 +86,13 @@ scenarios:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `kind` | yes | `runnable` for runnable scenarios; `composable` for packs. Required at the top level of every scenario file. |
-| `name` | no | Catalog identifier (kebab-case). Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by `@name` shorthand and `sonda run @name`. When posted to a running `sonda-server`, this field also acts as a uniqueness key — POSTing two cascades that share an active `name` returns [`409 Conflict`](../deploy/http-api.md#duplicate-scenario_name-returns-409). |
-| `tags` | no | List of strings shown in the catalog table and filterable via `sonda list --tag <t>`. |
+| `name` | no | Catalog identifier (kebab-case). Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by the `@name` shortcut and `sonda run @name`. When POSTed to a running `sonda-server`, this field also acts as a uniqueness key. POSTing two cascades that share an active `name` returns [`409 Conflict`](../deploy/http-api.md#duplicate-scenario_name-returns-409). |
+| `tags` | no | List of strings shown in the catalog table and filterable through `sonda list --tag <t>`. |
 | `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
 
-The compiler ignores `tags:` and `description:` — they only feed the catalog. `deny_unknown_fields`
-stays in force, so typos like `tag:` (singular) or `desc:` are rejected at parse time.
+The compiler ignores `tags:` and `description:`. They only feed the catalog. `deny_unknown_fields` stays in force, so typos like `tag:` (singular) or `desc:` are rejected at parse time.
 
-Drop a scenario file into your catalog directory and it shows up immediately:
+Drop a scenario file into your catalog directory and it appears immediately:
 
 ```bash
 sonda --catalog ./my-catalog list --tag infrastructure
@@ -110,10 +106,7 @@ runnable    steady-state   infrastructure,baseline   Normal oscillating baseline
 
 ## Environment variable interpolation
 
-`${VAR}` and `${VAR:-default}` references in a scenario file are substituted from
-the process environment before parsing. One file runs from your host CLI on the
-defaults and from a containerized `sonda-server` on the overrides -- no edit, no
-`sed` rewrite.
+`${VAR}` and `${VAR:-default}` references in a scenario file are substituted from the process environment before parsing. One file runs from your host CLI on the defaults and from a containerized `sonda-server` on the overrides — no edit, no `sed` rewrite.
 
 ```yaml title="loki-json-lines.yaml (excerpt)"
 defaults:
@@ -138,21 +131,14 @@ LOKI_URL=http://loki:3100 sonda run examples/loki-json-lines.yaml --duration 1s 
 | `${VAR:-default}` | Optional. Default text runs to the next unescaped `}`; may contain `:`, `/`, `?`, `&`, `=`. |
 | `$$` | Literal `$`. The only escape. |
 
-Variable names match `[A-Z_][A-Z0-9_]*`. Lowercase, leading digits, or other
-characters are rejected at compile time so a typo cannot silently swallow a YAML field.
+Variable names match `[A-Z_][A-Z0-9_]*`. Lowercase, leading digits, or other characters are rejected at compile time so a typo cannot silently hide a YAML field.
 
 !!! note "Not supported"
-    No recursion into substituted values, no nested defaults (`${A:-${B}}`), no
-    bare `$VAR`, no `:?` / `:+` / `:=`.
+    No recursion into substituted values, no nested defaults (`${A:-${B}}`), no bare `$VAR`, no `:?` / `:+` / `:=`.
 
 ### Built-in example variables
 
-Every scenario under `examples/` honours these names. Defaults map to the
-host-published Compose ports; the bundled `examples/docker-compose-victoriametrics.yml`
-exports the in-network values so POSTing an example scenario to the
-containerized `sonda-server` works untouched. See
-[Endpoints & networking](../deploy/server.md) for the full
-host-vs-container resolution table.
+Every scenario under `examples/` honors these names. Defaults map to the host-published Compose ports. The bundled `examples/docker-compose-victoriametrics.yml` exports the in-network values so POSTing an example scenario to the containerized `sonda-server` works unchanged. See [Endpoints and networking](../deploy/server.md) for the full host-vs-container resolution table.
 
 | Variable | Default (host CLI) | In-network override |
 |---|---|---|
@@ -166,9 +152,7 @@ host-vs-container resolution table.
 
 ## The `defaults:` block
 
-Every field in `defaults:` applies to every entry in `scenarios:` unless the entry overrides it.
-This is the main ergonomic win over legacy multi-scenario files, where you typed the same
-`encoder:`, `sink:`, and `rate:` for every entry.
+Every field in `defaults:` applies to every entry in `scenarios:` unless the entry overrides it. This is the main ergonomic win over legacy multi-scenario files, where you typed the same `encoder:`, `sink:`, and `rate:` for every entry.
 
 ```yaml title="defaults-example.yaml"
 version: 2
@@ -210,7 +194,7 @@ The `mem` entry overrides `rate` only; everything else comes from `defaults:`.
 
 ### Sink-error policy
 
-`on_sink_error` controls what the runner does when the sink returns an error mid-run -- a Loki `500`, a TCP reset, an HTTP timeout. Two values:
+`on_sink_error` controls what the runner does when the sink returns an error mid-run — a Loki `500`, a TCP reset, an HTTP timeout. Two values:
 
 | Value | Behavior |
 |---|---|
@@ -251,21 +235,18 @@ scenarios:
       value: 1
 ```
 
-The `noisy_logs` entry tolerates Loki blips. The `canary` entry treats any sink error as fatal -- useful when you want a CI run to fail the moment delivery breaks.
+The `noisy_logs` entry tolerates Loki blips. The `canary` entry treats any sink error as fatal — useful when you want a CI run to fail the moment delivery breaks.
 
 !!! tip "When to pick `fail`"
-    Pick `fail` when sink delivery is itself the contract under test -- CI gates that compare metric counts against an expected total, or smoke tests that should abort the moment the backend goes away. Pick `warn` (the default) for everything else: long-running fleets, demo environments, or any scenario where you want runtime self-observability via [`/stats`](../deploy/http-api.md#self-observability-via-stats) instead of thread death.
+    Pick `fail` when sink delivery is itself the contract under test. Examples: CI gates that compare metric counts against an expected total, or smoke tests that should abort the moment the backend goes away. Pick `warn` (the default) for everything else: long-running fleets, demo environments, or any scenario where you want runtime self-observability through [`/stats`](../deploy/http-api.md#self-observability-via-stats) instead of thread death.
 
-`--on-sink-error <warn|fail>` on `sonda run` overrides `defaults.on_sink_error` for one-off invocations -- handy when you want to point a single CI run at a YAML that defaults to `warn`. See [CLI Reference](../reference/cli-flags.md#sonda-run).
+`--on-sink-error <warn|fail>` on `sonda run` overrides `defaults.on_sink_error` for one-off invocations. This is useful when you want to point a single CI run at a YAML that defaults to `warn`. See [CLI Reference](../reference/cli-flags.md#sonda-run).
 
 ## Temporal chains with `after:`
 
-Use `after:` to express "this scenario starts when that one crosses a threshold". Sonda resolves
-the timing at parse time -- no runtime reactivity -- by computing concrete `phase_offset` values
-from each generator's shape.
+Use `after:` to express "this scenario starts when that one crosses a threshold". Sonda resolves the timing at parse time — no runtime reactivity — by computing concrete `phase_offset` values from each generator's shape.
 
-The built-in `link-failover` scenario is a worked example: a primary interface flaps, a backup
-link saturates once the primary drops, and latency degrades once the backup fills.
+The built-in `link-failover` scenario is a worked example: a primary interface flaps, a backup link saturates once the primary drops, and latency degrades once the backup fills.
 
 ```yaml title="link-failover.yaml"
 version: 2
@@ -328,13 +309,9 @@ scenarios:
       value: 70
 ```
 
-The `interface_oper_state` flap signal drops below `1` at `t=60s` (its `up_duration`), so
-`backup_link_utilization` starts at that same moment via an auto-computed `phase_offset`. The
-backup ramp crosses 70% a little over two minutes later, which is when `latency_ms` begins to
-degrade. Scenarios linked by `after:` get an auto-assigned `clock_group` so their timers share a
-start reference.
+The `interface_oper_state` flap signal drops below `1` at `t=60s` (its `up_duration`), so `backup_link_utilization` starts at that same moment through an auto-computed `phase_offset`. The backup ramp crosses 70% a little over two minutes later, which is when `latency_ms` begins to degrade. Scenarios linked by `after:` get an auto-assigned `clock_group` so their timers share a start reference.
 
-An `after:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one. `after:` holds the scenario in `pending` until its upstream crosses the threshold; if that crossing never happens, a scenario with no `duration:` would have no terminal point and sit `pending` for the lifetime of the run.
+An `after:`-gated entry must declare a `duration:` — on the entry itself or through `defaults.duration` — and is rejected at compile time without one. `after:` holds the scenario in `pending` until its upstream crosses the threshold. If that crossing never happens, a scenario with no `duration:` would have no terminal point and would sit `pending` for the lifetime of the run.
 
 Use `--dry-run` to see the resolved timing:
 
@@ -388,34 +365,29 @@ sonda --dry-run run link-failover.yaml
 Validation: OK (3 scenarios)
 ```
 
-The `phase_offset` lines show the concrete delays Sonda computed from the threshold-crossing
-math. The `(auto)` suffix on `clock_group` indicates Sonda assigned the group automatically
-because of the `after:` relationship.
+The `phase_offset` lines show the concrete delays Sonda computed from the threshold-crossing math. The `(auto)` suffix on `clock_group` shows that Sonda assigned the group automatically because of the `after:` relationship.
 
 !!! info "Duration is per-entry, not per-cascade"
-    Each entry's `duration:` runs from that entry's own resolved start time (`phase_offset`), not from cascade registration. The cascade's total wall-clock is therefore `max(phase_offset + duration)` across all entries, which can exceed `defaults.duration`.
+    Each entry's `duration:` runs from that entry's own resolved start time (`phase_offset`), not from cascade registration. The cascade's total wall-clock is therefore `max(phase_offset + duration)` across every entry, which can exceed `defaults.duration`.
 
-    For the `link-failover` example above, `defaults.duration` is `5m` and the largest `phase_offset` is `152.308s` (on `latency_ms`), so the chain finishes at roughly `152.308s + 5m ≈ 7m32s` of wall-clock — not 5m.
+    For the `link-failover` example above, `defaults.duration` is `5m` and the largest `phase_offset` is `152.308s` (on `latency_ms`), so the chain finishes at roughly `152.308s + 5m ≈ 7m32s` of wall-clock, not 5m.
 
-    The CLI `--duration` flag (and the body-level `duration` field on `POST /scenarios`) shorten **every entry's `duration` individually**; they do not cap the cascade's total wall-clock. Running the same chain with `--duration 2m` produces `152.308s + 2m ≈ 4m32s`, because every entry now runs for 2m from its own start.
+    The CLI `--duration` flag (and the body-level `duration` field on `POST /scenarios`) shortens **every entry's `duration` individually**; it does not cap the cascade's total wall-clock. Running the same chain with `--duration 2m` produces `152.308s + 2m ≈ 4m32s`, because every entry now runs for 2m from its own start.
 
-Run it from your catalog the same way as any other scenario — save the YAML under
-`my-catalog/link-failover.yaml`, then:
+Run it from your catalog the same way as any other scenario. Save the YAML under `my-catalog/link-failover.yaml`, then:
 
 ```bash
 sonda --catalog ./my-catalog run @link-failover
 ```
 
 !!! tip "Supported generators in `after:`"
-    The `after:` clause resolves against the target generator's trajectory. Supported shapes:
-    `flap`, `saturation`, `leak`, `degradation`, `spike_event`. Using `steady` as the target is
-    rejected -- sine crossings are ambiguous.
+    The `after:` clause resolves against the target generator's trajectory. Supported shapes: `flap`, `saturation`, `leak`, `degradation`, `spike_event`. Using `steady` as the target is rejected because sine crossings are ambiguous.
 
 For continuous gating that pauses and resumes a downstream as the upstream's value oscillates above and below a threshold, see [Continuous coupling with `while:`](#continuous-coupling-with-while).
 
 ## Continuous coupling with `while:`
 
-`after:` is a one-shot trigger -- it fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart: the gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. A `while:`-gated entry must declare a `duration:` -- on the entry itself or via `defaults.duration` -- and is rejected at compile time without one, because the `paused` state needs a terminal point to bound the scenario's lifetime. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for ~5 minutes by default — see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately. The upstream signal lives in the same scenario file by default; for [`sonda-server`](../deploy/server.md) deployments where the upstream arrives in a separate POST body, see [Cross-POST `while:` refs](#cross-post-while-refs).
+`after:` is a one-shot trigger. It fires once and the dependent scenario runs to completion. `while:` is the continuous-coupling counterpart. The gated scenario emits only while the upstream's latest value satisfies the predicate, pauses when the predicate fails, and resumes when the predicate becomes true again. A `while:`-gated entry must declare a `duration:` (on the entry itself or through `defaults.duration`) and is rejected at compile time without one, because the `paused` state needs a terminal point to bound the scenario's lifetime. Use `while:` when an event stream should track an upstream signal's lifecycle, not just its first crossing. When a `while:`-gated scenario pauses, downstream alerts on its metrics keep firing for about 5 minutes by default. See [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) for the stale-marker default that resolves them immediately. The upstream signal lives in the same scenario file by default. For [`sonda-server`](../deploy/server.md) deployments where the upstream arrives in a separate POST body, see [Cross-POST `while:` refs](#cross-post-while-refs).
 
 ```yaml title="link-traffic.yaml"
 version: 2
@@ -450,11 +422,11 @@ scenarios:
       value: 1
 ```
 
-`backup_traffic` emits only while `primary_link` reports a value below `1` -- in other words, while the primary link is down. When the primary flaps back up, the gate closes and `backup_traffic` pauses; when the primary drops again, the gate reopens and emission resumes. The schedule is debounced via the optional `delay:` clause shown below.
+`backup_traffic` emits only while `primary_link` reports a value below `1` — in other words, while the primary link is down. When the primary toggles back up, the gate closes and `backup_traffic` pauses; when the primary drops again, the gate reopens and emission resumes. The schedule is debounced through the optional `delay:` clause shown below.
 
 ### Lifecycle states
 
-A scenario carrying a `while:` clause walks through four lifecycle states. The runtime exposes the live state on `GET /scenarios/{id}/stats` so monitors can react to gate transitions without polling the upstream signal.
+A scenario that carries a `while:` clause walks through four lifecycle states. The runtime exposes the live state on `GET /scenarios/{id}/stats` so monitors can react to gate transitions without polling the upstream signal.
 
 ```
             +-----------+
@@ -475,9 +447,9 @@ A scenario carrying a `while:` clause walks through four lifecycle states. The r
         +-----------+
 ```
 
-`pending` covers the wait for the upstream's first eligible tick. The downstream enters `running` when the gate first opens, oscillates between `running` and `paused` for the rest of the run, and ends in `finished` when its `duration:` elapses or shutdown is signaled. A scenario with both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly -- `pending` need not always precede `running`.
+`pending` covers the wait for the upstream's first eligible tick. The downstream enters `running` when the gate first opens, alternates between `running` and `paused` for the rest of the run, and ends in `finished` when its `duration:` elapses or shutdown is signaled. A scenario with both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly — `pending` need not always come before `running`.
 
-A fifth state, `held`, replaces `paused` after a gate close when the scenario opts into the snap-to recovery shape via [`delay.close.snap_to`](#recovering-prometheus-alerts-on-gate-close) AND has emitted at least one sample. `held` differs from `paused` only on the pull-path: scrapers passing [`?include_state=...,held`](#aggregate-metrics-sees-paused-and-unresolved-scenarios) keep seeing the frozen value, while `paused` ghosts stay filtered out under that same allowlist. Push sinks behave identically in both states (the runner stops emitting). `held` applies to metric scenarios. See [Pattern C — Counter freeze-and-hold during outage](#pattern-c-counter-freeze-and-hold-during-outage) for the orchestration.
+A fifth state, `held`, replaces `paused` after a gate close when the scenario opts into the snap-to recovery shape through [`delay.close.snap_to`](#recovering-prometheus-alerts-on-gate-close) AND has emitted at least one sample. `held` differs from `paused` only on the pull-path: scrapers passing [`?include_state=...,held`](#aggregate-metrics-sees-paused-and-unresolved-scenarios) keep seeing the frozen value, while `paused` ghosts stay filtered out under that same allowlist. Push sinks behave the same way in both states (the runner stops emitting). `held` applies to metric scenarios. See [Pattern C — Counter freeze-and-hold during outage](#pattern-c-counter-freeze-and-hold-during-outage) for the orchestration.
 
 ### Debouncing transitions with `delay:`
 
@@ -499,11 +471,11 @@ Pair `while:` with `delay:` to debounce noisy upstream signals.
       close: 1s
 ```
 
-`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open; `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:` -- standalone `delay:` is rejected at compile time. The `close:` field also accepts an extended struct form for stale-marker control; see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) below.
+`open` is the duration the upstream value must satisfy the predicate before the gate transitions from closed to open. `close` is the duration the value must violate the predicate before the gate transitions back to closed. Either field defaults to `0s` when omitted. `delay:` requires `while:`. A standalone `delay:` is rejected at compile time. The `close:` field also accepts an extended struct form for stale-marker control; see [Recovering Prometheus alerts on gate close](#recovering-prometheus-alerts-on-gate-close) below.
 
 ### Recovering Prometheus alerts on gate close
 
-Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple whenever a `while:`-gated entry exits the `running` state with the gate open — on committed `running → paused` gate-close transitions, and on `running → finished` exits via `duration:` expiry or user-initiated shutdown — when the sink is `remote_write`. Downstream alerts resolve immediately on the next scrape cycle.
+Prometheus retains the last-known sample for the lookback-delta window (default 5 minutes) when a series stops emitting. A `while:`-gated downstream that reports `bgp_oper_state=2` ("down") and then pauses keeps the alert firing for that window because Prometheus has no signal that the source is stale. When the sink is `remote_write`, Sonda emits a Prometheus stale-marker sample for every recently-active `(metric_name, label_set)` tuple whenever a `while:`-gated entry exits the `running` state with the gate open. This covers committed `running → paused` gate-close transitions and `running → finished` exits through `duration:` expiry or user-initiated shutdown. Downstream alerts resolve immediately on the next scrape cycle.
 
 The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` keeps working unchanged. The extended form lets you override the stale marker with a literal recovery sample, or opt out of the default emit entirely. The two knobs are mutually exclusive — pick one.
 
@@ -525,7 +497,7 @@ The marker is on by default for `remote_write` sinks. The shorthand `close: 5s` 
         snap_to: 1            # emit one literal sample with this value before pausing
 ```
 
-`snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close. Setting `stale_marker: true` on a non-`remote_write` sink is rejected at normalize time, because the marker is a Prometheus remote-write-specific signal that would otherwise no-op silently — either switch to `sink.type: remote_write`, replace it with `snap_to:` for a sink-agnostic recovery sample, or drop the field. The exception is when `snap_to` is set on the same `close:` block: an explicit `stale_marker: true` paired with `snap_to` is accepted because `snap_to` already wins.
+`snap_to` replaces the stale marker with a normal sample carrying the supplied value. Use it when the recovery semantics call for an explicit recovered value (`bgp_oper_state=1` for "up") rather than a stale signal. When set, `snap_to` is honored on every sink the configured encoder can serialize to — including `stdout`, `file`, `loki`, and `kafka`. Without `snap_to`, only `remote_write` sinks emit a default close marker; the others stay silent on close. Setting `stale_marker: true` on a non-`remote_write` sink is rejected at normalize time, because the marker is a Prometheus remote-write-specific signal that would otherwise no-op silently. Either switch to `sink.type: remote_write`, replace it with `snap_to:` for a sink-agnostic recovery sample, or drop the field. The exception is when `snap_to` is set on the same `close:` block: an explicit `stale_marker: true` paired with `snap_to` is accepted because `snap_to` already wins.
 
 To suppress the default emit entirely, set `stale_marker: false` instead:
 
@@ -537,9 +509,9 @@ To suppress the default emit entirely, set `stale_marker: false` instead:
         stale_marker: false
 ```
 
-Setting both `snap_to` and `stale_marker: false` is a config error — `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
+Setting both `snap_to` and `stale_marker: false` is a config error. `snap_to` already replaces the stale marker, so the explicit `false` is redundant and likely a mistake. Setting `snap_to` alongside the implicit `stale_marker: true` default lets `snap_to` win silently.
 
-A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an additional close-emit; the recovery markers were already written on the earlier `running → paused` transition. Every distinct `(name, labels)` series active since the last gate close receives exactly one recovery marker on close, with no cardinality ceiling — high-cardinality scenarios recover the same as any other.
+A brief close that gets cancelled by a fresh `WhileOpen` arriving inside the `delay.close.duration` debounce window emits nothing — the gate stayed open. A scenario that hits its `duration:` while already paused goes `paused → finished` without an extra close-emit; the recovery markers were already written on the earlier `running → paused` transition. Every distinct `(name, labels)` series active since the last gate close receives exactly one recovery marker on close, with no cardinality ceiling. High-cardinality scenarios recover the same way as any other.
 
 Close-emit timestamps are strictly greater than the most recent active-emission timestamp for the same series. This avoids duplicate-timestamp rejection at the receiver — Prometheus and other TSDBs that dedup on `(series, timestamp)` would otherwise drop the recovery sample silently.
 
@@ -547,7 +519,7 @@ Gate-close emission is the active recovery primitive — Sonda writes a recovery
 
 #### Prefer `snap_to:` for `remote_write` integrations
 
-The default stale-marker behavior depends on how the receiving Prometheus handles stale-NaN samples ingested via remote-write. Some Prometheus configurations accept the marker into TSDB but do not propagate stale-marker semantics through the query engine for remote-write-ingested samples the way they do for scraped samples. The series stays "live" with the pre-pause value until natural `query.lookback-delta` expiry (around 5 minutes by default), and the alert clearance you expect on the next scrape cycle does not happen.
+The default stale-marker behavior depends on how the receiving Prometheus handles stale-NaN samples ingested through remote-write. Some Prometheus configurations accept the marker into TSDB but do not propagate stale-marker semantics through the query engine for remote-write-ingested samples the way they do for scraped samples. The series stays "live" with the pre-pause value until natural `query.lookback-delta` expiry (around 5 minutes by default), and the alert clearance you expect on the next scrape cycle does not happen.
 
 If your alerts are not clearing as expected on gate close, prefer `snap_to:` with an explicit recovery value over the default stale marker. The recovery sample is a normal Prometheus sample — stored and queried with consistent semantics across receiver versions and configurations — so the next evaluation sees the recovered value directly and clears the alert immediately.
 
@@ -559,11 +531,11 @@ If your alerts are not clearing as expected on gate close, prefer `snap_to:` wit
         snap_to: 1            # bgp_oper_state=1 means "up"
 ```
 
-The tradeoff is per-metric specificity: `snap_to:` requires you to choose a recovery value for each gated metric, which is reasonable for operator-facing signals where "healthy" has an obvious value (`bgp_oper_state=1`, `interface_oper_state=1`, error counters back to `0`). The default `stale_marker` is generic and needs no per-metric tuning, but its end-to-end effect is receiver-dependent. For pipelines that ingest into Prometheus via `remote_write` and drive alerting off the result, `snap_to:` is the more reliable default.
+The tradeoff is per-metric specificity. `snap_to:` requires you to choose a recovery value for each gated metric. This is reasonable for operator-facing signals where "healthy" has an obvious value (`bgp_oper_state=1`, `interface_oper_state=1`, error counters back to `0`). The default `stale_marker` is generic and needs no per-metric tuning, but its end-to-end effect is receiver-dependent. For pipelines that ingest into Prometheus through `remote_write` and drive alerting off the result, `snap_to:` is the more reliable default.
 
 ### Combining with `after:`
 
-`after:` and `while:` compose on the same entry. `after:` defers the scenario's first emission until an upstream crosses a threshold; `while:` then continuously gates the entry on every later edge. Pair them when a downstream should wait for a triggering event AND track the upstream's state thereafter -- a BGP session that opens once a link drops, then pauses every time the link briefly recovers.
+`after:` and `while:` compose on the same entry. `after:` defers the scenario's first emission until an upstream crosses a threshold; `while:` then continuously gates the entry on every later edge. Pair them when a downstream should wait for a triggering event AND track the upstream's state afterwards — a BGP session that opens once a link drops, then pauses every time the link briefly recovers.
 
 ```yaml title="scenarios/bgp-session-cascade.yaml"
 version: 2
@@ -602,13 +574,13 @@ scenarios:
       value: 1
 ```
 
-`bgp_session` stays `pending` until `after:` fires the first time `primary_link` drops below `1`. From that moment on `while:` takes over: the gate opens whenever the link is down, pauses when the link flaps back up, and reopens on the next drop. A scenario that uses both clauses with the gate already closed when `after:` fires enters `paused` directly -- the lifecycle skips `running` until the next gate-open edge.
+`bgp_session` stays `pending` until `after:` fires the first time `primary_link` drops below `1`. From that moment on `while:` takes over: the gate opens whenever the link is down, pauses when the link toggles back up, and reopens on the next drop. A scenario that uses both clauses with the gate already closed when `after:` fires enters `paused` directly — the lifecycle skips `running` until the next gate-open edge.
 
-The two clauses may also reference different upstreams (e.g. `after:` on a link event, `while:` on a separate health signal); the compiler tracks the dependency graph for both edges independently.
+The two clauses may also reference different upstreams (for example, `after:` on a link event, `while:` on a separate health signal). The compiler tracks the dependency graph for both edges independently.
 
 ### `--dry-run` preview
 
-`sonda --dry-run run link-traffic.yaml` renders the gate plumbing alongside the existing layout:
+`sonda --dry-run run link-traffic.yaml` renders the gate wiring alongside the existing layout:
 
 ```
 [config] [2/2] backup_link_throughput
@@ -624,23 +596,23 @@ The two clauses may also reference different upstreams (e.g. `after:` on a link 
     first_open:     ~60s
 ```
 
-The `first_open:` line shows the analytical time at which the upstream's value first satisfies the predicate, computed from the upstream generator's shape. When the upstream's generator is non-analytical (`sine`, `uniform`, `csv_replay`, `steady`), `first_open` renders as `<indeterminate -- non-analytical generator>` -- the gate still works at runtime, but no compile-time crossing time is available.
+The `first_open:` line shows the analytical time at which the upstream's value first satisfies the predicate, computed from the upstream generator's shape. When the upstream's generator is non-analytical (`sine`, `uniform`, `csv_replay`, `steady`), `first_open` renders as `<indeterminate -- non-analytical generator>`. The gate still works at runtime, but no compile-time crossing time is available.
 
-When an entry carries both `after:` and `while:` against different upstreams, both cues render side by side: `after_first_fire: <duration> (ref: <upstream_id>)` shows when the `after:` clause fires, while `first_open:` shows the time the `while:` gate first opens. Operators read `max(after_first_fire, first_open)` to know when the downstream first emits. When `after:` and `while:` share the same upstream they collapse into a single `phase_offset:` line.
+When an entry carries both `after:` and `while:` against different upstreams, both cues render side by side. `after_first_fire: <duration> (ref: <upstream_id>)` shows when the `after:` clause fires; `first_open:` shows the time the `while:` gate first opens. Operators read `max(after_first_fire, first_open)` to know when the downstream first emits. When `after:` and `while:` share the same upstream they collapse into a single `phase_offset:` line.
 
 ### Supported operators
 
-`while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time with the message `unsupported operator '<op>' on while: — only strict comparisons '<' and '>' are accepted`. Real-valued upstream signals make exact equality ambiguous; if you need an equality-like gate, pick a strict comparison with a small tolerance built into the upstream generator (for example, a `constant` upstream at `1.0` gated by `op: "<" value: 0.5`).
+`while:` accepts only the strict comparison operators `<` and `>`. Non-strict operators (`<=`, `>=`, `==`, `!=`) are rejected at compile time with the message `unsupported operator '<op>' on while: — only strict comparisons '<' and '>' are accepted`. Real-valued upstream signals make exact equality ambiguous. If you need an equality-like gate, pick a strict comparison with a small tolerance built into the upstream generator (for example, a `constant` upstream at `1.0` gated by `op: "<" value: 0.5`).
 
 ### Value typing
 
-`while.value` accepts either an integer or a float YAML scalar; both are stored as `f64`. `value: 1` and `value: 1.0` are equivalent. Prefer `1.0` (or any explicit decimal form) in scenario files so the YAML reader carries the operator's intent without relying on integer coercion. NaN and infinity (`.nan`, `.inf`, `-.inf`) are rejected at compile time because the strict comparison gate would never resolve deterministically; the same rejection applies to `delay.close.snap_to`.
+`while.value` accepts either an integer or a float YAML scalar; both are stored as `f64`. `value: 1` and `value: 1.0` are equivalent. Prefer `1.0` (or any explicit decimal form) in scenario files so the YAML reader carries the operator's intent without relying on integer coercion. NaN and infinity (`.nan`, `.inf`, `-.inf`) are rejected at compile time because the strict comparison gate would never resolve deterministically. The same rejection applies to `delay.close.snap_to`.
 
 ### Migrating an `after:`-only cascade to `while:` with recovery
 
-The `link-failover` scenario described above uses `after:` to start a `backup_link_utilization` saturation curve once the primary link drops below `1`. With `after:` the dependent scenario runs to completion regardless of what the primary does next -- if the primary recovers mid-cascade, the backup keeps emitting.
+The `link-failover` scenario described above uses `after:` to start a `backup_link_utilization` saturation curve once the primary link drops below `1`. With `after:` the dependent scenario runs to completion regardless of what the primary does next. If the primary recovers mid-cascade, the backup keeps emitting.
 
-To make the backup track the primary's state continuously, swap `after:` for `while:` on the cascade members that should pause when the primary recovers:
+To make the backup track the primary's state continuously, replace `after:` with `while:` on the cascade members that should pause when the primary recovers:
 
 ```yaml title="link-failover-recovery.yaml"
 version: 2
@@ -679,17 +651,17 @@ scenarios:
       close: 5s
 ```
 
-The `delay.close: 5s` debounces flap transitions: a brief recovery on the primary does not immediately tear down `backup_util`, but a sustained recovery longer than 5s does.
+The `delay.close: 5s` debounces toggle transitions. A brief recovery on the primary does not immediately tear down `backup_util`, but a sustained recovery longer than 5s does.
 
 ### Cross-POST `while:` refs
 
-The `while:` clause shown above gates a scenario on another signal *in the same file*. When you drive Sonda via [`sonda-server`](../deploy/server.md), you can also gate on a signal from a **separately POSTed body** by qualifying the `ref:` with the upstream's `scenario_name:`. This lets one process drive multiple independent POSTs whose lifecycles are loosely coupled — a baseline counter you launch at boot, paused or resumed by a cascade body you POST on demand later — without restarting either side or rewriting the YAML when a new upstream arrives.
+The `while:` clause shown above gates a scenario on another signal *in the same file*. When you drive Sonda through [`sonda-server`](../deploy/server.md), you can also gate on a signal from a **separately POSTed body** by qualifying the `ref:` with the upstream's `scenario_name:`. One process can then drive several independent POSTs whose lifecycles are loosely coupled. A baseline counter launched at boot can be paused or resumed by a cascade body you POST on demand later, without restarting either side or rewriting the YAML when a new upstream arrives.
 
 Cross-POST refs are a `sonda-server` feature. The CLI runs every scenario in a single process and has no cross-POST registry, so `sonda run` rejects a file with `while.scenario_name` at parse time and points here.
 
 #### Two patterns, pick the one your scrape pipeline needs
 
-Cross-POST `while:` is most often used to coordinate a long-running **baseline** with an on-demand **cascade**. Two shapes show up; the right one depends on whether the baseline and the cascade emit the *same* `(metric_name, label_set)` series or *different* series.
+Cross-POST `while:` is most often used to coordinate a long-running **baseline** with an on-demand **cascade**. Two shapes appear; the right one depends on whether the baseline and the cascade emit the *same* `(metric_name, label_set)` series or *different* series.
 
 | Pattern | Use when | How it works |
 |---|---|---|
@@ -697,7 +669,7 @@ Cross-POST `while:` is most often used to coordinate a long-running **baseline**
 | [**Pattern B — Cascade overrides baseline emission**](#pattern-b-cascade-overrides-baseline-emission) | Baseline and cascade emit the **same series**. You want the cascade's values to replace the baseline's in the scrape during the outage window. | DELETE the baseline, POST the cascade for the outage window, DELETE the cascade, POST the baseline again. Or — for scrapers that can pass `?include_state=running` — keep both alive with inverse `while:` clauses so only one is `running` at a time. |
 | [**Pattern C — Counter freeze-and-hold during outage**](#pattern-c-counter-freeze-and-hold-during-outage) | Single metric series (no separate baseline POST) whose value should freeze at the last sample during the outage window, then resume from the frozen value when the gate reopens. | A single scenario with `delay.close.snap_to: <value>` and a `while:` clause. Gate close transitions the scenario to `held`, the pull-path retains the frozen sample, and scrapers opt in with `?include_state=running,unresolved,held`. No DELETE-and-replace orchestration. |
 
-All three worked examples are below. Read them before picking — the same-series vs different-series distinction governs A vs B, and the freeze-vs-replace distinction governs C. Picking the wrong one shows up as either duplicate samples in `/metrics`, an empty scrape body at steady state, or a counter that goes to zero during the outage when you wanted it held at its last value.
+All three worked examples are below. Read them before picking. The same-series vs different-series distinction governs A vs B; the freeze-vs-replace distinction governs C. Picking the wrong one shows up as duplicate samples in `/metrics`, an empty scrape body at steady state, or a counter that drops to zero during the outage instead of holding its last value.
 
 #### Schema
 
@@ -712,9 +684,9 @@ while:
   if_unresolved: open                     # behavior when the upstream is not running yet
 ```
 
-Both POST bodies — the gated one and the gate source — MUST declare a top-level `scenario_name:` field. The upstream body's `scenario_name:` is the identifier the downstream's `while.scenario_name` references. A body without a top-level `scenario_name:` is anonymous and cannot be addressed by another body's `while:` clause; the compiler rejects a cross-POST `while:` on a body that does not name itself.
+Both POST bodies — the gated one and the gate source — MUST declare a top-level `scenario_name:` field. The upstream body's `scenario_name:` is the identifier the downstream's `while.scenario_name` references. A body without a top-level `scenario_name:` is anonymous and cannot be addressed by another body's `while:` clause. The compiler rejects a cross-POST `while:` on a body that does not name itself.
 
-`ref:` must be the top-level entry `id:` of an entry in the upstream body. Pack sub-signal syntax (`ref: my_entry.metric_name`) is rejected at parse time on cross-POST refs — use the top-level entry id.
+`ref:` must be the top-level entry `id:` of an entry in the upstream body. Pack sub-signal syntax (`ref: my_entry.metric_name`) is rejected at parse time on cross-POST refs. Use the top-level entry id.
 
 #### `if_unresolved:` modes
 
@@ -723,7 +695,7 @@ Both POST bodies — the gated one and the gate source — MUST declare a top-le
 | Value | Behavior |
 |---|---|
 | `open` | Emit at full rate as if the gate were true. Events flow at the configured rate; the scenario sits in `unresolved` (the resolution-status state) until the upstream POSTs and the resolver wires the subscription. Use this when the downstream is a baseline counter you want running unless the cascade gates it. |
-| `closed` | Pause emission as if the gate were false. The scenario sits in `unresolved`, no events are emitted. |
+| `closed` | Pause emission as if the gate were false. The scenario sits in `unresolved`; no events are emitted. |
 | `pending` (default) | Neither emit nor advance state. The scenario sits in `unresolved` until the upstream POSTs. This is the conservative default — no traffic until the dependency is satisfied. |
 
 Once the upstream IS running, the downstream behaves like a local `while:` clause: open when the predicate is true, paused (with `delay:` debounce, recovery markers, etc. — see [Continuous coupling with `while:`](#continuous-coupling-with-while)) when the predicate is false.
@@ -733,9 +705,9 @@ Once the upstream IS running, the downstream behaves like a local `while:` claus
 A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresolved`**, used while waiting for the named upstream to register. The scenario moves through the lifecycle like this:
 
 - **Initial POST**: the downstream lands in `unresolved`. Its [`pending_ref` field on `GET /scenarios/{id}`](../deploy/http-api.md#pending_ref-field-on-get-scenariosid) shows the upstream it is waiting on.
-- **Upstream POSTs**: the downstream resolves automatically — the server's resolver wires the subscription and the downstream transitions to `running` (or to `paused` if the predicate is already false). No client orchestration needed.
-- **Upstream is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again — `open` keeps it emitting, `closed` pauses, `pending` halts.
-- **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the gap — counters preserve their value through pause/resume cycles.
+- **Upstream POSTs**: the downstream resolves automatically. The server's resolver wires the subscription and the downstream transitions to `running` (or to `paused` if the predicate is already false). No client orchestration is needed.
+- **Upstream is DELETEd, or finishes its duration**: the downstream transitions back to `unresolved` and applies the `if_unresolved:` mode again. `open` keeps it emitting, `closed` pauses, `pending` halts.
+- **A new POST arrives with the same `scenario_name:`**: the downstream re-resolves to the new upstream automatically. The downstream keeps its accumulated state across the gap; counters preserve their value through pause/resume cycles.
 
 `GET /scenarios/{id}` exposes the wait target as `pending_ref` whenever `state` is `unresolved`. The field is omitted in every other state.
 
@@ -753,11 +725,11 @@ A cross-POST-gated scenario adds one state to the `while:` lifecycle: **`unresol
 
 `pending_ref.scenario_name` is the upstream POST body the downstream is waiting on; `pending_ref.entry_id` is the entry id inside that body. Both match the values written in the downstream's `while.scenario_name` and `while.ref`.
 
-Re-resolution is event-driven, not polled. There is no periodic background sweep — the server attempts to resolve a downstream's `pending_ref` only when a POST lands carrying a matching `scenario_name:`. If no upstream POST ever arrives, the downstream stays `unresolved` indefinitely (or, with `if_unresolved: open`, keeps emitting at its default rate). The orchestration implication: POST the upstream first when the wiring is predictable, or accept that the downstream sits in `unresolved` until the upstream shows up.
+Re-resolution is event-driven, not polled. There is no periodic background sweep. The server attempts to resolve a downstream's `pending_ref` only when a POST lands carrying a matching `scenario_name:`. If no upstream POST ever arrives, the downstream stays `unresolved` indefinitely (or, with `if_unresolved: open`, keeps emitting at its default rate). The orchestration implication: POST the upstream first when the wiring is predictable, or accept that the downstream sits in `unresolved` until the upstream appears.
 
 #### Pattern A — Cascade signals to pause a baseline
 
-A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0. The baseline and the cascade emit **different series** (`requests_total` and `link_state`); the cascade just signals the baseline to stop emitting while it is firing.
+A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0. The baseline and the cascade emit **different series** (`requests_total` and `link_state`). The cascade only signals the baseline to stop emitting while it is firing.
 
 ```yaml title="baseline.yaml — POST first, runs immediately under if_unresolved: open"
 version: 2
@@ -808,11 +780,11 @@ scenarios:
       down_duration: 5s
 ```
 
-POST `baseline.yaml` first. Because the cascade has not arrived, `if_unresolved: open` keeps the counter emitting at the full 100/s rate. Later, POST `cascade.yaml` — the baseline resolves to the cascade automatically. The counter now emits only while `link_state > 0` and pauses while it is `0`. When the cascade finishes (30s) or you DELETE it, the baseline returns to `if_unresolved: open` and resumes the unpaused 100/s rate. POST the cascade again and the baseline re-resolves; the counter picks up from where it froze, so its values stay monotonic across pause/resume cycles.
+POST `baseline.yaml` first. Because the cascade has not arrived, `if_unresolved: open` keeps the counter emitting at the full 100/s rate. Later, POST `cascade.yaml`. The baseline resolves to the cascade automatically. The counter now emits only while `link_state > 0` and pauses while it is `0`. When the cascade finishes (30s) or you DELETE it, the baseline returns to `if_unresolved: open` and resumes the unpaused 100/s rate. POST the cascade again and the baseline re-resolves. The counter picks up from where it froze, so its values stay monotonic across pause/resume cycles.
 
 #### Failing fast on a misspelled ref — `?validate=strict`
 
-By default `POST /scenarios` accepts a body whose `while.scenario_name` does not match any running scenario: the entry lands in `unresolved` and re-resolves whenever a matching upstream POSTs. That is the right behavior for predictable client-orchestrated wiring, but it can hide typos — a downstream gated on `bgp_peer_stat` (missing an `e`) sits in `unresolved` forever instead of failing the POST.
+By default `POST /scenarios` accepts a body whose `while.scenario_name` does not match any running scenario: the entry lands in `unresolved` and re-resolves whenever a matching upstream POSTs. That is the right behavior for predictable client-orchestrated wiring, but it can hide typos. A downstream gated on `bgp_peer_stat` (missing an `e`) sits in `unresolved` forever instead of failing the POST.
 
 Append `?validate=strict` to reject the entire body if any cross-POST `while:` ref is unresolvable at POST time:
 
@@ -822,7 +794,7 @@ curl -X POST 'http://localhost:8080/scenarios?validate=strict' \
   --data-binary @downstream.yaml
 ```
 
-The check is atomic — either every entry passes or the whole body is rejected; no scenarios spawn on rejection. The response is `HTTP 422 Unprocessable Entity` with an `unresolved_refs` array listing the missing upstreams:
+The check is atomic. Either every entry passes or the whole body is rejected; no scenarios spawn on rejection. The response is `HTTP 422 Unprocessable Entity` with an `unresolved_refs` array listing the missing upstreams:
 
 ```json
 {
@@ -841,7 +813,7 @@ Use `?validate=strict` for pre-flight checks in CI pipelines and for one-shot PO
 
 #### Re-POSTing under the same `scenario_name` is two operations
 
-Every POST whose top-level `scenario_name:` matches an entry already in `pending` / `running` / `paused` / `unresolved` returns `HTTP 409 Conflict`. There is no in-place update — replacing an active cascade is always DELETE-then-POST.
+Every POST whose top-level `scenario_name:` matches an entry already in `pending` / `running` / `paused` / `unresolved` returns `HTTP 409 Conflict`. There is no in-place update; replacing an active cascade is always DELETE-then-POST.
 
 ```json title="409 response body"
 {
@@ -857,15 +829,15 @@ Every POST whose top-level `scenario_name:` matches an entry already in `pending
 }
 ```
 
-`conflicting_scenarios` lists every active entry that shares the posted `scenario_name`. DELETE each one (a multi-entry body produces multiple handles, all of which must go) before the next POST. Entries that have already transitioned to `finished` do not block — they are stale handles and the server ignores them.
+`conflicting_scenarios` lists every active entry that shares the posted `scenario_name`. DELETE each one (a multi-entry body produces several handles, all of which must go) before the next POST. Entries that have already transitioned to `finished` do not block; they are stale handles and the server ignores them.
 
 #### Aggregate `/metrics` sees paused and unresolved scenarios
 
 The aggregate [`GET /metrics`](../deploy/http-api.md#get-metrics-vs-get-scenariosidmetrics) endpoint walks the full scenario map without filtering on state. Every scenario the server currently knows about — `running`, `paused`, `unresolved`, even `pending` — contributes the most recent value per `(metric_name, label_set)` to the scrape output. The handle holds those last-seen samples until you DELETE the scenario; gate-pause alone does not clear them.
 
-The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." If you want only one scenario to contribute a given series at a time, DELETE the inactive one rather than relying on the gate to silence it. This is load-bearing for the cascade-replaces-baseline pattern below.
+The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." To keep only one scenario contributing a given series at a time, DELETE the inactive one. The gate does not silence it. This matters for the cascade-replaces-baseline pattern below.
 
-Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped; with the parameter absent the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the six scenario states — `pending`, `running`, `paused`, `held`, `unresolved`, `finished` — in any combination:
+Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped. With the parameter absent, the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the six scenario states — `pending`, `running`, `paused`, `held`, `unresolved`, `finished` — in any combination:
 
 ```bash
 # Only running scenarios — paused, held, and unresolved ghosts are filtered out
@@ -887,7 +859,7 @@ A metric scenario configured with `delay.close.snap_to` reports `state: "held"` 
 
 !!! warning "`?include_state=running` filters out `if_unresolved: open` baselines"
 
-    A scenario that uses `if_unresolved: open` (Pattern A above) reports `state: "unresolved"`, not `state: "running"`, while no upstream cascade has resolved — the state machine treats "emitting at the open default" and "running normally as a resolved scenario" as distinct lifecycle states. A scraper hitting `?include_state=running` on a deployment that uses Pattern A will filter the baseline out and see an empty scrape body at steady state.
+    A scenario that uses `if_unresolved: open` (Pattern A above) reports `state: "unresolved"`, not `state: "running"`, while no upstream cascade has resolved. The state machine treats "emitting at the open default" and "running normally as a resolved scenario" as distinct lifecycle states. A scraper hitting `?include_state=running` on a deployment that uses Pattern A filters the baseline out and sees an empty scrape body at steady state.
 
     For that combination, use `?include_state=running,unresolved`:
 
@@ -896,11 +868,11 @@ A metric scenario configured with `delay.close.snap_to` reports `state: "held"` 
     curl 'http://localhost:8080/metrics?include_state=running,unresolved'
     ```
 
-    The baseline stays visible while the cascade is absent; once the cascade POSTs and the baseline resolves to `running`, both states still pass the filter, so the scrape never goes dark. During a gate-pause the baseline transitions to `paused` and drops out of the response, which is the desired behavior.
+    The baseline stays visible while the cascade is absent. Once the cascade POSTs and the baseline resolves to `running`, both states still pass the filter, so the scrape never goes dark. During a gate-pause the baseline transitions to `paused` and drops out of the response, which is the desired behavior.
 
 #### Pattern B — Cascade overrides baseline emission
 
-Pattern A pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note just above) — which is fine when the baseline and cascade emit different series. When they emit the **same** `(metric_name, label_set)` series — a constant healthy value swapped out for a flapping outage value on the same series — gate-pause is not enough, because the baseline's last `1` would sit alongside the cascade's `0` in the scrape. Orchestrate with DELETE + POST instead.
+Pattern A pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note above). That is fine when the baseline and cascade emit different series. When they emit the **same** `(metric_name, label_set)` series, gate-pause is not enough. The baseline's last `1` would sit alongside the cascade's `0` in the scrape. Orchestrate with DELETE + POST instead.
 
 ```yaml title="baseline.yaml — steady-state value"
 version: 2
@@ -954,16 +926,16 @@ scenarios:
 The orchestration sequence:
 
 1. **Start the baseline.** POST `baseline.yaml`. The series `interface_oper_state{device="rtr-edge-01", interface="GigabitEthernet0/0/0"}` reads `1` (healthy).
-2. **Begin the outage.** DELETE the baseline (`DELETE /scenarios/{baseline-id}`), then POST `outage.yaml`. Same series now flaps between `1` and `0` from the outage cascade.
-3. **End the outage.** DELETE the outage cascade, then POST `baseline.yaml` again. Series returns to a steady `1`.
+2. **Begin the outage.** DELETE the baseline (`DELETE /scenarios/{baseline-id}`), then POST `outage.yaml`. The same series now alternates between `1` and `0` from the outage cascade.
+3. **End the outage.** DELETE the outage cascade, then POST `baseline.yaml` again. The series returns to a steady `1`.
 
 The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
 
-If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow: POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so that exactly one of them is `running` at any moment. Scrapers request `GET /metrics?include_state=running` and see whichever scenario currently holds the gate open; the paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter — push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
+If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow. POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so exactly one is `running` at any moment. Scrapers request `GET /metrics?include_state=running` and see whichever scenario currently holds the gate open. The paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter. Push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
 
 #### Pattern C — Counter freeze-and-hold during outage
 
-Some operational signals should freeze at their last value during an outage rather than go silent or drop to zero. A monotonic counter that represents "requests served" or a gauge that represents "last-known interface state" is more truthful held at the last sample than reset, and a scraper that sees the frozen value can keep alerting against the same threshold throughout the outage window.
+Some operational signals should freeze at their last value during an outage rather than go silent or drop to zero. A monotonic counter that represents "requests served" or a gauge that represents "last-known interface state" is more truthful held at the last sample than reset. A scraper that sees the frozen value can keep alerting against the same threshold through the outage window.
 
 A single metric scenario with a `while:` clause and `delay.close.snap_to: <value>` does this without a separate baseline POST and without DELETE-and-replace orchestration. When the gate closes, the runner fires the one-shot recovery sample, the scenario transitions to the `held` lifecycle state, and `current_values` retains the frozen sample. Scrapers that pass `?include_state=running,unresolved,held` continue to see the frozen value on every scrape; scrapers that omit `held` from the allowlist see the series drop out for the duration of the outage.
 
@@ -1007,20 +979,19 @@ The orchestration sequence:
 2. **Outage begins.** POST an outage cascade that publishes `link_state` going to `0` (the same shape used in Patterns A and B). The gate closes — the runner fires the `snap_to: 1` recovery sample, and the scenario transitions from `unresolved` (or `running`) to `held`. The frozen `1` stays visible on the pull-path. Push sinks (`remote_write`, `kafka`, `loki`, etc.) stop receiving new samples for the duration of the hold; the one recovery sample at the close edge is the last write they see.
 3. **Outage ends.** The outage cascade reopens `link_state` (or is DELETEd). The downstream transitions from `held` back to `running` and resumes emission at the configured rate. The series carries forward without a gap on the pull-path; push sinks pick up new samples at the next tick.
 
-`held` is reachable only from metric scenarios that have emitted at least one sample before the gate first closes. A snap-to-equipped scenario whose gate closes before its first emission lands in `paused` (not `held`) because there is no frozen value to retain — the next gate open then emits normally and a subsequent close can transition into `held`.
+`held` is reachable only from metric scenarios that have emitted at least one sample before the gate first closes. A snap-to-equipped scenario whose gate closes before its first emission lands in `paused` (not `held`) because there is no frozen value to retain. The next gate open then emits normally and a later close can transition into `held`.
 
 The choice between Patterns A, B, and C:
 
-- **A** drops the baseline to zero contributions during the outage by gating its emission shut. Use when the baseline and the outage cascade emit different series, and "absent" is the right scrape behavior during the outage.
-- **B** replaces the baseline series with the outage cascade's values during the outage window. Use when the two emit the same series and you need the outage values to overwrite the baseline values in the scrape.
-- **C** holds a single series at its last value for the duration of the outage. Use when the right scrape behavior is "the value you last saw," with no separate baseline POST and no DELETE-and-replace orchestration.
+- **A** drops the baseline to zero contributions during the outage by gating its emission shut. Use this when the baseline and the outage cascade emit different series, and "absent" is the right scrape behavior during the outage.
+- **B** replaces the baseline series with the outage cascade's values during the outage window. Use this when the two emit the same series and you need the outage values to overwrite the baseline values in the scrape.
+- **C** holds a single series at its last value for the duration of the outage. Use this when the right scrape behavior is "the value you last saw," with no separate baseline POST and no DELETE-and-replace orchestration.
 
 For the HTTP surface — the strict-validation flag, the `pending_ref` field, the duplicate-name 409, and the new `/stats` fields — see [HTTP API reference — Cross-POST `while:` refs](../deploy/http-api.md#cross-post-while-refs).
 
 ## Pack-backed entries
 
-Reference a [metric pack](catalogs-and-packs.md) directly from a scenarios entry. Sonda
-expands the pack at compile time -- you get one prepared scenario per metric in the pack.
+Reference a [metric pack](catalogs-and-packs.md) directly from a scenarios entry. Sonda expands the pack at compile time. You get one prepared scenario per metric in the pack.
 
 ```yaml title="snmp-interface.yaml"
 version: 2
@@ -1044,13 +1015,11 @@ scenarios:
       ifIndex: "1"
 ```
 
-The `pack:` field replaces the `name:` + `generator:` combo. Any fields you set on the entry
-(`labels`, `rate`, `duration`, `encoder`, `sink`) apply to every expanded metric.
+The `pack:` field replaces the `name:` + `generator:` combo. Any fields you set on the entry (`labels`, `rate`, `duration`, `encoder`, `sink`) apply to every expanded metric.
 
 ## Clock groups
 
-Scenarios with the same `clock_group` share a start-time reference, which keeps multi-signal
-scenarios phase-aligned. You can set `clock_group:` explicitly:
+Scenarios with the same `clock_group` share a start-time reference, which keeps multi-signal scenarios phase-aligned. You can set `clock_group:` explicitly:
 
 ```yaml
 scenarios:
@@ -1062,17 +1031,13 @@ scenarios:
     ...
 ```
 
-Or let Sonda auto-assign one when you use `after:` -- every scenario in the same `after:` chain
-ends up in the same auto-named group (`chain_<head>`).
+Or let Sonda auto-assign one when you use `after:` — every scenario in the same `after:` chain ends up in the same auto-named group (`chain_<head>`).
 
-The start banner and the grouped run summary both show the `clock_group`. See
-[CLI Reference -- Status output](../reference/cli-flags.md#status-output) for what the banners look
-like at runtime.
+The start banner and the grouped run summary both show the `clock_group`. See [CLI Reference — Status output](../reference/cli-flags.md#status-output) for what the banners look like at runtime.
 
-## Scaffolding new files with `sonda new`
+## Generating new files with `sonda new`
 
-`sonda new` emits a scenario YAML file. The fastest path is `--template`, which prints a minimal runnable
-file and exits with no prompts:
+`sonda new` writes a scenario YAML file. The fastest path is `--template`, which prints a minimal runnable file and exits with no prompts:
 
 ```bash
 sonda new --template -o ./my-catalog/demo.yaml
@@ -1098,14 +1063,11 @@ scenarios:
       value: 1.0
 ```
 
-Drop the `--template` flag to walk the interactive flow (signal type → generator → rate →
-duration → sink type → output path), or use `--from <csv>` to seed the scaffold from
-existing CSV data. See [`sonda new`](../reference/cli-flags.md#sonda-new) for the full flag reference.
+Drop the `--template` flag to walk the interactive flow (signal type → generator → rate → duration → sink type → output path), or use `--from <csv>` to seed the file from existing CSV data. See [`sonda new`](../reference/cli-flags.md#sonda-new) for the full flag reference.
 
 ## What next
 
-- [**CLI Reference -- sonda run**](../reference/cli-flags.md#sonda-run) -- flag reference for running scenario files
-- [**CLI Reference -- dry run**](../reference/cli-flags.md#dry-run) -- validate and preview a scenario file before running
-- [**Scenario Fields**](../reference/scenario-fields.md) -- per-entry field reference (generators, labels, schedules)
-- [**Server API**](../deploy/server.md) -- `POST /scenarios` accepts a scenario file as YAML or JSON
-- [**Metric Packs**](catalogs-and-packs.md) -- the pack catalog you can reference from scenario entries
+- [**CLI Reference — sonda run**](../reference/cli-flags.md#sonda-run) — flag reference for running scenario files
+- [**Scenario Fields**](../reference/scenario-fields.md) — per-entry field reference (generators, labels, schedules)
+- [**Server API**](../deploy/server.md) — `POST /scenarios` accepts a scenario file as YAML or JSON
+- [**Metric Packs**](catalogs-and-packs.md) — the pack catalog you can reference from scenario entries

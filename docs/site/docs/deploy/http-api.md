@@ -5,13 +5,13 @@ description: REST endpoints exposed by sonda-server — scenarios, events, metri
 
 # HTTP API reference
 
-`sonda-server` exposes a REST API over HTTP. This page lists every endpoint, its request shape, and the responses you should expect. For how to install, start, and operate the server itself, see [Deploy as a server](server.md).
+`sonda-server` exposes a REST API over HTTP. This page lists every endpoint, its request shape, and the responses you should expect. For how to install, start, and operate the server, see [Deploy as a server](server.md).
 
 ## Conventions
 
 ### Authentication
 
-When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, and `/metrics` must include `Authorization: Bearer <key>`. The `/health` endpoint is always public. When no key is configured, all endpoints are publicly accessible — backwards compatible with existing deployments.
+When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, and `/metrics` must include `Authorization: Bearer <key>`. The `/health` endpoint is always public. When no key is configured, all endpoints are public. This preserves backwards compatibility with existing deployments.
 
 ```bash title="Authenticated request"
 curl -X POST http://localhost:8080/scenarios \
@@ -51,13 +51,13 @@ All error responses share the envelope `{"error": "<short_code>", "detail": "<me
 
 ### Sink URL gotchas
 
-When the server runs in a container, a `sink.url` of `http://localhost:<port>` resolves to the server's own loopback, not your host. POST responses include a `warnings` array when this misconfiguration is detected — the field is omitted entirely when no warnings fire. See [Networking on Deploy as a server](server.md#networking) for the full address-resolution reference.
+When the server runs in a container, a `sink.url` of `http://localhost:<port>` resolves to the server's own loopback, not your host. POST responses include a `warnings` array when the server detects this misconfiguration. The field is omitted entirely when no warnings apply. See [Networking on Deploy as a server](server.md#networking) for the full address-resolution reference.
 
 ## Health and observability
 
 ### `GET /health`
 
-Liveness probe. Always public — no `Authorization` header required.
+Liveness probe. Always public. No `Authorization` header required.
 
 ```bash
 curl http://localhost:8080/health
@@ -116,15 +116,15 @@ curl -s http://localhost:8080/scenarios/$ID/stats | jq .
 
 #### Self-observability via /stats
 
-External monitors — Kubernetes readiness probes, Prometheus alerts, ops dashboards — read this endpoint to answer one question: is the scenario actually delivering data, or is it silently wedged? `GET /scenarios` ships a precomputed `degraded` flag per scenario for at-a-glance checks, and `GET /scenarios/{id}/stats` returns the raw counters underneath so you can set your own thresholds.
+External monitors read this endpoint to answer one question. Is the scenario delivering data, or is it stuck? Examples: Kubernetes readiness probes, Prometheus alerts, ops dashboards. `GET /scenarios` returns a precomputed `degraded` flag per scenario for quick checks. `GET /scenarios/{id}/stats` returns the raw counters so you can set your own thresholds.
 
-The four sink-failure fields let external monitors spot a wedged runner without parsing logs, and you choose the threshold that counts as "degraded" for your environment.
+The four sink-failure fields let external monitors detect a stuck runner without parsing logs. You choose the threshold that counts as "degraded" for your environment.
 
-#### What a wedged batching sink looks like
+#### What a stuck batching sink looks like
 
-Five sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — pile events into an in-memory buffer and only deliver them in bursts ("flushes"). The other sinks (`stdout`, `file`, `tcp`, `udp`) deliver every event immediately. For the batching group, `total_events` climbs on every *buffered* write, but the delivery-health fields (`last_successful_write_at`, `consecutive_failures`, `total_sink_failures`) only move when a real flush succeeds or fails. That mismatch is the whole reason `/stats` exists: it tells you what's actually landing, not what's queued.
+Five sinks buffer events in memory and deliver them in bursts ("flushes"): `loki`, `http_push`, `remote_write`, `otlp_grpc`, and `kafka`. The other sinks (`stdout`, `file`, `tcp`, `udp`) deliver every event immediately. For the batching group, `total_events` increases on every *buffered* write. The delivery-health fields (`last_successful_write_at`, `consecutive_failures`, `total_sink_failures`) only move when a real flush succeeds or fails. That mismatch is the reason `/stats` exists. It tells you what is actually delivered, not what is queued.
 
-Picture a scenario writing to a Loki backend that has gone unreachable, running under the default [`on_sink_error: warn`](../build/scenario-files.md#sink-error-policy) policy. Six writes in:
+Consider a scenario writing to a Loki backend that has gone unreachable. The scenario runs under the default [`on_sink_error: warn`](../build/scenario-files.md#sink-error-policy) policy. Six writes in:
 
 ```text
  write #1   buffer       Ok  →  /stats untouched (only buffered)
@@ -136,7 +136,7 @@ Picture a scenario writing to a Loki backend that has gone unreachable, running 
  ...
 ```
 
-`total_events` keeps climbing the whole time — six successful tick results, six increments. But `/stats` tells the honest story:
+`total_events` keeps increasing the whole time. Six successful tick results, six increments. But `/stats` reports the delivery reality:
 
 ```json title="curl http://localhost:8080/scenarios/$ID/stats"
 {
@@ -148,23 +148,23 @@ Picture a scenario writing to a Loki backend that has gone unreachable, running 
 }
 ```
 
-`last_successful_write_at: null` says nothing has *ever* delivered. `consecutive_failures: 1` reflects the one failed flush in this window — buffered writes leave this counter alone; only a failed flush increments it, and only a *successful delivery* resets it to zero. `total_sink_failures: 1` is the same single failure counted as a lifetime total; until the first successful delivery, the two counters stay locked together. Run the scenario longer and both rise in step — once every `max_buffer_age` window (or whenever the batch fills), not on every tick.
+`last_successful_write_at: null` says nothing has *ever* been delivered. `consecutive_failures: 1` reflects the one failed flush in this window. Buffered writes leave this counter alone. Only a failed flush increments it. Only a *successful delivery* resets it to zero. `total_sink_failures: 1` is the same single failure counted as a lifetime total. Until the first successful delivery, the two counters stay locked together. Run the scenario longer and both rise in step. Each rise happens once every `max_buffer_age` window, or whenever the batch fills, not on every tick.
 
-This is the shape to look for: rising `total_events`, `last_successful_write_at` stuck at `null` (or stale), `consecutive_failures` non-zero. An operator who sees that pattern knows the backend is unreachable, no matter how high `total_events` climbs. Non-batching sinks deliver synchronously on every write, so for them the delivery-health fields and the event counter always advance together — the wedged-buffer trap doesn't apply.
+This is the shape to look for: rising `total_events`, `last_successful_write_at` stuck at `null` or stale, and a non-zero `consecutive_failures`. An operator who sees that pattern knows the backend is unreachable, no matter how high `total_events` rises. Non-batching sinks deliver synchronously on every write. For them the delivery-health fields and the event counter always advance together. The stuck-buffer trap does not apply.
 
 !!! info "Delivery-accurate, not buffer-accurate, for batching sinks"
-    The batching sinks — `loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka` — buffer events and flush them to the backend in batches. `last_successful_write_at` and `consecutive_failures` track actual *delivery* to the destination, not buffering: `last_successful_write_at` advances only when a write triggers a successful flush, and a write that merely buffers neither advances it nor resets `consecutive_failures`. So a batching sink that is buffering but failing to reach its backend shows a *stale* `last_successful_write_at` and a *non-zero* `consecutive_failures` — the honest signal that nothing is landing. Non-batching sinks (`stdout`, `file`, `tcp`, `udp`) deliver synchronously on every write, so the two readings always reflect the latest write.
+    The batching sinks (`loki`, `http_push`, `remote_write`, `otlp_grpc`, `kafka`) buffer events and flush them to the backend in batches. `last_successful_write_at` and `consecutive_failures` track actual *delivery* to the destination, not buffering. `last_successful_write_at` advances only when a write triggers a successful flush. A write that only buffers neither advances it nor resets `consecutive_failures`. A batching sink that is buffering but failing to reach its backend shows a *stale* `last_successful_write_at` and a *non-zero* `consecutive_failures`. That is the signal that nothing is delivered. Non-batching sinks (`stdout`, `file`, `tcp`, `udp`) deliver synchronously on every write, so the two readings always reflect the latest write.
 
-The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../build/scenario-files.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what's happening; when `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
+The four sink-failure fields are the runtime telemetry surface for the [`on_sink_error` policy](../build/scenario-files.md#sink-error-policy). When `on_sink_error: warn` (the default) is in effect, the runner stays alive on transient sink errors and these counters tell you what is happening. When `on_sink_error: fail` is set, the thread exits on the first error and `state` flips to `finished`.
 
 !!! note "`pending -> paused` is a reachable direct transition"
-    A scenario carrying both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly, skipping `running`. Clients building a state-machine assertion should not assume `pending` always precedes `running` -- watch for `paused` from the `pending` state too.
+    A scenario carrying both `after:` and `while:` whose `after:` triggers while the gate is closed enters `paused` directly, skipping `running`. Clients building a state-machine assertion should not assume `pending` always precedes `running`. Allow `paused` to follow the `pending` state too.
 
 !!! warning "Upgrading from a release without `pending`?"
-    Earlier Sonda releases reported only `running`, `paused`, and `finished` on `/scenarios/{id}/stats`. The `pending` value is new and arrives when a scenario is waiting on `after:` or on the first eligible upstream tick of a `while:` gate. Before rolling out, grep your Prometheus recording rules and Grafana dashboards for label matchers like `state=~"running|paused|finished"` -- exhaustive enumerations silently drop scenarios in `pending`. Either add `pending` to the alternation (`state=~"pending|running|paused|finished"`) or rewrite the matcher as a negation (`state!="finished"`) so new lifecycle values surface without another patch.
+    Earlier Sonda releases reported only `running`, `paused`, and `finished` on `/scenarios/{id}/stats`. The `pending` value is new. It applies when a scenario is waiting on `after:` or on the first eligible upstream tick of a `while:` gate. Before rolling out, grep your Prometheus recording rules and Grafana dashboards for label matchers like `state=~"running|paused|finished"`. Exhaustive enumerations drop scenarios in `pending` silently. Either add `pending` to the alternation (`state=~"pending|running|paused|finished"`) or rewrite the matcher as a negation (`state!="finished"`). The negation form surfaces new lifecycle values without another patch.
 
-!!! tip "Detecting a wedged sink"
-    To spot a scenario whose sink is wedged, read the `degraded` field on the [`GET /scenarios`](#get-scenarios) list response — it is `true` when a scenario has had sink failures and no successful delivery in the last 30 seconds:
+!!! tip "Detecting a stuck sink"
+    To detect a scenario whose sink is stuck, read the `degraded` field on the [`GET /scenarios`](#get-scenarios) list response. It is `true` when a scenario has had sink failures and no successful delivery in the last 30 seconds:
 
     ```bash
     # List the IDs of every degraded scenario:
@@ -172,7 +172,7 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
       jq -r '.scenarios[] | select(.degraded) | .id'
     ```
 
-    Wire that into a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel. If you need a different staleness window than the built-in 30 seconds, threshold `total_sink_failures` and the staleness of `last_successful_write_at` from this endpoint yourself.
+    Use that query as a Kubernetes readiness probe, a Prometheus alert query, or a Grafana panel. If you need a different staleness window than the built-in 30 seconds, threshold `total_sink_failures` and the age of `last_successful_write_at` from this endpoint yourself.
 
 ## Scenarios
 
@@ -187,18 +187,18 @@ The four sink-failure fields are the runtime telemetry surface for the [`on_sink
 
 ### `POST /scenarios`
 
-Post a [scenario](../build/scenario-files.md) YAML or JSON body. The server compiles and launches it. Returns the scenario ID(s) immediately; the scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
+Send a [scenario](../build/scenario-files.md) YAML or JSON body. The server compiles and launches it. The endpoint returns the scenario IDs immediately. The scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
 
-!!! tip "Need just one event?"
-    `POST /scenarios` is for sustained emission over time. To fire a single log or metric synchronously and block until the sink ACKs, use [`POST /events`](#post-events) instead.
+!!! tip "Need one event only?"
+    `POST /scenarios` is for sustained emission over time. To send a single log or metric synchronously and block until the sink acknowledges, use [`POST /events`](#post-events) instead.
 
 !!! warning "Sink URLs resolve inside the server's network"
-    POSTed scenarios compile and run inside the `sonda-server` process. A sink with `url: http://localhost:<port>` reaches the server container's loopback, not your host. Use the address the server can actually see:
+    Scenarios sent over HTTP compile and run inside the `sonda-server` process. A sink with `url: http://localhost:<port>` reaches the server container's loopback, not your host. Use the address the server can reach:
 
     - In Docker Compose, use the service name -- `http://victoriametrics:8428`, `http://loki:3100`, `kafka:9092`.
     - In Kubernetes, use the in-cluster Service DNS -- `http://vmsingle:8428` for same-namespace, or `http://vmsingle.monitoring.svc.cluster.local:8428` for cross-namespace.
 
-    When a POSTed scenario targets `localhost`, `127.0.0.1`, or `[::1]`, the server still returns **201 Created** -- the trap is likely a mistake but sometimes legitimate, so the scenario launches regardless. A `warnings: [...]` field on the response identifies the offending sink and points at [Networking](server.md#networking). The same message is emitted via `tracing::warn!` so operators can catch it in server logs:
+    When a scenario targets `localhost`, `127.0.0.1`, or `[::1]`, the server still returns **201 Created**. The address is usually a mistake but sometimes legitimate, so the scenario launches regardless. A `warnings: [...]` field on the response identifies the offending sink and points at [Networking](server.md#networking). The same message is also written through `tracing::warn!` so operators can find it in server logs:
 
     ```json title="Response (201 with loopback warning)"
     {
@@ -211,7 +211,7 @@ Post a [scenario](../build/scenario-files.md) YAML or JSON body. The server comp
     }
     ```
 
-    The `warnings` field is omitted entirely when no issues were detected, so existing clients that do not know about the field continue to parse the response unchanged.
+    The `warnings` field is omitted entirely when no issues were detected. Existing clients that do not know the field continue to parse the response unchanged.
 
 #### Single-scenario body
 
@@ -273,13 +273,13 @@ Post a [scenario](../build/scenario-files.md) YAML or JSON body. The server comp
     EOF
     ```
 
-    The JSON body is transcoded to YAML server-side and compiled through the same pipeline as the YAML path. Any valid scenario file can be posted as JSON by converting the YAML to its JSON equivalent.
+    The JSON body is transcoded to YAML server-side and compiled through the same pipeline as the YAML path. Any valid scenario file can be sent as JSON by converting the YAML to its JSON equivalent.
 
-The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body; anything that compiles to two or more entries (for example, a pack-backed entry that fans out) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time and takes one of `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`, or `"finished"`.
+The response shape depends on how many entries the compiler produces, not on the request format. A single-entry result returns the flat `{"id", "name", "state"}` body. Anything that compiles to two or more entries (for example, a pack-backed entry that expands) returns `{"scenarios": [...]}`. The `state` field reports the live lifecycle state at response time. It takes one of `"pending"`, `"running"`, `"paused"`, `"held"`, `"unresolved"`, or `"finished"`.
 
 #### Multi-scenario body
 
-Post a scenario file with two or more `scenarios:` entries to launch them atomically:
+Send a scenario file with two or more `scenarios:` entries to launch them atomically:
 
 === "YAML"
 
@@ -371,9 +371,9 @@ The response wraps each launched scenario in a `scenarios` array:
 }
 ```
 
-Each scenario gets its own ID and runs on a separate thread. You manage them individually with `GET /scenarios/{id}`, `DELETE /scenarios/{id}`, etc.
+Each scenario gets its own ID and runs on a separate thread. You manage them individually with `GET /scenarios/{id}`, `DELETE /scenarios/{id}`, and the rest.
 
-**Batch error handling** is atomic — if any entry in the batch fails compilation or validation, the entire request is rejected and nothing is launched:
+**Batch error handling** is atomic. If any entry in the batch fails compilation or validation, the entire request is rejected and nothing is launched:
 
 | Condition | Status | Behavior |
 |-----------|--------|----------|
@@ -384,10 +384,10 @@ Each scenario gets its own ID and runs on a separate thread. You manage them ind
 | All entries valid | **201** | All scenarios launched and returned |
 
 !!! tip "Long-running scenarios"
-    Omit the `duration` field from your scenario body (or put `duration:` only inside a single entry and omit it from `defaults:`) to create a scenario that runs indefinitely. Stop it later with `DELETE /scenarios/{id}`. The canonical run-until-stopped example is [`examples/long-running-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/long-running-metrics.yaml) — POST it to start, DELETE to stop, operator owns the lifecycle.
+    Omit the `duration` field from your scenario body, or put `duration:` inside a single entry and omit it from `defaults:`, to create a scenario that runs indefinitely. Stop it later with `DELETE /scenarios/{id}`. The reference run-until-stopped example is [`examples/long-running-metrics.yaml`](https://github.com/davidban77/sonda/blob/main/examples/long-running-metrics.yaml). Send it to start, DELETE to stop. The operator controls the lifecycle.
 
 ??? tip "Phase offsets and after: chains in batch requests"
-    Multi-scenario batches honor `phase_offset`, `clock_group`, and `after:` fields, just like `sonda run`. This lets you create time-correlated scenarios over the API:
+    Multi-scenario batches honor `phase_offset`, `clock_group`, and `after:` fields, the same as `sonda run`. This lets you create time-correlated scenarios over the API:
 
     ```yaml
     version: 2
@@ -427,13 +427,13 @@ Each scenario gets its own ID and runs on a separate thread. You manage them ind
 
 #### Pack references over HTTP
 
-Start the server with `--catalog <DIR>` (or the `SONDA_CATALOG` env var) and `POST /scenarios` resolves `pack: <name>` references against the `kind: composable` pack YAML files in that directory. Post a body that names a pack — `pack: telegraf_snmp_interface` — and the server expands it the same way `sonda run --catalog <dir>` does. You no longer have to inline the pack's metrics into the posted body client-side.
+Start the server with `--catalog <DIR>` (or the `SONDA_CATALOG` environment variable) and `POST /scenarios` resolves `pack: <name>` references against the `kind: composable` pack YAML files in that directory. Send a body that names a pack (for example `pack: telegraf_snmp_interface`) and the server expands it the same way `sonda run --catalog <dir>` does. You no longer have to inline the pack's metrics into the request body on the client side.
 
 ```bash
 sonda-server --port 8080 --catalog /scenarios
 ```
 
-Without `--catalog`, a body that references a pack by name is rejected with `400 Bad Request`, and the `detail` field names the unresolved pack. Inlining the pack's metrics directly into the posted body still works as an alternative — bodies that carry no `pack:` reference are unaffected either way.
+Without `--catalog`, a body that references a pack by name is rejected with `400 Bad Request`. The `detail` field names the unresolved pack. Inlining the pack's metrics directly into the request body still works as an alternative. Bodies that carry no `pack:` reference are unaffected either way.
 
 #### Error response reference
 
@@ -446,11 +446,11 @@ Without `--catalog`, a body that references a pack by name is rejected with `400
 
 #### Duplicate scenario_name returns 409
 
-When a posted body sets a top-level `scenario_name`, the server scans the active scenario map for any handle that already carries the same `scenario_name` and is in `pending`, `running`, `paused`, `held`, or `unresolved` state. If at least one match is found the POST is rejected with `409 Conflict`; nothing is launched. The contract is explicit: the operator must `DELETE` the conflicting scenarios first, then re-post. There is no `?force=true` override — the explicit DELETE is the only way to free the name.
+When a request body sets a top-level `scenario_name`, the server scans the active scenario map for a matching handle. A match is any handle with the same `scenario_name` in `pending`, `running`, `paused`, `held`, or `unresolved` state. If at least one match is found, the POST is rejected with `409 Conflict`. Nothing is launched. The rule is explicit: the operator must `DELETE` the conflicting scenarios first, then re-send the body. There is no `?force=true` override. The explicit DELETE is the only way to free the name.
 
-Anonymous bodies (no top-level `scenario_name`) bypass this check entirely — two consecutive POSTs of the same anonymous body both return 201. Finished handles are considered stale and never block a new POST — once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
+Anonymous bodies (no top-level `scenario_name`) skip this check entirely. Two consecutive POSTs of the same anonymous body both return 201. Finished handles do not block a new POST. Once every prior cascade with the same name reaches `finished` state, a new cascade with the same name returns 201.
 
-The conflict check is best-effort: it acquires a read lock, scans the active scenarios, and releases the lock before launching. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window — both will register and their Prometheus streams will collide on duplicate timestamps. Workshop-scale and sequential-operator usage are unaffected; high-concurrency callers should serialize POSTs that share a `scenario_name`.
+The conflict check is best-effort. It acquires a read lock, scans the active scenarios, and releases the lock before launching. Two simultaneous POSTs of the same `scenario_name` can both pass the check if they race within the launch window. Both register and their Prometheus streams will collide on duplicate timestamps. Sequential operator use is unaffected. High-concurrency callers should serialize POSTs that share a `scenario_name`.
 
 The 409 body lists every active scenario contributing to the conflict so the operator knows which IDs to DELETE:
 
@@ -464,17 +464,28 @@ The 409 body lists every active scenario contributing to the conflict so the ope
 }
 ```
 
-Each `conflicting_scenarios` entry carries the scenario `id` (use it with `DELETE /scenarios/{id}`), the per-entry `name` (the runtime-launched scenario name, not the file-level `scenario_name`), and the live `state` (one of `pending`, `running`, `paused`, `held`, `unresolved`). When the body produced multiple entries (multi-entry POST or pack expansion), each launched handle inherits the same file-level `scenario_name` and contributes one item to the array.
+Each `conflicting_scenarios` entry carries three fields:
+
+- `id` — use it with `DELETE /scenarios/{id}`.
+- `name` — the runtime-launched scenario name, not the file-level `scenario_name`.
+- `state` — one of `pending`, `running`, `paused`, `held`, or `unresolved`.
+
+When the body produces multiple entries through a multi-entry POST or pack expansion, each launched handle inherits the same file-level `scenario_name` and contributes one item to the array.
 
 ### Cross-POST `while:` refs
 
-A POSTed scenario can `while:`-gate itself on a signal in a **separate** POST body by qualifying the `ref:` with the upstream's `scenario_name:`. The HTTP surface adds four things on top of the [YAML schema](../build/scenario-files.md#cross-post-while-refs): a `?validate=strict` flag on `POST /scenarios`, a `pending_ref` field on `GET /scenarios/{id}`, an `unresolved` lifecycle state, and two new fields on `GET /scenarios/{id}/stats`.
+A scenario sent over HTTP can gate itself with `while:` on a signal in a **separate** POST body. Qualify the `ref:` with the upstream's `scenario_name:`. The HTTP surface adds four things on top of the [YAML schema](../build/scenario-files.md#cross-post-while-refs):
+
+- A `?validate=strict` flag on `POST /scenarios`.
+- A `pending_ref` field on `GET /scenarios/{id}`.
+- An `unresolved` lifecycle state.
+- Two new fields on `GET /scenarios/{id}/stats`.
 
 #### Deferred vs strict validation
 
-By default `POST /scenarios` accepts a body whose cross-POST refs have not been registered yet. The scenario lands in the `unresolved` state and resolves automatically once a matching upstream POSTs — this is the loose-coupling shape that lets you launch a baseline body without coordinating with whatever drives it later.
+By default `POST /scenarios` accepts a body whose cross-POST refs have not been registered yet. The scenario enters the `unresolved` state and resolves automatically once a matching upstream is sent. This is the loose-coupling shape. It lets you launch a baseline body without coordinating with whatever drives it later.
 
-Pass `?validate=strict` to flip that behavior: the server rejects the whole body with `422 Unprocessable Entity` if any cross-POST `while:` reference does not resolve at compile time. Nothing is launched. Use it when the dependency order is part of your contract and a missing upstream should fail loudly.
+Pass `?validate=strict` to change that behavior. The server rejects the whole body with `422 Unprocessable Entity` if any cross-POST `while:` reference does not resolve at compile time. Nothing is launched. Use it when the dependency order is part of your contract and a missing upstream should fail loudly.
 
 ```bash
 curl -X POST -H "Content-Type: text/yaml" \
@@ -495,25 +506,29 @@ curl -X POST -H "Content-Type: text/yaml" \
 }
 ```
 
-Each `unresolved_refs` entry identifies the missing upstream by `scenario_name` (the upstream POST body's name), `entry_id` (the entry inside that body the `while:` clause references), and `referenced_by` (the id of the downstream entry whose `while:` clause could not be wired).
+Each `unresolved_refs` entry identifies the missing upstream by three fields:
+
+- `scenario_name`: the upstream POST body's name.
+- `entry_id`: the entry inside that body the `while:` clause references.
+- `referenced_by`: the id of the downstream entry whose `while:` clause could not be connected.
 
 #### `unresolved` lifecycle state
 
-A scenario whose cross-POST `while:` clause has no registered upstream — and whose `if_unresolved:` mode is `pending` (the default) — sits in the `unresolved` state. The wire string is `"state": "unresolved"`. The lifecycle states a scenario can report on `GET /scenarios/{id}` and `GET /scenarios/{id}/stats` are therefore:
+A scenario whose cross-POST `while:` clause has no registered upstream, and whose `if_unresolved:` mode is `pending` (the default), is in the `unresolved` state. The wire string is `"state": "unresolved"`. The lifecycle states a scenario can report on `GET /scenarios/{id}` and `GET /scenarios/{id}/stats` are therefore:
 
 | State | When |
 |---|---|
-| `pending` | Waiting for `after:` to fire, or the first eligible tick of a local `while:` gate. |
+| `pending` | Waiting for `after:` to trigger, or the first eligible tick of a local `while:` gate. |
 | `running` | Emitting events. |
 | `paused` | Local `while:` gate is closed, or a cross-POST gate's `if_unresolved: closed` is in effect. |
-| `held` | Metric scenario configured with [`delay.close.snap_to`](../build/scenario-files.md#recovering-prometheus-alerts-on-gate-close) whose gate has closed after at least one emission. The frozen value is retained for pull-path scrapers that opt in via `?include_state=...,held`. |
-| `unresolved` | Cross-POST `while.scenario_name:` has not been POSTed yet (with `if_unresolved: pending`), or its upstream was DELETEd. |
+| `held` | Metric scenario configured with [`delay.close.snap_to`](../build/scenario-files.md#recovering-prometheus-alerts-on-gate-close) whose gate has closed after at least one emission. The frozen value is retained for pull-path scrapers that opt in through `?include_state=...,held`. |
+| `unresolved` | Cross-POST `while.scenario_name:` has not been received yet (with `if_unresolved: pending`), or its upstream was deleted. |
 | `finished` | `duration:` elapsed or shutdown signalled. Terminal. |
 
-A scenario can transition `unresolved → pending → running` once the upstream registers, and back to `unresolved` when the upstream is DELETEd or finishes its own duration. Re-POSTing the same `scenario_name:` re-resolves the downstream automatically — no client orchestration. See [Cross-POST `while:` refs](../build/scenario-files.md#cross-post-while-refs) for the YAML schema and the `if_unresolved:` mode reference.
+A scenario can transition `unresolved → pending → running` once the upstream registers. It returns to `unresolved` when the upstream is deleted or finishes its own duration. Re-sending the same `scenario_name:` re-resolves the downstream automatically. No client orchestration is required. See [Cross-POST `while:` refs](../build/scenario-files.md#cross-post-while-refs) for the YAML schema and the `if_unresolved:` mode reference.
 
 !!! warning "Add `unresolved` and `held` to your dashboards"
-    If you maintain Prometheus recording rules or Grafana dashboards that enumerate `state=~"pending|running|paused|finished"`, add `unresolved` and `held` to the alternation (`state=~"pending|running|paused|held|unresolved|finished"`) or rewrite the matcher as a negation (`state!="finished"`). Cross-POST scenarios in `unresolved` and snap-to scenarios in `held` are silently dropped by exhaustive enumerations.
+    If you maintain Prometheus recording rules or Grafana dashboards that enumerate `state=~"pending|running|paused|finished"`, add `unresolved` and `held` to the alternation (`state=~"pending|running|paused|held|unresolved|finished"`). Or rewrite the matcher as a negation (`state!="finished"`). Cross-POST scenarios in `unresolved` and snap-to scenarios in `held` are dropped silently by exhaustive enumerations.
 
 #### `pending_ref` field on `GET /scenarios/{id}`
 
@@ -541,7 +556,7 @@ curl -s http://localhost:8080/scenarios/$ID | jq .
 }
 ```
 
-`scenario_name` and `entry_id` are the upstream the downstream is waiting for. `if_unresolved` is the mode that applies until the upstream resolves (`open`, `closed`, or `pending`). `registered_at` is the ISO-8601 wall-clock time the downstream entered the resolver queue. `attempts` counts how many times the resolver has tried to wire this subscription — it advances on every promotion attempt and persists across `unresolved → running → unresolved` cycles so you can detect a downstream that has bounced repeatedly between states.
+`scenario_name` and `entry_id` are the upstream the downstream is waiting for. `if_unresolved` is the mode that applies until the upstream resolves (`open`, `closed`, or `pending`). `registered_at` is the ISO-8601 wall-clock time the downstream entered the resolver queue. `attempts` counts how many times the resolver has tried to connect this subscription. It increases on every promotion attempt and persists across `unresolved → running → unresolved` cycles. Use it to detect a downstream that has bounced between states.
 
 #### New stats fields
 
@@ -549,18 +564,18 @@ curl -s http://localhost:8080/scenarios/$ID | jq .
 
 | Field | Type | Meaning |
 |---|---|---|
-| `current_state_secs` | float | Seconds since the most recent state transition. Resets to `0.0` every time `state` changes (including the `unresolved → running` resolution edge). Use this to alert on a scenario that has been stuck in one state too long — e.g., `current_state_secs > 60 and state == "unresolved"` flags a cross-POST dependency that has not arrived. |
-| `cumulative_resolution_attempts` | integer | Lifetime count of how many times the cross-POST resolver has tried to wire this scenario's subscription. Increments on each promotion attempt; persists across `unresolved → running → unresolved` cycles. Only `DELETE /scenarios/{id}` resets it. Use it to spot a downstream that is bouncing between states because its upstream keeps coming and going. |
+| `current_state_secs` | float | Seconds since the most recent state transition. Resets to `0.0` every time `state` changes, including the `unresolved → running` resolution edge. Use it to alert on a scenario stuck in one state for too long. For example, `current_state_secs > 60 and state == "unresolved"` flags a cross-POST dependency that has not arrived. |
+| `cumulative_resolution_attempts` | integer | Lifetime count of how many times the cross-POST resolver has tried to connect this scenario's subscription. Increments on each promotion attempt. Persists across `unresolved → running → unresolved` cycles. Only `DELETE /scenarios/{id}` resets it. Use it to detect a downstream bouncing between states because its upstream keeps coming and going. |
 
-Both fields are present on every response, not just `unresolved` scenarios — `cumulative_resolution_attempts` is `0` for any scenario whose `while:` clause does not carry `scenario_name:`, and `current_state_secs` measures time since the last lifecycle edge for every state.
+Both fields are present on every response, not only on `unresolved` scenarios. `cumulative_resolution_attempts` is `0` for any scenario whose `while:` clause does not carry `scenario_name:`. `current_state_secs` measures the time since the last lifecycle edge for every state.
 
 #### Duplicate name across POSTs
 
-The [`409 Conflict` rule](#duplicate-scenario_name-returns-409) extends to cross-POST scenarios: a body whose top-level `scenario_name:` collides with one already registered in the resolver — whether that earlier scenario is `pending`, `running`, `paused`, `held`, or `unresolved` — is rejected. The `conflicting_scenarios` array on the 409 response identifies which IDs to DELETE before re-POSTing. This applies both to the upstream (the body that publishes the gate signal) and to any downstream POST whose top-level `scenario_name:` is already in use.
+The [`409 Conflict` rule](#duplicate-scenario_name-returns-409) extends to cross-POST scenarios. A body whose top-level `scenario_name:` collides with one already registered in the resolver is rejected. This applies whether that earlier scenario is `pending`, `running`, `paused`, `held`, or `unresolved`. The `conflicting_scenarios` array on the 409 response identifies which IDs to DELETE before re-sending. This applies to the upstream (the body that publishes the gate signal) and to any downstream POST whose top-level `scenario_name:` is already in use.
 
 ### `GET /scenarios`
 
-Lists all scenarios the server is currently tracking. Returns one entry per scenario with the `degraded` flag baked in.
+Lists all scenarios the server is currently tracking. Returns one entry per scenario with the `degraded` flag included.
 
 ```bash
 curl -s http://localhost:8080/scenarios | jq .
@@ -584,7 +599,7 @@ Each entry carries `id`, `name`, `state`, `elapsed_secs`, and `degraded`. The `s
 
 #### The `degraded` field
 
-`degraded` is the at-a-glance pipeline-health signal — one boolean per scenario that tells you whether its sink is delivering. It is `true` when the scenario has had sink failures (`total_sink_failures > 0`) **and** has not had a successful delivery within the last 30 seconds, or has never delivered at all. A healthy scenario, or one that failed earlier but is delivering again, reads `false`.
+`degraded` is the quick pipeline-health signal. One boolean per scenario tells you whether its sink is delivering. It is `true` when the scenario has had sink failures (`total_sink_failures > 0`) **and** has not had a successful delivery in the last 30 seconds, or has never delivered. A healthy scenario, or one that failed earlier but is delivering again, reads `false`.
 
 ```text
 curl /scenarios →
@@ -592,14 +607,14 @@ curl /scenarios →
   "scenarios": [
     { "id": "abc", "name": "loki-prod",   "state": "running", "degraded": false },
     { "id": "xyz", "name": "loki-broken", "state": "running", "degraded": true  }
-                                                                            ↑ wedged
+                                                                            ↑ stuck
   ]
 }
 ```
 
 `degraded = (total_sink_failures > 0) AND (no successful delivery in last 30s, or ever)`.
 
-The win is operator ergonomics: one field replaces a multi-step threshold check. Before, you had to pull the raw counters from `/stats` and threshold them yourself:
+The benefit is operator ergonomics. One field replaces a multi-step threshold check. Before, you had to read the raw counters from `/stats` and threshold them yourself:
 
 ```bash title="Threshold the raw stats yourself"
 curl -sS http://localhost:8080/scenarios/$ID/stats |
@@ -615,11 +630,11 @@ curl -sS http://localhost:8080/scenarios |
   jq '.scenarios[] | select(.degraded)'
 ```
 
-That same one-liner works as a Kubernetes readiness probe, a Prometheus alert input, or a Grafana panel query. If you need a different staleness window than the built-in 30 seconds, threshold the raw fields from `GET /scenarios/{id}/stats` yourself — `degraded` is a convenience over the same underlying counters.
+The same one-liner works as a Kubernetes readiness probe, a Prometheus alert input, or a Grafana panel query. If you need a different staleness window than the built-in 30 seconds, threshold the raw fields from `GET /scenarios/{id}/stats` yourself. `degraded` is a shortcut over the same underlying counters.
 
 ### `GET /scenarios/{id}`
 
-Inspects a single scenario: config, stats, elapsed time, and (when `state == unresolved`) the `pending_ref` object identifying the upstream it is waiting on. See [Cross-POST `while:` refs](#cross-post-while-refs) for the unresolved-state response shape.
+Inspects a single scenario: config, stats, elapsed time, and the `pending_ref` object identifying the upstream it is waiting on when `state == unresolved`. See [Cross-POST `while:` refs](#cross-post-while-refs) for the unresolved-state response shape.
 
 ### `DELETE /scenarios/{id}`
 
@@ -640,7 +655,7 @@ curl -X DELETE http://localhost:8080/scenarios/<id>
 
 ### `GET /scenarios/{id}/metrics`
 
-Returns the current value of every series one scenario is emitting, in Prometheus text exposition format. It is the per-scenario counterpart to [`GET /metrics`](#get-metrics): same one-sample-per-series shape, same idempotent snapshot semantics, scoped to a single scenario. Reach for it when each scenario is its own logical target and you have a stable ID to point at.
+Returns the current value of every series one scenario is emitting, in Prometheus text exposition format. It is the per-scenario counterpart to [`GET /metrics`](#get-metrics). It has the same one-sample-per-series shape and the same idempotent snapshot semantics, but scoped to a single scenario. Use it when each scenario is its own logical target and you have a stable ID to point at.
 
 The response carries the same `# TYPE` and `# HELP` annotations as the aggregate endpoint, scoped to the single scenario:
 
@@ -667,9 +682,9 @@ Replace `<SCENARIO_ID>` with the ID returned by `POST /scenarios`. Unknown scena
 
 ### `POST /events`
 
-`POST /events` emits **one** log or metric event synchronously. The request blocks until the sink ACKs delivery, then returns the latency it took. Use it when you want a single signal to land *now* and you want to know it landed before continuing.
+`POST /events` emits **one** log or metric event synchronously. The request blocks until the sink acknowledges delivery, then returns the latency it took. Use it when you want a single signal to arrive *now* and you want confirmation before continuing.
 
-The flat JSON body is the easy alternative to the scenario file shape — paste the encoder and sink inline, no `defaults:`, no `version: 2`, no scenario IDs to track.
+The flat JSON body is the simple alternative to the scenario file shape. You set the encoder and sink inline, with no `defaults:`, no `version: 2`, and no scenario IDs to track.
 
 #### When to use `/events` vs `/scenarios`
 
@@ -680,12 +695,12 @@ The flat JSON body is the easy alternative to the scenario file shape — paste 
 
 Both share the same encoders, sinks, auth, and loopback-warning behavior. They differ only in lifecycle:
 
-- **`/events`** is synchronous. The handler encodes the event, pushes it through the sink, and returns `{sent, signal_type, latency_ms}` once the destination ACKs (typically 5–30 ms). There is no scenario ID — the call is fire-and-confirm.
-- **`/scenarios`** is asynchronous. The server returns a scenario ID immediately and the scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
+- **`/events`** is synchronous. The handler encodes the event, pushes it through the sink, and returns `{sent, signal_type, latency_ms}` once the destination acknowledges (typically 5 to 30 ms). There is no scenario ID. The call is send-and-confirm.
+- **`/scenarios`** is asynchronous. The server returns a scenario ID immediately. The scenario runs in the background until its `duration` expires or you call `DELETE /scenarios/{id}`.
 
-!!! tip "Two real-world drivers"
-    - **Teaching and demos** — fire individual events without authoring a full scenario YAML.
-    - **Live demos** — a single `curl` on stage produces a Loki log line that Grafana picks up as a panel annotation within ~5–15 ms.
+!!! tip "Two common uses"
+    - **Teaching and demos** — send individual events without writing a full scenario YAML.
+    - **Live demos** — a single `curl` produces a Loki log line that Grafana picks up as a panel annotation within 5 to 15 ms.
 
 #### Request body
 
@@ -757,7 +772,7 @@ The body is a JSON object tagged by `signal_type`. The discriminator selects whi
 | `name` | string | yes | Metric name. Must match `[a-zA-Z_:][a-zA-Z0-9_:]*`. |
 | `value` | number (f64) | yes | Sample value. |
 
-The on-wire metric shape (counter, gauge, histogram lines, TimeSeries protobuf, …) is determined by the `encoder` you pick — there is no separate `metric_type` field.
+The on-wire metric shape (counter, gauge, histogram lines, TimeSeries protobuf, and so on) is determined by the `encoder` you pick. There is no separate `metric_type` field.
 
 #### Response
 
@@ -771,9 +786,9 @@ The on-wire metric shape (counter, gauge, histogram lines, TimeSeries protobuf, 
 }
 ```
 
-`latency_ms` is the wall-clock time the handler spent encoding the event and waiting for the sink to ACK.
+`latency_ms` is the wall-clock time the handler spent encoding the event and waiting for the sink to acknowledge.
 
-When pre-flight checks find advisories (e.g. a sink URL pointing at a loopback host), the response includes a `warnings` array. The field is **omitted entirely** when no warnings fire, so older clients parse responses unchanged:
+When pre-flight checks find advisories (for example, a sink URL pointing at a loopback host), the response includes a `warnings` array. The field is **omitted entirely** when no warnings apply, so older clients parse responses unchanged:
 
 ```json title="Response with loopback warning"
 {
@@ -786,13 +801,13 @@ When pre-flight checks find advisories (e.g. a sink URL pointing at a loopback h
 }
 ```
 
-Warnings are informational — they never block delivery. The same message is also written to the server log via `tracing::warn!`.
+Warnings are informational. They never block delivery. The same message is also written to the server log through `tracing::warn!`.
 
 #### Demo: Grafana annotation from one curl
 
-Fire a single log line and watch it appear as a Grafana panel annotation within seconds. This works on the **default `sonda-server` binary** — no feature flags required.
+Send a single log line and observe it appear as a Grafana panel annotation within seconds. This works on the **default `sonda-server` binary**. No feature flags are required.
 
-```bash title="Step 1 — fire the event"
+```bash title="Step 1 — send the event"
 curl -s -X POST http://127.0.0.1:8080/events \
   -H "Content-Type: application/json" \
   -d '{
@@ -805,13 +820,13 @@ curl -s -X POST http://127.0.0.1:8080/events \
 # {"sent":true,"signal_type":"logs","latency_ms":7}
 ```
 
-```bash title="Step 2 — confirm it landed in Loki"
+```bash title="Step 2 — confirm it arrived in Loki"
 curl -s 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode 'query={event="deploy_start"}' \
   --data-urlencode 'limit=1'
 ```
 
-End-to-end latency observed against a real Loki instance: **5–15 ms** from `curl` to ACK. Wire a Grafana annotation query against `{event="deploy_start"}` and the panel renders the overlay automatically.
+End-to-end latency observed against a real Loki instance: **5 to 15 ms** from `curl` to acknowledge. Configure a Grafana annotation query against `{event="deploy_start"}` and the panel renders the overlay automatically.
 
 ##### Errors
 
@@ -821,13 +836,13 @@ All errors share the envelope `{"error": "<short_code>", "detail": "<message>"}`
 |--------|------|---------------|
 | **400 Bad Request** | Malformed JSON; unknown `signal_type`; missing per-branch field; unknown encoder/sink type. | `unknown variant 'traces', expected 'logs' or 'metrics'` |
 | **401 Unauthorized** | API key configured and `Authorization: Bearer <key>` missing or wrong. | `missing or malformed Authorization header` |
-| **422 Unprocessable Entity** | Encoder/sink config validation failed (invalid metric name, `tcp` retry `max_attempts: 0`, etc.). | `invalid metric name "1bad": must match [a-zA-Z_:][a-zA-Z0-9_:]*` |
-| **502 Bad Gateway** | Sink push or flush returned an error (Loki down, network unreachable, etc.). | `sink error: TCP connect to 127.0.0.1:1: Connection refused` |
-| **500 Internal Server Error** | Unexpected — encoder error or panic in the blocking task. | `runtime error: <detail>` |
+| **422 Unprocessable Entity** | Encoder/sink config validation failed (invalid metric name, `tcp` retry `max_attempts: 0`, and similar). | `invalid metric name "1bad": must match [a-zA-Z_:][a-zA-Z0-9_:]*` |
+| **502 Bad Gateway** | Sink push or flush returned an error (Loki down, network unreachable, and similar). | `sink error: TCP connect to 127.0.0.1:1: Connection refused` |
+| **500 Internal Server Error** | Unexpected: encoder error or panic in the blocking task. | `runtime error: <detail>` |
 
 #### Build-time feature flags
 
-The default `sonda-server` binary supports `loki`, `stdout`, `file`, `tcp`, `udp`, `http_push`, `json_lines`, `prometheus_text`, and `syslog`. A few sinks and encoders are gated behind cargo features to keep the default binary small:
+The default `sonda-server` binary supports `loki`, `stdout`, `file`, `tcp`, `udp`, `http_push`, `json_lines`, `prometheus_text`, and `syslog`. A few sinks and encoders are behind cargo feature flags to keep the default binary small:
 
 | Need | Build with |
 |------|-----------|
@@ -835,7 +850,7 @@ The default `sonda-server` binary supports `loki`, `stdout`, `file`, `tcp`, `udp
 | `otlp` encoder, `otlp_grpc` sink | `cargo build --release -p sonda-server -F otlp` |
 | `kafka` sink | `cargo build --release -p sonda-server -F kafka` |
 
-If a request references a type that isn't compiled in, the server returns **422** with a clear hint, e.g. `encoder type 'remote_write' requires the 'remote-write' feature: cargo build -F remote-write`.
+If a request references a type that is not compiled in, the server returns **422** with a clear hint. For example: `encoder type 'remote_write' requires the 'remote-write' feature: cargo build -F remote-write`.
 
 #### Not in this version
 
@@ -847,15 +862,15 @@ If a request references a type that isn't compiled in, the server returns **422*
 
 ### `GET /metrics`
 
-To a scraper, `sonda-server` presents itself the same way a Prometheus exporter on a real device does — one URL, idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns the current value of every series across every running scenario, one sample per `(name, labels)` series with no per-sample timestamp, fused into a single Prometheus text-format response. `?label=k:v` filters that view by the labels the user attached when starting each scenario.
+To a scraper, `sonda-server` looks like a Prometheus exporter on a real device. One URL, idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns the current value of every series across every running scenario. One sample per `(name, labels)` series, with no per-sample timestamp, fused into a single Prometheus text-format response. `?label=k:v` filters that view by the labels you attached when starting each scenario.
 
-It is a **typed** exporter: each metric is fronted by `# TYPE` and (when configured) `# HELP` lines, so Prometheus, VictoriaMetrics, vmagent, and Telegraf consumers see the same exposition shape they would see scraping any real device. Set [`metric_type:` and `help:`](../reference/scenario-fields.md#prometheus-exposition-fields) on a scenario to declare the type and description explicitly; omit them and the server picks a sensible default (`gauge` for most metric generators, `counter` for [`step`](../build/generators.md#step), `histogram` / `summary` for those signal types).
+It is a **typed** exporter. Each metric is prefixed by `# TYPE` and (when configured) `# HELP` lines. Prometheus, VictoriaMetrics, vmagent, and Telegraf consumers see the same exposition shape they would see scraping any real device. Set [`metric_type:` and `help:`](../reference/scenario-fields.md#prometheus-exposition-fields) on a scenario to declare the type and description. Omit them and the server picks a default: `gauge` for most metric generators, `counter` for [`step`](../build/generators.md#step), and `histogram` or `summary` for those signal types.
 
-Why labels are the durable identity at scrape time: scenarios, multi-scenarios, and metric packs are three ways to *configure* Sonda, but only individual scenarios exist at runtime — packs and multi-scenarios fan out into independent scenarios at compile time. The labels you set on each scenario (`device: srl1`, `interface: eth0`, `region: us-east`) are the only cross-scenario grouping that survives, so `?label=k:v` is how you ask "give me one device's metrics" regardless of how the underlying scenarios got launched.
+Why labels are the durable identity at scrape time: scenarios, multi-scenarios, and metric packs are three ways to *configure* Sonda. Only individual scenarios exist at runtime. Packs and multi-scenarios expand into independent scenarios at compile time. The labels you set on each scenario (`device: srl1`, `interface: eth0`, `region: us-east`) are the only cross-scenario grouping that survives. So `?label=k:v` is how you ask "give me one device's metrics" regardless of how the underlying scenarios were launched.
 
 #### Happy path
 
-Post a scenario that declares `metric_type:` and `help:`, then scrape:
+Send a scenario that declares `metric_type:` and `help:`, then scrape:
 
 ```yaml title="memory-utilization.yaml"
 version: 2
@@ -898,12 +913,12 @@ memory_utilization{device="srl1"} 41.528
 memory_utilization{device="srl2"} 67.812
 ```
 
-One line per `(name, labels)` series, carrying the current value with no per-sample timestamp — the same shape `node_exporter` and Prometheus self-scrape produce. The scraper stamps every sample with its own scrape wall-clock at ingest time, so the server emitting its own timestamps would conflict with that. The `# TYPE` line appears once per metric name, and `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body — exactly what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
+One line per `(name, labels)` series, carrying the current value with no per-sample timestamp. This matches the shape `node_exporter` and Prometheus self-scrape produce. The scraper stamps every sample with its own scrape wall-clock at ingest time. The server emitting its own timestamps would conflict with that. The `# TYPE` line appears once per metric name. `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body. This is what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
 
 !!! info "Idempotent within a scrape window"
-    `GET /metrics` is non-destructive and stable: two scrapes back-to-back return byte-identical bodies. A Prometheus job and a vmagent job (and an ops dashboard) can scrape the same server without stealing events from each other. The CLI streaming sinks (`stdout`, `file`, `tcp`, `udp`) still emit a timestamp per event — they encode a stream over time, so the timestamp is what gives each line its identity. The HTTP scrape and the CLI stream serve different consumer models, so the encoder is configured differently for each path.
+    `GET /metrics` is non-destructive and stable. Two scrapes back-to-back return byte-identical bodies. A Prometheus job, a vmagent job, and an ops dashboard can all scrape the same server without taking events from each other. The CLI streaming sinks (`stdout`, `file`, `tcp`, `udp`) still emit a timestamp per event. They encode a stream over time, so the timestamp is what gives each line its identity. The HTTP scrape and the CLI stream serve different consumer models, so the encoder is configured differently for each path.
 
-Histogram and summary scenarios surface the same way — one `# TYPE` block per base name covering every `_bucket{le="..."}`, `_sum`, `_count`, and quantile line:
+Histogram and summary scenarios behave the same way. One `# TYPE` block per base name covers every `_bucket{le="..."}`, `_sum`, `_count`, and quantile line:
 
 ```text title="Response (histogram entry)"
 # HELP http_request_duration_seconds Request latency in seconds.
@@ -915,14 +930,14 @@ http_request_duration_seconds_sum{method="GET"} 9.505
 http_request_duration_seconds_count{method="GET"} 100
 ```
 
-This is the exposition shape `histogram_quantile()` expects, so PromQL percentile queries work end-to-end against the server.
+This is the exposition shape `histogram_quantile()` expects. PromQL percentile queries work end-to-end against the server.
 
 !!! warning "Mixed-type collisions become `untyped`"
-    Two scenarios that share a `name:` but declare different `metric_type` values (one `gauge`, one `counter`) collapse to a single `# TYPE <name> untyped` block in the aggregate response — Prometheus permits only one TYPE per metric name. The server logs a warning identifying both contributors. See [Prometheus exposition fields](../reference/scenario-fields.md#prometheus-exposition-fields) for the full rule.
+    Two scenarios that share a `name:` but declare different `metric_type` values (one `gauge`, one `counter`) collapse to a single `# TYPE <name> untyped` block in the aggregate response. Prometheus permits only one TYPE per metric name. The server logs a warning identifying both contributors. See [Prometheus exposition fields](../reference/scenario-fields.md#prometheus-exposition-fields) for the full rule.
 
 #### Filter by label
 
-`?label=k:v` narrows the response to scenarios whose configured `labels` contain that exact `k: v` pair. Repeat the parameter to AND-combine selectors — a scenario is included only when every filter matches:
+`?label=k:v` narrows the response to scenarios whose configured `labels` contain that exact `k: v` pair. Repeat the parameter to AND-combine selectors. A scenario is included only when every filter matches:
 
 ```bash
 # One device, all interfaces
@@ -932,7 +947,7 @@ curl 'http://localhost:8080/metrics?label=device:srl1'
 curl 'http://localhost:8080/metrics?label=device:srl1&label=interface:eth0'
 ```
 
-A scenario started with no `labels:` block never matches any filter — there is nothing to match against. Drop the filter to see those events.
+A scenario started with no `labels:` block never matches any filter. There is nothing to match against. Drop the filter to see those events.
 
 A malformed filter (missing `:`, empty key, empty value) returns `400 Bad Request`:
 
@@ -945,14 +960,14 @@ A malformed filter (missing `:`, empty key, empty value) returns `400 Bad Reques
 
 #### `GET /metrics` vs `GET /scenarios/{id}/metrics`
 
-Both endpoints emit Prometheus text and both are idempotent snapshots — two back-to-back calls return byte-identical bodies. They differ only in scope:
+Both endpoints emit Prometheus text and both are idempotent snapshots. Two back-to-back calls return byte-identical bodies. They differ only in scope:
 
 | Endpoint | Scope | Use it for |
 |---|---|---|
-| `GET /metrics` | Every running scenario fused into one response. Supports `?label=k:v` to slice the view. | Production scraping. One job covers every scenario, with no need to know IDs ahead of time. |
-| `GET /scenarios/{id}/metrics` | One scenario. | Debugging or wiring a per-scenario route when each scenario is its own logical target. |
+| `GET /metrics` | Every running scenario fused into one response. Supports `?label=k:v` to slice the view. | Production scraping. One job covers every scenario, with no need to know IDs in advance. |
+| `GET /scenarios/{id}/metrics` | One scenario. | Debugging or setting up a per-scenario route when each scenario is its own logical target. |
 
-Pick `GET /metrics` for any Prometheus / VictoriaMetrics / vmagent job — it is the endpoint that behaves like a normal exporter. Reach for the per-scenario endpoint when you are inspecting one scenario in isolation or want a stable URL per scenario.
+Pick `GET /metrics` for any Prometheus, VictoriaMetrics, or vmagent job. It is the endpoint that behaves like a normal exporter. Use the per-scenario endpoint when you are inspecting one scenario in isolation, or when you want a stable URL per scenario.
 
 #### Scrape config
 
@@ -969,7 +984,7 @@ scrape_configs:
       - targets: ["localhost:8080"]
 ```
 
-Use one job per slice you want to scrape — different devices, different regions, different tenants — and add a `label` param to each. With no `params`, the job scrapes everything the server is running.
+Use one job per slice you want to scrape, and add a `label` param to each. Slices include different devices, different regions, or different tenants. With no `params`, the job scrapes everything the server is running.
 
 When [authentication](#authentication) is enabled, add the bearer token to the job:
 

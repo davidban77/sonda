@@ -1,11 +1,11 @@
 # Kubernetes
 
-Run `sonda-server` in Kubernetes when you want an always-on synthetic-telemetry baseline living *inside* the cluster — a service that emits known metrics through your stack continuously, so a Grafana panel going flat means "the data stopped" and not "the scrape config broke." It is the difference between guessing whether a quiet dashboard is a real outage and knowing it at a glance.
+Run `sonda-server` in Kubernetes when you want a continuous synthetic-telemetry baseline running *inside* the cluster. The service emits known metrics through your stack at all times. A flat Grafana panel then means "the data stopped," not "the scrape config broke." It is the difference between guessing whether a quiet dashboard is a real outage and knowing it in one look.
 
-When you finish the install below, you have a `sonda-server` pod running in the cluster, reachable at a stable Service DNS name (`sonda.<namespace>.svc.cluster.local:8080`), ready to accept scenarios POSTed over HTTP and expose their metrics for Prometheus to scrape. Sonda ships a Helm chart that produces exactly that: a Deployment with health probes, a ClusterIP Service with a named `http` port, and optional scenario injection via ConfigMap.
+When you finish the install below, you have a `sonda-server` pod running in the cluster. It is reachable at a stable Service DNS name: `sonda.<namespace>.svc.cluster.local:8080`. It accepts scenarios sent over HTTP and exposes their metrics for Prometheus to scrape. The bundled Helm chart produces exactly that: a Deployment with health probes, a ClusterIP Service with a named `http` port, and optional scenario injection through a ConfigMap.
 
 !!! tip "Looking for the full walkthrough?"
-    The [Synthetic Monitoring](../test/synthetic-monitoring.md) guide is the end-to-end worked example for this use case — spin up a local cluster, deploy the chart, submit long-running scenarios, scrape them with Prometheus, and build Grafana dashboards. This page is the chart *reference*: every value, probe setting, and auth option the guide draws on.
+    The [Synthetic Monitoring](../test/synthetic-monitoring.md) guide is the end-to-end worked example for this use case. It covers starting a local cluster, deploying the chart, submitting long-running scenarios, scraping them with Prometheus, and building Grafana dashboards. This page is the chart *reference*: every value, probe setting, and auth option the guide uses.
 
 ## Prerequisites
 
@@ -14,8 +14,7 @@ You need a running Kubernetes cluster and these CLI tools installed:
 - `kubectl` -- configured to talk to your cluster
 - `helm` -- v3.x
 
-If you don't have a cluster yet, the [Synthetic Monitoring](../test/synthetic-monitoring.md#set-up-a-local-kubernetes-cluster) guide covers lightweight
-local options (kind, k3d, minikube, OrbStack) with step-by-step setup instructions.
+If you don't have a cluster yet, the [Synthetic Monitoring](../test/synthetic-monitoring.md#set-up-a-local-kubernetes-cluster) guide covers lightweight local options: kind, k3d, minikube, and OrbStack. It includes step-by-step setup instructions.
 
 ## Install the chart
 
@@ -41,12 +40,12 @@ You should see `1/1 Running` within 15--20 seconds. The chart defaults to
     helm install sonda ./helm/sonda -n sonda
     ```
 
-    All `kubectl` commands in this page assume the default namespace. Add `-n sonda` if you
+    All `kubectl` commands on this page assume the default namespace. Add `-n sonda` if you
     installed into a different one.
 
 ## Chart values reference
 
-The chart ships with sensible defaults. Override any value with `--set` flags or a
+The chart includes default values that work for most installs. Override any value with `--set` flags or a
 `-f values.yaml` file.
 
 ### Image
@@ -72,8 +71,8 @@ The chart ships with sensible defaults. Override any value with `--set` flags or
 | `service.type` | `ClusterIP` | Kubernetes Service type (`ClusterIP`, `NodePort`, `LoadBalancer`) |
 | `service.port` | `8080` | Service port exposed to the cluster |
 
-The Service exposes a named port called `http`, which is what ServiceMonitor and Ingress
-resources reference.
+The Service exposes a named port called `http`. ServiceMonitor and Ingress
+resources reference this name.
 
 ### Resources
 
@@ -84,7 +83,7 @@ resources reference.
 | `resources.limits.cpu` | `500m` | CPU limit |
 | `resources.limits.memory` | `256Mi` | Memory limit |
 
-These defaults are sized for light workloads (a handful of scenarios at moderate rates). If
+These defaults are sized for light workloads: a handful of scenarios at moderate rates. If
 you run many concurrent scenarios or high event rates, increase the limits:
 
 ```bash
@@ -154,10 +153,10 @@ instructions.
 
 A ServiceMonitor endpoint scrapes a single `path`. Two paths work for Sonda:
 
-- `/metrics` — aggregate scrape across every running scenario, with optional `?label=k:v` filtering. This is the right choice for most installs: one ServiceMonitor covers every scenario the server runs, regardless of how they were launched.
-- `/scenarios/<scenario-id>/metrics` — single-scenario snapshot. Use it when each scenario is its own logical target and you know its ID ahead of time (for example, one loaded from the `scenarios` ConfigMap at a stable route).
+- `/metrics` — an aggregate scrape across every running scenario, with optional `?label=k:v` filtering. This is the right choice for most installs. One ServiceMonitor covers every scenario the server runs, regardless of how it was launched.
+- `/scenarios/<scenario-id>/metrics` — a single-scenario snapshot. Use it when each scenario is its own logical target and you know its ID in advance. One example: a scenario loaded from the `scenarios` ConfigMap at a stable route.
 
-`serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error telling you to set the path to a Prometheus-text endpoint such as `/metrics` or `/scenarios/<scenario-id>/metrics`. This avoids silently producing a ServiceMonitor that scrapes a non-metrics route.
+`serviceMonitor.path` has no default. If you set `serviceMonitor.enabled: true` without also setting `serviceMonitor.path`, `helm install` and `helm upgrade` fail with a clear error. The error tells you to set the path to a Prometheus-text endpoint such as `/metrics` or `/scenarios/<scenario-id>/metrics`. This prevents a ServiceMonitor that silently scrapes a non-metrics route.
 
 | Value | Default | Description |
 |-------|---------|-------------|
@@ -177,8 +176,8 @@ See [Configuring scenarios](#configuring-scenarios) below.
 
 ## Configuring scenarios
 
-You can load scenarios into `sonda-server` two ways: bake them into the Helm release via
-ConfigMap, or submit them at runtime via the API.
+You can load scenarios into `sonda-server` two ways. Include them in the Helm release through a
+ConfigMap, or submit them at runtime over the API.
 
 ### ConfigMap (deploy-time)
 
@@ -206,16 +205,16 @@ scenarios:
 helm install sonda ./helm/sonda -f my-values.yaml
 ```
 
-The Deployment template includes a `checksum/scenarios` annotation, so changing scenario
+The Deployment template includes a `checksum/scenarios` annotation. Changing scenario
 content in your values file triggers an automatic pod rollout on `helm upgrade`.
 
-You can place `kind: composable` [metric pack](../build/catalogs-and-packs.md) YAMLs in the same `scenarios` map alongside your runnable scenarios. Whenever `scenarios` is populated, the chart points the server's `--catalog` flag at the mounted `/scenarios` directory, so `POST /scenarios` bodies that reference a pack by name (`pack: <name>`) resolve automatically -- no extra configuration. See [Pack references over HTTP](http-api.md#pack-references-over-http) for how that resolution works.
+You can place `kind: composable` [metric pack](../build/catalogs-and-packs.md) YAMLs in the same `scenarios` map next to your runnable scenarios. When `scenarios` is populated, the chart points the server's `--catalog` flag at the mounted `/scenarios` directory. `POST /scenarios` bodies that reference a pack by name (`pack: <name>`) then resolve automatically. No extra configuration. See [Pack references over HTTP](http-api.md#pack-references-over-http) for how that resolution works.
 
 See [Scenario Fields](../reference/scenario-fields.md) for the full YAML schema.
 
 ### API (runtime)
 
-Once `sonda-server` is running, you can submit scenarios dynamically without redeploying:
+Once `sonda-server` is running, you can submit scenarios at runtime without redeploying:
 
 ```bash
 curl -X POST -H "Content-Type: text/yaml" \
@@ -277,7 +276,7 @@ For example, a Prometheus instance in the same namespace can scrape
 
 ## Prometheus scraping
 
-`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view — every running scenario fused into one response, with `?label=k:v` to slice by the labels you attached to each scenario. `GET /scenarios/{id}/metrics` is the per-scenario view — the current value of every series for one scenario. Both endpoints are idempotent snapshots: one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape. For most Prometheus setups, the aggregate endpoint is the right call — one job covers every scenario and you do not need to know scenario IDs ahead of time. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` AND-filter syntax.
+`sonda-server` exposes two scrape endpoints. `GET /metrics` is the aggregate view. Every running scenario is fused into one response, with `?label=k:v` to slice the view by the labels you attached to each scenario. `GET /scenarios/{id}/metrics` is the per-scenario view. It carries the current value of every series for one scenario. Both endpoints are idempotent snapshots. They produce one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. For most Prometheus setups, the aggregate endpoint is the right choice. One job covers every scenario, and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` AND-filter syntax.
 
 ### Aggregate scrape config
 
@@ -290,7 +289,7 @@ scrape_configs:
       - targets: ["sonda.default.svc:8080"]
 ```
 
-Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics; repeat the `label` value to AND-combine selectors.
+Add `params: {label: ["device:srl1"]}` to scope a job to one device's metrics. Repeat the `label` value to AND-combine selectors.
 
 ### Per-scenario scrape config
 
@@ -309,7 +308,7 @@ Replace `<SCENARIO_ID>` with the UUID returned by `POST /scenarios`.
 
 ### ServiceMonitor
 
-If you run the [Prometheus Operator](https://prometheus-operator.dev/) (typically via
+If you run the [Prometheus Operator](https://prometheus-operator.dev/) (typically through
 kube-prometheus-stack), the chart includes an optional ServiceMonitor template. Enable it
 with:
 
@@ -320,7 +319,7 @@ helm install sonda ./helm/sonda --set serviceMonitor.enabled=true
 See the [ServiceMonitor](#servicemonitor) values reference for all options
 (`interval`, `scrapeTimeout`, `path`, `additionalLabels`).
 
-Alternatively, apply a custom ServiceMonitor manually for full control:
+You can also apply a custom ServiceMonitor manually for full control:
 
 ```yaml title="sonda-servicemonitor.yaml"
 apiVersion: monitoring.coreos.com/v1
@@ -496,7 +495,7 @@ helm upgrade sonda ./helm/sonda --set image.tag=<!--x-release-please-version-->1
 ```
 
 If your values file includes `scenarios`, the ConfigMap checksum annotation triggers an
-automatic pod rollout -- no manual restart needed.
+automatic pod rollout. No manual restart is needed.
 
 !!! info "Rollback"
     Helm keeps release history. Roll back to the previous version with:

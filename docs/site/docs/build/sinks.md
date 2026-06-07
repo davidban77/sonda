@@ -1,21 +1,15 @@
 # Sinks
 
-Sinks deliver encoded bytes to their destination. You select a sink with the `sink.type` field. If
-omitted, the default is `stdout`.
+A sink delivers encoded bytes to a destination. Set the destination with the `sink.type` field. The default is `stdout`.
 
-Most sinks buffer data before delivering it, which affects when you see output. For a full
-explanation of how this works, see [Sink Batching](sink-batching.md).
+Most sinks buffer data before delivery, which affects when output appears. For the full model, see [Sink Batching](sink-batching.md).
 
 !!! tip "Choosing the right `url:`"
-    Network sinks (`http_push`, `remote_write`, `loki`, `otlp_grpc`) accept a URL that is
-    resolved inside the process running the scenario. The same YAML run from your host CLI
-    vs. POSTed to a containerized `sonda-server` reaches different hosts. See
-    [Endpoints & networking](../deploy/server.md) for when to use `localhost`,
-    Compose service names, or Kubernetes Service DNS.
+    Network sinks (`http_push`, `remote_write`, `loki`, `otlp_grpc`) accept a URL resolved inside the process that runs the scenario. The same YAML run from your host CLI versus POSTed to a containerized `sonda-server` reaches different hosts. See [Endpoints and networking](../deploy/server.md) for when to use `localhost`, Compose service names, or Kubernetes Service DNS.
 
 ## stdout
 
-Writes events to standard output via a buffered writer. This is the default sink.
+Writes events to standard output through a buffered writer. This is the default sink.
 
 No additional parameters.
 
@@ -38,7 +32,7 @@ sink:
   path: /tmp/sonda-output.txt
 ```
 
-You can also use the `-o` CLI flag on `sonda run` as a shorthand for `--sink file --endpoint <path>`:
+The `-o` flag on `sonda run` is a shortcut for `--sink file --endpoint <path>`:
 
 ```bash title="cpu-scenario.yaml"
 sonda run cpu-scenario.yaml -o /tmp/metrics.txt
@@ -46,8 +40,7 @@ sonda run cpu-scenario.yaml -o /tmp/metrics.txt
 
 ## tcp
 
-Writes events over a persistent TCP connection. The connection is established when the scenario
-starts.
+Writes events over a persistent TCP connection. The connection opens when the scenario starts.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -61,8 +54,7 @@ sink:
 
 ## udp
 
-Sends each encoded event as a single UDP datagram. No connection is established -- an ephemeral
-local port is bound and each event is sent via `send_to`.
+Sends each encoded event as a single UDP datagram. There is no persistent connection. An ephemeral local port is bound and each event goes out through `send_to`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -77,18 +69,16 @@ sink:
 ## http_push
 
 !!! note
-    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this
-    feature. If building from source: `cargo build --features http -p sonda`.
+    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this feature. To build from source: `cargo build --features http -p sonda`.
 
-Batches encoded events and delivers them via HTTP POST. Events accumulate in a buffer until the
-batch size is reached, then the buffer is flushed as a single POST request.
+Buffers encoded events and delivers them by HTTP POST. Events accumulate until the batch size is reached, then the buffer is flushed as a single POST.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Target URL for HTTP POST requests. |
 | `content_type` | string | no | `application/octet-stream` | Value for the `Content-Type` header. |
-| `batch_size` | integer | no | `4096` (4 KiB) | Size flush threshold in bytes. Raise for high-rate scenarios. |
-| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
+| `batch_size` | integer | no | `4096` (4 KiB) | Size flush threshold in bytes. Raise this for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 | `headers` | map | no | none | Extra HTTP headers sent with every request. |
 
 ```yaml title="HTTP push sink"
@@ -99,9 +89,7 @@ sink:
   batch_size: 32768
 ```
 
-**CLI override** -- `sonda run` accepts `--sink http_push` and `--endpoint` to override the file's
-sink type and URL on a one-off run. Settings like `content_type`, `batch_size`, and custom
-`headers:` live in the YAML:
+**CLI override** — `sonda run` accepts `--sink http_push` and `--endpoint` to override the file's sink type and URL on a one-off run. Settings like `content_type`, `batch_size`, and custom `headers:` live in the YAML:
 
 ```bash title="cpu-scenario.yaml"
 sonda run cpu-scenario.yaml \
@@ -135,20 +123,16 @@ sink:
 
 ## remote_write
 
-Batches metrics as Prometheus remote write requests. Designed to be paired with the
-`remote_write` encoder, which produces length-prefixed protobuf `TimeSeries` bytes. The sink
-accumulates entries and, on flush, wraps them in a `WriteRequest`, snappy-compresses it, and
-HTTP POSTs with the correct protocol headers.
+Batches metrics as Prometheus remote write requests. Pair it with the `remote_write` encoder, which produces length-prefixed protobuf `TimeSeries` bytes. The sink accumulates entries and, on flush, wraps them in a `WriteRequest`, applies snappy compression, and HTTP POSTs with the correct protocol headers.
 
 !!! note
-    This sink requires the `remote-write` Cargo feature flag. Pre-built release binaries include
-    this feature. If building from source: `cargo build --features remote-write -p sonda`.
+    This sink requires the `remote-write` Cargo feature flag. Pre-built release binaries include this feature. To build from source: `cargo build --features remote-write -p sonda`.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Remote write endpoint URL. |
-| `batch_size` | integer | no | `5` | Size flush threshold in number of TimeSeries entries. Raise for high-rate scenarios. |
-| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of TimeSeries entries. Raise this for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="Remote write sink"
 encoder:
@@ -159,8 +143,7 @@ sink:
   batch_size: 5
 ```
 
-**CLI override** -- `sonda run` accepts `--encoder remote_write`, `--sink remote_write`, and
-`--endpoint <url>` to override the file's sink and encoder on a one-off run:
+**CLI override** — `sonda run` accepts `--encoder remote_write`, `--sink remote_write`, and `--endpoint <url>` to override the file's sink and encoder on a one-off run:
 
 ```bash title="cpu-scenario.yaml"
 sonda run cpu-scenario.yaml \
@@ -180,18 +163,16 @@ Compatible endpoints:
 
 ## kafka
 
-Batches events and publishes them to a Kafka topic. Uses a pure-Rust Kafka client (`rskafka`) for
-static binary compatibility -- no C dependencies or OpenSSL required.
+Batches events and publishes them to a Kafka topic. Uses a pure-Rust Kafka client (`rskafka`) for static binary compatibility. No C dependencies or OpenSSL are required.
 
 !!! note
-    This sink requires the `kafka` Cargo feature flag. Pre-built release binaries include this
-    feature. If building from source: `cargo build --features kafka -p sonda`.
+    This sink requires the `kafka` Cargo feature flag. Pre-built release binaries include this feature. To build from source: `cargo build --features kafka -p sonda`.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `brokers` | string | yes | -- | Comma-separated broker addresses (e.g. `"broker1:9092,broker2:9092"`). |
 | `topic` | string | yes | -- | Kafka topic name. |
-| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 | `tls` | object | no | none | TLS encryption settings. See [TLS](#kafka-tls). |
 | `sasl` | object | no | none | SASL authentication settings. See [SASL](#kafka-sasl). |
 
@@ -202,19 +183,17 @@ sink:
   topic: sonda-metrics
 ```
 
-Kafka brokers and topic live in the YAML; `sonda run` does not expose flags for them. Override
-the sink type from the command line with `--sink kafka` and define the rest in the file:
+Kafka brokers and topic live in the YAML. `sonda run` does not expose flags for them. Override the sink type from the command line with `--sink kafka` and define the rest in the file:
 
 ```bash title="kafka-cpu.yaml"
 sonda run kafka-cpu.yaml
 ```
 
-Events are buffered and published as a single Kafka record to partition 0 of the configured topic. The size threshold is a fixed 64 KiB internal buffer -- it is not user-tunable -- while `max_buffer_age` (default `5s`) is the configurable knob: a non-empty batch is flushed once it has been buffered longer than that. Broker-side auto-topic-creation is supported: the sink retries metadata lookups, giving the broker time to create the topic if `auto.create.topics.enable=true`.
+Events are buffered and published as a single Kafka record to partition 0 of the configured topic. The size threshold is a fixed 64 KiB internal buffer and is not user-tunable. `max_buffer_age` (default `5s`) is the configurable knob: a non-empty batch is flushed once buffered longer than that. Broker-side auto-topic-creation is supported. The sink retries metadata lookups, which gives the broker time to create the topic if `auto.create.topics.enable=true`.
 
 ### TLS { #kafka-tls }
 
-Most managed Kafka services (Confluent Cloud, AWS MSK, Aiven) require TLS-encrypted connections.
-Add a `tls` block to enable encryption.
+Most managed Kafka services (Confluent Cloud, AWS MSK, Aiven) require TLS-encrypted connections. Add a `tls` block to enable encryption.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -230,10 +209,9 @@ sink:
     enabled: true
 ```
 
-When `ca_cert` is omitted, Sonda trusts Mozilla's bundled root certificates (via `webpki-roots`).
-This works out of the box for any broker whose certificate is signed by a public CA.
+When `ca_cert` is omitted, Sonda trusts Mozilla's bundled root certificates (via `webpki-roots`). This works by default for any broker whose certificate is signed by a public CA.
 
-For brokers with self-signed or internal CA certificates, point `ca_cert` to the PEM file:
+For brokers with self-signed or internal CA certificates, point `ca_cert` at the PEM file:
 
 ```yaml title="Kafka with custom CA"
 sink:
@@ -246,8 +224,7 @@ sink:
 ```
 
 !!! tip
-    TLS uses `rustls` (pure Rust) -- there is no dependency on OpenSSL. This keeps the static
-    musl binary fully self-contained.
+    TLS uses `rustls` (pure Rust). There is no dependency on OpenSSL. The static musl binary stays fully self-contained.
 
 ### SASL { #kafka-sasl }
 
@@ -257,7 +234,7 @@ SASL authenticates your client to the Kafka broker. Sonda supports three mechani
 |-----------|-------------|
 | `PLAIN` | Confluent Cloud, Aiven, most SaaS Kafka services. |
 | `SCRAM-SHA-256` | AWS MSK (serverless and provisioned with SCRAM enabled). |
-| `SCRAM-SHA-512` | Self-managed Kafka clusters preferring stronger hashing. |
+| `SCRAM-SHA-512` | Self-managed Kafka clusters that prefer stronger hashing. |
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -279,14 +256,13 @@ sink:
 ```
 
 !!! warning
-    SASL can be used without TLS, but Sonda prints a warning because credentials are sent in
-    plaintext over the network. Always enable TLS alongside SASL in production.
+    SASL can be used without TLS, but Sonda prints a warning because the credentials are sent in plaintext over the network. Always enable TLS alongside SASL in production.
 
 ### Common configurations { #kafka-examples }
 
 === "Confluent Cloud"
 
-    Confluent Cloud uses TLS + SASL PLAIN. Your API key is the username, API secret is the password.
+    Confluent Cloud uses TLS and SASL PLAIN. Your API key is the username; the API secret is the password.
 
     ```yaml title="confluent-cloud.yaml"
     sink:
@@ -350,25 +326,23 @@ sink:
     ```
 
 !!! info
-    TLS and SASL are configured via scenario YAML only. There are no CLI flags for these options --
-    use a scenario file with `--scenario`.
+    TLS and SASL are configured via scenario YAML only. There are no CLI flags for these options. Use a scenario file with `--scenario`.
 
 ## loki
 
 !!! note
-    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this
-    feature. If building from source: `cargo build --features http -p sonda`.
+    This sink requires the `http` Cargo feature flag. Pre-built release binaries include this feature. To build from source: `cargo build --features http -p sonda`.
 
-Batches log lines and delivers them to Grafana Loki via HTTP POST. A Loki **stream** is the unit Loki indexes by, identified by its label set. At each flush, entries are grouped by their combined label set (scenario-level `labels` merged with any per-event `dynamic_labels`) and sent as a single push containing one stream per unique combination.
+Batches log lines and delivers them to Grafana Loki by HTTP POST. A Loki **stream** is the unit Loki indexes by, identified by its label set. At each flush, entries are grouped by their combined label set (scenario-level `labels` merged with any per-event `dynamic_labels`) and sent as a single push containing one stream per unique combination.
 
-Scenario-level `labels:` form the base stream labels. Per-event `dynamic_labels` (when used) join the stream label set, so a rotation through N values produces N distinct streams — each queryable in Grafana by label. See [Dynamic Labels — Loki sinks](scheduling.md#dynamic-labels-with-the-loki-sink) for the worked pattern.
+Scenario-level `labels:` form the base stream labels. Per-event `dynamic_labels` join the stream label set, so a rotation through N values produces N distinct streams, each queryable in Grafana by label. See [Dynamic Labels — Loki sinks](scheduling.md#dynamic-labels-with-the-loki-sink) for the worked pattern.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | yes | -- | Base URL of the Loki instance. |
-| `batch_size` | integer | no | `5` | Size flush threshold in number of log entries. Raise for high-rate scenarios. |
-| `max_streams_per_push` | integer | no | `128` | Hard cap on unique streams per flush. A flush that would emit more streams than the cap fails with a message naming the offending count and the cap, so high-cardinality `dynamic_labels` configurations surface as a config error instead of overloading the Loki ingester. Raise this if your ingester is sized for higher cardinality. |
-| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of log entries. Raise this for high-rate scenarios. |
+| `max_streams_per_push` | integer | no | `128` | Hard cap on unique streams per flush. A flush that would emit more streams than the cap fails with a message naming the offending count and the cap. High-cardinality `dynamic_labels` configurations surface as a config error instead of overloading the Loki ingester. Raise this if your ingester is sized for higher cardinality. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="Loki sink with top-level labels"
 version: 2
@@ -389,8 +363,7 @@ scenarios:
       env: dev
 ```
 
-**CLI override** -- `sonda run` accepts `--sink loki`, `--endpoint <url>`, and `--label k=v`
-(repeatable) for stream labels:
+**CLI override** — `sonda run` accepts `--sink loki`, `--endpoint <url>`, and `--label k=v` (repeatable) for stream labels:
 
 ```bash title="app-logs.yaml"
 sonda run app-logs.yaml \
@@ -402,22 +375,17 @@ The sink POSTs to `{url}/loki/api/v1/push`.
 
 ## otlp_grpc
 
-Batches OTLP protobuf data and delivers it via gRPC to an OpenTelemetry Collector. Designed to
-be paired with the `otlp` encoder, which produces length-prefixed protobuf `Metric` or `LogRecord`
-bytes. The sink accumulates entries and, on flush or when `batch_size` is reached, wraps them in
-an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends via gRPC unary call.
+Batches OTLP protobuf data and delivers it by gRPC to an OpenTelemetry Collector. Pair it with the `otlp` encoder, which produces length-prefixed protobuf `Metric` or `LogRecord` bytes. The sink accumulates entries and, on flush or when `batch_size` is reached, wraps them in an `ExportMetricsServiceRequest` or `ExportLogsServiceRequest` and sends them by gRPC unary call.
 
 !!! warning "Feature flag and build requirement"
-    This sink requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker
-    images do **not** include this feature. You must build from source:
-    `cargo build --features otlp -p sonda`.
+    This sink requires the `otlp` Cargo feature flag. Pre-built release binaries and Docker images do **not** include this feature. Build from source: `cargo build --features otlp -p sonda`.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `endpoint` | string | yes | -- | gRPC endpoint URL of the OTEL Collector (e.g. `"http://localhost:4317"`). |
-| `signal_type` | string | yes | -- | `"metrics"` or `"logs"` -- must match the scenario signal type. |
-| `batch_size` | integer | no | `5` | Size flush threshold in number of data points or log records. Raise for high-rate scenarios. |
-| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once it has been buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
+| `signal_type` | string | yes | -- | `"metrics"` or `"logs"`. Must match the scenario signal type. |
+| `batch_size` | integer | no | `5` | Size flush threshold in number of data points or log records. Raise this for high-rate scenarios. |
+| `max_buffer_age` | duration string | no | `5s` | Time flush threshold. A non-empty batch is flushed once buffered longer than this. Set `"0s"` to disable. See [Sink Batching](sink-batching.md#time-based-flushing). |
 
 ```yaml title="OTLP gRPC sink (metrics)"
 encoder:
@@ -439,17 +407,14 @@ sink:
   batch_size: 50
 ```
 
-**CLI override** -- `sonda run` accepts `--encoder otlp`, `--sink otlp_grpc`, and `--endpoint <url>`.
-The OTLP `signal_type` is derived from the scenario's `signal_type:`, so it does not need its own
-CLI flag:
+**CLI override** — `sonda run` accepts `--encoder otlp`, `--sink otlp_grpc`, and `--endpoint <url>`. The OTLP `signal_type` is derived from the scenario's `signal_type:`, so it does not need a separate CLI flag:
 
 ```bash title="cpu.yaml"
 sonda run cpu.yaml \
   --encoder otlp --sink otlp_grpc --endpoint http://localhost:4317
 ```
 
-Scenario-level `labels` are automatically converted to OTLP `Resource` attributes, so they appear
-as resource metadata in the Collector's output.
+Scenario-level `labels` are converted to OTLP `Resource` attributes, so they appear as resource metadata in the Collector's output.
 
 Compatible receivers:
 
@@ -462,13 +427,9 @@ Compatible receivers:
 
 ## Retry with backoff
 
-Network sinks can encounter transient failures -- connection resets, HTTP 5xx responses, broker
-unavailability. By default, Sonda does **not** retry, which is ideal for CI pipelines where you want
-fast failure feedback. For long-running soak tests or Kubernetes deployments where brief interruptions
-are expected, you can add a `retry:` block to any network sink.
+Network sinks can hit transient failures — connection resets, HTTP 5xx responses, broker outages. By default, Sonda does **not** retry, which is ideal for CI pipelines where fast failure feedback matters. For long-running soak tests or Kubernetes deployments where short interruptions are expected, add a `retry:` block to any network sink.
 
-Retry applies to these sinks: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`.
-It does **not** apply to `stdout`, `file`, or `udp`.
+Retry applies to these sinks: `http_push`, `remote_write`, `loki`, `otlp_grpc`, `kafka`, `tcp`. It does **not** apply to `stdout`, `file`, or `udp`.
 
 ### Configuration
 
@@ -490,7 +451,7 @@ All three fields are required when `retry:` is present:
 |-------|------|-------------|
 | `max_attempts` | integer | Number of retry attempts after the initial failure. Must be at least 1. Total calls = `max_attempts + 1`. |
 | `initial_backoff` | duration string | Delay before the first retry (e.g. `100ms`, `1s`). |
-| `max_backoff` | duration string | Upper bound on any single backoff delay. Must be >= `initial_backoff`. |
+| `max_backoff` | duration string | Upper bound on any single backoff delay. Must be at least `initial_backoff`. |
 
 ### How it works
 
@@ -501,8 +462,7 @@ base  = min(max_backoff, initial_backoff * 2^attempt)
 sleep = random(0, base)
 ```
 
-The jitter prevents synchronized retries when multiple sinks retry at the same time ("thundering
-herd"). Each retry attempt is logged to stderr:
+The jitter prevents synchronized retries when several sinks retry at the same time ("thundering herd"). Each retry attempt is logged to stderr:
 
 ```text
 sonda: retry 1/3 after 127ms (error: connection refused)
@@ -510,23 +470,20 @@ sonda: retry 2/3 after 312ms (error: connection refused)
 sonda: all 3 retries exhausted (last error: connection refused)
 ```
 
-If all retries are exhausted, the batch is **discarded**. This prevents unbounded buffer growth --
-since Sonda generates synthetic data, losing a batch is acceptable.
+If every retry is exhausted, the batch is **discarded**. Sonda generates synthetic data, so losing a batch is acceptable and prevents unbounded buffer growth.
 
 ### Error classification
 
-Not all errors trigger retries. Each sink classifies errors as retryable (transient) or permanent:
+Not every error triggers a retry. Each sink classifies errors as retryable (transient) or permanent:
 
 | Sink | Retryable | Not retried |
 |------|-----------|-------------|
 | `http_push`, `remote_write`, `loki` | HTTP 5xx, 429 (rate limit), transport errors | HTTP 4xx (except 429) |
 | `otlp_grpc` | UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED | INVALID_ARGUMENT, UNAUTHENTICATED |
-| `kafka` | All produce errors (typically transient broker/network issues) | -- |
+| `kafka` | All produce errors (typically transient broker or network issues) | -- |
 | `tcp` | Connection reset, broken pipe (reconnects automatically) | -- |
 
 !!! warning
-    Permanent errors (like a 401 Unauthorized or a malformed request returning 400) are never
-    retried. Sonda logs a warning and discards the batch immediately.
+    Permanent errors (a 401 Unauthorized or a malformed request that returns 400) are never retried. Sonda logs a warning and drops the batch immediately.
 
-Retry settings live in the scenario YAML — there is no CLI shortcut for them. Edit the
-`retry:` block inside the sink definition to tune attempts and backoff.
+Retry settings live in the scenario YAML. There is no CLI shortcut for them. Edit the `retry:` block inside the sink definition to tune attempts and backoff.

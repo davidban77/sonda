@@ -1,21 +1,21 @@
 ---
 title: Import real data
-description: Turn CSV exports, Grafana panels, and log files into replayable Sonda scenarios.
+description: Convert CSV exports, Grafana panels, and log files into replayable Sonda scenarios.
 ---
 
 # Import real data
 
-Sometimes the easiest way to get a realistic shape is to start from real data. Sonda's import paths take a CSV, a Grafana panel export, or a log file and produce a replayable scenario YAML — same cadence, same values, runnable on demand for incident replay, regression tests, or dashboard validation.
+This section covers three ways to turn real telemetry into a Sonda scenario. Each page handles one input format: a CSV file, a Grafana panel export, or a structured log file. The result is a YAML scenario you can replay for incident reproduction, regression tests, or dashboard validation.
 
 <div class="grid cards" markdown>
 
 -   :material-file-table-outline: __[From a CSV file](from-csv.md)__
 
-    `sonda new --from <csv>` reads numeric columns, runs pattern detection, and emits a scenario entry per column with a sensible generator alias.
+    `sonda new --from <csv>` reads each numeric column, classifies the pattern, and writes one scenario entry per column.
 
 -   :material-chart-areaspline: __[Grafana exports](grafana-exports.md)__
 
-    Export a Grafana panel as CSV, point `sonda new --from` at it, and you have a replayable scenario that reproduces the incident.
+    Export a Grafana panel as CSV. Point `sonda new --from` at it and replay the incident at the original cadence.
 
 -   :material-text-box-outline: __[Log files](log-files.md)__
 

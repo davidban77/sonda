@@ -1,27 +1,23 @@
 # Generators
 
-Generators produce values for each tick of a scenario. For metrics, they produce `f64` values. For
-logs, they produce structured log events. You select a generator with the `generator.type` field.
+A generator produces values for each tick of a scenario. For metrics, it produces `f64` values. For logs, it produces structured log events. You select a generator with the `generator.type` field.
 
 ## Which generator?
 
-Pick the row that matches what you are simulating. The first table covers the eight
-core metric generators. The second covers [operational aliases](#operational-aliases) --
-sugar for the same engine that lets you say `flap` instead of `sequence` with hand-aligned
-values.
+Pick the row that matches what you are simulating. The first table covers the eight core metric generators. The second covers [operational aliases](#operational-aliases) — shortcuts for the same engine that let you write `flap` instead of `sequence` with hand-aligned values.
 
 | Generator | Use case | Shape | Key fields |
 |-----------|----------|-------|------------|
 | [`constant`](#constant) | Up/down indicators, recording-rule baselines | Flat horizontal line | `value` |
 | [`sine`](#sine) | CPU, latency, cyclical load | Smooth oscillation around a midpoint | `amplitude`, `period_secs`, `offset` |
-| [`sawtooth`](#sawtooth) | Counter wraps, queue fill cycles | Linear ramp that snaps back at period end | `min`, `max`, `period_secs` |
+| [`sawtooth`](#sawtooth) | Counter wraps, queue fill cycles | Linear ramp that resets at period end | `min`, `max`, `period_secs` |
 | [`uniform`](#uniform) | Jitter, random-load streams | Random values drawn each tick | `min`, `max`, `seed` |
 | [`sequence`](#sequence) | Exact `for:` durations, scripted timelines | Whatever you list, tick by tick | `values`, `repeat` |
-| [`step`](#step) | `rate()` and `increase()` testing | Monotonic counter incrementing each tick | `start`, `step_size`, optional `max` |
+| [`step`](#step) | `rate()` and `increase()` testing | Monotonic counter that increases each tick | `start`, `step_size`, optional `max` |
 | [`spike`](#spike) | Anomaly detection, threshold alerts | Baseline with periodic outlier bursts | `baseline`, `magnitude`, `interval_secs` |
 | [`csv_replay`](#csv_replay) | Bit-for-bit incident reproduction | The recorded values, at the recorded cadence | `file`, `timescale`, `default_metric_name` |
 
-For [logs](#log-generators), pick `template` for synthesized messages with field pools or `csv_replay` for replaying a structured CSV of real log events at the recorded cadence. For latency distributions, see the [histogram and summary generators](#histogram-and-summary-generators).
+For [logs](#log-generators), choose `template` for synthesized messages with field pools or `csv_replay` for replaying a structured CSV of real log events at the recorded cadence. For latency distributions, see the [histogram and summary generators](#histogram-and-summary-generators).
 
 | Alias | Operational meaning | Shape | Key fields |
 |-------|---------------------|-------|------------|
@@ -29,20 +25,17 @@ For [logs](#log-generators), pick `template` for synthesized messages with field
 | [`flap`](#flap) | Interface or health-check toggling | Binary up/down with per-state durations | `up_duration`, `down_duration` |
 | [`saturation`](#saturation) | Buffer or disk filling, then resetting | Ramp from baseline to ceiling, repeats | `baseline`, `ceiling`, `time_to_saturate` |
 | [`leak`](#leak) | Memory leak, unreleased connections | One-way ramp toward ceiling, no reset | `baseline`, `ceiling`, `time_to_ceiling` |
-| [`degradation`](#degradation) | Latency climbing, throughput dropping | One-way ramp with noise on top | `baseline`, `ceiling`, `time_to_degrade` |
+| [`degradation`](#degradation) | Latency increasing, throughput dropping | One-way ramp with noise on top | `baseline`, `ceiling`, `time_to_degrade` |
 | [`spike_event`](#spike_event) | CPU spikes, request surges, error floods | Baseline with periodic bursts | `baseline`, `spike_height`, `spike_interval` |
 
 !!! tip "Aliases and core generators are interchangeable"
-    Aliases are sugar -- they desugar at parse time into the core generators above. Use the
-    alias when the operational meaning is clearer; drop to the core generator when you need a
-    parameter the alias does not expose (e.g. negative spike `magnitude` for dip testing).
+    Aliases are shortcuts. At parse time, each alias is translated into the core generators above. Use the alias when the operational meaning is clearer; use the core generator when you need a parameter the alias does not expose (for example, negative spike `magnitude` for dip testing).
 
 ## Metric generators
 
 ### constant
 
-Returns the same value on every tick. Use it for baseline testing or known-value verification
-(e.g. recording rule validation).
+Returns the same value on every tick. Use it for baseline testing or known-value verification (for example, recording rule validation).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -105,8 +98,7 @@ generator:
   offset: 50.0
 ```
 
-**Shape:** Oscillates smoothly between 0 and 100 with a 60-second period. At tick 0, the value
-equals the offset.
+**Shape:** Oscillates smoothly between 0 and 100 with a 60-second period. At tick 0, the value equals the offset.
 
 ```yaml title="cpu-sine.yaml"
 version: 2
@@ -141,7 +133,7 @@ cpu 100 1774279697110
 
 ### sawtooth
 
-Linearly ramps from `min` to `max` and resets to `min` at the start of each period.
+Ramps linearly from `min` to `max` and resets to `min` at the start of each period.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -157,7 +149,7 @@ generator:
   period_secs: 60.0
 ```
 
-**Shape:** A linear ramp from 0 to 100 over 60 seconds, then snaps back to 0.
+**Shape:** A linear ramp from 0 to 100 over 60 seconds, then a reset to 0.
 
 ```yaml title="ramp-sawtooth.yaml"
 version: 2
@@ -192,8 +184,7 @@ ramp 25 1774279702399
 
 ### uniform
 
-Produces uniformly distributed random values in the range `[min, max]`. Deterministic when
-seeded.
+Produces uniformly distributed random values in the range `[min, max]`. Deterministic when seeded.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -209,7 +200,7 @@ generator:
   seed: 42
 ```
 
-**Shape:** Random values scattered between 10 and 90. Same seed produces same sequence.
+**Shape:** Random values scattered between 10 and 90. The same seed produces the same sequence.
 
 ```yaml title="noise-uniform.yaml"
 version: 2
@@ -244,8 +235,7 @@ noise 27.068700996215277 1774279699731
 
 ### sequence
 
-Steps through an explicit list of values. Use it for modeling specific incident patterns like
-threshold crossings.
+Steps through an explicit list of values. Use it to model specific incident patterns such as threshold crossings.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -259,8 +249,7 @@ generator:
   repeat: true
 ```
 
-**Shape:** Steps through the list one value per tick. With `repeat: true`, wraps around after the
-last value. With `repeat: false`, the last value is emitted for all subsequent ticks.
+**Shape:** Steps through the list one value per tick. With `repeat: true`, wraps around after the last value. With `repeat: false`, the last value is emitted for every subsequent tick.
 
 ```bash
 sonda run examples/sequence-alert-test.yaml --duration 5s
@@ -277,15 +266,13 @@ cpu_spike_test{instance="server-01",job="node"} 95 1774279709031
 
 ### step
 
-Produces a monotonically increasing counter value: `start + tick * step_size`. With `max` set,
-the value wraps around using modular arithmetic, simulating a counter reset. This is the go-to
-generator for testing PromQL `rate()` and `increase()` queries.
+Produces a monotonically increasing counter value: `start + tick * step_size`. With `max` set, the value wraps using modular arithmetic to simulate a counter reset. This is the standard generator for testing PromQL `rate()` and `increase()` queries.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `start` | float | no | `0.0` | Initial value at tick 0. |
 | `step_size` | float | yes | -- | Increment applied per tick. |
-| `max` | float | no | none | Wrap-around threshold. When set and greater than `start`, the value resets to `start` upon reaching `max`. |
+| `max` | float | no | none | Wrap-around threshold. When set and greater than `start`, the value resets to `start` once it reaches `max`. |
 
 ```yaml title="Step generator"
 generator:
@@ -295,8 +282,7 @@ generator:
   max: 1000
 ```
 
-**Shape:** A linear ramp from `start`, incrementing by `step_size` each tick. Without `max`, it
-grows without bound. With `max`, it wraps back to `start` when it reaches the threshold.
+**Shape:** A linear ramp from `start`, increasing by `step_size` each tick. Without `max`, it grows without bound. With `max`, it wraps back to `start` when it reaches the threshold.
 
 ```bash
 sonda run examples/step-counter.yaml --duration 3s
@@ -311,23 +297,14 @@ request_count{instance="web-01",job="app"} 4 1775192672943
 ```
 
 !!! tip "Simulating counter resets"
-    Set `max` to a low value to see wrap-around behavior. For example, `start: 0`, `step_size: 1`,
-    `max: 5` produces `0, 1, 2, 3, 4, 0, 1, 2, ...` -- useful for verifying that your `rate()`
-    queries handle counter resets correctly. Prometheus treats the drop from `max-1` back to
-    `start` as a counter reset, so `rate()` and `increase()` stitch across the wrap transparently
-    — no data is lost or double-counted.
+    Set `max` to a low value to see the wrap-around behavior. For example, `start: 0`, `step_size: 1`, `max: 5` produces `0, 1, 2, 3, 4, 0, 1, 2, ...`. This is useful for verifying that your `rate()` queries handle counter resets correctly. Prometheus treats the drop from `max-1` back to `start` as a counter reset, so `rate()` and `increase()` stitch across the wrap correctly. No data is lost or double-counted.
 
 !!! info "`step` defaults to `metric_type: counter`"
-    When scraped through [`sonda-server`](../deploy/http-api.md#aggregate-prometheus-scrape),
-    a `step` scenario surfaces as a `# TYPE <name> counter` metric by default. Every other metric
-    generator defaults to `gauge`. Override either default by setting [`metric_type:`](../reference/scenario-fields.md#prometheus-exposition-fields)
-    on the scenario.
+    When scraped through [`sonda-server`](../deploy/http-api.md#aggregate-prometheus-scrape), a `step` scenario appears as a `# TYPE <name> counter` metric by default. Every other metric generator defaults to `gauge`. Override either default by setting [`metric_type:`](../reference/scenario-fields.md#prometheus-exposition-fields) on the scenario.
 
 ### spike
 
-Outputs a constant baseline value with periodic spikes. During a spike window the value is
-`baseline + magnitude`; outside the window the value is `baseline`. Use it for testing alert
-thresholds and anomaly detection rules that trigger on sudden value changes.
+Outputs a constant baseline value with periodic spikes. During a spike window the value is `baseline + magnitude`; outside the window the value is `baseline`. Use it to test alert thresholds and anomaly detection rules that trigger on sudden value changes.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -360,13 +337,11 @@ cpu_spike_test{instance="server-01",job="node"} 250 1775195162888
 ```
 
 !!! tip "Negative magnitude for dip testing"
-    Set `magnitude` to a negative value to create periodic dips below the baseline. For example,
-    `baseline: 100.0` with `magnitude: -50.0` produces values that drop from 100 to 50 during
-    the spike window -- useful for testing low-threshold alerts.
+    Set `magnitude` to a negative value to create periodic dips below the baseline. For example, `baseline: 100.0` with `magnitude: -50.0` produces values that drop from 100 to 50 during the spike window. This is useful for testing low-threshold alerts.
 
 ### csv_replay
 
-Replays numeric values from a CSV file. Use it to reproduce real production metric patterns captured from monitoring systems -- including Grafana CSV exports with embedded labels. The replay rate is derived from the CSV's column-0 timestamps and the optional `timescale` multiplier, so a 5-minute incident plays back over 5 minutes without manual tuning. For a step-by-step walkthrough of the Grafana export workflow, see the [Grafana CSV Replay](../import/grafana-exports.md) guide.
+Replays numeric values from a CSV file. Use it to reproduce real production metric patterns captured from monitoring systems, including Grafana CSV exports with embedded labels. The replay rate is derived from the CSV's column-0 timestamps and the optional `timescale` multiplier, so a 5-minute incident plays back over 5 minutes without manual tuning. For a step-by-step walkthrough of the Grafana export workflow, see the [Grafana CSV Replay](../import/grafana-exports.md) guide.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -374,19 +349,18 @@ Replays numeric values from a CSV file. Use it to reproduce real production metr
 | `columns` | list | no | -- | Explicit column specs. Each entry: `{index, name}` with optional `labels`. When absent, columns are auto-discovered from the header. |
 | `repeat` | boolean | no | `true` | When true, cycles back to the start. When false, holds the last value. |
 | `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` plays 2x faster, `0.5` plays 2x slower. Must be strictly positive. |
-| `default_metric_name` | string | no | -- | Fallback metric name for auto-discovered columns whose header has labels but no `__name__`. Suffixed with `_<column_index>` when multiple columns share the fallback. |
+| `default_metric_name` | string | no | -- | Fallback metric name for auto-discovered columns whose header has labels but no `__name__`. Suffixed with `_<column_index>` when several columns share the fallback. |
 
-Header rows are auto-detected: if any non-time field on the first data line is non-numeric, the line is treated as a header and skipped.
+Header rows are auto-detected. If any non-time field on the first data line is non-numeric, the line is treated as a header and skipped.
 
-When `columns` is omitted, Sonda reads the CSV header and auto-discovers column names and labels. If the CSV has no header (all-numeric first row), you must provide explicit `columns`.
+When `columns` is omitted, Sonda reads the CSV header and auto-discovers column names and labels. If the CSV has no header (an all-numeric first row), you must provide explicit `columns`.
 
 !!! warning "Scenario `rate:` is overridden for csv_replay"
-    For `csv_replay`, the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in column 0 of the CSV. Setting `rate:` in YAML has no effect on emission cadence -- run `sonda --verbose --dry-run` to confirm the derived rate or inspect the startup banner. Use `timescale:` to speed up or slow down replay.
+    For `csv_replay`, the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in column 0 of the CSV. Setting `rate:` in YAML has no effect on emission cadence. Run `sonda --verbose --dry-run` to confirm the derived rate or inspect the startup banner. Use `timescale:` to speed up or slow down replay.
 
 === "Auto-discovery (default)"
 
-    When `columns` is absent, Sonda reads the header row and creates one metric stream per
-    data column. This works with both plain headers and Grafana-style label-aware headers.
+    When `columns` is absent, Sonda reads the header row and creates one metric stream per data column. This works with both plain headers and Grafana-style label-aware headers.
 
     ```yaml title="Auto-discovered columns"
     generator:
@@ -425,13 +399,11 @@ When `columns` is omitted, Sonda reads the CSV header and auto-discovers column 
           job: node
     ```
 
-    This expands into three independent metric streams -- `cpu_percent`, `mem_percent`, and
-    `disk_io_mbps` -- all sharing the same `labels`, `rate`, `sink`, and other scenario fields.
+    This expands into three independent metric streams — `cpu_percent`, `mem_percent`, and `disk_io_mbps` — that share the same `labels`, `rate`, `sink`, and other scenario fields.
 
 === "Per-column labels"
 
-    Each column entry can carry its own `labels` map. Per-column labels are merged with
-    scenario-level labels, and column labels override on key conflict.
+    Each column entry can carry its own `labels` map. Per-column labels are merged with scenario-level labels, and column labels win on key conflict.
 
     ```yaml title="Per-column labels (scenarios entry)"
     scenarios:
@@ -456,15 +428,12 @@ When `columns` is omitted, Sonda reads the CSV header and auto-discovers column 
           job: node
     ```
 
-    `cpu_percent` gets `{core="0", instance="prod-server-42", job="node"}`.
-    `disk_io_mbps` gets only the scenario-level labels.
+    `cpu_percent` gets `{core="0", instance="prod-server-42", job="node"}`. `disk_io_mbps` gets only the scenario-level labels.
 
-**Shape:** Follows the exact pattern recorded in the CSV file -- the values are replayed verbatim,
-one per tick.
+**Shape:** Follows the exact pattern recorded in the CSV file. The values are replayed verbatim, one per tick.
 
 !!! note
-    The CSV file path is relative to the working directory where you run `sonda`, not
-    relative to the scenario file.
+    The CSV file path is relative to the working directory where you run `sonda`, not relative to the scenario file.
 
 ??? tip "Supported header formats for auto-discovery"
     Sonda recognizes five column header formats:
@@ -477,21 +446,16 @@ one per tick.
     | Plain name | `cpu_percent` | `cpu_percent` | none |
     | Simple word | `prometheus` | `prometheus` | none |
 
-    Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is supported via the `default_metric_name` field on the generator -- see the [Grafana CSV Replay](../import/grafana-exports.md#labels-only-headers-default_metric_name) guide.
+    Formats 1 and 2 are produced by Grafana. Format 3 (labels only, no metric name) is supported through the `default_metric_name` field on the generator. See the [Grafana CSV Replay](../import/grafana-exports.md#labels-only-headers-default_metric_name) guide.
 
 ## Operational aliases
 
-Writing `type: sawtooth` with `min`, `max`, and `period_secs` works, but it forces you to think
-in signal-processing terms. Operational aliases let you describe *what is happening* -- a memory
-leak, a flapping interface, a healthy baseline -- and Sonda translates that into the right
-generator with sensible defaults.
+Writing `type: sawtooth` with `min`, `max`, and `period_secs` works, but it forces you to think in signal-processing terms. Operational aliases let you describe *what is happening* — a memory leak, a flapping interface, a healthy baseline — and Sonda translates that into the right generator with reasonable defaults.
 
-Aliases are syntactic sugar. At config load time, each alias is desugared into a concrete
-generator (and optionally jitter settings). The runtime never sees aliases -- everything runs
-through the same generator engine. All existing generator types still work unchanged.
+Aliases are shortcuts. At config load time, each alias is translated into a concrete generator (and optionally jitter settings). The runtime never sees aliases; everything runs through the same generator engine. Every existing generator type still works unchanged.
 
-| Alias | Desugars to | Operational meaning |
-|-------|-------------|---------------------|
+| Alias | Translates to | Operational meaning |
+|-------|---------------|---------------------|
 | `steady` | `sine` + jitter | Normal healthy oscillation |
 | `flap` | `sequence` | Binary up/down toggle (interface flapping) |
 | `saturation` | `sawtooth` | Resource filling up then resetting |
@@ -501,8 +465,7 @@ through the same generator engine. All existing generator types still work uncha
 
 ### steady
 
-Models a healthy, "everything is fine" signal. Values oscillate gently around a center point
-with slight noise -- the kind of metric you see on a server under normal load.
+Models a healthy "everything is fine" signal. Values oscillate gently around a center point with slight noise — the kind of metric you see on a server under normal load.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -524,14 +487,12 @@ generator:
 
 Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-second cycle.
 
-!!! tip "Scaffold a starter"
-    `sonda new` walks through signal type → generator → rate → duration → sink and writes a
-    ready-to-run YAML with the `steady` alias prefilled.
+!!! tip "Generate a starter file"
+    `sonda new` walks through signal type → generator → rate → duration → sink and writes a ready-to-run YAML with the `steady` alias filled in.
 
 ### flap
 
-Models a binary signal toggling between two states -- an interface going up and down, a service
-bouncing between healthy and unhealthy.
+Models a binary signal toggling between two states — an interface going up and down, a service alternating between healthy and unhealthy.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -539,7 +500,7 @@ bouncing between healthy and unhealthy.
 | `down_duration` | duration | `"5s"` | How long the signal stays "down" per cycle. |
 | `up_value` | float | `1.0` | Value emitted during the "up" state. |
 | `down_value` | float | `0.0` | Value emitted during the "down" state. |
-| `enum` | string | unset | Domain shorthand for `(up_value, down_value)`. See the table below. Mutually exclusive with explicit `up_value`/`down_value`. |
+| `enum` | string | unset | Domain shortcut for `(up_value, down_value)`. See the table below. Mutually exclusive with explicit `up_value`/`down_value`. |
 
 ```yaml title="Interface flap"
 generator:
@@ -548,12 +509,11 @@ generator:
   down_duration: "5s"
 ```
 
-At `rate: 1`, this produces 10 ticks of `1.0` followed by 5 ticks of `0.0`, then repeats.
-The number of ticks per state is derived from the duration and the scenario `rate`.
+At `rate: 1`, this produces 10 ticks of `1.0` followed by 5 ticks of `0.0`, then repeats. The number of ticks per state is derived from the duration and the scenario `rate`.
 
-#### `enum:` shorthand
+#### `enum:` shortcut
 
-For operator-facing metrics, prefer the `enum:` shorthand over hand-tuned values. It selects a `(up_value, down_value)` pair aligned with gNMI / openconfig conventions so dashboards and alert rules built around standard state codes (UP=1, DOWN=2, ESTABLISHED=6, IDLE=1) keep working unchanged. `enum: oper_state` is the recommended starting point for any interface-state or operational-status metric.
+For operator-facing metrics, use the `enum:` shortcut over hand-tuned values. It selects a `(up_value, down_value)` pair aligned with gNMI / openconfig conventions, so dashboards and alert rules built around standard state codes (UP=1, DOWN=2, ESTABLISHED=6, IDLE=1) keep working unchanged. `enum: oper_state` is the recommended starting point for any interface-state or operational-status metric.
 
 | `enum:` value | `up_value` | `down_value` | Use case |
 |---|---|---|---|
@@ -587,8 +547,7 @@ generator:
 
 ### saturation
 
-Models a resource that fills up and resets on a repeating cycle -- disk usage growing between
-log rotations, a buffer draining when a consumer catches up.
+Models a resource that fills up and resets on a repeating cycle — disk usage growing between log rotations, a buffer draining when a consumer catches up.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -604,12 +563,11 @@ generator:
   time_to_saturate: "5m"
 ```
 
-Values ramp linearly from 20 to 95 over 5 minutes, then snap back to 20 and repeat.
+Values ramp linearly from 20 to 95 over 5 minutes, then reset to 20 and repeat.
 
 ### leak
 
-Models a resource growing toward a ceiling without ever resetting -- a memory leak, a
-connection pool that never releases, a queue that fills but never drains.
+Models a resource growing toward a ceiling without ever resetting — a memory leak, a connection pool that never releases, a queue that fills but never drains.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -628,14 +586,11 @@ generator:
 Values ramp linearly from 40 to 95 over 120 seconds with no reset.
 
 !!! warning "time_to_ceiling must be >= duration"
-    If you set a scenario `duration` and `time_to_ceiling` is shorter, Sonda rejects the
-    config with an error. A leak that resets mid-run is the `saturation` pattern -- use that
-    alias instead if you want repeating fill-and-reset cycles.
+    If you set a scenario `duration` and `time_to_ceiling` is shorter, Sonda rejects the config with an error. A leak that resets mid-run is the `saturation` pattern. Use that alias instead if you want repeating fill-and-reset cycles.
 
 ### degradation
 
-Models gradual performance loss with realistic noise -- latency increasing over time, error
-rates climbing, throughput dropping.
+Models gradual performance loss with realistic noise — latency increasing over time, error rates rising, throughput dropping.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -659,8 +614,7 @@ Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each ti
 
 ### spike_event
 
-Models periodic anomalous bursts above a baseline -- CPU spikes, sudden request surges,
-momentary error floods.
+Models periodic anomalous bursts above a baseline — CPU spikes, sudden request surges, momentary error floods.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -681,49 +635,30 @@ generator:
 Values hold at 35 between spikes, then jump to 95 (35 + 60) for 10 seconds every 30 seconds.
 
 ??? tip "Aliases vs. core generators"
-    You can always use the underlying generator directly if you need parameters that the alias
-    does not expose. For example, `spike_event` does not expose the `spike` generator's
-    `magnitude` parameter (which supports negative values for dip testing). In that case,
-    use `type: spike` with `magnitude: -50.0` directly.
+    You can use the underlying generator directly if you need parameters the alias does not expose. For example, `spike_event` does not expose the `spike` generator's `magnitude` parameter (which supports negative values for dip testing). In that case, use `type: spike` with `magnitude: -50.0` directly.
 
     Aliases and core generators are interchangeable in any scenario file. Mix them freely.
 
 ## Histogram and summary generators
 
-The metric generators above produce a single number per tick -- one value, one time series, one
-line. That works for counters ("how many requests?") and gauges ("what's the CPU usage?"), but
-it cannot answer distribution questions: "how fast are requests?" or "what latency do 99% of
-users experience?"
+The metric generators above produce a single number per tick — one value, one time series, one line. That works for counters ("how many requests?") and gauges ("what is the CPU usage?"), but it cannot answer distribution questions: "how fast are requests?" or "what latency do 99% of users experience?"
 
-That is the problem histograms and summaries solve. Instead of recording a single value, they
-observe many individual measurements (e.g., request durations) and produce **multiple time
-series per tick** that describe the shape of those measurements: where the values cluster, how
-they spread, and where the tail ends.
+That is the problem histograms and summaries solve. Instead of recording a single value, they observe many individual measurements (for example, request durations). They then produce **multiple time series per tick** that describe the shape of those measurements: where the values cluster, how they spread, and where the tail ends.
 
-Think of it this way: a counter tells you *how many* requests happened. A histogram tells you
-*how long* each of them took -- broken down into ranges so you can compute percentiles.
+Another way to see it: a counter tells you *how many* requests happened. A histogram tells you *how long* each one took, broken down into ranges so you can compute percentiles.
 
 !!! info "How real systems work"
-    When you instrument an HTTP handler with a histogram in a Prometheus client library, every
-    request duration is "observed" into the histogram. The client doesn't store each individual
-    duration. Instead, it maintains cumulative counters for predefined bucket boundaries (e.g.,
-    "how many requests took <= 100ms?"). Prometheus scrapes these counters, and you use
-    `histogram_quantile()` to estimate percentiles from the bucket distribution.
+    When you instrument an HTTP handler with a histogram in a Prometheus client library, every request duration is observed into the histogram. The client does not store each individual duration. Instead, it maintains cumulative counters for predefined bucket boundaries (for example, "how many requests took 100ms or less?"). Prometheus scrapes these counters, and you use `histogram_quantile()` to estimate percentiles from the bucket distribution.
 
-    Sonda's histogram generator does the same thing: it samples synthetic observations from a
-    distribution, updates cumulative bucket counters, and emits the result in Prometheus format.
-    The output is indistinguishable from a real instrumented service.
+    Sonda's histogram generator does the same thing. It samples synthetic observations from a distribution, updates cumulative bucket counters, and emits the result in Prometheus format. The output looks the same as a real instrumented service.
 
-Histograms and summaries are scenario entries with `signal_type: histogram` or `signal_type: summary` and a `distribution:` block in place of the metric `generator:` block. Run them with `sonda run` just like any other scenario. For a hands-on walkthrough of testing latency alerts, see the [Histograms, Summaries, and Latency Alerts](../test/alert-testing.md) guide.
+Histograms and summaries are scenario entries with `signal_type: histogram` or `signal_type: summary` and a `distribution:` block in place of the metric `generator:` block. Run them with `sonda run` like any other scenario. For a hands-on walkthrough of testing latency alerts, see the [Histograms, Summaries, and Latency Alerts](../test/alert-testing.md) guide.
 
 ### histogram
 
-A histogram answers the question: **"what is the distribution of observed values?"** It does
-this by sorting observations into buckets -- ranges with upper boundaries you define. Each
-bucket counts how many observations fell at or below that boundary.
+A histogram answers the question: **"what is the distribution of observed values?"** It does this by sorting observations into buckets — ranges with upper boundaries you define. Each bucket counts how many observations fell at or below that boundary.
 
-For a metric named `http_request_duration_seconds` with buckets at 0.1, 0.25, and 0.5, each
-tick produces something like:
+For a metric named `http_request_duration_seconds` with buckets at 0.1, 0.25, and 0.5, each tick produces something like:
 
 ```text
 http_request_duration_seconds_bucket{le="0.1"}   60   # 60 requests were <= 100ms
@@ -734,28 +669,18 @@ http_request_duration_seconds_count              100  # total observations
 http_request_duration_seconds_sum                15.2 # total seconds across all requests
 ```
 
-Buckets are **cumulative** -- the `le="0.25"` count includes all observations that are also in
-`le="0.1"`. They are also **counters**, so they only increase over time. This is what makes
-`rate()` and `histogram_quantile()` work: Prometheus computes per-second rates from the
-counter deltas, then interpolates between bucket boundaries to estimate any percentile you ask
-for.
+Buckets are **cumulative** — the `le="0.25"` count includes every observation that is also in `le="0.1"`. They are also **counters**, so they only increase over time. This is what makes `rate()` and `histogram_quantile()` work: Prometheus computes per-second rates from the counter deltas, then interpolates between bucket boundaries to estimate any percentile you ask for.
 
 ??? tip "Choosing bucket boundaries"
-    Bucket boundaries determine the resolution of your percentile estimates. If your SLO is
-    "p99 latency under 500ms" but you have no bucket boundary near 500ms, the estimate will be
-    coarse. The default Prometheus buckets (`0.005` to `10.0`) work for general HTTP latency.
-    For tighter SLOs, add boundaries near your threshold:
+    Bucket boundaries determine the resolution of your percentile estimates. If your SLO is "p99 latency under 500ms" but you have no bucket boundary near 500ms, the estimate is coarse. The default Prometheus buckets (`0.005` to `10.0`) work for general HTTP latency. For tighter SLOs, add boundaries near your threshold:
 
     ```yaml
     buckets: [0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5]
     ```
 
-    More buckets means more time series (one per bucket per label combination), so there is a
-    cardinality tradeoff. For most services, 10-15 buckets is a reasonable starting point.
+    More buckets means more time series (one per bucket per label combination), so there is a cardinality tradeoff. For most services, 10-15 buckets is a reasonable starting point.
 
-Each tick, the generator samples `observations_per_tick` values from a configurable distribution,
-updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `_count`, and
-`_sum`. Bucket counts never decrease -- they follow counter semantics.
+Each tick, the generator samples `observations_per_tick` values from a configurable distribution, updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `_count`, and `_sum`. Bucket counts never decrease; they follow counter semantics.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -766,7 +691,7 @@ updates cumulative bucket counters, and emits one line per bucket plus `+Inf`, `
 | `buckets` | list of floats | no | Prometheus defaults | Sorted upper boundaries. Default: `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]`. |
 | `observations_per_tick` | integer | no | `100` | Number of observations sampled per tick. |
 | `mean_shift_per_sec` | float | no | `0.0` | Linear drift applied to the distribution center per second. Simulates latency degradation. |
-| `seed` | integer | no | `0` | RNG seed for deterministic output. Same seed produces the same bucket counts. |
+| `seed` | integer | no | `0` | RNG seed for deterministic output. The same seed produces the same bucket counts. |
 | `labels` | map | no | none | Static labels attached to every series. |
 | `encoder` | object | no | `prometheus_text` | Output format. |
 | `sink` | object | no | `stdout` | Output destination. |
@@ -796,9 +721,7 @@ scenarios:
       handler: /api/v1/query
 ```
 
-**Shape:** N+3 time series per tick (N bucket boundaries + `+Inf` + `_count` + `_sum`). With
-default buckets, that is 14 series per tick. All bucket counters are cumulative and monotonically
-increasing across ticks.
+**Shape:** N+3 time series per tick (N bucket boundaries + `+Inf` + `_count` + `_sum`). With default buckets, that is 14 series per tick. Every bucket counter is cumulative and increases across ticks.
 
 ```bash
 sonda run examples/histogram.yaml
@@ -815,27 +738,15 @@ http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 9.505 17
 ```
 
 !!! tip "Simulating latency degradation"
-    Set `mean_shift_per_sec` to a positive value to make the distribution drift higher over time.
-    This causes more observations to land in higher buckets, raising percentile estimates and
-    eventually triggering latency alerts. See the
-    [alert testing walkthrough](../test/alert-testing.md#test-a-histogram_quantile-alert-with-sonda)
-    for a complete example.
+    Set `mean_shift_per_sec` to a positive value to make the distribution center move higher over time. More observations land in higher buckets, percentile estimates rise, and latency alerts eventually trigger. See the [alert testing walkthrough](../test/alert-testing.md#test-a-histogram_quantile-alert-with-sonda) for a complete example.
 
 ### summary
 
-Where a histogram stores raw bucket counts and lets Prometheus estimate percentiles server-side,
-a summary does the math upfront: it computes the actual percentile values on the client and
-reports them directly. The p50 *is* 98ms. The p99 *is* 148ms. No estimation, no bucket
-interpolation.
+Where a histogram stores raw bucket counts and lets Prometheus estimate percentiles server-side, a summary does the math upfront. It computes the actual percentile values on the client and reports them directly. The p50 *is* 98ms. The p99 *is* 148ms. No estimation, no bucket interpolation.
 
-The tradeoff is flexibility. With a histogram, you can compute *any* percentile after the fact
-from the stored buckets. With a summary, you only get the specific quantiles you configured. And
-critically, you **cannot aggregate summary quantiles across instances** -- averaging the p99 of
-ten pods does not give you the fleet-wide p99. If you need cross-instance percentiles (and in
-Kubernetes, you almost always do), use histograms.
+The tradeoff is flexibility. With a histogram, you can compute *any* percentile after the fact from the stored buckets. With a summary, you only get the specific quantiles you configured. And critically, you **cannot aggregate summary quantiles across instances** — averaging the p99 of ten pods does not give you the fleet-wide p99. If you need cross-instance percentiles (and in Kubernetes, you almost always do), use histograms.
 
-Each tick, the generator samples observations, sorts them, and computes quantile values using
-the nearest-rank method.
+Each tick, the generator samples observations, sorts them, and computes quantile values using the nearest-rank method.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -877,9 +788,7 @@ scenarios:
       method: GetUser
 ```
 
-**Shape:** Q+2 time series per tick (Q quantile targets + `_count` + `_sum`). With default
-quantiles, that is 6 series per tick. Quantile values are fresh per-tick snapshots computed from
-that tick's observations. `_count` and `_sum` are cumulative.
+**Shape:** Q+2 time series per tick (Q quantile targets + `_count` + `_sum`). With default quantiles, that is 6 series per tick. Quantile values are fresh per-tick snapshots computed from that tick's observations. `_count` and `_sum` are cumulative.
 
 ```bash
 sonda run examples/summary.yaml
@@ -895,22 +804,13 @@ rpc_duration_seconds_sum{method="GetUser",service="auth"} 9.802 1775409507904
 ```
 
 !!! warning "Summaries are not aggregatable"
-    You cannot meaningfully combine quantile values across multiple instances. If you need
-    percentiles across a fleet, use histograms instead -- `histogram_quantile()` works on
-    summed bucket counters.
+    You cannot combine quantile values across several instances. If you need percentiles across a fleet, use histograms instead. `histogram_quantile()` works on summed bucket counters.
 
 ### Distribution models
 
-Both histogram and summary generators require a `distribution` block that controls how
-observations are sampled. The distribution you choose determines the *shape* of the data --
-whether observations cluster tightly around a center, skew toward fast values with a long tail,
-or spread evenly across a range.
+Both histogram and summary generators require a `distribution` block that controls how observations are sampled. The distribution you choose determines the *shape* of the data — whether observations cluster tightly around a center, skew toward fast values with a long tail, or spread evenly across a range.
 
-Pick the distribution that matches the real-world metric you are simulating. For HTTP request
-latency, exponential is almost always the right choice: most requests are fast, but some take
-much longer. For RPC durations in a healthy service with predictable behavior, normal gives you
-a symmetric bell curve. Uniform is mainly useful for stress-testing bucket boundaries, since
-real metrics rarely distribute evenly.
+Pick the distribution that matches the real-world metric you are simulating. For HTTP request latency, exponential is almost always the right choice: most requests are fast, but some take much longer. For RPC durations in a healthy service with predictable behavior, normal gives you a symmetric bell curve. Uniform is mainly useful for stress-testing bucket boundaries, since real metrics rarely distribute evenly.
 
 | Distribution | YAML type | Parameters | Typical use |
 |-------------|-----------|------------|-------------|
@@ -982,19 +882,18 @@ log_generator:
   seed: 42
 ```
 
-Templates are selected round-robin by tick. Placeholders are resolved by randomly picking from
-the corresponding field pool.
+Templates are selected round-robin by tick. Placeholders are resolved by picking randomly from the corresponding field pool.
 
 ### csv_replay
 
-Replays structured log events from a CSV file. The CSV has a `timestamp` column that drives the emission cadence, plus optional `severity` and `message` columns and any number of free-form field columns. The replay rate is derived from the median Δt of the timestamp column -- the same model the metrics-side [`csv_replay`](#csv_replay) uses -- so a 10-minute window in the CSV plays back over 10 minutes of wall clock without manual rate tuning. For a full walkthrough including the Loki / `logcli` export pipeline, see the [Log CSV Replay](../import/log-files.md) guide.
+Replays structured log events from a CSV file. The CSV has a `timestamp` column that drives the emission cadence, plus optional `severity` and `message` columns and any number of free-form field columns. The replay rate is derived from the median Δt of the timestamp column, the same model the metrics-side [`csv_replay`](#csv_replay) uses. A 10-minute window in the CSV plays back over 10 minutes of wall clock without manual rate tuning. For a full walkthrough including the Loki / `logcli` export pipeline, see the [Log CSV Replay](../import/log-files.md) guide.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file` | string | yes | -- | Path to the CSV file (relative to the working directory where you run `sonda`). |
 | `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` plays 2x faster, `0.5` plays 2x slower. Must be strictly positive. |
 | `default_severity` | string | no | `info` | Fallback severity when the severity column is missing, empty, or unparseable. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
-| `repeat` | boolean | no | `true` | When true, cycles back to the start of the CSV. When false, holds the last row for all subsequent ticks. |
+| `repeat` | boolean | no | `true` | When true, cycles back to the start of the CSV. When false, holds the last row for every subsequent tick. |
 | `columns` | object | no | auto-discover | Explicit name-based column mapping. Sub-fields: `timestamp`, `severity`, `message`. Any column not named here (and not auto-matched) becomes a field column. |
 
 ```yaml title="CSV replay log generator"
@@ -1017,32 +916,27 @@ sonda -q run examples/log-csv-replay.yaml --duration 11s
 {"timestamp":"2026-05-15T18:37:55.791Z","severity":"warn","message":"GET /api/v1/users returned 200 with high latency","labels":{},"fields":{"user_id":"u-91"}}
 ```
 
-The `timestamp` on each emitted event is the wall-clock time at emission, not the CSV row's timestamp. The CSV's timestamp column is only used to derive the replay cadence; severity, message, and field values are taken from the CSV verbatim.
+The `timestamp` on each emitted event is the wall-clock time at emission, not the CSV row's timestamp. The CSV's timestamp column is only used to derive the replay cadence. Severity, message, and field values are taken from the CSV verbatim.
 
 !!! warning "Scenario `rate:` is overridden for csv_replay"
-    For log `csv_replay`, the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in the timestamp column. Setting `rate:` in YAML has no effect on emission cadence -- run `sonda --verbose --dry-run` to confirm the derived rate, or inspect the startup banner. Use `timescale:` to speed up or slow down replay. This is the same model the metrics-side [`csv_replay`](#csv_replay) uses; see that section for the derivation details.
+    For log `csv_replay`, the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in the timestamp column. Setting `rate:` in YAML has no effect on emission cadence. Run `sonda --verbose --dry-run` to confirm the derived rate, or inspect the startup banner. Use `timescale:` to speed up or slow down replay. This is the same model the metrics-side [`csv_replay`](#csv_replay) uses; see that section for the derivation details.
 
 !!! info "Severity fallback is soft-fail"
-    When a row's severity cell is empty or unrecognized, Sonda falls back to `default_severity` instead of erroring. At expand time, Sonda emits one summary warn line counting how many rows used the fallback. Empty field cells are omitted from the row's `fields` map (rather than appearing as `key: ""`). Full failure-mode reference is in the [Log CSV Replay](../import/log-files.md#failure-modes) guide.
+    When a row's severity cell is empty or unrecognized, Sonda falls back to `default_severity` instead of erroring. At expand time, Sonda emits one summary warn line counting how many rows used the fallback. Empty field cells are omitted from the row's `fields` map (rather than appearing as `key: ""`). The full failure-mode reference is in the [Log CSV Replay](../import/log-files.md#failure-modes) guide.
 
 ## Jitter
 
-Jitter adds deterministic uniform noise to any metric generator's output. Instead of clean,
-perfectly smooth values, you get realistic-looking fluctuations -- the kind you see in real
-production metrics.
+Jitter adds deterministic uniform noise to any metric generator's output. Instead of clean, perfectly smooth values, you get realistic fluctuations — the kind you see in real production metrics.
 
 !!! info "Why jitter?"
-    A sine wave is useful for testing alert thresholds, but real CPU metrics are never perfectly
-    smooth. Adding jitter lets you verify that your alerting rules and dashboards handle noisy
-    signals correctly.
+    A sine wave is useful for testing alert thresholds, but real CPU metrics are never perfectly smooth. Adding jitter lets you verify that your alerting rules and dashboards handle noisy signals correctly.
 
-Jitter is configured at the scenario level (a sibling of `generator`, not nested inside it)
-because it wraps any generator transparently.
+Jitter is configured at the scenario level (a sibling of `generator`, not nested inside it) because it wraps any generator transparently.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every value. |
-| `jitter_seed` | integer | no | `0` | Seed for deterministic noise. Same seed produces the same noise sequence. |
+| `jitter_seed` | integer | no | `0` | Seed for deterministic noise. The same seed produces the same noise sequence. |
 
 ```yaml title="examples/jitter-sine.yaml"
 version: 2
@@ -1075,15 +969,10 @@ scenarios:
 sonda run examples/jitter-sine.yaml --duration 3s
 ```
 
-Without jitter, a sine wave with `offset: 50` outputs exactly `50.0` at tick 0. With
-`jitter: 3.0`, the value lands somewhere in `[47.0, 53.0]` -- different each tick, but
-reproducible across runs when `jitter_seed` is set.
+Without jitter, a sine wave with `offset: 50` outputs exactly `50.0` at tick 0. With `jitter: 3.0`, the value falls somewhere in `[47.0, 53.0]`. Different each tick, but reproducible across runs when `jitter_seed` is set.
 
 !!! tip "Works with every metric generator"
-    Jitter wraps the generator's output, so it works with `constant`, `sine`, `sawtooth`,
-    `uniform`, `sequence`, `step`, `spike`, and `csv_replay`. It does not apply to log generators.
+    Jitter wraps the generator's output, so it works with `constant`, `sine`, `sawtooth`, `uniform`, `sequence`, `step`, `spike`, and `csv_replay`. It does not apply to log generators.
 
 ??? tip "When to skip `jitter_seed`"
-    If you omit `jitter_seed`, it defaults to `0`. Two scenarios with the same `jitter` value
-    and no explicit seed produce identical noise sequences. Set different seeds when you need
-    independent noise on multiple scenarios.
+    If you omit `jitter_seed`, it defaults to `0`. Two scenarios with the same `jitter` value and no explicit seed produce identical noise sequences. Set different seeds when you need independent noise on several scenarios.

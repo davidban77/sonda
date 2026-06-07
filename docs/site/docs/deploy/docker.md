@@ -1,16 +1,16 @@
 # Docker
 
-Reach for the Docker image when you want Sonda without a local Rust toolchain — on a CI runner, on a colleague's laptop, or alongside the bundled observability stacks (Prometheus, VictoriaMetrics, Grafana) that this page sets up further down. The image is a single artifact that carries both the `sonda` CLI and the `sonda-server` HTTP API, so the same `docker run` works whether you want a one-shot scenario or a long-running server.
+Use the Docker image when you want Sonda without a local Rust toolchain. Common cases are CI runners, a colleague's laptop, or running alongside the bundled observability stacks (Prometheus, VictoriaMetrics, Grafana) shown later on this page. The image is a single artifact. It carries both the `sonda` CLI and the `sonda-server` HTTP API. The same `docker run` works for a one-shot scenario or a long-running server.
 
 ## Run a scenario in three commands
 
-Pre-built multi-arch images are published to GitHub Container Registry on each release. Pull the image, point it at a scenario file on your machine, and watch the output:
+Pre-built multi-arch images are published to GitHub Container Registry on each release. Pull the image, point it at a scenario file on your machine, and view the output:
 
 ```bash
 # 1. Pull the published image (Docker picks the right architecture for your host)
 docker pull ghcr.io/davidban77/sonda:latest
 
-# 2. Scaffold a starter scenario into the current directory
+# 2. Generate a starter scenario file in the current directory
 docker run --rm -v "$PWD":/work -w /work \
   ghcr.io/davidban77/sonda:latest \
   new --template -o hello.yaml
@@ -21,13 +21,13 @@ docker run --rm -v "$PWD":/work -w /work \
   run hello.yaml --duration 5s
 ```
 
-That last command prints five Prometheus-format metric lines and a completion banner — the same output you would get from a locally installed `sonda`. The `-v "$PWD":/work -w /work` flags mount your current directory into the container so `sonda` can read the YAML file and write the scaffold back out.
+That last command prints five Prometheus-format metric lines and a completion banner. The output matches a locally installed `sonda`. The `-v "$PWD":/work -w /work` flags mount your current directory into the container so `sonda` can read the YAML file and write the starter file back out.
 
-From here you can run your own scenarios, start the HTTP server (see [Running with Docker](#running-with-docker) below), or bring up one of the bundled [Docker Compose stacks](#docker-compose-stack). Most readers consume the published image and never need to build it — the [build instructions](#building-the-image) are at the end of the page for when you do.
+From here you can run your own scenarios, start the HTTP server, or use one of the bundled stacks. See [Running with Docker](#running-with-docker) below for the server and [Docker Compose stacks](#docker-compose-stack) for the bundled options. Most readers use the published image and never build their own. The [build instructions](#building-the-image) are at the end of the page for when you do.
 
 ## Running with Docker
 
-The default entrypoint is `sonda-server`, which starts the HTTP API on port 8080. See [Server API](server.md) for the full endpoint reference.
+The default entrypoint is `sonda-server`. It starts the HTTP API on port 8080. See [Server API](server.md) for the full endpoint reference.
 
 ```bash
 # Start the server (default behaviour)
@@ -53,7 +53,7 @@ docker run --rm \
 ```
 
 !!! info "`argv[1]` must be the subcommand"
-    The default entrypoint is `sonda-server`, which inspects `argv[1]` and `exec`s the sibling `sonda` CLI when it matches one of the four subcommands (`run`, `list`, `show`, `new`). That means **global flags like `--catalog` belong after the subcommand** when running through the default entrypoint — `sonda run @x --catalog /catalog`, not `sonda --catalog /catalog run @x`. The host CLI accepts both orderings; the Docker constraint is the dispatch shim, not clap.
+    The default entrypoint is `sonda-server`. It inspects `argv[1]` and runs the sibling `sonda` CLI when it matches one of the four subcommands (`run`, `list`, `show`, `new`). That means **global flags like `--catalog` belong after the subcommand** when using the default entrypoint. Use `sonda run @x --catalog /catalog`, not `sonda --catalog /catalog run @x`. The host CLI accepts both orderings. The Docker constraint comes from the shim that runs the sibling binary, not clap.
 
     For invocations that don't start with a subcommand (`--help`, `--version`, or the global-flag-first style), override the entrypoint:
 
@@ -69,15 +69,15 @@ docker run --rm \
       --catalog /catalog list
     ```
 
-The image ships no built-in catalog. Mount a directory of your own scenario and pack YAML files (typically `kind: runnable` and `kind: composable` files) at any path inside the container and pass `--catalog <path>` to point `sonda` at it. See [Catalogs](../build/catalogs-and-packs.md) for the directory layout.
+The image has no built-in catalog. Mount a directory of your own scenario and pack YAML files (typically `kind: runnable` and `kind: composable` files) at any path inside the container. Pass `--catalog <path>` to point `sonda` at it. See [Catalogs](../build/catalogs-and-packs.md) for the directory layout.
 
 !!! warning "Pre-1.9 env vars are gone"
-    Earlier releases let the image discover scenarios from `SONDA_PACK_PATH=/packs` and `SONDA_SCENARIO_PATH=/scenarios` env vars (with companion `/packs` and `/scenarios` directories baked into the image). Both were dropped in 1.9. Discovery is explicit via `--catalog <dir>` — no env-var fallback, no implicit search path. Old recipes built around `docker run … run @scenario` (expecting `SONDA_PACK_PATH` to do the lookup) will fail with "catalog dir does not exist or is not a directory" or a `@name` resolution error — add `--catalog /catalog` and mount your catalog volume there.
+    Earlier releases let the image discover scenarios from `SONDA_PACK_PATH=/packs` and `SONDA_SCENARIO_PATH=/scenarios` environment variables. The image also included companion `/packs` and `/scenarios` directories. Both were removed in 1.9. Discovery is explicit through `--catalog <dir>`. There is no environment variable fallback and no implicit search path. Old recipes built around `docker run … run @scenario` fail with "catalog dir does not exist or is not a directory" or a `@name` resolution error. Add `--catalog /catalog` and mount your catalog volume there.
 
 ## Authentication
 
 You can protect the server's `/scenarios/*` endpoints with API key authentication.
-Pass the key through the `SONDA_API_KEY` environment variable -- this works the same
+Pass the key through the `SONDA_API_KEY` environment variable. It works the same
 way as the `--api-key` CLI flag.
 
 === "`docker run`"
@@ -135,7 +135,7 @@ including error responses, protected vs. public endpoints, and Prometheus scrape
 
 ## Docker Compose Stack
 
-A `docker-compose.yml` ships with `sonda-server`, Prometheus, Alertmanager, and Grafana
+A `docker-compose.yml` is provided with `sonda-server`, Prometheus, Alertmanager, and Grafana
 for smoke-testing scenario submission and exploring the control plane.
 
 | Service | Port | Description |
@@ -145,16 +145,15 @@ for smoke-testing scenario submission and exploring the control plane.
 | `alertmanager` | 9093 | Alertmanager for alert routing |
 | `grafana` | 3000 | Grafana dashboards (password: `admin`) |
 
-!!! warning "Scenarios POSTed here write to container stdout"
+!!! warning "Scenarios sent here write to container stdout"
     The two scenario files referenced below (`docker-metrics.yaml`,
-    `docker-alerts.yaml`) use `sink: stdout`. When you POST them into `sonda-server`,
-    the generated events land on the server container's stdout -- visible via
-    `docker logs sonda-server` -- and nothing reaches Prometheus or Grafana in this
-    stack.
+    `docker-alerts.yaml`) use `sink: stdout`. When you send them to `sonda-server`,
+    the generated events arrive on the server container's stdout. View them with
+    `docker logs sonda-server`. Nothing reaches Prometheus or Grafana in this stack.
 
     This stack is useful for verifying `sonda-server` accepts and runs your scenario
     body. **To see data flowing into Prometheus and Grafana, use the
-    [VictoriaMetrics Stack](#victoriametrics-stack) below**, which ships scenarios
+    [VictoriaMetrics Stack](#victoriametrics-stack) below**. It includes scenarios
     that push to an HTTP backend reachable from inside the container.
 
     The [Endpoints & networking](server.md) page explains why a sink URL resolves
@@ -190,15 +189,15 @@ docker compose down
 ```
 
 Grafana is still provisioned at [http://localhost:3000](http://localhost:3000) and
-Prometheus at [http://localhost:9090](http://localhost:9090) -- they just will not show
+Prometheus at [http://localhost:9090](http://localhost:9090). They will not show
 sonda data from the stdout scenarios above. Use the VictoriaMetrics Stack for that.
 
 !!! info "Swapping `stdout` for `http_push` in this stack"
-    Rewrite either scenario on the fly to push to Prometheus's remote-write receiver
+    Rewrite either scenario to push to Prometheus's remote-write receiver
     (`http://prometheus:9090/api/v1/write`). See
-    [Endpoints & networking](server.md#one-file-both-paths-var-default) -- use
+    [Endpoints & networking](server.md#one-file-both-paths-var-default). Use
     `${VAR:-default}` so one file works from both host CLI and inside the container,
-    or `sed` the URL just before POSTing.
+    or `sed` the URL before posting.
 
 Two scenario files are provided for this stack:
 
@@ -210,7 +209,7 @@ See [Example Scenarios](../test/examples.md) for the full catalog.
 ## VictoriaMetrics Stack
 
 A dedicated compose file adds VictoriaMetrics, vmagent, and Grafana with a pre-provisioned datasource
-and auto-provisioned **Sonda Overview** dashboard.
+and a pre-loaded **Sonda Overview** dashboard.
 
 | Service | Port | Description |
 |---------|------|-------------|
@@ -235,13 +234,13 @@ curl "http://localhost:8428/api/v1/series?match[]={__name__=~'sonda.*'}"
 docker compose -f examples/docker-compose-victoriametrics.yml down -v
 ```
 
-The scenario URL uses `${VICTORIAMETRICS_URL:-http://localhost:8428/...}`: the compose
-file exports `VICTORIAMETRICS_URL` on the `sonda-server` container so the scenario
-resolves the in-network service name when POSTed, and falls back to host loopback when
-run from your host CLI. See
+The scenario URL uses `${VICTORIAMETRICS_URL:-http://localhost:8428/...}`. The compose
+file sets `VICTORIAMETRICS_URL` on the `sonda-server` container, so the scenario
+resolves the in-network service name when sent over HTTP. The default applies when
+you run the scenario from your host CLI. See
 [Endpoints & networking](server.md#one-file-both-paths-var-default) for the pattern.
 
-You can also push from the host CLI using a pipe to VictoriaMetrics.
+You can also push from the host CLI with a pipe to VictoriaMetrics.
 See [Sinks](../build/sinks.md) for all available sink types (`http_push`, `remote_write`, `loki`, etc.).
 
 ```yaml title="sonda-demo.yaml"
@@ -276,16 +275,16 @@ sonda run sonda-demo.yaml \
 ```
 
 Explore metrics in the VictoriaMetrics UI at [http://localhost:8428/vmui](http://localhost:8428/vmui),
-or open Grafana and navigate to **Dashboards > Sonda > Sonda Overview**.
+or open Grafana and go to **Dashboards > Sonda > Sonda Overview**.
 
 !!! tip
     The stack includes vmagent for remote write relay. You can push protobuf metrics
-    through vmagent using `examples/remote-write-vm.yaml`.
+    through vmagent with `examples/remote-write-vm.yaml`.
     See [Encoders](../build/encoders.md) for details.
 
 ### Alerting Profile
 
-Add vmalert, Alertmanager, and a webhook receiver to test the complete alerting loop:
+Add vmalert, Alertmanager, and a webhook receiver to test the full alerting path:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml \
@@ -298,7 +297,7 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 | `alertmanager` | 9093 | Alert routing and notification |
 | `webhook-receiver` | 8090 | HTTP echo server (shows alert payloads) |
 
-Push a threshold-crossing metric and watch alerts flow through to the webhook:
+Push a threshold-crossing metric and observe alerts arrive at the webhook:
 
 ```bash
 sonda run examples/alertmanager/alerting-scenario.yaml
@@ -308,7 +307,7 @@ See the [Alerting Pipeline](../test/end-to-end-pipelines.md) guide for the full 
 
 ## Building the Image
 
-Most readers use the published `ghcr.io/davidban77/sonda` image and never need this section. Build your own only when you want a local image from a working tree — for example, to test an unreleased change.
+Most readers use the published `ghcr.io/davidban77/sonda` image and never need this section. Build your own only when you want a local image from a working tree. One example is testing an unreleased change.
 
 The multi-stage Dockerfile compiles static musl binaries and copies them into a `scratch` base. The final image is typically under 20 MB.
 
@@ -322,7 +321,7 @@ For multi-arch builds (linux/amd64 and linux/arm64) using Docker Buildx:
 docker buildx build --platform linux/amd64,linux/arm64 -t sonda .
 ```
 
-The pre-built multi-arch images on GitHub Container Registry are produced by this same Dockerfile on each release, and Docker automatically pulls the correct architecture for your host:
+The pre-built multi-arch images on GitHub Container Registry come from this same Dockerfile on each release. Docker pulls the correct architecture for your host automatically:
 
 ```bash
 docker pull ghcr.io/davidban77/sonda:latest

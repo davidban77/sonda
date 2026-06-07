@@ -1,42 +1,30 @@
 # CSV Import
 
-After last week's incident, you exported the CPU and memory series from Grafana to
-attach to the postmortem. The CSV sits in a Drive folder. The next time someone tries
-to reproduce the alert pattern in CI, they will not find the file -- and even if they
-do, raw replay locks them to the original timestamps and the original rate.
+This page covers `sonda new --from <csv>`. The command reads a CSV file, detects the pattern in each numeric column, and writes a Sonda scenario YAML. The result is a portable scenario you can check into a repository and run later.
 
-What you actually want is the *shape* of that incident as a reusable scenario:
-"a CPU spike like the one from the May 14 outage" parameterized on rate and duration,
-checked into the repo next to the alert rules. `sonda new --from <csv>` does that
-conversion in one step. It scans each column, classifies the pattern (steady, spike,
-leak, sawtooth, flap, step), and emits a scenario YAML wired to a generator with
-the right knobs.
+A common case: last week, you exported the CPU and memory series from Grafana for a postmortem. The CSV now sits in a shared folder. Next time someone wants to reproduce the alert in CI, the file is hard to find. Even if they find it, raw replay locks them to the original timestamps and rate.
+
+You want the *pattern* of that incident as a reusable scenario. For example: "a CPU spike like the May 14 outage", parameterised on rate and duration, stored next to the alert rules. `sonda new --from <csv>` does this conversion in one step.
 
 ---
 
 ## Why import instead of replay?
 
-The [csv_replay](grafana-exports.md) generator plays back raw CSV values verbatim. It
-preserves the original sample interval automatically (the replay rate is derived from the CSV
-timestamps, not from `rate:`) and supports labels-only Grafana exports via
-`default_metric_name:`. Use it when you need bit-for-bit fidelity tied to a specific file.
+The [csv_replay](grafana-exports.md) generator plays back raw CSV values without changes. It preserves the original sample interval from the CSV timestamps, not from `rate:`. It also supports labels-only Grafana exports through `default_metric_name:`. Use it when you need an exact replay tied to a specific file.
 
-`sonda new --from <csv>` takes a different approach:
+`sonda new --from <csv>` is different:
 
-- **Portable** -- the generated YAML uses generators (`steady`, `spike_event`, `leak`, `flap`,
-  `sawtooth`, `step`), so it runs without the original CSV file.
-- **Parameterized** -- you can tune rate, duration, and generator parameters after import.
-- **Shareable** -- the YAML is self-contained. Drop it into a repo, CI pipeline, or Helm chart.
+- **Portable** — the generated YAML uses generator aliases (`steady`, `spike_event`, `leak`, `flap`, `sawtooth`, `step`), so it runs without the original CSV file.
+- **Parameterised** — you can change rate, duration, and generator parameters after import.
+- **Shareable** — the YAML is self-contained. Drop it into a repository, CI pipeline, or Helm chart.
 
-Use `csv_replay` when you need bit-for-bit fidelity. Use `sonda new --from <csv>` when you
-need the *shape* of the data as a reusable scenario that does not depend on the original CSV.
+Use `csv_replay` when you need an exact replay. Use `sonda new --from <csv>` when you want the *pattern* of the data as a reusable scenario. The result does not depend on the original CSV.
 
 ---
 
 ## The workflow
 
-`sonda new --from <csv>` writes a scenario YAML to stdout (or to a file with `-o`). Run the
-result with `sonda run` once you are happy with it:
+`sonda new --from <csv>` writes a scenario YAML to stdout, or to a file with `-o`. Run the result with `sonda run`:
 
 ```text
 CSV file  -->  sonda new --from data.csv  -->  scenario.yaml  -->  sonda run
@@ -53,8 +41,7 @@ sonda new --from examples/sample-multi-column.csv -o scenario.yaml
 wrote scenario to scenario.yaml
 ```
 
-The generated file is a valid [scenario YAML](../build/scenario-files.md), ready for
-`sonda run`:
+The generated file is a valid [scenario YAML](../build/scenario-files.md), ready for `sonda run`:
 
 ```yaml title="scenario.yaml"
 version: 2
@@ -90,17 +77,14 @@ scenarios:
   # ... (one entry per column)
 ```
 
-Each numeric column in the CSV gets its own `scenarios:` entry. The generator alias is chosen
-by pattern detection, so you can edit the output and tune the parameters rather than starting
-from a blank file.
+Each numeric column in the CSV becomes its own entry under `scenarios:`. The generator alias comes from pattern detection. You edit the output and tune the parameters instead of starting from a blank file.
 
 !!! info "One column, one entry"
-    `sonda new --from <csv>` emits a scenario YAML regardless of column count. Single-column CSVs produce a one-entry `scenarios:` list; multi-column CSVs produce one entry per column. Shared `rate`, `duration`, `encoder`, and `sink` live in `defaults:`.
+    `sonda new --from <csv>` writes a scenario YAML for any column count. A single-column CSV produces a one-entry `scenarios:` list. A multi-column CSV produces one entry per column. The shared `rate`, `duration`, `encoder`, and `sink` values live in `defaults:`.
 
 ### Preview to stdout
 
-Omit `-o` to print the generated YAML to stdout without writing a file — useful for quick
-inspection or piping into other tools:
+Omit `-o` to print the generated YAML to stdout without writing a file. This is useful for quick inspection or piping into other tools:
 
 ```bash
 sonda new --from examples/sample-cpu-values.csv
@@ -108,7 +92,7 @@ sonda new --from examples/sample-cpu-values.csv
 
 ### Run the result
 
-Once the YAML looks right, run it like any other scenario:
+When the YAML looks right, run it like any other scenario:
 
 ```bash
 sonda -q run scenario.yaml --duration 3s
@@ -125,8 +109,7 @@ cpu_percent 55.42337922089686 1775712697333
 
 ## Grafana CSV exports
 
-`sonda new --from <csv>` understands Grafana's "Series joined by time" CSV format. It parses
-the `{__name__="...", key="value"}` headers to extract metric names and labels automatically.
+`sonda new --from <csv>` reads Grafana's "Series joined by time" CSV format. It parses the `{__name__="...", key="value"}` headers and extracts metric names and labels automatically.
 
 ```bash
 sonda new --from examples/grafana-export.csv -o grafana-scenario.yaml
@@ -160,16 +143,13 @@ scenarios:
       job: prometheus
 ```
 
-For details on exporting from Grafana, see the
-[Grafana CSV Export Replay](grafana-exports.md#export-from-grafana) guide.
+For details on exporting from Grafana, see the [Grafana CSV Export Replay](grafana-exports.md#export-from-grafana) guide.
 
 ---
 
 ## Detected patterns
 
-The pattern detector uses statistical analysis to classify each column into one of six
-patterns. Each pattern maps to a Sonda generator or
-[operational vocabulary](../build/generators.md) alias.
+The pattern detector uses statistical analysis to classify each column into one of six patterns. Each pattern maps to a Sonda generator or [operational vocabulary](../build/generators.md) alias.
 
 | Pattern | What it looks like | Generator / alias | Key parameters |
 |---------|-------------------|-------------------|----------------|
@@ -180,13 +160,10 @@ patterns. Each pattern maps to a Sonda generator or
 | **Flap** | Bimodal toggle (up/down) | `flap` | up_value, down_value, up_duration, down_duration |
 | **Step** | Constant-rate counter increments | `step` | start, step_size |
 
-The detector runs through these in priority order. When the data does not clearly match a
-more specific pattern, it falls back to **steady**.
+The detector tries these in priority order. When the data does not clearly match a more specific pattern, it falls back to **steady**.
 
 !!! info "Pattern detection is heuristic"
-    The detector uses statistical thresholds (linear regression, IQR outlier detection,
-    k-means clustering) to classify patterns. With very short time series (fewer than 10 data
-    points), detection accuracy decreases. For best results, export at least 20-30 data points.
+    The detector uses statistical thresholds: linear regression, IQR outlier detection, and k-means clustering. With very short time series (fewer than 10 data points), accuracy decreases. For best results, export at least 20-30 data points.
 
 ---
 
@@ -194,9 +171,9 @@ more specific pattern, it falls back to **steady**.
 
 The generated YAML is a starting point. After import, you can:
 
-- **Change the sink** -- replace `stdout` with `remote_write`, `loki`, or any other sink.
-- **Adjust parameters** -- tune `amplitude`, `period`, or `baseline` to match your needs.
-- **Add scheduling** -- add `gaps:`, `bursts:`, or `cardinality_spike:` blocks.
+- **Change the sink** — replace `stdout` with `remote_write`, `loki`, or another sink.
+- **Adjust parameters** — change `amplitude`, `period`, or `baseline` to match your needs.
+- **Add scheduling** — add `gaps:`, `bursts:`, or `cardinality_spike:` blocks.
 - **Override rate and duration at run time:**
 
 ```bash
@@ -213,21 +190,15 @@ sonda new [--template] [--from <CSV>] [-o <PATH>]
 
 | Flag | Description |
 |------|-------------|
-| (no flags) | Interactive flow. Walks through signal type → generator → rate → duration → sink type → output path. |
+| (no flags) | Interactive flow. Asks for signal type, generator, rate, duration, sink type, and output path. |
 | `--template` | Print a minimal valid YAML to stdout and exit. No prompts. |
-| `--from <CSV>` | Seed the scaffold from a CSV file. Runs pattern detection on each numeric column. |
+| `--from <CSV>` | Generate a scenario from a CSV file. Runs pattern detection on each numeric column. |
 | `-o <PATH>` | Write the result to a file instead of stdout. |
 
-See [CLI Reference: sonda new](../reference/cli-flags.md#sonda-new) for the full
-reference.
+See [CLI Reference: sonda new](../reference/cli-flags.md#sonda-new) for the full reference.
 
 ---
 
 ## Replaying log streams from CSV
 
-`sonda new --from <csv>` is scoped to metric series. If your CSV is a structured log export
--- for example a `timestamp,severity,message,trace_id` dump from Loki via `logcli` -- use the
-`log_csv_replay` generator instead. It replays each row as a `LogEvent`, derives the emission
-rate from the timestamp column the same way `csv_replay` does for metrics, and routes
-free-form columns into `LogEvent::fields`. See the [Log CSV Replay](log-files.md) guide
-for the end-to-end workflow.
+`sonda new --from <csv>` only handles metric series. If your CSV is a structured log export, for example a `timestamp,severity,message,trace_id` dump from Loki via `logcli`, use the `log_csv_replay` generator instead. It replays each row as a `LogEvent` and derives the emission rate from the timestamp column. Free-form columns become entries in `LogEvent::fields`. See the [Log CSV Replay](log-files.md) guide for the full workflow.

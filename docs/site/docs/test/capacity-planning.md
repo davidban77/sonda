@@ -1,29 +1,34 @@
-# Capacity Planning
+---
+title: Capacity planning
+description: Use Sonda to generate controlled high-volume load and find real ingestion and cardinality limits in your observability backend.
+---
 
-You need to answer "how big does my infrastructure need to be?" -- but you can't test at scale
-against production, and guessing leads to either over-provisioning (wasted money) or
-under-provisioning (3 AM pages). Sonda lets you generate controlled, high-volume synthetic load
-against your observability backend so you can measure real ingestion limits, find cardinality
-ceilings, and size your infrastructure with data instead of hope.
+# Capacity planning
+
+This page shows how to size an observability backend with measured data instead of guesses. You generate controlled synthetic load with Sonda, push it at the backend, and read the actual ingestion, cardinality, and resource limits.
+
+The page covers four tests:
+
+- Throughput limits — how many samples per second the pipeline accepts.
+- Cardinality limits — how many unique series before the index degrades.
+- Traffic spikes — whether the pipeline survives sudden 10x bursts.
+- Backend measurement — which TSDB metrics to record on every run.
 
 **What you need:**
 
-- Sonda installed ([Getting Started](../get-started/quickstart.md))
-- Docker with Compose v2 for backend testing (`docker compose`)
-- `curl` and `jq` for querying results
-
----
+- Sonda installed ([Getting Started](../get-started/quickstart.md)).
+- Docker with Compose v2 (`docker compose`).
+- `curl` and `jq` for querying results.
 
 ## Start the test backend
 
-All the scenarios in this guide push metrics to VictoriaMetrics. Start the included Docker
-Compose stack:
+Every scenario on this page pushes metrics to VictoriaMetrics. Start the included Docker Compose stack:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml up -d
 ```
 
-Wait for VictoriaMetrics to become healthy:
+Wait for VictoriaMetrics to report healthy:
 
 ```bash
 curl -s http://localhost:8428/health
@@ -31,35 +36,31 @@ curl -s http://localhost:8428/health
 ```
 
 !!! tip "Clean slate between tests"
-    Tear down and recreate the stack between test runs to avoid leftover data skewing results:
-    `docker compose -f examples/docker-compose-victoriametrics.yml down -v && docker compose -f examples/docker-compose-victoriametrics.yml up -d`
+    Recreate the stack between test runs so leftover data does not skew the results.
 
----
+    ```bash
+    docker compose -f examples/docker-compose-victoriametrics.yml down -v
+    docker compose -f examples/docker-compose-victoriametrics.yml up -d
+    ```
 
 ## Test throughput limits
 
-The first question in capacity planning: how many data points per second can your pipeline
-ingest before it falls behind? Sonda's `rate` field controls events per second per scenario,
-and multi-scenario files let you run several streams in parallel.
+The first question in capacity planning: how many samples per second can the pipeline accept before it falls behind? The `rate` field controls events per second per scenario. Multi-scenario files run several streams in parallel.
 
-### Smoke-check before scaling up
+### Smoke check before scaling up
 
-Before you push thousands of events per second at a backend, confirm Sonda generates at the
-target rate on your hardware. A 5-second stdout run is enough:
+Before you push thousands of events per second at a backend, confirm Sonda produces the target rate on your hardware. A 5-second stdout run is enough:
 
 ```bash
 sonda -q run examples/capacity-throughput-test.yaml --rate 1000 --duration 5s | wc -l
 # ~5000 lines
 ```
 
-If the line count roughly matches `rate * duration`, generation is keeping up. See
-[Pipeline Validation](end-to-end-pipelines.md) for the full smoke-test pattern with exit-code
-checks and CI snippets. The rest of this section assumes the smoke check passed.
+If the line count roughly matches `rate * duration`, generation keeps up. See [Pipeline Validation](end-to-end-pipelines.md) for the full smoke test pattern with exit-code checks and CI snippets. The rest of this section assumes the smoke check passed.
 
 ### Multi-stream throughput test
 
-This scenario runs 3 metric streams at 1,000 events/sec each -- 3,000 data points per second
-hitting VictoriaMetrics:
+This scenario runs 3 metric streams at 1,000 events per second each — 3,000 samples per second hitting VictoriaMetrics:
 
 ```bash
 sonda run examples/capacity-throughput-test.yaml
@@ -103,8 +104,7 @@ scenarios:
     # ... (sine generator, inherits rate/duration/sink from defaults)
 ```
 
-The full file contains all three scenarios with different generator shapes. Each runs on its
-own thread.
+The full file contains all three scenarios with different generator patterns. Each one runs on its own thread.
 
 After the run completes, verify all three metrics arrived:
 
@@ -114,10 +114,9 @@ curl -s "http://localhost:8428/api/v1/query?query=throughput_cpu_usage" | jq '.d
 curl -s "http://localhost:8428/api/v1/query?query=throughput_memory_bytes" | jq '.data.result | length'
 ```
 
-### Scale the test up
+### Increase the test rate
 
-To find your saturation point, increase the rate until you see ingestion errors or data loss.
-Override the rate from the CLI without editing the YAML:
+To find the saturation point, raise the rate until you see ingestion errors or data loss. Override the rate from the CLI without editing the YAML:
 
 ```bash
 # 5,000 events/sec on a single stream — uses the throughput-test scenario above
@@ -129,26 +128,16 @@ wc -l < /tmp/throughput-5k.txt
 # ~150000 lines
 ```
 
-!!! warning "Disk and network are usually the bottleneck"
-    Sonda can generate tens of thousands of events per second on modest hardware. The
-    limit is almost always on the receiving end -- network bandwidth, disk I/O on the TSDB,
-    or HTTP connection limits. Monitor your backend's resource usage during the test,
-    not just Sonda's output.
-
----
+!!! warning "Disk and network are usually the limit"
+    Sonda produces tens of thousands of events per second on modest hardware. The limit is almost always on the receiving end — network bandwidth, disk I/O on the TSDB, or HTTP connection limits. Monitor the backend's resource usage during the test, not only Sonda's output.
 
 ## Find cardinality limits
 
-High series cardinality (many unique label combinations) is the most common cause of TSDB
-performance degradation. Pod churn in Kubernetes, ephemeral containers, and misconfigured
-service discovery all create cardinality explosions. Sonda's `cardinality_spikes` feature
-lets you simulate these explosions in a controlled way.
+High series cardinality (many unique label combinations) is the most common cause of TSDB performance degradation. Pod churn in Kubernetes, ephemeral containers, and misconfigured service discovery all produce cardinality explosions. The `cardinality_spikes` field simulates them in a controlled way.
 
 ### How cardinality spikes work
 
-A cardinality spike injects a dynamic label with many unique values during a recurring time
-window. Outside the window, the label is absent (single series). During the window, each tick
-gets a different label value, creating `cardinality` unique series.
+A cardinality spike injects a dynamic label with many unique values during a recurring time window. Outside the window, the label is absent (one series). During the window, each tick uses a different label value, which produces `cardinality` unique series.
 
 ```
 Time ──────────────────────────────────────────────────────►
@@ -163,8 +152,7 @@ Time ─────────────────────────
 
 ### Run a cardinality stress test
 
-This scenario pushes two metrics with overlapping cardinality spikes -- 500 unique pod names
-and 200 unique endpoints:
+This scenario pushes two metrics with overlapping cardinality spikes — 500 unique pod names and 200 unique endpoints:
 
 ```bash
 sonda run examples/capacity-cardinality-stress.yaml
@@ -216,10 +204,9 @@ curl -s "http://localhost:8428/api/v1/series?match[]=http_requests_total" \
 # Expected: ~501 (1 baseline + 500 from spike)
 ```
 
-### Scale cardinality progressively
+### Increase cardinality progressively
 
-Run multiple tests with increasing cardinality to find where your TSDB starts struggling.
-Track query latency and memory usage at each level:
+Run multiple tests with rising cardinality to find where the TSDB starts to struggle. Track query latency and memory usage at each level:
 
 | Test | `cardinality` | Expected unique series | What to watch |
 |------|---------------|----------------------|---------------|
@@ -228,9 +215,12 @@ Track query latency and memory usage at each level:
 | High | 5,000 | ~5,001 | Query timeouts, ingestion backpressure |
 | Extreme | 10,000 | ~10,001 | OOM events, disk I/O saturation |
 
-The cardinality and spike window live in the scenario YAML. For a quick single-metric
-cardinality test, scaffold a minimal scenario with `sonda new --template`, replace the
-`generator:` block with `type: constant`, add a `cardinality_spikes:` clause, and run it:
+The cardinality and spike window are in the scenario YAML. For a quick single-metric cardinality test, follow these steps:
+
+- Generate a minimal scenario with `sonda new --template`.
+- Replace the `generator:` block with `type: constant`.
+- Add a `cardinality_spikes:` clause.
+- Run it:
 
 ```yaml title="cardinality-quick.yaml"
 version: 2
@@ -265,26 +255,15 @@ scenarios:
 sonda -q run cardinality-quick.yaml
 ```
 
-!!! info "Cardinality vs. throughput"
-    Cardinality and throughput stress different parts of your TSDB. High throughput stresses
-    the write path (WAL, network, CPU). High cardinality stresses the index (memory,
-    compaction, query planning). Test both dimensions independently, then together.
+!!! info "Cardinality versus throughput"
+    Cardinality and throughput test different parts of the TSDB. High throughput tests the write path (WAL, network, CPU). High cardinality tests the index (memory, compaction, query planning). Test both dimensions on their own first, then together.
 
-??? tip "Steady-state fleet simulation with dynamic labels"
-    Cardinality spikes are time-windowed -- ideal for testing label explosions that come and go.
-    If you want **always-on** cardinality (e.g., simulating a stable fleet of 50 hosts), use
-    `dynamic_labels` instead. The label is present on every event, producing a constant number
-    of series for the full duration. See
-    [Dynamic labels](../reference/scenario-fields.md#dynamic-labels) in the scenario field
-    reference.
-
----
+??? tip "Steady-state simulation with dynamic labels"
+    Cardinality spikes are time-windowed and are ideal for testing label explosions that come and go. If you want **always-on** cardinality (for example, a stable set of 50 hosts), use `dynamic_labels` instead. The label is present on every event, which produces a constant number of series for the full duration. See [Dynamic labels](../reference/scenario-fields.md#dynamic-labels) in the scenario field reference.
 
 ## Simulate traffic spikes with bursts
 
-Real traffic doesn't arrive at a steady rate. Black Friday, a viral post, or a cascading
-retry storm can spike your ingest rate by 10x in seconds. Sonda's `bursts` feature lets you
-simulate these spikes to test whether your pipeline handles sudden load without dropping data.
+Real traffic does not arrive at a steady rate. Black Friday, a viral post, or a retry storm can multiply the ingest rate by 10x in seconds. The `bursts` field simulates these spikes so you can test whether the pipeline handles sudden load without dropping data.
 
 ### How bursts work
 
@@ -304,7 +283,7 @@ Rate ──►
 
 ### Run a burst test
 
-This scenario runs at 500 events/sec with 10x bursts (5,000/sec) every 30 seconds:
+This scenario runs at 500 events per second with 10x bursts (5,000 per second) every 30 seconds:
 
 ```bash
 sonda run examples/capacity-burst-test.yaml
@@ -349,7 +328,7 @@ scenarios:
     # ... (sine generator, same burst config)
 ```
 
-After the run, verify that data arrived during both steady-state and burst windows:
+After the run, verify that data arrived during both the steady-state and burst windows:
 
 ```bash
 curl -s "http://localhost:8428/api/v1/query_range?\
@@ -358,9 +337,7 @@ query=burst_http_requests&start=$(date -v-3M +%s)&end=$(date +%s)&step=5s" \
 ```
 
 ??? tip "Combining bursts with cardinality spikes"
-    For a worst-case scenario, combine both features in a single metric. This simulates a
-    Kubernetes deployment rollout where pod churn (cardinality spike) and traffic ramp-up
-    (burst) happen simultaneously:
+    For a worst-case test, combine both fields in a single metric. This simulates a Kubernetes deployment rollout where pod churn (cardinality spike) and traffic increase (burst) happen at the same time:
 
     ```yaml
     name: worst_case_test
@@ -389,19 +366,15 @@ query=burst_http_requests&start=$(date -v-3M +%s)&end=$(date +%s)&step=5s" \
       type: stdout
     ```
 
-    During the 10-second overlap window, Sonda emits 1,000 events/sec (200 * 5) across
-    1,000 unique series. That's a sharp, realistic stress test.
-
----
+    During the 10-second overlap window, Sonda emits 1,000 events per second (200 * 5) across 1,000 unique series. That is a sharp, realistic test.
 
 ## Measure backend performance
 
-Generating load is only half the story. You need to measure how your backend responds
-to that load. Here are the key metrics to capture during each test run.
+Generating load is only half the work. You also need to measure how the backend responds. These are the key metrics to capture during every test run.
 
 ### VictoriaMetrics
 
-Query these after your test completes:
+Run these queries after the test completes:
 
 ```bash
 # Ingestion rate (rows/sec received)
@@ -419,7 +392,7 @@ query=process_resident_memory_bytes" | jq '.data.result[0].value[1]'
 
 ### Prometheus
 
-If you're testing against Prometheus instead, use these queries:
+If you test against Prometheus instead, use these queries:
 
 ```bash
 # Head series count (active cardinality)
@@ -437,22 +410,19 @@ query=prometheus_tsdb_wal_truncations_failed_total" | jq '.data.result[0].value[
 
 ### What to record
 
-Capture these metrics for each test run to build a sizing model:
+Capture these metrics for every test run. They build the sizing model:
 
 | Metric | Where to get it | Why it matters |
 |--------|----------------|----------------|
-| Ingestion rate (samples/sec) | TSDB internal metrics | Confirms actual vs. intended write rate |
+| Ingestion rate (samples/sec) | TSDB internal metrics | Confirms actual versus intended write rate |
 | Active time series | TSDB head series count | Tracks cardinality growth |
 | Memory usage | `process_resident_memory_bytes` | Cardinality scales linearly with RAM |
-| Disk growth rate | `du -sh` on TSDB data dir | Storage sizing for retention period |
+| Disk growth rate | `du -sh` on the TSDB data directory | Storage size for the retention period |
 | Query latency at load | Time a `count()` query | Detects index bloat from high cardinality |
-
----
 
 ## Calculate infrastructure sizing
 
-With test data from the previous sections, you can build a practical sizing model. The formula
-is straightforward:
+With test data from the previous sections, you can build a sizing model. The formula is direct:
 
 ### Storage estimate
 
@@ -465,24 +435,22 @@ Typical `bytes_per_sample` values (compressed, on disk):
 
 | Backend | Bytes per sample | Notes |
 |---------|-----------------|-------|
-| VictoriaMetrics | 0.4--1.0 | Aggressive compression; lower end for uniform data |
-| Prometheus | 1.0--2.0 | TSDB blocks with index overhead |
-| Thanos / Mimir | 1.5--3.0 | Includes object storage overhead |
+| VictoriaMetrics | 0.4–1.0 | Aggressive compression; lower end for uniform data |
+| Prometheus | 1.0–2.0 | TSDB blocks with index overhead |
+| Thanos / Mimir | 1.5–3.0 | Includes object storage overhead |
 
-**Example calculation:** You measured a sustained ingestion rate of 3,000 samples/sec during
-the throughput test.
+**Example calculation:** You measured a sustained ingestion rate of 3,000 samples per second during the throughput test.
 
 ```
 daily_storage  = 3,000 * 86,400 * 1.0 bytes = ~259 MB/day  (VictoriaMetrics)
 monthly_storage = 259 * 30 = ~7.8 GB/month
 ```
 
-With 90-day retention: **~23 GB of disk**.
+With 90-day retention: **about 23 GB of disk**.
 
 ### Memory estimate
 
-Cardinality is the primary driver of memory usage. From your cardinality stress tests, note
-the memory delta between the baseline and each spike level:
+Cardinality is the main driver of memory usage. From your cardinality stress tests, note the memory delta between the baseline and each spike level:
 
 ```bash
 # Measure memory before and after a cardinality test
@@ -498,52 +466,42 @@ AFTER=$(curl -s "http://localhost:8428/api/v1/query?query=process_resident_memor
 echo "Memory delta: $(( (AFTER - BEFORE) / 1024 / 1024 )) MB"
 ```
 
-A rough rule of thumb: plan for **1--4 KB of RAM per active time series**, depending on your
-backend and label complexity.
+A rough rule: plan for **1 to 4 KB of RAM per active time series**. The exact value depends on the backend and label complexity.
 
 ### Sizing checklist
 
-Run through this checklist for each environment you're sizing:
+Run through this checklist for each environment you size:
 
 | Dimension | Test scenario | Key measurement |
 |-----------|--------------|-----------------|
-| Peak throughput | `capacity-throughput-test.yaml` at increasing rates | Max sustained samples/sec before errors |
-| Cardinality ceiling | `capacity-cardinality-stress.yaml` at increasing cardinality | Max unique series before memory/query degradation |
+| Peak throughput | `capacity-throughput-test.yaml` at increasing rates | Maximum sustained samples/sec before errors |
+| Cardinality ceiling | `capacity-cardinality-stress.yaml` at increasing cardinality | Maximum unique series before memory or query degradation |
 | Burst headroom | `capacity-burst-test.yaml` with high multipliers | Whether data survives 10x spikes without loss |
-| Disk budget | Any scenario at target rate for 10+ minutes | Measured bytes/sample for storage projection |
-
----
+| Disk budget | Any scenario at the target rate for 10+ minutes | Measured bytes per sample for the storage projection |
 
 ## Performance baselines
 
-These tables show measured performance from actual benchmarks. They represent Sonda-side
-resource usage -- generation rates, memory, and encoder overhead -- not backend capacity.
+These tables show measured performance from benchmark runs. The numbers describe Sonda-side resource usage — generation rates, memory, and encoder size — not backend capacity.
 
 !!! info "Measured on Apple Silicon"
-    Benchmarks ran on macOS with Apple Silicon, Sonda v0.8.0 release build, file sink, single
-    thread per scenario. Your numbers will vary by hardware and sink type, but the key takeaway
-    holds: Sonda generates millions of events per second on a single core with a flat ~7.5 MB
-    memory footprint. Use the [throughput](#test-throughput-limits) and
-    [cardinality](#find-cardinality-limits) tests above to measure your own environment.
+    Benchmarks ran on macOS with Apple Silicon, Sonda v0.8.0 release build, file sink, one thread per scenario. Your numbers vary by hardware and sink type. The conclusion holds: Sonda produces millions of events per second on a single core with a flat ~7.5 MB memory footprint. Use the [throughput](#test-throughput-limits) and [cardinality](#find-cardinality-limits) tests above to measure your own environment.
 
 ### Generator throughput
 
-Single CPU core, `prometheus_text` encoder, file sink:
+One CPU core, `prometheus_text` encoder, file sink:
 
 | Generator | Events/sec | Notes |
 |-----------|-----------|-------|
 | `constant` | ~7,200,000 | Minimal computation per event |
-| `csv_replay` | ~6,200,000 | Values pre-loaded into memory, cycles through them |
-| `sawtooth` | ~5,800,000 | Simple linear ramp calculation |
+| `csv_replay` | ~6,200,000 | Values pre-loaded into memory, cycled through |
+| `sawtooth` | ~5,800,000 | Simple linear calculation |
 | `uniform` | ~5,700,000 | RNG evaluation per event |
 | `sine` | ~5,400,000 | Trigonometric calculation per event |
 | `histogram` | ~257,000 ticks/sec | Each tick emits 14 lines (12 buckets + count + sum) |
 | `summary` | ~349,000 ticks/sec | Each tick emits 6 lines (4 quantiles + count + sum) |
 
 !!! tip "Histogram and summary throughput"
-    These generators are measured in ticks/sec because each tick produces multiple output lines.
-    In terms of raw line throughput, histogram produces ~3.6M lines/sec and summary ~2.1M
-    lines/sec.
+    These generators are measured in ticks per second because each tick produces multiple output lines. In raw line throughput, histogram produces about 3.6M lines per second and summary about 2.1M lines per second.
 
 ### Encoder bytes per event
 
@@ -558,37 +516,30 @@ Measured with 3 labels (`job`, `instance`, `env`), a typical metric name, and a 
 | `json_lines` | ~136 | JSON overhead from keys and quoting |
 
 !!! note
-    `remote_write` and `otlp` bytes measured via file sink. Over-the-wire size with network
-    sinks may differ due to batching and compression. Actual size also varies with metric name
-    length, number of labels, and value precision.
+    `remote_write` and `otlp` bytes are measured via the file sink. The over-the-wire size with network sinks may differ because of batching and compression. The size also varies with metric name length, number of labels, and value precision.
 
 ### Memory footprint
 
-Sonda does not store per-series state -- it generates events on the fly. Memory is essentially
-flat regardless of cardinality:
+Sonda does not store per-series state. It generates events on the fly. Memory is essentially flat regardless of cardinality:
 
 | Scenario | RSS |
 |----------|-----|
 | Single metric, any cardinality (100 to 50,000 series) | ~7.5 MB |
 | 5 concurrent scenarios, 25,000 total events/sec | ~7.5 MB |
 
-Memory is driven by the number of concurrent scenarios and sink buffering, not by series
-cardinality.
+Memory is driven by the number of concurrent scenarios and sink buffering, not by series cardinality.
 
 ### Kubernetes resource recommendations
 
-Sonda's low resource footprint means you can run it almost anywhere. Suggested resource
-requests for Sonda pods:
+Sonda's low resource footprint means you can run it almost anywhere. Suggested resource requests for Sonda pods:
 
 | Profile | Event rate | CPU request | Memory request | Use case |
 |---------|-----------|-------------|----------------|----------|
 | Small | up to 1,000/sec | 50m | 32 Mi | Development, CI pipeline checks |
-| Medium | 1,000--100,000/sec | 100m | 64 Mi | Integration testing, alert validation |
-| Large | 100,000--1,000,000+/sec | 250m | 128 Mi | Load testing, capacity planning |
+| Medium | 1,000–100,000/sec | 100m | 64 Mi | Integration testing, alert validation |
+| Large | 100,000–1,000,000+/sec | 250m | 128 Mi | Load testing, capacity planning |
 
-Set resource limits 2x above requests to accommodate bursts.
-
----
+Set resource limits to 2x the requests to absorb bursts.
 
 ## Quick reference
 
@@ -602,11 +553,11 @@ Set resource limits 2x above requests to accommodate bursts.
 | Count series in VM | `curl -s "http://localhost:8428/api/v1/series?match[]=<metric>" \| jq '.data \| length'` |
 | Tear down | `docker compose -f examples/docker-compose-victoriametrics.yml down -v` |
 
-**Related pages:**
+## Related pages
 
-- [Scenario Fields](../reference/scenario-fields.md) -- cardinality_spikes, bursts, and rate reference
-- [Sinks](../build/sinks.md) -- http_push configuration for backend targets
-- [E2E Testing](end-to-end-pipelines.md) -- full Docker Compose test suite
-- [Pipeline Validation](end-to-end-pipelines.md) -- quick smoke tests without Docker
-- [Example Scenarios](examples.md) -- all example scenario files
-- [Troubleshooting](../reference/troubleshooting.md) -- common issues and how to fix them
+- [Scenario Fields](../reference/scenario-fields.md) — reference for `cardinality_spikes`, `bursts`, and `rate`.
+- [Sinks](../build/sinks.md) — `http_push` configuration for backend targets.
+- [E2E Testing](end-to-end-pipelines.md) — full Docker Compose test suite.
+- [Pipeline Validation](end-to-end-pipelines.md) — quick smoke tests without Docker.
+- [Example Scenarios](examples.md) — all example scenario files.
+- [Troubleshooting](../reference/troubleshooting.md) — common issues and how to fix them.

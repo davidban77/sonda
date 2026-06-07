@@ -1,12 +1,14 @@
 # Log CSV Replay
 
-You captured a real log stream from production -- maybe a 10-minute window around an incident, exported out of Loki with `logcli` -- and you want to feed those exact log lines back through your pipeline. Same severities, same fields, same inter-arrival timing. `log_csv_replay` is the log-side counterpart of [`csv_replay` for metrics](grafana-exports.md): point it at a structured CSV, and Sonda replays each row as a `LogEvent` at the cadence recorded in the file.
+This page covers `log_csv_replay`. You point it at a structured CSV, and Sonda replays each row as a `LogEvent` at the cadence recorded in the file. It is the log-side counterpart of [`csv_replay` for metrics](grafana-exports.md).
 
-The replay rate is derived from the CSV's `timestamp` column -- the `rate:` you set in YAML is ignored. A 10-minute window in the CSV plays back over 10 minutes of wall clock without any manual rate tuning.
+A common case: you captured a 10-minute window around an incident from Loki with `logcli`. You want to send the same lines back through your pipeline with the same severities, fields, and timing.
+
+The replay rate is derived from the CSV's `timestamp` column. The `rate:` you set in YAML is ignored. A 10-minute window in the CSV replays over 10 minutes of wall clock time with no manual rate tuning.
 
 ---
 
-## CSV shape
+## CSV format
 
 `log_csv_replay` expects a CSV with three semantic columns plus any number of free-form field columns:
 
@@ -21,20 +23,20 @@ timestamp,severity,message,user_id
 
 | Column | Role | Required | Behavior |
 |--------|------|----------|----------|
-| `timestamp` | Drives the replay rate via median Δt | yes | Epoch seconds (or epoch milliseconds when value > 1e12). |
+| `timestamp` | Drives the replay rate via median Δt | yes | Epoch seconds, or epoch milliseconds when the value is greater than 1e12. |
 | `severity` | Maps to `LogEvent::severity` | no | Falls back to `default_severity` when missing or unparseable. |
-| `message` | Maps to `LogEvent::message` | no | Empty cell becomes empty string. |
-| everything else | Becomes an entry in `LogEvent::fields` | no | Column name = field key. Empty cells are omitted. |
+| `message` | Maps to `LogEvent::message` | no | An empty cell becomes an empty string. |
+| everything else | Becomes an entry in `LogEvent::fields` | no | The column name is the field key. Empty cells are omitted. |
 
-Sonda auto-discovers each role from the header row (case-insensitive). The aliases below are matched in order:
+Sonda detects each role from the header row, case-insensitive. The aliases below are matched in order:
 
 - `timestamp` / `ts` / `time` → timestamp role
 - `severity` / `level` → severity role
 - `message` / `msg` / `log` → message role
 
-Any header that does not match one of those becomes a free-form field column. So `user_id`, `trace_id`, `pod` -- whatever your structured log shipped -- comes through as a `fields` entry on every emitted event.
+Any header that does not match one of these becomes a free-form field column. Headers like `user_id`, `trace_id`, or `pod` are written as a `fields` entry on every emitted event.
 
-When the header names don't match the conventions, use [explicit `columns:`](#explicit-column-mapping) to point Sonda at the right columns by name.
+When the header names don't match the conventions, use [explicit `columns:`](#explicit-column-mapping) to map Sonda to the right columns by name.
 
 ---
 
@@ -72,19 +74,19 @@ sonda -q run examples/log-csv-replay.yaml --duration 11s
 {"timestamp":"2026-05-15T18:37:55.791Z","severity":"warn","message":"GET /api/v1/users returned 200 with high latency","labels":{},"fields":{"user_id":"u-91"}}
 ```
 
-The CSV has a 3-second step between timestamps, so Sonda derives `rate = 1 / 3 ≈ 0.333 events/s` and emits one event every three seconds. The `rate: 1` in YAML is replaced -- with a `tracing::warn!` recording the override:
+The CSV has a 3-second step between timestamps. Sonda derives `rate = 1 / 3 ≈ 0.333 events/s` and emits one event every three seconds. The `rate: 1` in YAML is replaced. A `tracing::warn!` records the override:
 
 ```text title="Override warning on stderr"
 WARN log_csv_replay 'app_logs_csv_replay': overriding rate=1 with derived rate=0.3333333333333333 samples/s (CSV Δt=3s, timescale=1)
 ```
 
-The `timestamp` field on each emitted event is the wall-clock time at emission, not the CSV row's timestamp. The CSV column is only used to derive the cadence; severity, message, and field values are taken verbatim.
+The `timestamp` field on each emitted event is the wall-clock time at emission, not the CSV row's timestamp. The CSV column is only used to derive the cadence. Severity, message, and field values are taken from the CSV without changes.
 
 ---
 
 ## CSV-derived rate overrides YAML `rate:`
 
-`log_csv_replay` behaves like the metrics-side `csv_replay`: the scenario's `rate:` is always replaced by `timescale / median_delta_t`, where `median_delta_t` is the median interval between consecutive timestamps in the `timestamp` column. Setting `rate:` in YAML has no effect on emission cadence.
+`log_csv_replay` behaves like the metrics-side `csv_replay`. The scenario's `rate:` is always replaced by `timescale / median_delta_t`. The value `median_delta_t` is the median interval between consecutive timestamps in the `timestamp` column. Setting `rate:` in YAML has no effect on emission cadence.
 
 ```yaml title="Speed up a 10-minute log window into 1 minute"
 scenarios:
@@ -100,15 +102,15 @@ scenarios:
 `timescale` must be a positive finite number (`> 0`). The default is `1.0`.
 
 !!! info "How the derivation works"
-    Sonda reads the timestamp column for up to 100 data rows, parses each cell as a number, and computes the median of consecutive differences. Values larger than `1e12` are treated as epoch milliseconds; smaller values are treated as epoch seconds. The derived rate is `timescale / median_delta`. Run `sonda --verbose --dry-run` to confirm the value, or inspect the startup banner.
+    Sonda reads the timestamp column for up to 100 data rows. It parses each cell as a number and computes the median of consecutive differences. Values larger than `1e12` are read as epoch milliseconds. Smaller values are read as epoch seconds. The derived rate is `timescale / median_delta`. Run `sonda --verbose --dry-run` to confirm the value, or check the startup banner.
 
 ---
 
 ## Pulling a CSV out of Loki with `logcli`
 
-The typical workflow: you have a real log stream living in Loki, and you want to extract a window of it as a CSV that `log_csv_replay` can consume.
+A typical workflow: you have a real log stream in Loki. You want to extract a window of it as a CSV that `log_csv_replay` can read.
 
-Loki's official CLI `logcli` produces JSON output by default. The shape you want for `log_csv_replay` is `timestamp,severity,message,...fields`. The conversion is a small `jq` pipeline.
+Loki's official CLI `logcli` produces JSON output by default. The format you want for `log_csv_replay` is `timestamp,severity,message,...fields`. The conversion is a small `jq` pipeline.
 
 ### Step 1: query the window from Loki
 
@@ -120,7 +122,7 @@ logcli query \
   '{app="api-gateway"}' > raw-logs.jsonl
 ```
 
-Each line is one log entry with shape:
+Each line is one log entry:
 
 ```json
 {"timestamp":"2026-05-12T14:00:00.123Z","labels":{"app":"api-gateway","level":"info","pod":"api-7c4f9"},"line":"GET /api/v1/health returned 200"}
@@ -128,7 +130,7 @@ Each line is one log entry with shape:
 
 ### Step 2: project the columns you need
 
-Use `jq` to flatten each entry into a CSV row. The `timestamp` comes from the entry timestamp; `severity` comes out of the labels; `message` is the `line`; everything else you care about becomes a field column.
+Use `jq` to flatten each entry into a CSV row. The `timestamp` comes from the entry timestamp. The `severity` comes from the labels. The `message` is `line`. Other values become field columns.
 
 ```bash
 jq -r '
@@ -185,16 +187,16 @@ scenarios:
 sonda run loki-replay.yaml
 ```
 
-Sonda derives the replay rate from the timestamps in `incident.csv` -- a 10-minute window plays back over 10 minutes -- and ships each event to Loki tagged with `source="replay"`, so you can query the originals and the replay side-by-side.
+Sonda derives the replay rate from the timestamps in `incident.csv`. A 10-minute window replays over 10 minutes. Each event is sent to Loki tagged with `source="replay"`, so you can query the originals and the replay side by side.
 
 !!! tip "Add a tag label, not a CSV column"
-    Use the sink's `labels:` block to add `source=replay` (or `run_id=...`) to every event. Putting that in the CSV would create a redundant `LogEvent.fields` entry on every row.
+    Use the sink's `labels:` block to add `source=replay` or `run_id=...` to every event. Adding the value in the CSV would create a redundant `LogEvent.fields` entry on every row.
 
 ---
 
 ## Explicit column mapping
 
-When the CSV header uses names that don't match the auto-discovery aliases -- `ts` instead of `timestamp`, `sev` instead of `severity`, `text` instead of `message` -- declare them explicitly with `columns:`.
+When the CSV header uses names that don't match the auto-discovery aliases, declare them with `columns:`. Examples: `ts` instead of `timestamp`, `sev` instead of `severity`, `text` instead of `message`.
 
 ```yaml title="Explicit column mapping"
 scenarios:
@@ -209,7 +211,7 @@ scenarios:
         message: text
 ```
 
-Explicit `columns:` overrides auto-discovery. Any column not listed (and not auto-matched) becomes a field column.
+Explicit `columns:` overrides auto-discovery. Any column not listed and not auto-matched becomes a field column.
 
 ---
 
@@ -217,28 +219,28 @@ Explicit `columns:` overrides auto-discovery. Any column not listed (and not aut
 
 | Error message | Cause | Fix |
 |---------------|-------|-----|
-| `csv_replay: file "..." has fewer than 2 data rows; cannot derive replay rate` | The CSV only has a header and zero or one data rows. | At least two data rows are required to measure the sample interval. Export a wider window. |
+| `csv_replay: file "..." has fewer than 2 data rows; cannot derive replay rate` | The CSV only has a header and zero or one data rows. | At least two data rows are needed to measure the sample interval. Export a wider window. |
 | `csv_replay: non-monotonic timestamps in "..." (row N value X <= previous Y)` | A timestamp goes backward or repeats. Common with concatenated exports or paused recordings. | Sort the CSV by timestamp, deduplicate, or split it at the discontinuity. |
 | `csv_replay: 'timescale' must be a positive finite number, got 0` | `timescale: 0`, a negative value, or `NaN` / `Inf`. | Set `timescale` to a positive number, or remove it to use the default `1.0`. |
 | `log_csv_replay: CSV content is empty` | The file is empty or contains only comments. | Re-export the window with actual data rows. |
-| `log_csv_replay: column "X" not found in CSV header` | An explicit `columns:` mapping references a header name that doesn't exist. | Check the header row of the CSV; column name matching is case-insensitive. |
+| `log_csv_replay: column "X" not found in CSV header` | An explicit `columns:` mapping references a header name that does not exist. | Check the header row of the CSV. Column name matching is case-insensitive. |
 
 ### Severity fallback (soft-fail)
 
-When a row's severity cell is empty or contains an unrecognized value like `bogus`, Sonda does **not** error. Instead, the row falls back to `default_severity` (default: `Info`). At expand time, Sonda emits one summary warn line counting how many rows used the fallback:
+When a row's severity cell is empty or contains an unrecognised value like `bogus`, Sonda does **not** error. Instead, the row falls back to `default_severity`, which is `Info` by default. At expand time, Sonda emits one summary warn line counting how many rows used the fallback:
 
 ```text
 WARN log_csv_replay 'incident_replay': 7 row(s) used default_severity due to missing or unparseable severity values
 ```
 
-This is a per-scenario summary, not per-event. If the fallback count is high relative to the row count, double-check the severity column in your CSV -- typos in custom severity values often surface this way.
+This is a per-scenario summary, not per-event. If the fallback count is high relative to the row count, check the severity column in your CSV. Typos in custom severity values often appear this way.
 
 Valid severity strings: `trace`, `debug`, `info`, `warn` (or `warning`), `error`, `fatal`. Case-insensitive.
 
 ### Empty messages and fields
 
-- An empty `message` cell produces an empty string in the emitted event -- not an error.
-- An empty field cell is **omitted** from the row's `fields` map. A row with `user_id,,trace_id=abc` produces `{"trace_id":"abc"}` -- no `user_id` key at all, rather than `{"user_id":""}`.
+- An empty `message` cell produces an empty string in the emitted event. It is not an error.
+- An empty field cell is **omitted** from the row's `fields` map. A row with `user_id,,trace_id=abc` produces `{"trace_id":"abc"}`, with no `user_id` key, rather than `{"user_id":""}`.
 
 ---
 
@@ -259,14 +261,14 @@ log_generator:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `file` | string | yes | -- | Path to the CSV file (relative to the working directory where you run `sonda`). |
-| `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` plays 2x faster, `0.5` plays 2x slower. Must be strictly positive. |
+| `file` | string | yes | -- | Path to the CSV file, relative to the working directory where you run `sonda`. |
+| `timescale` | float | no | `1.0` | Replay speed multiplier. `2.0` is 2x faster, `0.5` is 2x slower. Must be strictly positive. |
 | `default_severity` | string | no | `info` | Fallback severity when the severity column is missing, empty, or unparseable. One of `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
-| `repeat` | boolean | no | `true` | When true, cycles back to the start of the CSV. When false, holds the last row for all subsequent ticks. |
-| `columns` | object | no | auto-discover | Explicit name-based column mapping. Sub-fields: `timestamp`, `severity`, `message`. Any column not named here (and not auto-matched) becomes a field column. |
+| `repeat` | boolean | no | `true` | When true, cycles back to the start of the CSV. When false, holds the last row for all later ticks. |
+| `columns` | object | no | auto-discover | Explicit name-based column mapping. Sub-fields: `timestamp`, `severity`, `message`. Any column not named here and not auto-matched becomes a field column. |
 
-!!! note "The scenario's `rate:` is always overridden"
-    For `log_csv_replay`, `rate:` is computed from the CSV's `timestamp` column and `timescale`. Any value you set in YAML is replaced. Run `sonda --verbose --dry-run` to confirm the derived rate, or inspect the startup banner.
+!!! note "The scenario's `rate:` is always replaced"
+    For `log_csv_replay`, `rate:` is computed from the CSV's `timestamp` column and `timescale`. Any value you set in YAML is replaced. Run `sonda --verbose --dry-run` to confirm the derived rate, or check the startup banner.
 
 For the full generator reference, see [Generators: log csv_replay](../build/generators.md#csv_replay_1). For the metrics-side workflow, see [Grafana CSV Replay](grafana-exports.md).
 
@@ -274,13 +276,13 @@ For the full generator reference, see [Generators: log csv_replay](../build/gene
 
 ## Coming from `type: replay`?
 
-Earlier versions shipped a `type: replay` log generator that cycled lines from a plain text file at a hand-tuned `rate:`. It hardcoded severity to `Info`, had no field support, and ignored timestamps entirely. **It has been removed.**
+Earlier versions included a `type: replay` log generator that cycled lines from a plain text file at a hand-tuned `rate:`. It hardcoded severity to `Info`, had no field support, and ignored timestamps. **It has been removed.**
 
 If you have an existing YAML that uses `type: replay`, the migration is:
 
-1. Convert your text log file into a CSV with at least a `timestamp` column. The simplest possible CSV is `timestamp,message` with synthetic timestamps spaced at your old replay rate (e.g. 200ms apart for `rate: 5`).
+1. Convert your text log file into a CSV with at least a `timestamp` column. The simplest CSV is `timestamp,message` with synthetic timestamps spaced at your old replay rate. For example, 200ms apart for `rate: 5`.
 2. Change `type: replay` to `type: csv_replay`.
-3. Drop the YAML `rate:` -- it's derived from the CSV now.
+3. Remove the YAML `rate:`. The rate is derived from the CSV now.
 
 ```yaml title="Before (no longer works)"
 log_generator:
@@ -295,4 +297,4 @@ log_generator:
   default_severity: info
 ```
 
-If your source data is genuinely unstructured text and you cannot convert it to CSV, the raw-file replay capability is planned in a separate `sonda-integrations` adapter. Track [issue #347](https://github.com/davidban77/sonda/issues/347) for status.
+If your source data is unstructured text and you cannot convert it to CSV, raw-file replay is planned. It will live in a separate `sonda-integrations` adapter. Track [issue #347](https://github.com/davidban77/sonda/issues/347) for status.

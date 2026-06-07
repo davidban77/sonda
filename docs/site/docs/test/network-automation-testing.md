@@ -1,26 +1,25 @@
-# Network Automation Testing
+---
+title: Network automation testing
+description: Use Sonda to generate synthetic network alerts and verify that an automation engine (Ansible EDA, Prefect, or StackStorm) triggers the right workflow.
+---
 
-Your automation runbook says "when InterfaceDown fires, run the remediation playbook." But have
-you ever tested that end-to-end? Most teams discover broken automation wiring during a real
-outage -- the worst possible time. This guide shows you how to use Sonda to generate synthetic
-network alerts and verify that your automation engine (Ansible EDA, Prefect, or StackStorm)
-actually triggers the right workflow.
+# Network automation testing
+
+This page shows how to verify that a network automation runbook actually runs when an alert fires. You generate synthetic interface and BGP telemetry with Sonda, trigger the alert, and confirm that Ansible EDA, Prefect, or StackStorm executes the matching workflow.
+
+Most teams discover broken automation wiring during a real outage, which is the worst possible time. The scenarios on this page let you test the wiring without waiting for a real failure.
 
 **What you need:**
 
-- The [Alerting Pipeline](end-to-end-pipelines.md) stack running (Sonda, VictoriaMetrics, vmalert, Alertmanager)
-- Familiarity with the [Network Device Telemetry](network-device-telemetry.md) scenarios
-- An automation engine installed (Ansible EDA, Prefect, or StackStorm)
-- `curl` and `jq` in PATH
+- The [Alerting Pipeline](end-to-end-pipelines.md) stack running (Sonda, VictoriaMetrics, vmalert, Alertmanager).
+- Familiarity with the [Network Device Telemetry](network-device-telemetry.md) scenarios.
+- An automation engine installed (Ansible EDA, Prefect, or StackStorm).
+- `curl` and `jq` in PATH.
 
 !!! tip "Build on what exists"
-    This guide picks up where the alerting pipeline's webhook delivery stops. If you haven't
-    run through the [Alerting Pipeline](end-to-end-pipelines.md) guide yet, start there -- it
-    covers the Sonda to VictoriaMetrics to Alertmanager chain in detail.
+    This page extends the alerting pipeline guide. If you have not run through the [Alerting Pipeline](end-to-end-pipelines.md) guide yet, start there. It covers the Sonda to VictoriaMetrics to Alertmanager chain in detail.
 
----
-
-## The end-to-end picture
+## The full path
 
 ```
 sonda CLI       VictoriaMetrics    vmalert        Alertmanager     Automation Engine
@@ -34,14 +33,11 @@ sonda CLI       VictoriaMetrics    vmalert        Alertmanager     Automation En
  |                 |                 |                |     trigger runbook
 ```
 
-The first four hops are already covered by the alerting pipeline guide. This guide focuses on
-the last hop: receiving the Alertmanager webhook and triggering an automation workflow.
-
----
+The first four hops are covered by the alerting pipeline guide. This page covers the last hop: receiving the Alertmanager webhook and triggering an automation workflow.
 
 ## Start the alerting stack
 
-If the stack is not already running, bring it up with the alerting profile:
+If the stack is not already running, start it with the alerting profile:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml \
@@ -55,16 +51,11 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
   --profile alerting ps
 ```
 
-See the [Alerting Pipeline](end-to-end-pipelines.md#start-the-stack) guide for the full service
-table and troubleshooting.
-
----
+See the [Alerting Pipeline](end-to-end-pipelines.md#start-the-stack) guide for the full service table and troubleshooting.
 
 ## Alert rules for automation testing
 
-The network device telemetry guide includes alert rules with production-style `for:` durations
-(30 seconds to 5 minutes). For automation testing, you want alerts to fire quickly so you get
-fast feedback on your wiring.
+The network device telemetry guide uses alert rules with production-style `for:` durations (30 seconds to 5 minutes). For automation testing, you want alerts to fire quickly so you get fast feedback on the wiring.
 
 ```yaml title="examples/network-automation-alerts.yaml"
 groups:
@@ -98,12 +89,9 @@ groups:
           runbook_url: "https://runbooks.example.com/network/bgp-session-down"
 ```
 
-The `automation: "true"` label lets you route only automation-eligible alerts to your engine,
-keeping human-notification routes separate. The short `for: 10s` duration means alerts fire
-within 15 seconds (one evaluation interval plus the pending duration).
+The `automation: "true"` label lets you route only automation-eligible alerts to your engine, separating them from human-notification routes. The short `for: 10s` duration means alerts fire within 15 seconds (one evaluation interval plus the pending duration).
 
-To use these rules with the Docker Compose stack, mount them into vmalert alongside (or instead
-of) the default rules:
+To use these rules with the Docker Compose stack, mount them into vmalert alongside or instead of the default rules:
 
 ```bash
 docker compose -f examples/docker-compose-victoriametrics.yml \
@@ -118,21 +106,13 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 ```
 
 !!! info "Why copy the file?"
-    The vmalert service mounts `examples/alertmanager/alert-rules.yml` and evaluates
-    `--rule=/rules/*.yml`. Placing your file in the same directory makes it available
-    to vmalert without modifying `docker-compose-victoriametrics.yml`.
-
----
+    The vmalert service mounts `examples/alertmanager/alert-rules.yml` and evaluates `--rule=/rules/*.yml`. Placing your file in the same directory makes it available to vmalert without modifying `docker-compose-victoriametrics.yml`.
 
 ## Push metrics that trigger alerts
 
-The built-in `link-failover` scenario generates `interface_oper_state` transitions that
-trigger InterfaceDown. To also trigger BGPSessionDown, you need a BGP metric.
+The built-in `link-failover` scenario produces `interface_oper_state` transitions that trigger `InterfaceDown`. To also trigger `BGPSessionDown`, you need a BGP metric.
 
-The failover scenario models an edge router primary link flap (60s up / 30s down, cycling) with
-a backup link that saturates after the primary drops. The first flap crosses `interface_oper_state
-== 0` at the one-minute mark, which is plenty to trigger the `for: 10s` rule. For BGP, add a
-quick one-liner:
+The failover scenario models an edge router primary link flap (60s up, 30s down, cycling). The backup link saturates after the primary drops. The first flap crosses `interface_oper_state == 0` at the one-minute mark, which is enough to trigger the `for: 10s` rule. For BGP, add a one-liner scenario:
 
 ```bash
 # Terminal 1: run the link-failure scenario from examples/
@@ -140,11 +120,7 @@ sonda run examples/network-link-failure.yaml
 ```
 
 !!! warning "Sink must target VictoriaMetrics"
-    The example scenarios default to `stdout`. To push to VictoriaMetrics, change the sink
-    in each scenario entry to `http_push` as shown in the
-    [Network Device Telemetry](network-device-telemetry.md#push-to-a-monitoring-backend) guide.
-    For a quick single-metric test, scaffold a minimal scenario with `sonda new --template`,
-    swap the sink for `http_push`, then run it with `sonda run your-file.yaml`.
+    The example scenarios default to `stdout`. To push to VictoriaMetrics, change the sink in each scenario entry to `http_push`. The [Network Device Telemetry](network-device-telemetry.md#push-to-a-monitoring-backend) guide shows the change. For a quick single-metric test, generate a minimal scenario with `sonda new --template`, change the sink to `http_push`, then run `sonda run your-file.yaml`.
 
 Verify the alert fired in vmalert:
 
@@ -160,12 +136,9 @@ curl -s http://localhost:9093/api/v2/alerts \
   | jq '.[] | select(.labels.alertname == "InterfaceDown") | .labels'
 ```
 
----
+## Connect the webhook to your automation engine
 
-## Wire the webhook to your automation engine
-
-Alertmanager delivers alerts as HTTP POST requests with a JSON payload. Your automation engine
-needs an endpoint that receives these webhooks and triggers the appropriate workflow.
+Alertmanager delivers alerts as HTTP POST requests with a JSON payload. Your automation engine needs an endpoint that receives these webhooks and triggers the matching workflow.
 
 Here is the Alertmanager webhook payload structure (simplified):
 
@@ -197,9 +170,7 @@ Each automation engine consumes this payload differently. Choose your engine bel
 
 === "Ansible EDA"
 
-    [Ansible Event-Driven Automation](https://www.ansible.com/products/event-driven-automation)
-    uses rulebooks that map event sources to actions. The `alertmanager` event source plugin
-    listens for webhook POST requests from Alertmanager.
+    [Ansible Event-Driven Automation](https://www.ansible.com/products/event-driven-automation) uses rulebooks that map event sources to actions. The `alertmanager` event source plugin listens for webhook POST requests from Alertmanager.
 
     **Rulebook:**
 
@@ -251,14 +222,11 @@ Each automation engine consumes this payload differently. Choose your engine bel
     ansible-rulebook --rulebook rulebook-interface-down.yml -i inventory.yml
     ```
 
-    When InterfaceDown fires, EDA receives the webhook, matches the condition, and runs
-    `playbooks/remediate-interface.yml` with the device and interface as extra vars.
+    When `InterfaceDown` fires, EDA receives the webhook, matches the condition, and runs `playbooks/remediate-interface.yml` with the device and interface as extra vars.
 
 === "Prefect"
 
-    [Prefect](https://www.prefect.io/) can receive webhooks through
-    [Prefect webhooks](https://docs.prefect.io/latest/automate/events/webhook-triggers/) that
-    trigger flow runs. Create a webhook endpoint that maps Alertmanager payloads to Prefect events.
+    [Prefect](https://www.prefect.io/) can receive webhooks through [Prefect webhooks](https://docs.prefect.io/latest/automate/events/webhook-triggers/) that trigger flow runs. Create a webhook endpoint that maps Alertmanager payloads to Prefect events.
 
     **Flow definition:**
 
@@ -277,7 +245,7 @@ Each automation engine consumes this payload differently. Choose your engine bel
         logger.info(f"Remediation complete for {interface} on {device}")
     ```
 
-    **Webhook receiver** (a small FastAPI app that bridges Alertmanager to Prefect):
+    **Webhook receiver** (a small FastAPI app that connects Alertmanager to Prefect):
 
     ```python title="webhook_receiver.py"
     from fastapi import FastAPI, Request
@@ -302,8 +270,7 @@ Each automation engine consumes this payload differently. Choose your engine bel
 
 === "StackStorm"
 
-    [StackStorm](https://stackstorm.com/) uses sensors and rules to map events to actions.
-    The `stackstorm-alertmanager` pack provides a webhook sensor for Alertmanager.
+    [StackStorm](https://stackstorm.com/) uses sensors and rules to map events to actions. The `stackstorm-alertmanager` pack provides a webhook sensor for Alertmanager.
 
     **Rule definition:**
 
@@ -343,19 +310,16 @@ Each automation engine consumes this payload differently. Choose your engine bel
             send_resolved: true
     ```
 
-    Register the rule and verify it's active:
+    Register the rule and verify it is active:
 
     ```bash
     st2 rule create rules/remediate_interface_down.yaml
     st2 rule list --pack=network_automation
     ```
 
----
-
 ## Verify the automation triggers
 
-With the alerting stack running and your automation engine wired up, push metrics and watch the
-full chain execute.
+With the alerting stack running and the automation engine connected, push metrics and watch the full chain execute.
 
 ### Step-by-step verification
 
@@ -387,8 +351,7 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
   --profile alerting logs webhook-receiver --tail 20
 ```
 
-**5. Confirm your automation engine received the event and ran the workflow.** This step
-depends on your engine:
+**5. Confirm the automation engine received the event and ran the workflow.** This step depends on the engine:
 
 === "Ansible EDA"
 
@@ -406,7 +369,7 @@ depends on your engine:
     prefect flow-run ls --flow-name "remediate-interface-down"
     ```
 
-    Verify the flow run completed successfully with the correct device and interface parameters.
+    Verify the flow run completed with the correct device and interface parameters.
 
 === "StackStorm"
 
@@ -415,22 +378,17 @@ depends on your engine:
     st2 execution list --action=network_automation.remediate_interface
     ```
 
-    Verify the execution completed with `status: succeeded`.
+    Verify the execution finished with `status: succeeded`.
 
----
+## Test flap handling
 
-## Test flap detection
+A single interface-down event is the easy case. The harder case is rapid alternation between firing and resolved — an interface that bounces up and down repeatedly. The automation needs to handle this without triggering a remediation storm.
 
-A single interface-down event is the easy case. The harder scenario is flapping -- an interface
-that bounces up and down repeatedly. Your automation needs to handle this without triggering
-a remediation storm.
+### What rapid alternation looks like
 
-### What flapping looks like
+The `link-failover` scenario's `flap` generator produces a simple pattern: 60s up, 30s down, cycling for the duration. Real flaps are faster and less predictable.
 
-The `link-failover` scenario's `flap` generator already produces a simple flap pattern: 60s up,
-30s down, cycling for the scenario duration. But real flaps are faster and less predictable.
-
-Here is a rapid-flap sequence that toggles every 2--3 seconds:
+Here is a rapid sequence that toggles every 2 to 3 seconds:
 
 ```yaml title="Rapid flap sequence (inline in a scenario entry)"
 generator:
@@ -446,7 +404,7 @@ generator:
   repeat: true
 ```
 
-And a slow-flap variant with longer down windows:
+And a slower variant with longer down windows:
 
 ```yaml title="Slow flap sequence"
 generator:
@@ -462,24 +420,20 @@ generator:
 
 ### What to validate
 
-Use these flap patterns to test your automation handles each case correctly:
+Use these patterns to test that the automation handles each case correctly:
 
 | Flap pattern | Expected behavior | What to check |
 |-------------|-------------------|---------------|
 | Single down (10s) with `for: 10s` | Alert fires once, resolves once | Runbook triggers exactly once |
-| Rapid flap (2--3s toggles) | Alert may not fire (down duration < `for:`) | Runbook should NOT trigger |
+| Rapid flap (2 to 3s toggles) | Alert may not fire (down duration < `for:`) | Runbook should NOT trigger |
 | Slow flap (10s down windows) | Alert fires on each down window | Runbook triggers per event, or is deduplicated |
 
 !!! tip "Tuning `for:` as a flap filter"
-    The `for:` duration in your alert rule acts as a debounce. If the interface recovers
-    before the `for:` timer expires, the alert never fires. Increase `for:` to filter out
-    fast flaps; decrease it to catch brief outages. Test both extremes with Sonda to find
-    the right balance.
+    The `for:` duration in an alert rule acts as a debounce. If the interface returns before the `for:` timer expires, the alert never fires. Increase `for:` to filter out fast flaps. Decrease it to detect brief outages. Test both extremes with Sonda to find the right balance.
 
 ### Vary the timing
 
-The sequence generator gives you precise control over flap timing. At `rate: 1`, each value
-in the sequence is one second. To simulate sub-second flaps, increase the rate:
+The sequence generator gives precise control over flap timing. At `rate: 1`, each value in the sequence is one second. To simulate sub-second flaps, increase the rate:
 
 ```yaml
 scenarios:
@@ -492,7 +446,7 @@ scenarios:
       repeat: true
 ```
 
-To simulate flaps with longer intervals, decrease the rate:
+To simulate longer intervals, decrease the rate:
 
 ```yaml
 scenarios:
@@ -505,32 +459,26 @@ scenarios:
       repeat: true
 ```
 
----
-
 ## Validate remediation workflows end-to-end
 
-The ultimate test: does the full chain work from synthetic metric to completed remediation?
-Here is a checklist for validating your automation workflow against Sonda-generated alerts.
+The final test: does the full chain work from synthetic metric to completed remediation? Here is a checklist for validating the automation workflow against Sonda-generated alerts.
 
 ### Test matrix
 
 | Test case | Sonda scenario | Expected alert | Expected automation |
 |-----------|---------------|---------------|-------------------|
-| Interface down | `@link-failover` | InterfaceDown fires | Remediation playbook runs |
-| Interface recovers | Let the `flap` cycle back to 1 | InterfaceDown resolves | Resolution handler runs (if configured) |
-| BGP session down | BGP sequence (see [Network Device Telemetry](network-device-telemetry.md#bgp-session-state)) | BGPSessionDown fires | BGP remediation runs |
+| Interface down | `@link-failover` | `InterfaceDown` fires | Remediation playbook runs |
+| Interface recovers | Let the `flap` cycle back to 1 | `InterfaceDown` resolves | Resolution handler runs (if configured) |
+| BGP session down | BGP sequence (see [Network Device Telemetry](network-device-telemetry.md#bgp-session-state)) | `BGPSessionDown` fires | BGP remediation runs |
 | Rapid flap | Rapid flap sequence (above) | No alert (below `for:` threshold) | No automation triggers |
-| Slow flap | Slow flap sequence (above) | Multiple InterfaceDown alerts | Deduplication or rate limiting works |
+| Slow flap | Slow flap sequence (above) | Multiple `InterfaceDown` alerts | Deduplication or rate limiting works |
 | Concurrent failures | Run interface + BGP scenarios together | Both alerts fire | Both workflows run without interference |
 
 ### Resolution events
 
-Alertmanager sends a `"status": "resolved"` webhook when an alert clears. Your automation
-should handle this -- for example, closing a ticket or logging the recovery.
+Alertmanager sends a `"status": "resolved"` webhook when an alert clears. The automation should handle this — for example, closing a ticket or logging the recovery.
 
-The failover scenario naturally produces resolution events: after each 30-second down window,
-the `flap` generator returns `interface_oper_state` to 1, the alert clears, and Alertmanager
-delivers the resolved webhook. Verify your engine processes it:
+The failover scenario produces resolution events naturally. After each 30-second down window, the `flap` generator returns `interface_oper_state` to 1, the alert clears, and Alertmanager delivers the resolved webhook. Verify the engine processes it:
 
 ```bash
 # Check webhook logs for resolved status
@@ -541,8 +489,7 @@ docker compose -f examples/docker-compose-victoriametrics.yml \
 
 ### Concurrency testing
 
-Run multiple Sonda scenarios simultaneously to test that your automation handles concurrent
-alerts correctly. Create a BGP session scenario file:
+Run multiple Sonda scenarios at the same time to confirm the automation handles concurrent alerts correctly. Create a BGP session scenario file:
 
 ```yaml title="bgp-session-down.yaml"
 version: 2
@@ -585,10 +532,7 @@ sonda run examples/network-link-failure.yaml &
 sonda run bgp-session-down.yaml
 ```
 
-Both InterfaceDown and BGPSessionDown should fire and trigger their respective workflows
-without interfering with each other.
-
----
+Both `InterfaceDown` and `BGPSessionDown` should fire and trigger their workflows without interfering with each other.
 
 ## Tear down
 
@@ -605,8 +549,6 @@ If you copied the automation alert rules into `examples/alertmanager/`, clean th
 rm -f examples/alertmanager/network-automation-alerts.yml
 ```
 
----
-
 ## Quick reference
 
 | Task | Command |
@@ -618,9 +560,9 @@ rm -f examples/alertmanager/network-automation-alerts.yml
 | Check webhook delivery | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting logs webhook-receiver` |
 | Tear down | `docker compose -f examples/docker-compose-victoriametrics.yml --profile alerting down -v` |
 
-**Related pages:**
+## Related pages
 
-- [Network Device Telemetry](network-device-telemetry.md) -- generating interface and BGP metrics with the sequence generator
-- [Alerting Pipeline](end-to-end-pipelines.md) -- the full Sonda to VictoriaMetrics to Alertmanager pipeline
-- [Alert Testing](alert-testing.md) -- generator patterns for testing alert thresholds
-- [CI Alert Validation](end-to-end-pipelines.md) -- automating alert rule validation in GitHub Actions
+- [Network Device Telemetry](network-device-telemetry.md) — generating interface and BGP metrics with the sequence generator.
+- [Alerting Pipeline](end-to-end-pipelines.md) — full Sonda to VictoriaMetrics to Alertmanager pipeline.
+- [Alert Testing](alert-testing.md) — generator patterns for testing alert thresholds.
+- [CI Alert Validation](end-to-end-pipelines.md) — automating alert rule validation in GitHub Actions.

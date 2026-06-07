@@ -5,11 +5,11 @@ description: Organize your scenarios into a catalog directory; reuse metric shap
 
 # Catalogs and packs
 
-A **catalog** is a directory of scenario YAML files Sonda discovers via `--catalog <dir>`. A **pack** is a reusable bundle of metric names and label schemas you reference from any runnable scenario with `pack: <name>`. The two work together — packs live alongside runnable scenarios in the same catalog — but you can use catalogs without packs if you don't need the reuse.
+A **catalog** is a directory of scenario YAML files Sonda discovers through `--catalog <dir>`. A **pack** is a reusable bundle of metric names and label schemas you reference from any runnable scenario with `pack: <name>`. The two work together — packs live alongside runnable scenarios in the same catalog — but catalogs can be used without packs if you do not need the reuse.
 
 ## Catalogs
 
-Each file in a catalog declares a `kind:` — `runnable` for scenarios you can run, `composable` for [packs](#packs) other scenarios reference. Sonda doesn't ship a built-in catalog: yours lives in your own repo, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become first-class artifacts of the system they model instead of being pinned to a Sonda release.
+Each file in a catalog declares a `kind:` — `runnable` for scenarios you can run, `composable` for [packs](#packs) other scenarios reference. Sonda does not include a built-in catalog. Yours lives in your own repository, versioned next to your alert rules, dashboards, and CI workflows. Scenarios become fully supported artifacts of the system they model instead of being pinned to a Sonda release.
 
 ### The minimum
 
@@ -26,9 +26,9 @@ sonda --catalog ./my-catalog show @cpu-spike
 sonda --catalog ./my-catalog run @cpu-spike
 ```
 
-Files without a recognized `kind:` header are silently skipped. Files with an unparseable YAML body print a warning to stderr and are skipped — the listing continues.
+Files without a recognized `kind:` header are skipped silently. Files with an unparseable YAML body print a warning to stderr and are skipped. The listing continues.
 
-Two files with the same logical name (`name:` field or filename) are a **hard error** — discovery fails with the conflicting paths. Rename one to disambiguate.
+Two files with the same logical name (`name:` field or filename) are a **hard error**. Discovery fails with the conflicting paths. Rename one to disambiguate.
 
 ### Browse the catalog
 
@@ -52,7 +52,7 @@ sonda --catalog ~/sonda-catalog list --kind runnable
 sonda --catalog ~/sonda-catalog list --tag cpu
 ```
 
-For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `tags`, and the resolved `source` path. Use it as the contract when scripting catalog discovery.
+For machine-readable output, add `--json` to get a stable array on stdout. Each element has `name`, `kind`, `description`, `tags`, and the resolved `source` path. Use it as the contract when you script catalog discovery.
 
 ### Run a scenario
 
@@ -70,16 +70,16 @@ node_cpu_usage_percent{cpu="0",instance="web-01",job="node_exporter"} 95 1775589
 ■ node_cpu_usage_percent  completed in 10.0s | events: 50 | bytes: 4350 B | errors: 0
 ```
 
-`sonda run` also accepts a direct filesystem path (no `@`, no `--catalog`) when you want to run a one-off file:
+`sonda run` also accepts a direct filesystem path (no `@`, no `--catalog`) when you want to run a single file:
 
 ```bash
 sonda run examples/basic-metrics.yaml
 ```
 
-CLI overrides (`--duration`, `--rate`, `--sink`, `--endpoint`, `--encoder`, `--label`) win over the values inside the file, so you can pin a backend or speed up a long-running scenario without editing the YAML.
+CLI overrides (`--duration`, `--rate`, `--sink`, `--endpoint`, `--encoder`, `--label`) win over the values inside the file. Use them to pin a backend or speed up a long-running scenario without editing the YAML.
 
 !!! tip "Validate without emitting"
-    Add `--dry-run` to compile the scenario and print the resolved config — no events are written:
+    Add `--dry-run` to compile the scenario and print the resolved config. No events are written:
 
     ```bash
     sonda --catalog ~/sonda-catalog --dry-run run @cpu-spike
@@ -131,7 +131,7 @@ sonda --catalog ~/sonda-catalog show @cpu-spike > my-cpu-spike.yaml
 sonda run my-cpu-spike.yaml
 ```
 
-### Author your own entries
+### Write your own entries
 
 A catalog entry is a scenario YAML with a top-level `kind:` field. For runnable entries:
 
@@ -168,9 +168,9 @@ scenarios:
 | `tags` | no | Optional list of strings. `sonda list --tag <t>` filters on this. |
 | `description` | no | One-line summary shown in the `sonda list` table and JSON output. |
 
-The compiler ignores `tags:` and `description:` — they only feed the catalog views. Strict unknown-field validation stays in force, so typos like `desc:` or `tag:` (singular) are rejected at parse time.
+The compiler ignores `tags:` and `description:`. They only feed the catalog views. Strict unknown-field validation stays in force, so typos like `desc:` or `tag:` (singular) are rejected at parse time.
 
-After dropping the file in your catalog directory, `sonda list` picks it up on the next run:
+After you drop the file in your catalog directory, `sonda list` picks it up on the next run:
 
 ```bash
 sonda --catalog ~/sonda-catalog list --tag application
@@ -178,9 +178,9 @@ sonda --catalog ~/sonda-catalog list --tag application
 
 ## Packs
 
-A metric pack is a reusable bundle of metric names and label schemas, expressed as a `kind: composable` YAML file in your catalog. Reference a pack from any runnable scenario with `pack: <name>` and Sonda expands it into one entry per metric — exact names, correct shared labels, and sensible default generators per metric.
+A metric pack is a reusable bundle of metric names and label schemas, expressed as a `kind: composable` YAML file in your catalog. Reference a pack from any runnable scenario with `pack: <name>` and Sonda expands it into one entry per metric: exact names, correct shared labels, and reasonable default generators per metric.
 
-Sonda no longer ships any built-in packs; you author your own and check them into a catalog directory alongside your scenarios.
+Sonda no longer includes any built-in packs. You write your own and check them into a catalog directory alongside your scenarios.
 
 ### Why metric packs
 
@@ -190,7 +190,7 @@ Packs solve this by encoding the exact schema your tooling expects. You provide 
 
 ### Browse packs in the catalog
 
-Packs live alongside scenarios in the catalog directory. Filter the listing to just packs with `--kind composable`:
+Packs live alongside scenarios in the catalog directory. Filter the listing to packs with `--kind composable`:
 
 ```bash
 sonda --catalog ~/sonda-catalog list --kind composable
@@ -203,7 +203,7 @@ composable  node_exporter_cpu          infrastructure,cpu      Per-CPU mode coun
 composable  node_exporter_memory       infrastructure,memory   Memory gauge metrics (node_exporter-compatible)
 ```
 
-`sonda list` shows packs as `kind: composable`. They are not directly runnable — you reference them from a `kind: runnable` entry via `pack: <name>` and supply instance-specific labels.
+`sonda list` shows packs as `kind: composable`. Packs are not directly runnable. Reference them from a `kind: runnable` entry through `pack: <name>` and supply instance-specific labels.
 
 For machine-readable output, add `--json` to get the same stable DTO that scenarios use.
 
@@ -249,7 +249,7 @@ ifOutErrors{device="rtr-edge-01",ifAlias="",ifIndex="1",ifName="GigabitEthernet0
 ...
 ```
 
-The `pack: <name>` lookup requires `--catalog <dir>` on `sonda run`. To reference a pack file by path instead (handy for ad-hoc one-offs), set `pack: ./my-pack.yaml` (anything containing `/` or starting with `.`).
+The `pack: <name>` lookup requires `--catalog <dir>` on `sonda run`. To reference a pack file by path instead (useful for one-off runs), set `pack: ./my-pack.yaml` (anything containing `/` or starting with `.`).
 
 Use `--dry-run` to see the expanded config without emitting data:
 
@@ -312,7 +312,7 @@ scenarios:
           type: flap
 ```
 
-In this example, `ifOperStatus` uses the [`flap`](generators.md#operational-aliases) alias to simulate an interface toggling up and down, while all other metrics keep their pack defaults.
+In this example, `ifOperStatus` uses the [`flap`](generators.md#operational-aliases) alias to simulate an interface toggling up and down. The other metrics keep their pack defaults.
 
 You can override any metric by name. Each override accepts:
 
@@ -333,7 +333,7 @@ Labels are merged in this order, with later sources winning on key conflicts:
 3. Your `labels` in the scenario file
 4. Per-metric override `labels` (if any)
 
-### Author a pack
+### Write a pack
 
 A pack is a YAML file with `kind: composable`. The pack identity (`name`, `description`, `category`) and the metric set (`shared_labels`, `metrics`) sit flat at the top level of the file:
 
@@ -370,7 +370,7 @@ metrics:
       value: 0.0
 ```
 
-Drop the file in your catalog directory and it shows up immediately:
+Drop the file in your catalog directory and it appears immediately:
 
 ```bash
 sonda --catalog ~/sonda-catalog list --kind composable
@@ -417,9 +417,9 @@ All pack fields are top-level keys in the file:
 | `metrics[].labels` | map | no | Per-metric labels (merged on top of `shared_labels`). |
 | `metrics[].generator` | object | no | Default generator. Falls back to `constant { value: 0.0 }` when absent. |
 
-## Pattern: catalog + packs together
+## Pattern: catalog and packs together
 
-The typical project structure uses both — runnable scenarios at the catalog root and packs in a `packs/` subdirectory:
+The typical project structure uses both: runnable scenarios at the catalog root and packs in a `packs/` subdirectory.
 
 ```text
 my-catalog/
@@ -444,13 +444,11 @@ scenarios:
       ifName: GigabitEthernet0/0/0
 ```
 
-`sonda --catalog ./my-catalog list` discovers everything; `sonda run @edge-router-snmp` runs the pack-backed scenario. The catalog directory layout has no special meaning — Sonda walks it recursively for `kind:` headers — but a `packs/` subdirectory keeps the listing readable.
+`sonda --catalog ./my-catalog list` discovers every file; `sonda run @edge-router-snmp` runs the pack-backed scenario. The catalog directory layout has no special meaning — Sonda walks it recursively for `kind:` headers — but a `packs/` subdirectory keeps the listing readable.
 
 ## Where to next
 
-- [Generators](generators.md) — all generator types and operational aliases.
+- [Generators](generators.md) — every generator type and operational alias.
 - [Scenario file format](scenario-files.md#pack-backed-entries) — reference a pack inline from a `scenarios:` entry.
 - [CLI flags](../reference/cli-flags.md) — full flag reference for `sonda list`, `sonda show`, `sonda run`.
-- [Scenario fields](../reference/scenario-fields.md) — YAML reference for writing your own scenarios.
-- [Network device telemetry](../test/network-device-telemetry.md) — end-to-end walkthrough using SNMP-shaped metrics for dashboard testing.
-- [Alert testing](../test/alert-testing.md) — end-to-end walkthrough using shaped signals to validate alert rules.
+- [Network device telemetry](../test/network-device-telemetry.md) — end-to-end walkthrough that uses SNMP-shaped metrics for dashboard testing.

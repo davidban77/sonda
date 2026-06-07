@@ -1,10 +1,10 @@
 # Server API
 
-`sonda-server` is the HTTP control plane for Sonda: a long-running process you POST scenarios to, then inspect or stop them over a REST API. Reach for it when you want Sonda running as a service rather than a one-shot CLI command — integrating into CI pipelines, test harnesses, or dashboards, or keeping a synthetic-telemetry baseline alive for hours or days.
+`sonda-server` is the HTTP control plane for Sonda. It is a long-running process. You send scenarios to it over REST, then inspect or stop them. Use it when you want Sonda as a service instead of a one-shot CLI command. Common cases: integrating Sonda into CI pipelines, test harnesses, or dashboards, or keeping a synthetic-telemetry baseline alive for hours or days.
 
-The `sonda-server` binary ships alongside the `sonda` CLI: the [install script](../get-started/quickstart.md#installation) and release tarballs place both on your PATH, and the [Docker image](docker.md) runs `sonda-server` as its default entrypoint.
+The `sonda-server` binary is installed next to the `sonda` CLI. The [install script](../get-started/quickstart.md#installation) and release tarballs place both on your PATH. The [Docker image](docker.md) runs `sonda-server` as its default entrypoint.
 
-This page covers installing, configuring, and operating the server. For request and response shapes of every endpoint, see [HTTP API reference](http-api.md).
+This page covers installing, configuring, and operating the server. For the request and response shapes of every endpoint, see [HTTP API reference](http-api.md).
 
 ## Starting the server
 
@@ -36,7 +36,7 @@ Start the server with the installed `sonda-server` binary. It listens on port `8
 
 ## Your first request loop
 
-With the server running, you can drive its full lifecycle from `curl` in three steps — start it, POST a scenario, and confirm it is running:
+With the server running, you can drive its full lifecycle from `curl` in three steps. Start the server, send a scenario, then confirm it is running:
 
 ```bash
 # 1. Confirm the server is up
@@ -69,11 +69,11 @@ EOF
 curl http://localhost:8080/scenarios
 ```
 
-The scenario runs in a background thread inside the server until its `duration` expires, or until you stop it with `DELETE /scenarios/{id}`. See [HTTP API reference](http-api.md) for the full endpoint catalogue, request bodies, and response shapes.
+The scenario runs in a background thread inside the server until its `duration` expires, or until you stop it with `DELETE /scenarios/{id}`. See [HTTP API reference](http-api.md) for the full endpoint list, request bodies, and response shapes.
 
 ## Server flags
 
-`sonda-server` accepts `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`), `--api-key <KEY>` (or `SONDA_API_KEY` env var), and `--catalog <DIR>` (or `SONDA_CATALOG` env var). Control log verbosity with the `RUST_LOG` environment variable (default `info`):
+`sonda-server` accepts four flags: `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`), `--api-key <KEY>` (or `SONDA_API_KEY`), and `--catalog <DIR>` (or `SONDA_CATALOG`). Use the `RUST_LOG` environment variable to control log verbosity (default `info`):
 
 ```bash
 RUST_LOG=debug sonda-server --port 8080
@@ -86,9 +86,9 @@ RUST_LOG=debug sonda-server --port 8080
 | `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/metrics`, and `/events`. See [Authentication](#authentication). |
 | `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](http-api.md#pack-references-over-http). |
 
-When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML files. The path must exist — a missing directory fails the server at startup with a clear error.
+When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML files. The path must exist. A missing directory makes the server fail at startup with a clear error.
 
-Press Ctrl+C for graceful shutdown — the server signals all running scenarios to stop before exiting.
+Press Ctrl+C for graceful shutdown. The server signals all running scenarios to stop before exiting.
 
 ## Authentication
 
@@ -96,7 +96,7 @@ You can protect scenario endpoints with API key authentication. When enabled, al
 
 ### Enabling authentication
 
-Pass an API key via the `--api-key` flag or the `SONDA_API_KEY` environment variable:
+Pass an API key with the `--api-key` flag or the `SONDA_API_KEY` environment variable:
 
 === "CLI flag"
 
@@ -117,7 +117,7 @@ INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and
 ```
 
 !!! info "No key = no auth"
-    When neither `--api-key` nor `SONDA_API_KEY` is set, the server runs without authentication and all endpoints are publicly accessible. This preserves full backwards compatibility with existing deployments.
+    When neither `--api-key` nor `SONDA_API_KEY` is set, the server runs without authentication. All endpoints are public. This preserves backwards compatibility with existing deployments.
 
 ### Protected vs. public endpoints
 
@@ -160,7 +160,7 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
             key: api-key
     ```
 
-    Apply the secret before deploying:
+    Apply the Secret before deploying:
 
     ```bash
     kubectl apply -f sonda-secret.yaml
@@ -170,17 +170,17 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
 
 ## Networking
 
-You wrote a scenario with `url: http://localhost:8428`, it worked from your laptop, you POSTed it to a containerized `sonda-server`, and now nothing arrives at your backend. That's the most common surprise when moving a YAML from one place to another, and it's the reason this section exists.
+You write a scenario with `url: http://localhost:8428`. It works from your laptop. You send it to a containerized `sonda-server` and nothing arrives at your backend. That is the most common surprise when moving a YAML from one place to another. This section exists to prevent it.
 
-The rule that matters: Sonda resolves sink URLs in the process that **runs** the scenario, not in the process that **submits** it. `localhost` means "this container's loopback" inside a container, "your host" outside. This section gives you a table for every realistic combination — host, Compose, Kubernetes, external — plus the env-var pattern that lets one YAML work from all of them.
+The rule that matters: Sonda resolves sink URLs in the process that **runs** the scenario, not the process that **submits** it. Inside a container, `localhost` means the container's loopback. Outside a container, it means your host. The next section covers every realistic combination: host, Compose, Kubernetes, and external. It also covers the environment variable pattern that lets one YAML work from all of them.
 
 ### Two invocation paths
 
-Every sink URL is resolved inside the process that is about to write to it. Sonda has two invocation paths, and they resolve `localhost` very differently.
+Every sink URL is resolved inside the process that is about to write to it. Sonda has two invocation paths. They resolve `localhost` differently.
 
 === "Host CLI"
 
-    You run `sonda run file.yaml` on your laptop or a bare host. The scenario runs **in the shell process on your host**. `http://localhost:8428` resolves to your host's loopback, which reaches whatever is listening on port 8428 there — typically a Compose-published port or a native install.
+    You run `sonda run file.yaml` on your laptop or a bare host. The scenario runs **in the shell process on your host**. `http://localhost:8428` resolves to your host's loopback. It reaches whatever listens on port 8428 there. The usual target is a Compose-published port or a native install.
 
     ```bash
     sonda run examples/victoriametrics-metrics.yaml
@@ -188,7 +188,7 @@ Every sink URL is resolved inside the process that is about to write to it. Sond
 
 === "`sonda-server` in a container"
 
-    You POST a scenario body to `sonda-server` running inside a container. The scenario is compiled and runs **inside that container's network namespace**. `http://localhost:8428` resolves to the container's own loopback — nothing is there, the request fails.
+    You send a scenario body to `sonda-server` running inside a container. The scenario is compiled and runs **inside that container's network namespace**. `http://localhost:8428` resolves to the container's own loopback. Nothing is there, so the request fails.
 
     ```bash
     curl -X POST -H "Content-Type: text/yaml" \
@@ -196,12 +196,12 @@ Every sink URL is resolved inside the process that is about to write to it. Sond
       http://localhost:8080/scenarios
     ```
 
-The host-side `curl` talks to the host's loopback (hitting the published `8080:8080` port), but the scenario it carries runs one level deeper, inside the server container.
+The host-side `curl` talks to the host's loopback (hitting the published `8080:8080` port). The scenario it carries runs one level deeper, inside the server container.
 
 !!! warning "The `localhost` trap"
-    A scenario with `url: http://localhost:8428` works from the host CLI and silently fails when POSTed to a containerized `sonda-server` — inside the container, `localhost` is the container, not your host. The POST returns 201, the sink times out, no data lands.
+    A scenario with `url: http://localhost:8428` works from the host CLI and fails silently when sent to a containerized `sonda-server`. Inside the container, `localhost` is the container, not your host. The POST returns 201, the sink times out, no data arrives.
 
-    Two fixes: write the URL with [`${VAR:-default}`](#one-file-both-paths-var-default) so one file works from both paths, or hardcode the in-network address (Compose service name like `http://victoriametrics:8428`, or the Kubernetes Service DNS `http://vmsingle.monitoring.svc.cluster.local:8428`).
+    Two fixes are available. Write the URL with [`${VAR:-default}`](#one-file-both-paths-var-default) so one file works from both paths. Or hardcode the in-network address: a Compose service name like `http://victoriametrics:8428`, or the Kubernetes Service DNS `http://vmsingle.monitoring.svc.cluster.local:8428`.
 
 ### Endpoint resolution reference
 
@@ -211,18 +211,18 @@ Pick the row that matches where `sonda` runs and where your backend lives.
 |---|---|---|---|
 | Host CLI | Backend on host (native install) | `http://localhost:<port>` | Host loopback reaches the native listener. |
 | Host CLI | Backend in Compose (port-published) | `http://localhost:<published-port>` | The Compose-published port is exposed on the host. |
-| `sonda-server` in Compose | Backend in same Compose network | `http://<service-name>:<port>` | Compose provides a DNS entry per service. `victoriametrics`, `loki`, `kafka`. |
+| `sonda-server` in Compose | Backend in same Compose network | `http://<service-name>:<port>` | Compose provides a DNS entry per service. Examples: `victoriametrics`, `loki`, `kafka`. |
 | `sonda-server` in Compose | Backend on host (Docker Desktop) | `http://host.docker.internal:<port>` | Docker Desktop publishes a virtual DNS name that routes back to the host. |
 | `sonda-server` in Kubernetes (same namespace) | Service in same namespace | `http://<svc>:<port>` | Kubernetes DNS resolves short names within a namespace. |
-| `sonda-server` in Kubernetes (cross-namespace) | Service in another namespace | `http://<svc>.<ns>.svc.cluster.local:<port>` | FQDN is required for cross-namespace resolution. |
+| `sonda-server` in Kubernetes (cross-namespace) | Service in another namespace | `http://<svc>.<ns>.svc.cluster.local:<port>` | The FQDN is required for cross-namespace resolution. |
 | `sonda-server` anywhere | External backend (SaaS, cloud) | `https://<public-dns>:<port>` | Fully qualified external DNS plus TLS. |
 
 !!! note
-    On Linux without Docker Desktop, `host.docker.internal` does not resolve by default. Either add `--add-host=host.docker.internal:host-gateway` to the `sonda-server` container or use the host's LAN IP.
+    On Linux without Docker Desktop, `host.docker.internal` does not resolve by default. Add `--add-host=host.docker.internal:host-gateway` to the `sonda-server` container, or use the host's LAN IP.
 
 ### One file, both paths: `${VAR:-default}`
 
-The first-class fix is `${VAR:-default}` interpolation in the YAML itself. The same file then runs from your host CLI on the defaults and from a containerized `sonda-server` on the overrides — no edit, no `sed`, no second copy.
+The recommended fix is `${VAR:-default}` interpolation inside the YAML. The same file then runs from your host CLI on the defaults and from a containerized `sonda-server` on the overrides. No edit, no `sed`, no second copy.
 
 ```yaml title="A sink URL that works from both paths"
 sink:
@@ -230,11 +230,11 @@ sink:
   url: "${VICTORIAMETRICS_URL:-http://localhost:8428/api/v1/import/prometheus}"
 ```
 
-The bundled `examples/docker-compose-victoriametrics.yml` exports the in-network overrides on the `sonda-server` container, so every scenario under `examples/` already works untouched in both places. See the [full reference](../build/scenario-files.md#environment-variable-interpolation) for syntax and the seven built-in variable names every example honours.
+The bundled `examples/docker-compose-victoriametrics.yml` sets the in-network overrides on the `sonda-server` container. Every scenario under `examples/` works untouched in both places. See the [full reference](../build/scenario-files.md#environment-variable-interpolation) for the syntax and the seven built-in variable names every example honours.
 
-### Rewriting URLs before POSTing
+### Rewriting URLs before posting
 
-If a YAML file hardcodes `http://localhost:<port>` and you would rather not add interpolation, rewrite the URL in flight:
+If a YAML file hardcodes `http://localhost:<port>` and you prefer not to add interpolation, rewrite the URL before posting it:
 
 ```bash title="Swap localhost for Compose service names"
 sed 's|http://localhost:8428|http://victoriametrics:8428|g; \
@@ -246,7 +246,7 @@ sed 's|http://localhost:8428|http://victoriametrics:8428|g; \
       http://localhost:8080/scenarios
 ```
 
-The swaps cover the Compose backends Sonda ships with:
+The substitutions cover the Compose backends bundled with Sonda:
 
 | Backend | Host CLI URL (published port) | Compose URL (service name) |
 |---|---|---|
@@ -254,7 +254,7 @@ The swaps cover the Compose backends Sonda ships with:
 | Loki | `http://localhost:3100` | `http://loki:3100` |
 | Kafka | `localhost:9094` (external listener) | `kafka:9092` (internal listener) |
 
-Service names come from `examples/docker-compose-victoriametrics.yml`. Match the `sed` substitutions to your service names if you customize the compose file.
+Service names come from `examples/docker-compose-victoriametrics.yml`. Match the `sed` substitutions to your service names if you change the compose file.
 
 !!! tip "Diff before you POST"
     ```bash
@@ -266,7 +266,7 @@ Service names come from `examples/docker-compose-victoriametrics.yml`. Match the
 
 === "Host CLI to Compose VictoriaMetrics"
 
-    `sonda` runs on your host. The Compose stack publishes VictoriaMetrics on `localhost:8428`. The scenario's `url:` uses host loopback.
+    `sonda` runs on your host. The Compose stack exposes VictoriaMetrics on `localhost:8428`. The scenario's `url:` uses host loopback.
 
     ```yaml
     sink:
