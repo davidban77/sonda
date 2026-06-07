@@ -13,7 +13,9 @@ use crate::config::LogScenarioConfig;
 use crate::encoder::create_encoder;
 use crate::generator::create_log_generator;
 use crate::model::metric::{Labels, MetricEvent};
-use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
+use crate::schedule::core_loop::{
+    self, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
+};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -105,7 +107,7 @@ pub fn run_logs_with_sink_gated(
     let mut buf: Vec<u8> = Vec::with_capacity(512);
 
     let mut tick_fn = |ctx: &TickContext<'_>,
-                       sink: &mut dyn Sink,
+                       output: &mut TickOutput,
                        _events_buf: &mut Vec<MetricEvent>|
      -> Result<TickResult, SondaError> {
         let mut event = generator.generate(ctx.tick);
@@ -130,17 +132,18 @@ pub fn run_logs_with_sink_gated(
         buf.clear();
         encoder.encode_log(&event, &mut buf)?;
         let bytes_written = buf.len() as u64;
-        sink.write_log_event(&event, &buf)?;
-        let delivered = sink.last_write_delivered();
+        output.writes.push(WriteCommand::LogEvent {
+            event,
+            bytes: std::mem::take(&mut buf),
+        });
 
         Ok(TickResult {
             bytes_written,
-            delivered,
+            delivered: true,
         })
     };
 
-    let stats_for_flush = stats.clone();
-    let loop_result = match gate_ctx {
+    match gate_ctx {
         None => core_loop::run_schedule_loop(
             &schedule,
             config.rate,
@@ -158,12 +161,6 @@ pub fn run_logs_with_sink_gated(
             sink,
             &mut tick_fn,
         ),
-    };
-
-    let flush_result = sink.flush();
-    match loop_result {
-        Ok(()) => core_loop::apply_flush_policy(&schedule, stats_for_flush.as_ref(), flush_result),
-        Err(e) => Err(e),
     }
 }
 

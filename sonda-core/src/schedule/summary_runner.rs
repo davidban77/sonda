@@ -22,7 +22,9 @@ use crate::encoder::create_encoder;
 use crate::generator::histogram::to_distribution;
 use crate::generator::summary::{SummaryGenerator, DEFAULT_SUMMARY_QUANTILES};
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use crate::schedule::core_loop::{self, GateContext, TickContext, TickResult};
+use crate::schedule::core_loop::{
+    self, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
+};
 use crate::schedule::is_in_spike;
 use crate::schedule::stats::ScenarioStats;
 use crate::schedule::ParsedSchedule;
@@ -144,7 +146,7 @@ pub fn run_with_sink_gated(
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
 
     let mut tick_fn = |ctx: &TickContext<'_>,
-                       sink: &mut dyn Sink,
+                       output: &mut TickOutput,
                        events_buf: &mut Vec<MetricEvent>|
      -> Result<TickResult, SondaError> {
         let wall_now = ctx.wall_clock;
@@ -180,7 +182,9 @@ pub fn run_with_sink_gated(
             buf.clear();
             encoder.encode_metric(&event, &mut buf)?;
             total_bytes += buf.len() as u64;
-            sink.write(&buf)?;
+            output
+                .writes
+                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
             events_buf.push(event);
         }
 
@@ -208,7 +212,9 @@ pub fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&sum_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        sink.write(&buf)?;
+        output
+            .writes
+            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
         events_buf.push(sum_event);
 
         let count_event = MetricEvent::from_parts(
@@ -220,19 +226,18 @@ pub fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&count_event, &mut buf)?;
         total_bytes += buf.len() as u64;
-        sink.write(&buf)?;
+        output
+            .writes
+            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
         events_buf.push(count_event);
-
-        let delivered = sink.last_write_delivered();
 
         Ok(TickResult {
             bytes_written: total_bytes,
-            delivered,
+            delivered: true,
         })
     };
 
-    let stats_for_flush = stats.clone();
-    let loop_result = match gate_ctx {
+    match gate_ctx {
         None => core_loop::run_schedule_loop(
             &schedule,
             config.rate,
@@ -250,12 +255,6 @@ pub fn run_with_sink_gated(
             sink,
             &mut tick_fn,
         ),
-    };
-
-    let flush_result = sink.flush();
-    match loop_result {
-        Ok(()) => core_loop::apply_flush_policy(&schedule, stats_for_flush.as_ref(), flush_result),
-        Err(e) => Err(e),
     }
 }
 
