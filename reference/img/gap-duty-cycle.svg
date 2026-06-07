@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 380" role="img" aria-label="Gap duty cycle visualization">
+  <title>Gap duty cycle — count_over_time(interface_oper_state[1s]) — Last 5 minutes</title>
+  <desc>Rectangular duty-cycle wave: ~100s of emission at ~1000 samples/sec, then ~20s gap, repeated. Two and a half full cycles over a 5-minute window.</desc>
+
+  <!-- Self-contained Grafana-style panel mockup: dark slate background,
+       panel chrome, axes, lime duty-cycle wave. No real screenshot needed
+       — this conveys the same teaching point without dragging real labels
+       or a snapshot of a UI that will drift. -->
+
+  <defs>
+    <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#a3e635" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#a3e635" stop-opacity="0.08"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Panel background -->
+  <rect width="880" height="380" rx="12" fill="#0f172a"/>
+
+  <!-- Panel header -->
+  <rect x="0" y="0" width="880" height="46" rx="12" fill="#111827"/>
+  <rect x="0" y="34" width="880" height="12" fill="#111827"/>
+  <text x="20" y="29" font-family="system-ui, -apple-system, sans-serif"
+        font-size="14" font-weight="700" fill="#e2e8f0">
+    count_over_time(interface_oper_state[1s])
+  </text>
+  <text x="860" y="29" font-family="system-ui, -apple-system, sans-serif"
+        font-size="12" font-weight="600" fill="#94a3b8" text-anchor="end">
+    Last 5 minutes · min step 1s
+  </text>
+
+  <!-- Plot area inset: x=70..850 (780 wide), y=70..330 (260 tall) -->
+
+  <!-- Y-axis grid + labels -->
+  <g font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" fill="#64748b">
+    <line x1="70" y1="330" x2="850" y2="330" stroke="#334155" stroke-width="1"/>
+    <line x1="70" y1="265" x2="850" y2="265" stroke="#1e293b" stroke-width="1" stroke-dasharray="2 4"/>
+    <line x1="70" y1="200" x2="850" y2="200" stroke="#1e293b" stroke-width="1" stroke-dasharray="2 4"/>
+    <line x1="70" y1="135" x2="850" y2="135" stroke="#1e293b" stroke-width="1" stroke-dasharray="2 4"/>
+    <line x1="70" y1="70"  x2="850" y2="70"  stroke="#1e293b" stroke-width="1" stroke-dasharray="2 4"/>
+
+    <text x="62" y="334" text-anchor="end">0</text>
+    <text x="62" y="269" text-anchor="end">250</text>
+    <text x="62" y="204" text-anchor="end">500</text>
+    <text x="62" y="139" text-anchor="end">750</text>
+    <text x="62" y="74"  text-anchor="end">1000</text>
+  </g>
+
+  <!-- X-axis (time). 5 min window = 300s. 780px wide / 300s = 2.6 px/s.
+       Marks every 1 minute at x = 70, 226, 382, 538, 694, 850. -->
+  <g font-family="ui-monospace, 'JetBrains Mono', monospace" font-size="11" fill="#64748b">
+    <line x1="70"  y1="330" x2="70"  y2="334" stroke="#475569"/>
+    <line x1="226" y1="330" x2="226" y2="334" stroke="#475569"/>
+    <line x1="382" y1="330" x2="382" y2="334" stroke="#475569"/>
+    <line x1="538" y1="330" x2="538" y2="334" stroke="#475569"/>
+    <line x1="694" y1="330" x2="694" y2="334" stroke="#475569"/>
+    <line x1="850" y1="330" x2="850" y2="334" stroke="#475569"/>
+
+    <text x="70"  y="350" text-anchor="middle">14:30</text>
+    <text x="226" y="350" text-anchor="middle">14:31</text>
+    <text x="382" y="350" text-anchor="middle">14:32</text>
+    <text x="538" y="350" text-anchor="middle">14:33</text>
+    <text x="694" y="350" text-anchor="middle">14:34</text>
+    <text x="850" y="350" text-anchor="middle">14:35</text>
+  </g>
+
+  <!-- Duty cycle path. Period = 120s (2m): 100s emit at ~1000, 20s gap at 0.
+       At 2.6px/s, 100s = 260px emit, 20s = 52px gap.
+       Plot y=70 is value 1000, y=330 is value 0.
+       Starting from x=70 (t=0), three cycles fit roughly in 300s:
+         emit  0..100  → x 70..330
+         gap  100..120 → x 330..382
+         emit 120..220 → x 382..642
+         gap  220..240 → x 642..694
+         emit 240..300 → x 694..850  (truncated at right edge)
+   -->
+  <path d="M 70 70
+           L 330 70 L 330 330
+           L 382 330 L 382 70
+           L 642 70 L 642 330
+           L 694 330 L 694 70
+           L 850 70"
+        fill="none"
+        stroke="#a3e635"
+        stroke-width="2.5"
+        stroke-linejoin="miter"/>
+
+  <!-- Light fill under the wave so the gaps read as "empty" zones. -->
+  <path d="M 70 330
+           L 70 70 L 330 70 L 330 330
+           L 382 330 L 382 70 L 642 70 L 642 330
+           L 694 330 L 694 70 L 850 70 L 850 330
+           Z"
+        fill="url(#fillGrad)"
+        opacity="0.9"/>
+
+  <!-- Gap annotations (callouts on first two gaps) -->
+  <g font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#94a3b8">
+    <line x1="356" y1="280" x2="356" y2="318" stroke="#475569" stroke-dasharray="2 3"/>
+    <text x="356" y="272" text-anchor="middle">20s gap</text>
+    <line x1="668" y1="280" x2="668" y2="318" stroke="#475569" stroke-dasharray="2 3"/>
+    <text x="668" y="272" text-anchor="middle">20s gap</text>
+  </g>
+
+  <!-- Legend chip top-left of plot -->
+  <g transform="translate(82, 84)">
+    <rect width="220" height="22" rx="4" fill="#020617" stroke="#1e293b"/>
+    <line x1="10" y1="11" x2="26" y2="11" stroke="#a3e635" stroke-width="2.5"/>
+    <text x="34" y="15" font-family="ui-monospace, 'JetBrains Mono', monospace"
+          font-size="11" fill="#e2e8f0">samples · 1s buckets</text>
+  </g>
+</svg>
