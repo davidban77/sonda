@@ -86,7 +86,7 @@ In CI you usually want quiet output, machine-readable exit codes, and env-var-dr
   env:
     VICTORIAMETRICS_URL: ${{ secrets.VM_URL }}
   run: |
-    sonda -q run examples/baseline.yaml
+    sonda -q run examples/basic-metrics.yaml
 ```
 
 Exit codes are scriptable:
