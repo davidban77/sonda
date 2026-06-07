@@ -265,6 +265,12 @@ pub fn launch_scenario_with_gates(
     let thread = std::thread::Builder::new()
         .name(format!("sonda-{}", name))
         .spawn(move || -> Result<(), SondaError> {
+            // PHASE-1 THROWAWAY: per-scenario current_thread tokio runtime so
+            // the sync schedule loop can block_on tokio gate channels.
+            // Removed in Phase 2a when the schedule loop itself becomes async.
+            crate::schedule::gate_bus::install_thread_runtime()
+                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
+
             // Drop guard clears the alive flag on every exit path, including
             // panics — observers polling `is_alive()` see a single clean
             // transition `true → false` regardless of how the thread terminates.

@@ -31,7 +31,7 @@ use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
 #[cfg(feature = "config")]
-use std::sync::mpsc;
+use tokio::sync::watch;
 
 /// Run all scenarios in `entries` concurrently, one OS thread per scenario.
 /// Set `shutdown` to `false` to stop all running scenarios.
@@ -201,7 +201,7 @@ pub fn launch_multi_compiled(
                     op: clause.op,
                     threshold: clause.value,
                 };
-                let (tx, rx) = mpsc::sync_channel::<crate::schedule::gate_bus::GateEdge>(1);
+                let (tx, rx) = watch::channel::<Option<crate::schedule::gate_bus::GateEdge>>(None);
                 let if_unresolved = clause.if_unresolved.unwrap_or_default();
                 let bus = resolver.lookup(cross_scenario, clause.ref_id.as_str());
                 let (gate_rx, initial, start_unresolved) = match bus {

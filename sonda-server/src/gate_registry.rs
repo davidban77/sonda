@@ -158,7 +158,7 @@ impl GateBusResolver for GateBusRegistry {
                 if sub.stats.strong_count() == 0 {
                     continue;
                 }
-                let _ = sub.sender.try_send(GateEdge::UpstreamGone);
+                sub.sender.send_replace(Some(GateEdge::UpstreamGone));
                 let handle_id = sub.handle_id.clone();
                 let pending_entry = sub.into_pending(key.0.clone(), key.1.clone());
                 pending.insert(handle_id, pending_entry);
@@ -231,9 +231,9 @@ impl GateBusResolver for GateBusRegistry {
 mod tests {
     use super::*;
     use sonda_core::compiler::WhileOp;
-    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use tokio::sync::watch;
 
     fn while_spec() -> WhileSpec {
         WhileSpec {
@@ -268,6 +268,24 @@ mod tests {
         )
     }
 
+    fn watch_recv_timeout(
+        rx: &mut watch::Receiver<Option<GateEdge>>,
+        timeout: Duration,
+    ) -> Result<GateEdge, ()> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            if !rx.has_changed().unwrap_or(false)
+                && tokio::time::timeout(timeout, rx.changed()).await.is_err()
+            {
+                return Err(());
+            }
+            (*rx.borrow_and_update()).ok_or(())
+        })
+    }
+
     #[test]
     fn t_reg_1_register_then_lookup_roundtrip() {
         let reg = GateBusRegistry::new();
@@ -285,7 +303,7 @@ mod tests {
         let reg = GateBusRegistry::new();
         let bus = Arc::new(GateBus::new());
         reg.register("post-a", "m", Arc::clone(&bus)).expect("reg");
-        let (tx, _rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, _rx) = watch::channel::<Option<GateEdge>>(None);
         let (_alive, weak) = live_stats();
         let got = reg.subscribe(("post-a", "m"), "h1", weak.clone(), tx.clone());
         assert!(got.is_some());
@@ -301,7 +319,7 @@ mod tests {
     #[test]
     fn t_reg_3_subscribe_with_no_upstream_returns_none_then_insert_pending() {
         let reg = GateBusRegistry::new();
-        let (tx, _rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, _rx) = watch::channel::<Option<GateEdge>>(None);
         let (_alive, weak) = live_stats();
         let got = reg.subscribe(("missing", "m"), "h2", weak.clone(), tx.clone());
         assert!(got.is_none());
@@ -315,7 +333,7 @@ mod tests {
     fn t_reg_4_sweep_pending_resolves_after_register() {
         let reg = GateBusRegistry::new();
         let (alive, weak) = live_stats();
-        let (tx, _rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, _rx) = watch::channel::<Option<GateEdge>>(None);
         reg.insert_pending(make_pending("h1", "upstream", "m", weak, tx));
 
         let bus = Arc::new(GateBus::new());
@@ -336,15 +354,14 @@ mod tests {
         let reg = GateBusRegistry::new();
         let bus = Arc::new(GateBus::new());
         reg.register("post-a", "m", Arc::clone(&bus)).expect("reg");
-        let (tx, rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, mut rx) = watch::channel::<Option<GateEdge>>(None);
         let (alive, weak) = live_stats();
         reg.subscribe(("post-a", "m"), "h1", weak.clone(), tx.clone())
             .expect("sub");
         reg.track_subscriber(make_pending("h1", "post-a", "m", weak, tx));
 
         reg.unregister("post-a");
-        let edge = rx
-            .recv_timeout(Duration::from_millis(200))
+        let edge = watch_recv_timeout(&mut rx, Duration::from_millis(200))
             .expect("UpstreamGone within 200ms");
         assert_eq!(edge, GateEdge::UpstreamGone);
         assert!(reg.lookup("post-a", "m").is_none());
@@ -362,14 +379,14 @@ mod tests {
         bus_a.tick(1.0);
         reg.register("post-a", "m", Arc::clone(&bus_a))
             .expect("reg-a");
-        let (tx, rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, mut rx) = watch::channel::<Option<GateEdge>>(None);
         let (alive, weak) = live_stats();
         reg.subscribe(("post-a", "m"), "h1", weak.clone(), tx.clone())
             .expect("sub");
         reg.track_subscriber(make_pending("h1", "post-a", "m", weak, tx));
 
         reg.unregister("post-a");
-        let _ = rx.recv_timeout(Duration::from_millis(200));
+        let _ = watch_recv_timeout(&mut rx, Duration::from_millis(200));
 
         let bus_b = Arc::new(GateBus::new());
         bus_b.tick(1.0);
@@ -378,8 +395,7 @@ mod tests {
         let promoted = reg.sweep_pending();
         assert_eq!(promoted, 1, "sweep must re-resolve the pending subscriber");
 
-        let edge = rx
-            .recv_timeout(Duration::from_millis(200))
+        let edge = watch_recv_timeout(&mut rx, Duration::from_millis(200))
             .expect("WhileOpen within 200ms");
         assert_eq!(edge, GateEdge::WhileOpen);
         drop(alive);
@@ -400,7 +416,7 @@ mod tests {
         let reg = GateBusRegistry::new();
         let bus = Arc::new(GateBus::new());
         reg.register("post-a", "m", Arc::clone(&bus)).expect("reg");
-        let (tx, rx) = mpsc::sync_channel::<GateEdge>(1);
+        let (tx, mut rx) = watch::channel::<Option<GateEdge>>(None);
         {
             let (alive_local, weak) = live_stats();
             reg.subscribe(("post-a", "m"), "h-dead", weak.clone(), tx.clone())
@@ -409,7 +425,7 @@ mod tests {
             drop(alive_local);
         }
         reg.unregister("post-a");
-        let edge = rx.recv_timeout(Duration::from_millis(100));
+        let edge = watch_recv_timeout(&mut rx, Duration::from_millis(100));
         assert!(
             edge.is_err(),
             "no edge should be delivered for a dead-weak subscriber"
@@ -447,7 +463,7 @@ mod tests {
             kept.push(stats);
             let handle_id = format!("h{i}");
             let h = thread::spawn(move || {
-                let (tx, _rx) = mpsc::sync_channel::<GateEdge>(1);
+                let (tx, _rx) = watch::channel::<Option<GateEdge>>(None);
                 let _ = r.subscribe(("post-a", "m"), &handle_id, weak.clone(), tx.clone());
                 r.track_subscriber(make_pending(&handle_id, "post-a", "m", weak, tx));
             });
