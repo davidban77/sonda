@@ -16,7 +16,7 @@ use crate::encoder::create_encoder;
 use crate::generator::create_generator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::core_loop::{
-    self, CloseEmitFn, CloseSignal, GateContext, TickContext, TickResult,
+    self, CloseEmitFn, CloseSignal, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
 };
 use crate::schedule::gate_bus::GateBus;
 use crate::schedule::is_in_spike;
@@ -117,7 +117,7 @@ pub fn run_with_sink_gated(
 
     let upstream_bus_for_tick = upstream_bus.clone();
     let mut tick_fn = |ctx: &TickContext<'_>,
-                       sink: &mut dyn Sink,
+                       output: &mut TickOutput,
                        events_buf: &mut Vec<MetricEvent>|
      -> Result<TickResult, SondaError> {
         let wall_now = ctx.wall_clock;
@@ -155,19 +155,19 @@ pub fn run_with_sink_gated(
         buf.clear();
         encoder.encode_metric(&event, &mut buf)?;
         let bytes_written = buf.len() as u64;
-        sink.write(&buf)?;
-        let delivered = sink.last_write_delivered();
+        output
+            .writes
+            .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
 
         events_buf.push(event);
 
         Ok(TickResult {
             bytes_written,
-            delivered,
+            delivered: true,
         })
     };
 
-    let stats_for_flush = stats.clone();
-    let loop_result = match gate_ctx {
+    match gate_ctx {
         None => core_loop::run_schedule_loop(
             &schedule,
             config.rate,
@@ -194,12 +194,6 @@ pub fn run_with_sink_gated(
                 &mut tick_fn,
             )
         }
-    };
-
-    let flush_result = sink.flush();
-    match loop_result {
-        Ok(()) => core_loop::apply_flush_policy(&schedule, stats_for_flush.as_ref(), flush_result),
-        Err(e) => Err(e),
     }
 }
 
@@ -254,7 +248,8 @@ fn make_close_emitter(
         CloseSignal::SnapTo(v) => v,
     };
 
-    Box::new(move |sink: &mut dyn Sink| -> Result<(), SondaError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(256);
+    Box::new(move |output: &mut TickOutput| -> Result<(), SondaError> {
         let (series, watermark) = match stats.write() {
             Ok(mut st) => st.drain_close_emit_series(),
             Err(p) => p.into_inner().drain_close_emit_series(),
@@ -270,12 +265,13 @@ fn make_close_emitter(
             None => SystemTime::now(),
         };
 
-        let mut buf: Vec<u8> = Vec::with_capacity(256);
         for (name, labels) in series {
             buf.clear();
             let marker = MetricEvent::from_parts(name, value, labels, close_ts);
             encoder.encode_metric(&marker, &mut buf)?;
-            sink.write(&buf)?;
+            output
+                .writes
+                .push(WriteCommand::Bytes(std::mem::take(&mut buf)));
         }
         Ok(())
     })
@@ -1220,6 +1216,24 @@ mod tests {
         }
     }
 
+    fn drain_emit_to_memory(
+        emit: &mut crate::schedule::core_loop::CloseEmitFn,
+        dest: &mut crate::sink::memory::MemorySink,
+    ) {
+        use crate::schedule::core_loop::{TickOutput, WriteCommand};
+        use crate::sink::Sink as SinkTrait;
+        let mut output = TickOutput::default();
+        emit(&mut output).expect("close-emit must succeed");
+        for cmd in output.writes.drain(..) {
+            match cmd {
+                WriteCommand::Bytes(buf) => SinkTrait::write(dest, &buf).expect("memory write ok"),
+                WriteCommand::LogEvent { event, bytes } => {
+                    SinkTrait::write_log_event(dest, &event, &bytes).expect("memory log write ok")
+                }
+            }
+        }
+    }
+
     #[test]
     fn close_emitter_is_idempotent_after_draining_series() {
         use crate::encoder::create_encoder;
@@ -1249,7 +1263,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut first = MemorySink::new();
-        emit(&mut first).expect("first call ok");
+        drain_emit_to_memory(&mut emit, &mut first);
         assert!(
             !first.buffer.is_empty(),
             "first invocation must emit the tracked series"
@@ -1267,7 +1281,7 @@ mod tests {
         }
 
         let mut second = MemorySink::new();
-        emit(&mut second).expect("second call ok");
+        drain_emit_to_memory(&mut emit, &mut second);
         assert!(
             second.buffer.is_empty(),
             "second invocation with no new series must emit nothing"
@@ -1307,7 +1321,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        emit(&mut sink).expect("close-emit must succeed");
+        drain_emit_to_memory(&mut emit, &mut sink);
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
@@ -1368,7 +1382,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        emit(&mut sink).expect("close-emit must succeed");
+        drain_emit_to_memory(&mut emit, &mut sink);
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines = output.lines().filter(|l| !l.is_empty()).count();
@@ -1406,7 +1420,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        emit(&mut sink).expect("close-emit must succeed");
+        drain_emit_to_memory(&mut emit, &mut sink);
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines = output.lines().filter(|l| !l.is_empty()).count();
