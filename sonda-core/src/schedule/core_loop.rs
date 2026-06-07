@@ -13,7 +13,7 @@ use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
 use crate::sink::Sink;
-use crate::SondaError;
+use crate::{RuntimeError, SondaError};
 
 use super::ParsedSchedule;
 
@@ -589,8 +589,8 @@ impl GateContext {
 /// pause continues from tick N on resume.
 ///
 /// On `WhileClose` the wrapper breaks out of the inner loop via a
-/// segment-scoped flag, transitions to `Paused`, and blocks on
-/// `recv_timeout` until either the gate reopens or shutdown arrives.
+/// segment-scoped flag, transitions to `Paused`, and awaits the next
+/// gate edge until either the gate reopens or shutdown arrives.
 ///
 /// Stats updates: `state` is written on every transition. While paused,
 /// `current_rate` is reset to 0.0 and `elapsed_secs` keeps wall-clocking
@@ -607,7 +607,7 @@ pub(crate) fn gated_loop(
 ) -> Result<(), SondaError> {
     let mut close_warn_limiter = SinkErrorRateLimiter::new();
 
-    let body_result = gated_loop_body(
+    let body_result = run_on_thread_runtime(gated_loop_body(
         schedule,
         rate,
         shutdown,
@@ -616,7 +616,7 @@ pub(crate) fn gated_loop(
         &mut close_warn_limiter,
         sink,
         tick_fn,
-    );
+    ))?;
 
     match body_result {
         Ok(LoopExit::Shutdown) => {
@@ -653,8 +653,16 @@ pub(crate) fn gated_loop(
     }
 }
 
+fn run_on_thread_runtime<F: std::future::Future>(fut: F) -> Result<F::Output, SondaError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
+    Ok(rt.block_on(fut))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn gated_loop_body(
+async fn gated_loop_body(
     schedule: &ParsedSchedule,
     rate: f64,
     shutdown: Option<&AtomicBool>,
@@ -704,11 +712,8 @@ fn gated_loop_body(
         match state {
             ScenarioState::Pending => {
                 if !after_satisfied {
-                    match gate_ctx.gate_rx.recv_timeout(remaining_until(
-                        schedule,
-                        started_at,
-                        PAUSED_POLL_INTERVAL,
-                    )) {
+                    let wait = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
+                    match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
                         Some(GateEdge::AfterFired) => {
                             after_satisfied = true;
                         }
@@ -794,6 +799,7 @@ fn gated_loop_body(
                     && !debounce_close_to_paused(
                         schedule, started_at, shutdown, gate_ctx, &debounce,
                     )
+                    .await
                 {
                     while_open = true;
                     continue;
@@ -823,7 +829,7 @@ fn gated_loop_body(
                     wakeup = wakeup.min(remaining);
                 }
 
-                let recv = gate_ctx.gate_rx.recv_timeout(wakeup);
+                let recv = gate_ctx.gate_rx.recv_edge_timeout(wakeup).await;
                 let now = Instant::now();
                 match recv {
                     Some(GateEdge::WhileOpen) => {
@@ -922,7 +928,7 @@ fn gated_loop_body(
                     }
                     UnresolvedBehavior::Closed | UnresolvedBehavior::Pending => {
                         let wakeup = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
-                        match gate_ctx.gate_rx.recv_timeout(wakeup) {
+                        match gate_ctx.gate_rx.recv_edge_timeout(wakeup).await {
                             Some(GateEdge::WhileOpen) => {
                                 while_open = true;
                                 state = ScenarioState::Pending;
@@ -1067,11 +1073,11 @@ enum LoopExit {
 /// debounce timer to fire (commit). Returns `true` when the transition
 /// to `Paused` should commit, `false` when the close was cancelled by a
 /// reopen within the debounce window.
-fn debounce_close_to_paused(
+async fn debounce_close_to_paused(
     schedule: &ParsedSchedule,
     started_at: Instant,
     shutdown: Option<&AtomicBool>,
-    gate_ctx: &GateContext,
+    gate_ctx: &mut GateContext,
     debounce: &DebounceState,
 ) -> bool {
     if debounce.delay_close.is_zero() {
@@ -1091,7 +1097,7 @@ fn debounce_close_to_paused(
         if let Some(remaining) = remaining_duration(schedule, started_at) {
             wait = wait.min(remaining);
         }
-        match gate_ctx.gate_rx.recv_timeout(wait) {
+        match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
             Some(GateEdge::WhileOpen) => return false,
             Some(GateEdge::WhileClose) => {}
             Some(GateEdge::AfterFired) => {}
@@ -1115,7 +1121,7 @@ fn run_running_segment(
     rate: f64,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
-    gate_ctx: &GateContext,
+    gate_ctx: &mut GateContext,
     segment_running: &Arc<AtomicBool>,
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
@@ -1136,7 +1142,7 @@ fn run_running_segment(
     let saw_close_for_wrapper = Arc::clone(&saw_close);
     let saw_gone_for_wrapper = Arc::clone(&saw_gone);
     let saw_open_for_wrapper = Arc::clone(&saw_open);
-    let gate_rx = &gate_ctx.gate_rx;
+    let gate_rx = &mut gate_ctx.gate_rx;
 
     type WrappedTick<'a> = Box<
         dyn FnMut(
