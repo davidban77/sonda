@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.14.1](https://github.com/davidban77/sonda/compare/v1.14.0...v1.14.1) (2026-06-07)
+
+
+### Documentation
+
+* **site:** reorganize for newcomers — outcome-named IA, tabs, glossary ([#442](https://github.com/davidban77/sonda/issues/442)) ([716bb5b](https://github.com/davidban77/sonda/commit/716bb5b0f304997483368421cf29135a7730e91b))
+
 ## [1.14.0](https://github.com/davidban77/sonda/compare/v1.13.1...v1.14.0) (2026-05-30)
 
 
