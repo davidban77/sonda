@@ -209,6 +209,7 @@ fn sink_kind(sink: &SinkConfig) -> &'static str {
         SinkConfig::File { .. } => "file",
         SinkConfig::Tcp { .. } => "tcp",
         SinkConfig::Udp { .. } => "udp",
+        SinkConfig::Memory { .. } => "memory",
         #[cfg(feature = "http")]
         SinkConfig::HttpPush { .. } => "http_push",
         #[cfg(feature = "http")]

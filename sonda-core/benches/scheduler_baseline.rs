@@ -3,11 +3,12 @@
 //! CPU%, tick-drift and dropped-tick percentage per N, and writes a markdown
 //! report alongside a stdout table.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,8 +16,11 @@ use sonda_core::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
 use sonda_core::schedule::handle::ScenarioHandle;
-use sonda_core::sink::SinkConfig;
-use sonda_core::{launch_scenario, prepare_entries, OnSinkError};
+use sonda_core::schedule::runner::run_with_sink;
+use sonda_core::schedule::stats::ScenarioStats;
+use sonda_core::sink::memory::{CapturedRing, MemorySink};
+use sonda_core::sink::{Sink, SinkConfig};
+use sonda_core::{launch_scenario, prepare_entries, OnSinkError, RuntimeError, SondaError};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 const DEFAULT_SCENARIO_COUNTS: &[usize] = &[1, 10, 50, 100, 250, 500];
@@ -25,7 +29,8 @@ const DEFAULT_WARMUP_SECS: u64 = 30;
 const DEFAULT_MEASURE_SECS: u64 = 60;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const DROPPED_TICK_TOLERANCE: f64 = 0.10;
-const NULL_SINK_PATH: &str = "/dev/null";
+const CAPTURE_RING_SIZE: usize = 1_000_000;
+const DRIFT_WARMUP_FRACTION: f64 = 0.10;
 
 fn warmup_secs() -> u64 {
     std::env::var("SONDA_BENCH_WARMUP_SECS")
@@ -59,6 +64,10 @@ struct RowResult {
     cpu_pct: f64,
     drift_mean_ms: f64,
     drift_p99_ms: f64,
+    drift_p50_us: f64,
+    drift_p90_us: f64,
+    drift_p99_us: f64,
+    drift_max_us: f64,
     dropped_pct: f64,
 }
 
@@ -70,7 +79,7 @@ struct Sample {
     per_scenario_events: Vec<u64>,
 }
 
-fn metrics_entry(name: String, rate: f64) -> ScenarioEntry {
+fn metrics_entry(name: String, rate: f64, sink: SinkConfig) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
             name,
@@ -81,9 +90,7 @@ fn metrics_entry(name: String, rate: f64) -> ScenarioEntry {
             cardinality_spikes: None,
             dynamic_labels: None,
             labels: None,
-            sink: SinkConfig::File {
-                path: NULL_SINK_PATH.to_string(),
-            },
+            sink,
             phase_offset: None,
             clock_group: None,
             clock_group_is_auto: None,
@@ -99,19 +106,168 @@ fn metrics_entry(name: String, rate: f64) -> ScenarioEntry {
     })
 }
 
-fn launch_n(n: usize) -> Vec<ScenarioHandle> {
-    let entries: Vec<ScenarioEntry> = (0..n)
-        .map(|i| metrics_entry(format!("bench_{i}"), RATE_HZ))
-        .collect();
-    let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
-    let mut handles = Vec::with_capacity(prepared.len());
-    for (i, p) in prepared.into_iter().enumerate() {
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let handle = launch_scenario(format!("bench_{i}"), p.entry, shutdown, p.start_delay)
-            .expect("launch_scenario must succeed");
-        handles.push(handle);
+fn metrics_config_for_capture(name: String, rate: f64) -> ScenarioConfig {
+    ScenarioConfig {
+        base: BaseScheduleConfig {
+            name,
+            rate,
+            duration: None,
+            gaps: None,
+            bursts: None,
+            cardinality_spikes: None,
+            dynamic_labels: None,
+            labels: None,
+            sink: SinkConfig::Memory {
+                capture: true,
+                max_events: Some(CAPTURE_RING_SIZE),
+            },
+            phase_offset: None,
+            clock_group: None,
+            clock_group_is_auto: None,
+            start_time: None,
+            jitter: None,
+            jitter_seed: None,
+            on_sink_error: OnSinkError::Warn,
+        },
+        generator: GeneratorConfig::Constant { value: 1.0 },
+        encoder: EncoderConfig::PrometheusText { precision: None },
+        metric_type: None,
+        help: None,
     }
-    handles
+}
+
+struct DriftStats {
+    p50_us: f64,
+    p90_us: f64,
+    p99_us: f64,
+    max_us: f64,
+}
+
+fn compute_drift_stats(timestamps: &[Instant], rate_hz: f64) -> DriftStats {
+    if timestamps.len() < 2 {
+        return DriftStats {
+            p50_us: 0.0,
+            p90_us: 0.0,
+            p99_us: 0.0,
+            max_us: 0.0,
+        };
+    }
+    let expected_interval_us = 1_000_000.0 / rate_hz;
+    let skip = ((timestamps.len() as f64) * DRIFT_WARMUP_FRACTION).floor() as usize;
+    let trimmed = &timestamps[skip..];
+    if trimmed.len() < 2 {
+        return DriftStats {
+            p50_us: 0.0,
+            p90_us: 0.0,
+            p99_us: 0.0,
+            max_us: 0.0,
+        };
+    }
+    let mut deltas_us: Vec<f64> = Vec::with_capacity(trimmed.len() - 1);
+    for pair in trimmed.windows(2) {
+        let dt_us = pair[1].duration_since(pair[0]).as_micros() as f64;
+        deltas_us.push((dt_us - expected_interval_us).abs());
+    }
+    DriftStats {
+        p50_us: percentile(&deltas_us, 50.0),
+        p90_us: percentile(&deltas_us, 90.0),
+        p99_us: percentile(&deltas_us, 99.0),
+        max_us: deltas_us.iter().copied().fold(0.0f64, f64::max),
+    }
+}
+
+fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
+    assert!(n >= 1, "launch_n requires at least one scenario");
+    let capture_handle = Arc::new(Mutex::new(CapturedRing::new(CAPTURE_RING_SIZE)));
+
+    let mut handles = Vec::with_capacity(n);
+    handles.push(launch_capturing_scenario(
+        "bench_0".to_string(),
+        Arc::clone(&capture_handle),
+    ));
+
+    if n > 1 {
+        let entries: Vec<ScenarioEntry> = (1..n)
+            .map(|i| {
+                metrics_entry(
+                    format!("bench_{i}"),
+                    RATE_HZ,
+                    SinkConfig::Memory {
+                        capture: false,
+                        max_events: None,
+                    },
+                )
+            })
+            .collect();
+        let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
+        for (offset, p) in prepared.into_iter().enumerate() {
+            let i = offset + 1;
+            let shutdown = Arc::new(AtomicBool::new(true));
+            let handle = launch_scenario(format!("bench_{i}"), p.entry, shutdown, p.start_delay)
+                .expect("launch_scenario must succeed");
+            handles.push(handle);
+        }
+    }
+    (handles, capture_handle)
+}
+
+// Mirrors launch_scenario for the shared-capture path; bench-local replica.
+fn launch_capturing_scenario(
+    id: String,
+    capture_handle: Arc<Mutex<CapturedRing>>,
+) -> ScenarioHandle {
+    let config = metrics_config_for_capture(id.clone(), RATE_HZ);
+    let name = config.base.name.clone();
+    let shutdown = Arc::new(AtomicBool::new(true));
+    let stats = Arc::new(RwLock::new(ScenarioStats::default()));
+    let alive = Arc::new(AtomicBool::new(true));
+    let cleaned_up = Arc::new(AtomicBool::new(true));
+    let labels: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
+
+    let shutdown_for_thread = Arc::clone(&shutdown);
+    let stats_for_thread = Arc::clone(&stats);
+    let alive_for_thread = Arc::clone(&alive);
+
+    let thread = std::thread::Builder::new()
+        .name(format!("sonda-{name}"))
+        .spawn(move || -> Result<(), SondaError> {
+            struct AliveGuard(Arc<AtomicBool>);
+            impl Drop for AliveGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _guard = AliveGuard(alive_for_thread);
+
+            let sink_inner = MemorySink::with_shared_capture(capture_handle);
+            let mut sink: Box<dyn Sink> = Box::new(sink_inner);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
+            rt.block_on(run_with_sink(
+                &config,
+                &mut sink,
+                Some(shutdown_for_thread.as_ref()),
+                Some(stats_for_thread),
+            ))
+        })
+        .expect("scenario thread must spawn");
+
+    ScenarioHandle::new(
+        id,
+        name,
+        None,
+        shutdown,
+        Some(thread),
+        Instant::now(),
+        stats,
+        RATE_HZ,
+        alive,
+        labels,
+        None,
+        cleaned_up,
+    )
 }
 
 fn stop_all(handles: &mut [ScenarioHandle]) {
@@ -186,7 +342,8 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
         "[bench] N={n}: launching scenarios at {RATE_HZ:.0} Hz \
          (warmup {warmup}s, measure {measure}s)"
     );
-    let mut handles = launch_n(n);
+
+    let (mut handles, capture_handle) = launch_n(n);
 
     thread::sleep(Duration::from_secs(warmup));
 
@@ -222,10 +379,18 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
     let drift_p99_ms = percentile(&drift_samples_ms, 99.0);
     let dropped_pct = compute_dropped_pct(&samples, &initial_events);
 
+    let captured_timestamps: Vec<Instant> = {
+        let guard = capture_handle.lock().expect("capture handle poisoned");
+        guard.events().iter().map(|(ts, _)| *ts).collect()
+    };
+    let drift = compute_drift_stats(&captured_timestamps, RATE_HZ);
+
     eprintln!(
         "[bench] N={n}: rss={rss_mb:.1}MB vsize={vsize_mb:.0}MB threads={threads} \
          cpu={cpu_pct:.1}% drift_mean={drift_mean_ms:.2}ms drift_p99={drift_p99_ms:.2}ms \
-         dropped={dropped_pct:.2}%"
+         drift_us p50={:.1} p90={:.1} p99={:.1} max={:.1} \
+         dropped={dropped_pct:.2}%",
+        drift.p50_us, drift.p90_us, drift.p99_us, drift.max_us
     );
 
     stop_all(&mut handles);
@@ -238,6 +403,10 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
         cpu_pct,
         drift_mean_ms,
         drift_p99_ms,
+        drift_p50_us: drift.p50_us,
+        drift_p90_us: drift.p90_us,
+        drift_p99_us: drift.p99_us,
+        drift_max_us: drift.max_us,
         dropped_pct,
     }
 }
@@ -318,7 +487,7 @@ fn percentile(values: &[f64], p: f64) -> f64 {
 fn print_table(rows: &[RowResult]) {
     println!();
     println!(
-        "| {:>5} | {:>9} | {:>11} | {:>7} | {:>5} | {:>20} | {:>19} | {:>14} |",
+        "| {:>5} | {:>9} | {:>11} | {:>7} | {:>5} | {:>20} | {:>19} | {:>12} | {:>12} | {:>12} | {:>11} | {:>14} |",
         "N",
         "RSS (MB)",
         "VSize (MB)",
@@ -326,15 +495,19 @@ fn print_table(rows: &[RowResult]) {
         "CPU %",
         "Tick drift mean (ms)",
         "Tick drift p99 (ms)",
+        "Drift p50 us",
+        "Drift p90 us",
+        "Drift p99 us",
+        "Drift max us",
         "Dropped-tick %"
     );
     println!(
-        "|{:-<7}|{:-<11}|{:-<13}|{:-<9}|{:-<7}|{:-<22}|{:-<21}|{:-<16}|",
-        "", "", "", "", "", "", "", ""
+        "|{:-<7}|{:-<11}|{:-<13}|{:-<9}|{:-<7}|{:-<22}|{:-<21}|{:-<14}|{:-<14}|{:-<14}|{:-<13}|{:-<16}|",
+        "", "", "", "", "", "", "", "", "", "", "", ""
     );
     for r in rows {
         println!(
-            "| {:>5} | {:>9.1} | {:>11.1} | {:>7} | {:>5.1} | {:>20.2} | {:>19.2} | {:>14.2} |",
+            "| {:>5} | {:>9.1} | {:>11.1} | {:>7} | {:>5.1} | {:>20.2} | {:>19.2} | {:>12.1} | {:>12.1} | {:>12.1} | {:>11.1} | {:>14.2} |",
             r.n,
             r.rss_mb,
             r.vsize_mb,
@@ -342,6 +515,10 @@ fn print_table(rows: &[RowResult]) {
             r.cpu_pct,
             r.drift_mean_ms,
             r.drift_p99_ms,
+            r.drift_p50_us,
+            r.drift_p90_us,
+            r.drift_p99_us,
+            r.drift_max_us,
             r.dropped_pct
         );
     }
@@ -362,25 +539,29 @@ fn render_markdown(rows: &[RowResult], warmup: u64, measure: u64) -> String {
     out.push_str("## Methodology\n\n");
     out.push_str(&format!(
         "Each row is N concurrent scenarios, each emitting at 100 events/sec via the \
-         Prometheus text encoder to a `file:/dev/null` sink (no real I/O — measures the \
-         scheduler, not the sink). {warmup}s warm-up + {measure}s measurement window. \
-         RSS / VSize / thread count / CPU% sampled every ~1s via the `sysinfo` crate; \
-         tick drift and dropped-tick rate computed from per-scenario \
-         `ScenarioStats::total_events` deltas between consecutive 1s samples (the \
-         production sinks do not expose per-event timestamps to the harness without a \
-         production-code change, so per-sample event-rate deviation is used as the \
-         scheduler-fidelity proxy). A bucket is counted as `dropped` when the observed \
-         events in the 1s window deviate from the expected count (`rate * dt`) by more \
-         than ±10%.\n\n"
+         Prometheus text encoder into a `memory` sink (no I/O — measures the scheduler, \
+         not the sink). {warmup}s warm-up + {measure}s measurement window. RSS / VSize / \
+         thread count / CPU% sampled every ~1s via the `sysinfo` crate. \
+         Tick drift is reported two ways: \n\
+         \n\
+         - **ms-level proxy** — `total_events` deltas between consecutive 1s samples. A bucket \
+         is counted as `dropped` when the observed events in the 1s window deviate from the \
+         expected count (`rate * dt`) by more than ±10%. \n\
+         - **microsecond-level direct** — the first of the N main scenarios writes through a \
+         `memory` sink with `capture: true`, retaining `(Instant, bytes)` per event across the \
+         full warm-up and measurement window. All N scenarios share the same scheduler, so the \
+         captured cadence reflects the load every scenario experiences at this N. Per-event \
+         drift is computed as `(t[i+1] - t[i]) - (1_000_000us / rate_hz)`; the first 10% of \
+         samples are dropped as warm-up jitter; p50/p90/p99/max are reported in microseconds. \n\n"
     ));
     out.push_str("## Results\n\n");
     out.push_str(
-        "| N scenarios | RSS (MB) | VSize (MB) | Threads | CPU % | Tick drift mean (ms) | Tick drift p99 (ms) | Dropped-tick % |\n",
+        "| N scenarios | RSS (MB) | VSize (MB) | Threads | CPU % | Tick drift mean (ms) | Tick drift p99 (ms) | Drift p50 (us) | Drift p90 (us) | Drift p99 (us) | Drift max (us) | Dropped-tick % |\n",
     );
-    out.push_str("|---|---|---|---|---|---|---|---|\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for r in rows {
         out.push_str(&format!(
-            "| {} | {:.1} | {:.1} | {} | {:.1} | {:.2} | {:.2} | {:.2} |\n",
+            "| {} | {:.1} | {:.1} | {} | {:.1} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} |\n",
             r.n,
             r.rss_mb,
             r.vsize_mb,
@@ -388,6 +569,10 @@ fn render_markdown(rows: &[RowResult], warmup: u64, measure: u64) -> String {
             r.cpu_pct,
             r.drift_mean_ms,
             r.drift_p99_ms,
+            r.drift_p50_us,
+            r.drift_p90_us,
+            r.drift_p99_us,
+            r.drift_max_us,
             r.dropped_pct
         ));
     }
@@ -403,15 +588,17 @@ fn inflection_paragraph(rows: &[RowResult]) -> String {
     let max_threads = rows.iter().map(|r| r.threads).max().unwrap_or(0);
     let max_rss = rows.iter().map(|r| r.rss_mb).fold(0.0f64, f64::max);
     let max_drift_p99 = rows.iter().map(|r| r.drift_p99_ms).fold(0.0f64, f64::max);
+    let max_drift_p99_us = rows.iter().map(|r| r.drift_p99_us).fold(0.0f64, f64::max);
     let max_dropped = rows.iter().map(|r| r.dropped_pct).fold(0.0f64, f64::max);
     format!(
         "Thread count grows linearly with N (peak observed: {max_threads}); RSS scales with \
          the per-thread stack reservation (peak observed: {max_rss:.1} MB). The earliest \
          metric to break under this scheduler is whichever among tick-drift p99 (peak \
-         observed: {max_drift_p99:.2} ms), dropped-tick percentage (peak observed: \
-         {max_dropped:.2}%), and CPU% saturates first as N climbs. Read the row-to-row \
-         deltas above to identify where the curve bends — the linear-thread, linear-stack \
-         growth itself is the canary for this baseline."
+         observed: {max_drift_p99:.2} ms proxy / {max_drift_p99_us:.1} us direct), \
+         dropped-tick percentage (peak observed: {max_dropped:.2}%), and CPU% saturates \
+         first as N climbs. Read the row-to-row deltas above to identify where the curve \
+         bends — the linear-thread, linear-stack growth itself is the canary for this \
+         baseline."
     )
 }
 

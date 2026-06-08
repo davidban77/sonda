@@ -761,7 +761,10 @@ pub fn validate_summary_config(config: &SummaryScenarioConfig) -> Result<(), Son
 /// validation time, not at factory time.
 pub fn validate_sink_config(sink: &SinkConfig) -> Result<(), SondaError> {
     match sink {
-        SinkConfig::Stdout | SinkConfig::File { .. } | SinkConfig::Udp { .. } => Ok(()),
+        SinkConfig::Stdout
+        | SinkConfig::File { .. }
+        | SinkConfig::Udp { .. }
+        | SinkConfig::Memory { .. } => Ok(()),
         SinkConfig::Tcp { retry, .. } => validate_retry_config_opt(retry.as_ref()),
         #[cfg(feature = "http")]
         SinkConfig::HttpPush {

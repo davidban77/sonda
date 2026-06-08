@@ -152,6 +152,23 @@ pub enum SinkConfig {
         address: String,
     },
 
+    /// In-process memory sink for tests and benchmarks.
+    ///
+    /// When `capture` is `true`, each write records its `Instant` alongside
+    /// the bytes, bounded to the most recent `max_events` entries. When
+    /// `capture` is `false`, the sink only accumulates bytes in its buffer.
+    #[cfg_attr(feature = "config", serde(rename = "memory"))]
+    Memory {
+        /// Whether to record `(Instant, bytes)` on every write.
+        #[cfg_attr(feature = "config", serde(default))]
+        capture: bool,
+
+        /// Cap on retained captured events. Defaults to `1_000_000` when
+        /// `capture` is `true` and the field is omitted.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_events: Option<usize>,
+    },
+
     /// Batch encoded events and deliver them via HTTP POST.
     ///
     /// Bytes are accumulated in a buffer until `batch_size` bytes are reached,
@@ -396,6 +413,17 @@ pub fn create_sink(
             Ok(Box::new(tcp::TcpSink::new(address, rp)?))
         }
         SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
+        SinkConfig::Memory {
+            capture,
+            max_events,
+        } => {
+            if *capture {
+                let max = max_events.unwrap_or(1_000_000);
+                Ok(Box::new(memory::MemorySink::with_capture(max)))
+            } else {
+                Ok(Box::new(memory::MemorySink::new()))
+            }
+        }
         #[cfg(feature = "http")]
         SinkConfig::HttpPush {
             url,
@@ -1392,6 +1420,79 @@ retry:
             sink.buffer, encoded,
             "default impl must forward the encoded bytes to write() unchanged"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // SinkConfig::Memory: factory wiring and capture path
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn create_sink_memory_without_capture_returns_ok() {
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+        };
+        let mut sink = create_sink(&cfg, None).unwrap();
+        sink.write(b"hello").unwrap();
+        sink.flush().unwrap();
+    }
+
+    #[test]
+    fn create_sink_memory_with_capture_returns_usable_sink() {
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(8),
+        };
+        let mut sink = create_sink(&cfg, None).unwrap();
+        sink.write(b"one").unwrap();
+        sink.write(b"two").unwrap();
+        sink.flush().unwrap();
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_deserializes_with_type_field() {
+        let yaml = "type: memory\ncapture: true\nmax_events: 64";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(64)
+            }
+        ));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_defaults_when_fields_omitted() {
+        let yaml = "type: memory";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: false,
+                max_events: None
+            }
+        ));
+    }
+
+    #[test]
+    fn sink_config_memory_is_cloneable_and_debuggable() {
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(16),
+        };
+        let cloned = cfg.clone();
+        assert!(matches!(
+            cloned,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(16)
+            }
+        ));
+        let s = format!("{cfg:?}");
+        assert!(s.contains("Memory"));
     }
 
     #[cfg(all(not(feature = "otlp"), feature = "config"))]
