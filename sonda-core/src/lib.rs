@@ -241,6 +241,10 @@ pub enum RuntimeError {
     /// [`ConfigError`] when collected at the multi-runner level.
     #[error("{0}")]
     ScenariosFailed(String),
+
+    /// A `tokio::task::spawn_blocking` task panicked or was cancelled.
+    #[error("blocking task failed: {0}")]
+    TaskPanicked(String),
 }
 
 #[cfg(test)]

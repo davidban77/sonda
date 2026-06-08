@@ -40,9 +40,9 @@ use crate::SondaError;
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
+pub async fn run(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, None)?;
-    run_with_sink(config, sink.as_mut(), None, None)
+    run_with_sink(config, &mut sink, None, None).await
 }
 
 /// Run a histogram scenario to completion, writing encoded events into the
@@ -62,22 +62,22 @@ pub fn run(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run_with_sink(
+pub async fn run_with_sink(
     config: &HistogramScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_with_sink_gated(config, sink, shutdown, stats, None)
+    run_with_sink_gated(config, sink, shutdown, stats, None).await
 }
 
 /// Run a histogram scenario with optional `while:` / `after:` gating.
 ///
 /// Histograms cannot be `while:` upstreams (compile-time
 /// `NonMetricsTarget`), but they can be `while:`-gated downstreams.
-pub fn run_with_sink_gated(
+pub async fn run_with_sink_gated(
     config: &HistogramScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: Option<GateContext>,
@@ -277,23 +277,29 @@ pub fn run_with_sink_gated(
     };
 
     match gate_ctx {
-        None => core_loop::run_schedule_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            sink,
-            &mut tick_fn,
-        ),
-        Some(ctx) => core_loop::gated_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            ctx,
-            sink,
-            &mut tick_fn,
-        ),
+        None => {
+            core_loop::run_schedule_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
+        Some(ctx) => {
+            core_loop::gated_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                ctx,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
     }
 }
 
@@ -312,10 +318,35 @@ fn format_le_value(bound: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use crate::config::{BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig};
     use crate::encoder::EncoderConfig;
-    use crate::sink::memory::MemorySink;
-    use crate::sink::SinkConfig;
+    use crate::sink::{Sink, SinkConfig};
+    use crate::SondaError;
+
+    type SharedBuf = std::sync::Arc<Mutex<Vec<u8>>>;
+
+    struct ProbeSink(SharedBuf);
+
+    impl Sink for ProbeSink {
+        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.0
+                .lock()
+                .expect("probe sink mutex poisoned")
+                .extend_from_slice(data);
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
+        let buf: SharedBuf = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
+        (sink, buf)
+    }
 
     /// Build a minimal HistogramScenarioConfig for testing.
     fn make_config(
@@ -355,23 +386,31 @@ mod tests {
 
     // ---- Run completes without error ----------------------------------------
 
-    #[test]
-    fn run_completes_for_short_duration() {
+    #[tokio::test]
+    async fn run_completes_for_short_duration() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("histogram run must succeed");
-        assert!(!sink.buffer.is_empty(), "histogram run must produce output");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("histogram run must succeed");
+        assert!(
+            !buf.lock().unwrap().is_empty(),
+            "histogram run must produce output"
+        );
     }
 
     // ---- Output contains expected series names ------------------------------
 
-    #[test]
-    fn output_contains_bucket_count_sum_series() {
+    #[tokio::test]
+    async fn output_contains_bucket_count_sum_series() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
 
         assert!(
             output.contains("http_request_duration_seconds_bucket{"),
@@ -389,13 +428,16 @@ mod tests {
 
     // ---- le label present on bucket events -----------------------------------
 
-    #[test]
-    fn bucket_events_have_le_label() {
+    #[tokio::test]
+    async fn bucket_events_have_le_label() {
         let config = make_config(50.0, "100ms", Some(vec![0.1, 0.5, 1.0]));
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
 
         // Check for specific le values.
         assert!(
@@ -410,34 +452,39 @@ mod tests {
 
     // ---- Gap suppresses output -----------------------------------------------
 
-    #[test]
-    fn gap_suppresses_histogram_output() {
+    #[tokio::test]
+    async fn gap_suppresses_histogram_output() {
         let mut config = make_config(100.0, "2s", None);
         config.base.gaps = Some(crate::config::GapConfig {
             every: "1s".to_string(),
             r#for: "500ms".to_string(),
         });
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
         // With gaps, we should have less output than without.
         // Just verify it ran successfully and produced some output.
         assert!(
-            !sink.buffer.is_empty(),
+            !buf.lock().unwrap().is_empty(),
             "histogram with gaps must still produce some output"
         );
     }
 
     // ---- Custom buckets are used --------------------------------------------
 
-    #[test]
-    fn custom_buckets_appear_in_output() {
+    #[tokio::test]
+    async fn custom_buckets_appear_in_output() {
         let config = make_config(50.0, "100ms", Some(vec![1.0, 5.0, 10.0]));
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         // Should have events for le="1", le="5", le="10", and le="+Inf"
         assert!(output.contains("le=\"1\""), "expected le=\"1\" in output");
         assert!(
@@ -463,17 +510,20 @@ mod tests {
 
     // ---- Labels from config are included ------------------------------------
 
-    #[test]
-    fn config_labels_appear_in_output() {
+    #[tokio::test]
+    async fn config_labels_appear_in_output() {
         let mut config = make_config(50.0, "100ms", Some(vec![1.0]));
         let mut label_map = std::collections::HashMap::new();
         label_map.insert("method".to_string(), "GET".to_string());
         config.base.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         assert!(
             output.contains("method=\"GET\""),
             "config labels must appear in output"

@@ -311,47 +311,56 @@ pub fn launch_scenario_with_gates(
                 }
             }
 
+            // Per-scenario current-thread Tokio runtime: drives the async
+            // runner from inside the std::thread::spawn'd scenario thread.
+            // One runtime per thread keeps the blocking-task pool local to
+            // this scenario.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
+
             match entry {
                 ScenarioEntry::Metrics(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_with_sink_gated(
+                    rt.block_on(run_with_sink_gated(
                         &config,
-                        sink.as_mut(),
+                        &mut sink,
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
                         upstream_bus,
                         gate_ctx,
-                    )
+                    ))
                 }
                 ScenarioEntry::Logs(config) => {
                     let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
-                    run_logs_with_sink_gated(
+                    rt.block_on(run_logs_with_sink_gated(
                         &config,
-                        sink.as_mut(),
+                        &mut sink,
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
                         gate_ctx,
-                    )
+                    ))
                 }
                 ScenarioEntry::Histogram(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_histogram_with_sink_gated(
+                    rt.block_on(run_histogram_with_sink_gated(
                         &config,
-                        sink.as_mut(),
+                        &mut sink,
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
                         gate_ctx,
-                    )
+                    ))
                 }
                 ScenarioEntry::Summary(config) => {
                     let mut sink = create_sink(&config.sink, None)?;
-                    run_summary_with_sink_gated(
+                    rt.block_on(run_summary_with_sink_gated(
                         &config,
-                        sink.as_mut(),
+                        &mut sink,
                         Some(shutdown_for_thread.as_ref()),
                         Some(Arc::clone(&stats_for_thread)),
                         gate_ctx,
-                    )
+                    ))
                 }
             }
         })

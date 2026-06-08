@@ -39,3 +39,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 insta = { workspace = true, features = ["filters"] }
 rstest = { workspace = true }
+
+[lints]
+workspace = true

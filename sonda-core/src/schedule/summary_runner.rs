@@ -40,9 +40,9 @@ use crate::SondaError;
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
+pub async fn run(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, None)?;
-    run_with_sink(config, sink.as_mut(), None, None)
+    run_with_sink(config, &mut sink, None, None).await
 }
 
 /// Run a summary scenario to completion, writing encoded events into the
@@ -62,22 +62,22 @@ pub fn run(config: &SummaryScenarioConfig) -> Result<(), SondaError> {
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run_with_sink(
+pub async fn run_with_sink(
     config: &SummaryScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_with_sink_gated(config, sink, shutdown, stats, None)
+    run_with_sink_gated(config, sink, shutdown, stats, None).await
 }
 
 /// Run a summary scenario with optional `while:` / `after:` gating.
 ///
 /// Summaries cannot be `while:` upstreams (compile-time
 /// `NonMetricsTarget`), but they can be `while:`-gated downstreams.
-pub fn run_with_sink_gated(
+pub async fn run_with_sink_gated(
     config: &SummaryScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: Option<GateContext>,
@@ -238,32 +238,63 @@ pub fn run_with_sink_gated(
     };
 
     match gate_ctx {
-        None => core_loop::run_schedule_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            sink,
-            &mut tick_fn,
-        ),
-        Some(ctx) => core_loop::gated_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            ctx,
-            sink,
-            &mut tick_fn,
-        ),
+        None => {
+            core_loop::run_schedule_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
+        Some(ctx) => {
+            core_loop::gated_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                ctx,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use crate::config::{BaseScheduleConfig, DistributionConfig, SummaryScenarioConfig};
     use crate::encoder::EncoderConfig;
-    use crate::sink::memory::MemorySink;
-    use crate::sink::SinkConfig;
+    use crate::sink::{Sink, SinkConfig};
+    use crate::SondaError;
+
+    type SharedBuf = std::sync::Arc<Mutex<Vec<u8>>>;
+
+    struct ProbeSink(SharedBuf);
+
+    impl Sink for ProbeSink {
+        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.0
+                .lock()
+                .expect("probe sink mutex poisoned")
+                .extend_from_slice(data);
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
+        let buf: SharedBuf = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
+        (sink, buf)
+    }
 
     /// Build a minimal SummaryScenarioConfig for testing.
     fn make_config(
@@ -306,23 +337,31 @@ mod tests {
 
     // ---- Run completes without error ----------------------------------------
 
-    #[test]
-    fn run_completes_for_short_duration() {
+    #[tokio::test]
+    async fn run_completes_for_short_duration() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("summary run must succeed");
-        assert!(!sink.buffer.is_empty(), "summary run must produce output");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("summary run must succeed");
+        assert!(
+            !buf.lock().unwrap().is_empty(),
+            "summary run must produce output"
+        );
     }
 
     // ---- Output contains expected series names ------------------------------
 
-    #[test]
-    fn output_contains_quantile_count_sum_series() {
+    #[tokio::test]
+    async fn output_contains_quantile_count_sum_series() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
 
         assert!(
             output.contains("rpc_duration_seconds{"),
@@ -340,13 +379,16 @@ mod tests {
 
     // ---- quantile label present on quantile events ---------------------------
 
-    #[test]
-    fn quantile_events_have_quantile_label() {
+    #[tokio::test]
+    async fn quantile_events_have_quantile_label() {
         let config = make_config(50.0, "100ms", Some(vec![0.5, 0.99]));
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
 
         assert!(
             output.contains("quantile=\"0.5\""),
@@ -360,36 +402,41 @@ mod tests {
 
     // ---- Gap suppresses output -----------------------------------------------
 
-    #[test]
-    fn gap_suppresses_summary_output() {
+    #[tokio::test]
+    async fn gap_suppresses_summary_output() {
         let mut config = make_config(100.0, "2s", None);
         config.base.gaps = Some(crate::config::GapConfig {
             every: "1s".to_string(),
             r#for: "500ms".to_string(),
         });
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
         assert!(
-            !sink.buffer.is_empty(),
+            !buf.lock().unwrap().is_empty(),
             "summary with gaps must still produce some output"
         );
     }
 
     // ---- Labels from config are included ------------------------------------
 
-    #[test]
-    fn config_labels_appear_in_output() {
+    #[tokio::test]
+    async fn config_labels_appear_in_output() {
         let mut config = make_config(50.0, "100ms", Some(vec![0.5]));
         let mut label_map = std::collections::HashMap::new();
         label_map.insert("service".to_string(), "auth".to_string());
         config.base.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         assert!(
             output.contains("service=\"auth\""),
             "config labels must appear in output"
