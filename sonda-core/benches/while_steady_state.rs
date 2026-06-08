@@ -5,11 +5,12 @@
 //! lives separately as a `#[test] fn` in `tests/while_runtime.rs`; this
 //! bench is the developer-facing profiler.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use tokio_util::sync::CancellationToken;
+
 use sonda_core::compiler::WhileOp;
 use sonda_core::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
@@ -47,52 +48,62 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
 }
 
 fn bench_baseline_ungated(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime must build");
     c.bench_function("baseline_ungated_300ms_at_1khz", |b| {
         b.iter(|| {
-            let entry = metrics_entry("bench", 1000.0, 300);
-            let shutdown = Arc::new(AtomicBool::new(true));
-            let mut handle = launch_scenario_with_gates(
-                "bench".to_string(),
-                None,
-                entry,
-                shutdown,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            handle.join(Some(Duration::from_secs(2))).unwrap();
+            rt.block_on(async {
+                let entry = metrics_entry("bench", 1000.0, 300);
+                let mut handle = launch_scenario_with_gates(
+                    "bench".to_string(),
+                    None,
+                    entry,
+                    CancellationToken::new(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                handle.join(Some(Duration::from_secs(2))).unwrap();
+            });
         });
     });
 }
 
 fn bench_gated_open(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime must build");
     c.bench_function("gated_open_300ms_at_1khz", |b| {
         b.iter(|| {
-            let bus = Arc::new(GateBus::new());
-            bus.tick(1.0);
-            let (rx, init) = bus.subscribe(SubscriptionSpec {
-                after: None,
-                while_: Some(WhileSpec {
-                    op: WhileOp::GreaterThan,
-                    threshold: 0.0,
-                }),
+            rt.block_on(async {
+                let bus = Arc::new(GateBus::new());
+                bus.tick(1.0);
+                let (rx, init) = bus.subscribe(SubscriptionSpec {
+                    after: None,
+                    while_: Some(WhileSpec {
+                        op: WhileOp::GreaterThan,
+                        threshold: 0.0,
+                    }),
+                });
+                let entry = metrics_entry("gated", 1000.0, 300);
+                let mut handle = launch_scenario_with_gates(
+                    "gated".to_string(),
+                    None,
+                    entry,
+                    CancellationToken::new(),
+                    None,
+                    Some(Arc::clone(&bus)),
+                    Some(GateContext::new(rx, init).with_has_while(true)),
+                    None,
+                )
+                .unwrap();
+                handle.join(Some(Duration::from_secs(2))).unwrap();
             });
-            let entry = metrics_entry("gated", 1000.0, 300);
-            let shutdown = Arc::new(AtomicBool::new(true));
-            let mut handle = launch_scenario_with_gates(
-                "gated".to_string(),
-                None,
-                entry,
-                shutdown,
-                None,
-                Some(Arc::clone(&bus)),
-                Some(GateContext::new(rx, init).with_has_while(true)),
-                None,
-            )
-            .unwrap();
-            handle.join(Some(Duration::from_secs(2))).unwrap();
         });
     });
 }

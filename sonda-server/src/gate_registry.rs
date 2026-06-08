@@ -9,6 +9,7 @@ use sonda_core::schedule::gate_bus::{
     RegistryError, WhileSpec,
 };
 use sonda_core::schedule::stats::ScenarioStats;
+use sonda_core::ScenarioState;
 use sonda_core::UnresolvedBehavior;
 
 type BusKey = (String, String);
@@ -150,6 +151,23 @@ impl GateBusResolver for GateBusRegistry {
         let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
         let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
 
+        let stale_pending: Vec<String> = pending
+            .iter()
+            .filter(|(_, entry)| entry.scenario_name == scenario_name)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for handle_id in stale_pending {
+            let entry = pending.remove(&handle_id).expect("just snapshotted");
+            entry.edge_sender.send_replace(Some(GateEdge::UpstreamGone));
+            if let Some(stats_arc) = entry.stats.upgrade() {
+                if let Ok(mut s) = stats_arc.write() {
+                    if s.state != ScenarioState::Finished {
+                        s.transition_state(ScenarioState::Unresolved);
+                    }
+                }
+            }
+        }
+
         for key in removed_keys {
             let Some(refs) = subs.remove(&key) else {
                 continue;
@@ -224,6 +242,36 @@ impl GateBusResolver for GateBusRegistry {
         let mut subs = self.subscribers.write().unwrap_or_else(|p| p.into_inner());
         let (key, sub) = SubscriberRef::from_pending(pending);
         subs.entry(key).or_default().push(sub);
+    }
+
+    fn cancel_pending_for_upstream(
+        &self,
+        scenario_name: &str,
+        entry_id: &str,
+    ) -> Vec<RegistryError> {
+        let mut pending = self.pending.write().unwrap_or_else(|p| p.into_inner());
+        let matching: Vec<String> = pending
+            .iter()
+            .filter(|(_, p)| p.scenario_name == scenario_name && p.entry_id == entry_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut errors = Vec::with_capacity(matching.len());
+        for handle_id in matching {
+            let entry = pending.remove(&handle_id).expect("just snapshotted");
+            entry.edge_sender.send_replace(Some(GateEdge::UpstreamGone));
+            if let Some(stats_arc) = entry.stats.upgrade() {
+                if let Ok(mut s) = stats_arc.write() {
+                    if s.state != ScenarioState::Finished {
+                        s.transition_state(ScenarioState::Unresolved);
+                    }
+                }
+            }
+            errors.push(RegistryError::UpstreamCancelled {
+                scenario_name: entry.scenario_name,
+                entry_id: entry.entry_id,
+            });
+        }
+        errors
     }
 }
 
@@ -431,6 +479,111 @@ mod tests {
             "no edge should be delivered for a dead-weak subscriber"
         );
         assert!(reg.pending_for_handle("h-dead").is_none());
+    }
+
+    #[test]
+    fn downstream_resolves_with_upstream_cancelled_error_when_upstream_cancels() {
+        let reg = GateBusRegistry::new();
+        let (tx, mut rx) = watch::channel::<Option<GateEdge>>(None);
+        let (alive, weak) = live_stats();
+        reg.insert_pending(make_pending(
+            "h-pending",
+            "post-upstream",
+            "metric_a",
+            weak,
+            tx,
+        ));
+        assert!(
+            reg.pending_for_handle("h-pending").is_some(),
+            "pending entry must be present before cancellation"
+        );
+
+        let errors = reg.cancel_pending_for_upstream("post-upstream", "metric_a");
+
+        assert_eq!(
+            errors.len(),
+            1,
+            "exactly one error must be returned for the cancelled pending entry"
+        );
+        assert!(
+            matches!(
+                &errors[0],
+                RegistryError::UpstreamCancelled { scenario_name, entry_id }
+                if scenario_name == "post-upstream" && entry_id == "metric_a"
+            ),
+            "error must be UpstreamCancelled for the matching upstream, got: {:?}",
+            errors[0]
+        );
+        assert!(
+            reg.pending_for_handle("h-pending").is_none(),
+            "pending entry must be removed after cancellation"
+        );
+        let edge = watch_recv_timeout(&mut rx, Duration::from_millis(200))
+            .expect("waiter must receive UpstreamGone within 200ms");
+        assert_eq!(edge, GateEdge::UpstreamGone);
+        drop(alive);
+    }
+
+    #[test]
+    fn cancel_pending_for_upstream_only_affects_matching_upstream() {
+        let reg = GateBusRegistry::new();
+        let (tx_a, mut rx_a) = watch::channel::<Option<GateEdge>>(None);
+        let (tx_b, mut rx_b) = watch::channel::<Option<GateEdge>>(None);
+        let (alive_a, weak_a) = live_stats();
+        let (alive_b, weak_b) = live_stats();
+        reg.insert_pending(make_pending(
+            "h-a",
+            "post-upstream",
+            "metric_a",
+            weak_a,
+            tx_a,
+        ));
+        reg.insert_pending(make_pending("h-b", "post-other", "metric_b", weak_b, tx_b));
+
+        let errors = reg.cancel_pending_for_upstream("post-upstream", "metric_a");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            reg.pending_for_handle("h-a").is_none(),
+            "matching pending must be removed"
+        );
+        assert!(
+            reg.pending_for_handle("h-b").is_some(),
+            "non-matching pending must remain"
+        );
+        assert_eq!(
+            watch_recv_timeout(&mut rx_a, Duration::from_millis(200)),
+            Ok(GateEdge::UpstreamGone),
+            "matching waiter must receive UpstreamGone"
+        );
+        assert!(
+            watch_recv_timeout(&mut rx_b, Duration::from_millis(50)).is_err(),
+            "non-matching waiter must not receive any edge"
+        );
+        drop(alive_a);
+        drop(alive_b);
+    }
+
+    #[test]
+    fn unregister_signals_pending_downstreams_waiting_on_that_upstream() {
+        let reg = GateBusRegistry::new();
+        let (tx, mut rx) = watch::channel::<Option<GateEdge>>(None);
+        let (alive, weak) = live_stats();
+        reg.insert_pending(make_pending("h-pending", "nope", "entry-x", weak, tx));
+        assert!(
+            reg.pending_for_handle("h-pending").is_some(),
+            "pending entry must be present before unregister"
+        );
+
+        reg.unregister("nope");
+
+        let edge = watch_recv_timeout(&mut rx, Duration::from_millis(200))
+            .expect("waiter must receive UpstreamGone within 200ms");
+        assert_eq!(edge, GateEdge::UpstreamGone);
+        assert!(
+            reg.pending_for_handle("h-pending").is_none(),
+            "pending entry must be removed after unregister"
+        );
+        drop(alive);
     }
 
     #[test]

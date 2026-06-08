@@ -5,6 +5,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::compiler::{DelayClause, UnresolvedBehavior};
 use crate::config::validate::StartTime;
 use crate::config::OnSinkError;
@@ -131,6 +133,7 @@ pub(crate) type TickFn<'a> = dyn FnMut(
         &mut TickOutput,
         &mut Vec<MetricEvent>,
     ) -> Result<TickResult, SondaError>
+    + Send
     + 'a;
 
 /// Scenario-level wall-clock anchor: the resolved emission-time base plus the
@@ -643,6 +646,8 @@ pub struct GateContext {
     pub start_unresolved: bool,
     /// Whether a gate-close should land the scenario in `Held` (snap-to opt-in) instead of `Paused`.
     pub holds_on_close: bool,
+    /// Per-scenario cancellation signal. The gated loop's select arms wake on this.
+    pub cancel: CancellationToken,
 }
 
 impl GateContext {
@@ -658,7 +663,13 @@ impl GateContext {
             if_unresolved: None,
             start_unresolved: false,
             holds_on_close: false,
+            cancel: CancellationToken::new(),
         }
+    }
+
+    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
     }
 
     pub fn with_delay(mut self, delay: Option<DelayClause>) -> Self {
@@ -799,7 +810,7 @@ async fn gated_loop_body(
     write_state(stats, state, paused_zero_rate);
 
     loop {
-        if shutdown_requested(shutdown) {
+        if shutdown_requested(shutdown) || gate_ctx.cancel.is_cancelled() {
             return Ok(LoopExit::Shutdown);
         }
         if duration_expired(schedule, started_at) {
@@ -810,7 +821,12 @@ async fn gated_loop_body(
             ScenarioState::Pending => {
                 if !after_satisfied {
                     let wait = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
-                    match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
+                    let edge = tokio::select! {
+                        biased;
+                        _ = gate_ctx.cancel.cancelled() => return Ok(LoopExit::Shutdown),
+                        edge = gate_ctx.gate_rx.recv_edge_timeout(wait) => edge,
+                    };
+                    match edge {
                         Some(GateEdge::AfterFired) => {
                             after_satisfied = true;
                         }
@@ -929,7 +945,11 @@ async fn gated_loop_body(
                     wakeup = wakeup.min(remaining);
                 }
 
-                let recv = gate_ctx.gate_rx.recv_edge_timeout(wakeup).await;
+                let recv = tokio::select! {
+                    biased;
+                    _ = gate_ctx.cancel.cancelled() => return Ok(LoopExit::Shutdown),
+                    recv = gate_ctx.gate_rx.recv_edge_timeout(wakeup) => recv,
+                };
                 let now = Instant::now();
                 match recv {
                     Some(GateEdge::WhileOpen) => {
@@ -1030,7 +1050,12 @@ async fn gated_loop_body(
                     }
                     UnresolvedBehavior::Closed | UnresolvedBehavior::Pending => {
                         let wakeup = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
-                        match gate_ctx.gate_rx.recv_edge_timeout(wakeup).await {
+                        let recv = tokio::select! {
+                            biased;
+                            _ = gate_ctx.cancel.cancelled() => return Ok(LoopExit::Shutdown),
+                            recv = gate_ctx.gate_rx.recv_edge_timeout(wakeup) => recv,
+                        };
+                        match recv {
                             Some(GateEdge::WhileOpen) => {
                                 while_open = true;
                                 state = ScenarioState::Pending;
@@ -1188,7 +1213,10 @@ async fn debounce_close_to_paused(
 
     let deadline = Instant::now() + debounce.delay_close;
     loop {
-        if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
+        if shutdown_requested(shutdown)
+            || gate_ctx.cancel.is_cancelled()
+            || duration_expired(schedule, started_at)
+        {
             return true;
         }
         let now = Instant::now();
@@ -1199,7 +1227,12 @@ async fn debounce_close_to_paused(
         if let Some(remaining) = remaining_duration(schedule, started_at) {
             wait = wait.min(remaining);
         }
-        match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
+        let recv = tokio::select! {
+            biased;
+            _ = gate_ctx.cancel.cancelled() => return true,
+            recv = gate_ctx.gate_rx.recv_edge_timeout(wait) => recv,
+        };
+        match recv {
             Some(GateEdge::WhileOpen) => return false,
             Some(GateEdge::WhileClose) => {}
             Some(GateEdge::AfterFired) => {}
@@ -1252,6 +1285,7 @@ async fn run_running_segment(
                 &mut TickOutput,
                 &mut Vec<MetricEvent>,
             ) -> Result<TickResult, SondaError>
+            + Send
             + 'a,
     >;
     let mut wrapped: WrappedTick<'_> = Box::new(
@@ -2401,11 +2435,10 @@ mod tests {
     #[tokio::test]
     async fn events_buf_capacity_does_not_grow_under_metrics_workload() {
         use crate::model::metric::{Labels, MetricEvent};
-        use std::cell::Cell;
 
         let schedule = minimal_schedule(Some(Duration::from_millis(500)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let first_ptr: Cell<Option<usize>> = Cell::new(None);
+        let mut first_ptr: Option<usize> = None;
 
         let mut tick_fn = |_ctx: &TickContext<'_>,
                            _output: &mut TickOutput,
@@ -2424,8 +2457,8 @@ mod tests {
                 "events_buf capacity must stay at the pre-allocated 16 for a 1-event-per-tick workload"
             );
             let ptr = events_buf.as_ptr() as usize;
-            match first_ptr.get() {
-                None => first_ptr.set(Some(ptr)),
+            match first_ptr {
+                None => first_ptr = Some(ptr),
                 Some(p) => assert_eq!(
                     ptr, p,
                     "events_buf backing allocation must be reused across ticks"
@@ -2456,7 +2489,7 @@ mod tests {
             "loop must have executed multiple ticks to exercise the buffer reuse"
         );
         assert!(
-            first_ptr.get().is_some(),
+            first_ptr.is_some(),
             "tick_fn must have observed at least one events_buf pointer"
         );
     }

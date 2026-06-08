@@ -494,6 +494,12 @@ impl PendingRef {
 pub enum RegistryError {
     #[error("scenario_name '{name}' is already in use by a running scenario")]
     DuplicateScenarioName { name: String },
+    /// The upstream scenario this resolution was waiting on was cancelled before it could register.
+    #[error("upstream '{scenario_name}/{entry_id}' was cancelled before resolving")]
+    UpstreamCancelled {
+        scenario_name: String,
+        entry_id: String,
+    },
 }
 
 /// Process-wide registry for cross-POST gate bus lookup.
@@ -532,6 +538,17 @@ pub trait GateBusResolver: Send + Sync {
     /// re-pend it for cross-POST re-resolution. Default impl is a no-op for
     /// resolvers that do not implement re-resolution tracking.
     fn track_subscriber(&self, _pending: PendingResolution) {}
+
+    /// Signal that an upstream scenario will not register; resolve any pending
+    /// waiters with [`RegistryError::UpstreamCancelled`] and notify them via
+    /// [`GateEdge::UpstreamGone`]. Default impl is a no-op.
+    fn cancel_pending_for_upstream(
+        &self,
+        _scenario_name: &str,
+        _entry_id: &str,
+    ) -> Vec<RegistryError> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

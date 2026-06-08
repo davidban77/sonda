@@ -3,24 +3,22 @@
 //! CPU%, tick-drift and dropped-tick percentage per N, and writes a markdown
 //! report alongside a stdout table.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use tokio_util::sync::CancellationToken;
 
 use sonda_core::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
 use sonda_core::schedule::handle::ScenarioHandle;
-use sonda_core::schedule::runner::run_with_sink;
-use sonda_core::schedule::stats::ScenarioStats;
-use sonda_core::sink::memory::{CapturedRing, MemorySink};
-use sonda_core::sink::{Sink, SinkConfig};
-use sonda_core::{launch_scenario, prepare_entries, OnSinkError, RuntimeError, SondaError};
+use sonda_core::sink::memory::CapturedRing;
+use sonda_core::sink::SinkConfig;
+use sonda_core::{launch_scenario, prepare_entries, OnSinkError};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 const DEFAULT_SCENARIO_COUNTS: &[usize] = &[1, 10, 50, 100, 250, 500];
@@ -202,72 +200,27 @@ fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
         let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
         for (offset, p) in prepared.into_iter().enumerate() {
             let i = offset + 1;
-            let shutdown = Arc::new(AtomicBool::new(true));
-            let handle = launch_scenario(format!("bench_{i}"), p.entry, shutdown, p.start_delay)
-                .expect("launch_scenario must succeed");
+            let handle = launch_scenario(
+                format!("bench_{i}"),
+                p.entry,
+                CancellationToken::new(),
+                p.start_delay,
+            )
+            .expect("launch_scenario must succeed");
             handles.push(handle);
         }
     }
     (handles, capture_handle)
 }
 
-// Mirrors launch_scenario for the shared-capture path; bench-local replica.
 fn launch_capturing_scenario(
     id: String,
-    capture_handle: Arc<Mutex<CapturedRing>>,
+    _capture_handle: Arc<Mutex<CapturedRing>>,
 ) -> ScenarioHandle {
     let config = metrics_config_for_capture(id.clone(), RATE_HZ);
-    let name = config.base.name.clone();
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-    let alive = Arc::new(AtomicBool::new(true));
-    let cleaned_up = Arc::new(AtomicBool::new(true));
-    let labels: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
-
-    let shutdown_for_thread = Arc::clone(&shutdown);
-    let stats_for_thread = Arc::clone(&stats);
-    let alive_for_thread = Arc::clone(&alive);
-
-    let thread = std::thread::Builder::new()
-        .name(format!("sonda-{name}"))
-        .spawn(move || -> Result<(), SondaError> {
-            struct AliveGuard(Arc<AtomicBool>);
-            impl Drop for AliveGuard {
-                fn drop(&mut self) {
-                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-                }
-            }
-            let _guard = AliveGuard(alive_for_thread);
-
-            let sink_inner = MemorySink::with_shared_capture(capture_handle);
-            let mut sink: Box<dyn Sink> = Box::new(sink_inner);
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
-            rt.block_on(run_with_sink(
-                &config,
-                &mut sink,
-                Some(shutdown_for_thread.as_ref()),
-                Some(stats_for_thread),
-            ))
-        })
-        .expect("scenario thread must spawn");
-
-    ScenarioHandle::new(
-        id,
-        name,
-        None,
-        shutdown,
-        Some(thread),
-        Instant::now(),
-        stats,
-        RATE_HZ,
-        alive,
-        labels,
-        None,
-        cleaned_up,
-    )
+    let entry = ScenarioEntry::Metrics(config);
+    launch_scenario(id, entry, CancellationToken::new(), None)
+        .expect("launch_scenario must succeed")
 }
 
 fn stop_all(handles: &mut [ScenarioHandle]) {
@@ -681,27 +634,33 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 }
 
 fn main() {
-    let counts = scenario_counts();
-    let warmup = warmup_secs();
-    let measure = measure_secs();
-    eprintln!("[bench] sonda scheduler baseline harness");
-    eprintln!(
-        "[bench] N values: {counts:?}; rate {RATE_HZ:.0} Hz; \
-         warmup {warmup}s; measure {measure}s"
-    );
-    let mut rows = Vec::with_capacity(counts.len());
-    for &n in &counts {
-        rows.push(run_row(n, warmup, measure));
-    }
-    print_table(&rows);
-    let md = render_markdown(&rows, warmup, measure);
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate dir must have a parent (workspace root)");
-    let out_path = workspace_root.join("target/bench-output/scheduler-baseline.md");
-    if let Some(parent) = out_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::write(&out_path, md).expect("must write markdown report");
-    eprintln!("[bench] wrote {}", out_path.display());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime must build");
+    runtime.block_on(async {
+        let counts = scenario_counts();
+        let warmup = warmup_secs();
+        let measure = measure_secs();
+        eprintln!("[bench] sonda scheduler baseline harness");
+        eprintln!(
+            "[bench] N values: {counts:?}; rate {RATE_HZ:.0} Hz; \
+             warmup {warmup}s; measure {measure}s"
+        );
+        let mut rows = Vec::with_capacity(counts.len());
+        for &n in &counts {
+            rows.push(run_row(n, warmup, measure));
+        }
+        print_table(&rows);
+        let md = render_markdown(&rows, warmup, measure);
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crate dir must have a parent (workspace root)");
+        let out_path = workspace_root.join("target/bench-output/scheduler-baseline.md");
+        if let Some(parent) = out_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(&out_path, md).expect("must write markdown report");
+        eprintln!("[bench] wrote {}", out_path.display());
+    });
 }

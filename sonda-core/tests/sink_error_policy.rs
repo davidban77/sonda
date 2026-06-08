@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, OnSinkError, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::{LogGeneratorConfig, TemplateConfig};
@@ -104,8 +106,8 @@ fn build_log_entry(name: &str, sink: SinkConfig, policy: OnSinkError) -> Scenari
     })
 }
 
-#[test]
-fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
+#[tokio::test(flavor = "multi_thread")]
+async fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
     let (listener, url) = mock_loki_listener();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_listener = Arc::clone(&stop);
@@ -124,14 +126,9 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
         OnSinkError::Warn,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "warn-persistent".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("warn-persistent".to_string(), entry, cancel.clone(), None)
+        .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(800));
     let snap_mid = handle.stats_snapshot();
@@ -166,8 +163,8 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
     );
 }
 
-#[test]
-fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
+#[tokio::test(flavor = "multi_thread")]
+async fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
     // Bind then drop a listener so the port is guaranteed free — every flush
     // against it will fail to connect.
     let dead_url = {
@@ -188,14 +185,9 @@ fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
         OnSinkError::Warn,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "warn-dead-url".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("warn-dead-url".to_string(), entry, cancel.clone(), None)
+        .expect("launch must succeed");
 
     handle.join(Some(Duration::from_secs(3))).expect("join Ok");
 
@@ -217,8 +209,8 @@ fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
     );
 }
 
-#[test]
-fn fail_policy_exits_thread_with_sink_error() {
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_policy_exits_thread_with_sink_error() {
     let (listener, url) = mock_loki_listener();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_listener = Arc::clone(&stop);
@@ -237,14 +229,9 @@ fn fail_policy_exits_thread_with_sink_error() {
         OnSinkError::Fail,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "fail-propagates".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("fail-propagates".to_string(), entry, cancel.clone(), None)
+        .expect("launch must succeed");
 
     let join_result = handle.join(Some(Duration::from_secs(5)));
 

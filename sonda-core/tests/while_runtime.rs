@@ -8,10 +8,11 @@
 
 mod common;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use tokio_util::sync::CancellationToken;
 
 use sonda_core::compiler::{DelayClause, WhileOp};
 use sonda_core::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry};
@@ -92,8 +93,8 @@ fn while_gt_zero() -> SubscriptionSpec {
     }
 }
 
-#[test]
-fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     // Upstream metric oscillates 0 → 1 → 0 across 600ms; downstream gated
     // by `while: ref=upstream op=">" value=0`. Drive the bus directly so
     // the test is deterministic.
@@ -101,7 +102,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let gate_ctx = GateContext::new(rx, init).with_has_while(true);
 
     let entry = metrics_entry("downstream", 200.0, 600);
@@ -109,7 +110,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
         "downstream".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(gate_ctx),
@@ -145,20 +146,20 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscription() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscription() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0); // gate open before subscription
     let (rx, init) = bus.subscribe(while_gt_zero());
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d1", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d1".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -181,20 +182,20 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d2", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d2".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -211,21 +212,21 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_no_catch_up_burst_on_resume() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_no_catch_up_burst_on_resume() {
     // Verify A1h: after a long pause, resume must emit at the configured
     // rate, not "catch up" with a burst of events.
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d3", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "d3".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -299,13 +300,13 @@ fn metrics_entry_with_generator(
     })
 }
 
-#[test]
-fn while_runtime_sequence_generator_preserves_position_across_pause() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_sequence_generator_preserves_position_across_pause() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let values = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
     let entry = metrics_entry_with_generator(
         "seq_gated",
@@ -320,7 +321,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
         "seq_gated".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -368,13 +369,13 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     );
 }
 
-#[test]
-fn while_runtime_ramp_generator_slope_preserved_across_pause() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     // Sawtooth (saturation desugars to this): 0 → 100 over 4s at 50/s.
     let entry = metrics_entry_with_generator(
         "sat_gated",
@@ -390,7 +391,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
         "sat_gated".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -436,19 +437,19 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     );
 }
 
-#[test]
-fn while_runtime_finished_state_after_duration_expires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_finished_state_after_duration_expires() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d4", 50.0, 200);
     let mut handle = launch_scenario_with_gates(
         "d4".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -463,8 +464,8 @@ fn while_runtime_finished_state_after_duration_expires() {
     assert!(matches!(snap.state, ScenarioState::Finished));
 }
 
-#[test]
-fn while_runtime_multiple_downstreams_share_one_upstream() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_multiple_downstreams_share_one_upstream() {
     // A2: two downstreams subscribe to the same upstream bus. Both must
     // transition together when the gate edge arrives.
     let bus = Arc::new(GateBus::new());
@@ -473,13 +474,13 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
     let (rx_a, init_a) = bus.subscribe(while_gt_zero());
     let (rx_b, init_b) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
 
     let mut handle_a = launch_scenario_with_gates(
         "a".to_string(),
         None,
         metrics_entry("a", 100.0, 500),
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx_a, init_a).with_has_while(true)),
@@ -491,7 +492,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
         "b".to_string(),
         None,
         metrics_entry("b", 100.0, 500),
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx_b, init_b).with_has_while(true)),
@@ -516,21 +517,21 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
     handle_b.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_logs_signal_can_be_gated_downstream() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_logs_signal_can_be_gated_downstream() {
     // BGP UPDOWN log scenario: a logs entry gated by `while:` must
     // transition through pending/running/paused.
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = logs_entry("bgp_log", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "bgp_log".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -564,8 +565,8 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_delay_open_debounces_pause_to_running_transition() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     // A2a: delay.open debounces close→open. Sub during gate-closed
     // (pending → paused), then open: must wait at least delay.open
     // before emitting events.
@@ -580,13 +581,13 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
         close_snap_to: None,
     };
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("debounced", 200.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "debounced".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -622,8 +623,8 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_strict_lt_threshold_gating() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_strict_lt_threshold_gating() {
     // Inverse direction: `while: ref=src op="<" value=10` opens when
     // upstream drops below threshold.
     let bus = Arc::new(GateBus::new());
@@ -638,13 +639,13 @@ fn while_runtime_strict_lt_threshold_gating() {
     let (rx, init) = bus.subscribe(spec);
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("inv", 100.0, 500);
     let mut handle = launch_scenario_with_gates(
         "inv".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -663,8 +664,8 @@ fn while_runtime_strict_lt_threshold_gating() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn scenario_restart_does_not_leak_gate_bus() {
+#[tokio::test(flavor = "multi_thread")]
+async fn scenario_restart_does_not_leak_gate_bus() {
     // Risk #4 from phases.md: spawn 50 short-lived gated scenarios in
     // a loop, assert the bus's Arc count returns to baseline after each
     // scenario finishes.
@@ -673,13 +674,13 @@ fn scenario_restart_does_not_leak_gate_bus() {
 
     for i in 0..20 {
         let (rx, init) = bus.subscribe(while_gt_zero());
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry(&format!("ephemeral_{i}"), 50.0, 80);
         let mut handle = launch_scenario_with_gates(
             format!("ephemeral_{i}"),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
@@ -700,8 +701,8 @@ fn scenario_restart_does_not_leak_gate_bus() {
     );
 }
 
-#[test]
-fn while_runtime_delay_close_debounces_running_to_paused_transition() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     // delay.close: a brief gate-close-then-reopen within the debounce
     // window must NOT pause the scenario; a sustained close (≥ delay.close)
     // does. Mirrors the delay.open debounce test but for the opposite
@@ -717,13 +718,13 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
         close_snap_to: None,
     };
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("debounced_close", 200.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "debounced_close".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -767,8 +768,8 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     // Subscribe with both after: and while: on the same upstream. Initial
     // value 1 → after-not-fired (op="<", threshold=1, strict), gate closed
     // (op="<", threshold=1, strict) — state = Pending. Drive value to 0
@@ -793,13 +794,13 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
         "gate must be closed at value=1"
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("after_open", 100.0, 1000);
     let mut handle = launch_scenario_with_gates(
         "after_open".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -834,8 +835,8 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     // Use a single upstream where after.op=">" threshold=100 and
     // while.op="<" threshold=10. Sequence:
     //
@@ -863,13 +864,13 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("after_paused", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "after_paused".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -918,8 +919,8 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     // While Pending (after not yet satisfied), repeated WhileOpen /
     // WhileClose edges on the same upstream must not transition the
     // scenario out of Pending. Single-bus approach: after.op=">"
@@ -944,13 +945,13 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("absorb", 100.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "absorb".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -998,8 +999,8 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     // Subscribe with after.op=">" threshold=100 at value=5: after has not
     // fired, gate is irrelevant (after gates Pending entry). Broadcast
     // UpstreamGone while still Pending. With if_unresolved=None, the
@@ -1021,13 +1022,13 @@ fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("pending_upstream_gone", 100.0, 5000);
     let mut handle = launch_scenario_with_gates(
         "pending_upstream_gone".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -1073,19 +1074,19 @@ fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_steady_within_5pct_of_baseline() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_steady_within_5pct_of_baseline() {
     // Perf-regression gate (A10): a scenario with `while:` open the entire
     // run must produce within 5% of the event count of the same scenario
     // without `while:`. Both runs are short (300ms) to keep the test fast.
     fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 1000.0, 300);
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "baseline".to_string(),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             None,
             None,
@@ -1101,12 +1102,12 @@ fn while_runtime_steady_within_5pct_of_baseline() {
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
         let entry = metrics_entry("gated", 1000.0, 300);
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             Some(Arc::clone(&bus)),
             Some(GateContext::new(rx, init).with_has_while(true)),
@@ -1136,8 +1137,8 @@ fn while_runtime_steady_within_5pct_of_baseline() {
     );
 }
 
-#[test]
-fn close_emit_conflict_compile_error_when_snap_to_and_stale_marker_false() {
+#[tokio::test(flavor = "multi_thread")]
+async fn close_emit_conflict_compile_error_when_snap_to_and_stale_marker_false() {
     use sonda_core::compile_scenario_file_compiled;
     use sonda_core::compiler::expand::InMemoryPackResolver;
 
@@ -1190,8 +1191,8 @@ scenarios:
     );
 }
 
-#[test]
-fn delay_close_legacy_shorthand_still_deserializes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn delay_close_legacy_shorthand_still_deserializes() {
     use sonda_core::compile_scenario_file_compiled;
     use sonda_core::compiler::expand::InMemoryPackResolver;
 
@@ -1231,8 +1232,8 @@ scenarios:
         .expect("legacy delay.close shorthand must still parse");
 }
 
-#[test]
-fn nan_upstream_value_keeps_downstream_paused() {
+#[tokio::test(flavor = "multi_thread")]
+async fn nan_upstream_value_keeps_downstream_paused() {
     let bus = Arc::new(GateBus::new());
     bus.tick(f64::NAN);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -1242,13 +1243,13 @@ fn nan_upstream_value_keeps_downstream_paused() {
         "NaN upstream must close the gate at subscription"
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("nan_paused", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "nan_paused".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -1278,8 +1279,8 @@ fn nan_upstream_value_keeps_downstream_paused() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn delay_close_extended_form_deserializes_all_fields() {
+#[tokio::test(flavor = "multi_thread")]
+async fn delay_close_extended_form_deserializes_all_fields() {
     use sonda_core::compile_scenario_file_compiled;
     use sonda_core::compiler::expand::InMemoryPackResolver;
 

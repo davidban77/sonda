@@ -2239,6 +2239,8 @@ dependencies = [
  "serde_yaml_ng",
  "sonda-core",
  "tempfile",
+ "tokio",
+ "tokio-util",
  "tracing-subscriber",
 ]
 
@@ -2264,6 +2266,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tonic",
  "tracing",
  "tracing-test",
@@ -2291,6 +2294,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http",
  "tracing",

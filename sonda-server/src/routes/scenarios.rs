@@ -597,7 +597,12 @@ async fn launch_compiled(
     warnings: Vec<String>,
 ) -> Result<Response, Response> {
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
-    let mut handles = launch_multi_compiled(compiled, Some(resolver)).map_err(|e| {
+    let mut handles = launch_multi_compiled(
+        compiled,
+        Some(resolver),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .map_err(|e| {
         warn!(error = %e, "POST /scenarios: failed to launch scenarios");
         match e {
             sonda_core::SondaError::Config(_) => unprocessable(e),
@@ -1139,10 +1144,10 @@ mod tests {
     use http_body_util::BodyExt;
     use hyper::{Request, StatusCode};
     use sonda_core::ScenarioHandle;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, RwLock};
     use std::thread;
     use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
     use tower::ServiceExt;
 
     // ---- Helpers ---------------------------------------------------------------
@@ -1152,34 +1157,31 @@ mod tests {
     /// The thread emits `event_count` events at `interval` apart, incrementing
     /// total_events and bytes_emitted on each tick.
     fn make_handle(id: &str, name: &str, event_count: u64, interval: Duration) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_for_task = cancel.clone();
         let stats_clone = Arc::clone(&stats);
 
-        let thread = thread::Builder::new()
-            .name(format!("test-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                for _ in 0..event_count {
-                    if !shutdown_clone.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    thread::sleep(interval);
-                    if let Ok(mut st) = stats_clone.write() {
-                        st.total_events += 1;
-                        st.bytes_emitted += 64;
-                    }
+        let task = tokio::task::spawn(async move {
+            for _ in 0..event_count {
+                if cancel_for_task.is_cancelled() {
+                    break;
                 }
-                Ok(())
-            })
-            .expect("thread must spawn");
+                tokio::time::sleep(interval).await;
+                if let Ok(mut st) = stats_clone.write() {
+                    st.total_events += 1;
+                    st.bytes_emitted += 64;
+                }
+            }
+            Ok::<(), sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             100.0,
@@ -1193,30 +1195,21 @@ mod tests {
         )
     }
 
-    /// Build a ScenarioHandle that has already finished (thread exits immediately).
     fn make_stopped_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let shutdown_clone = Arc::clone(&shutdown);
 
-        let thread = thread::Builder::new()
-            .name(format!("test-stopped-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                // Check shutdown immediately and exit.
-                let _ = shutdown_clone.load(Ordering::SeqCst);
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async { Ok::<(), sonda_core::SondaError>(()) });
 
-        // Give thread time to finish.
         thread::sleep(Duration::from_millis(50));
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             100.0,
@@ -1380,7 +1373,7 @@ scenarios:
     // ---- GET /scenarios: empty state -----------------------------------------
 
     /// GET /scenarios with no scenarios returns an empty list.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_empty_returns_empty_array() {
         let app = router_with_handles(vec![]);
         let req = Request::builder()
@@ -1404,7 +1397,7 @@ scenarios:
     // ---- GET /scenarios: two scenarios listed --------------------------------
 
     /// Start 2 scenarios, GET /scenarios returns both listed.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_returns_both_when_two_present() {
         let h1 = make_handle("id-aaa", "scenario_alpha", 1000, Duration::from_millis(50));
         let h2 = make_handle("id-bbb", "scenario_beta", 1000, Duration::from_millis(50));
@@ -1449,7 +1442,7 @@ scenarios:
     // ---- GET /scenarios: response shape --------------------------------------
 
     /// Each scenario summary has id, name, status, elapsed_secs fields.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_response_shape_has_required_fields() {
         let h = make_handle("id-shape", "shape_test", 1000, Duration::from_millis(50));
         let app = router_with_handles(vec![h]);
@@ -1474,7 +1467,7 @@ scenarios:
     }
 
     /// A scenario with no sink failures reports degraded=false in the list.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_degraded_false_for_healthy_scenario() {
         let h = make_handle(
             "id-healthy",
@@ -1502,7 +1495,7 @@ scenarios:
     // ---- GET /scenarios/{id}: correct name, status, elapsed -------------------
 
     /// GET /scenarios/{id} returns correct name, status, and positive elapsed_secs.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_returns_correct_name_status_elapsed() {
         let h = make_handle(
             "id-detail",
@@ -1544,7 +1537,7 @@ scenarios:
     // ---- GET /scenarios/{id}: stats fields present ----------------------------
 
     /// GET /scenarios/{id} response includes stats sub-object with all required fields.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_response_has_stats_fields() {
         let h = make_handle(
             "id-stats-fields",
@@ -1581,7 +1574,7 @@ scenarios:
 
     // ---- GET /scenarios/{id}: degraded field on detail + nested stats --------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_degraded_false_for_healthy_scenario() {
         let h = make_handle(
             "id-detail-healthy",
@@ -1610,7 +1603,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_degraded_true_when_failures_and_no_delivery() {
         let mut stats = ScenarioStats::default();
         stats.total_sink_failures = 5;
@@ -1641,7 +1634,7 @@ scenarios:
     // ---- GET /scenarios/{id}: stats.total_events > 0 after running ------------
 
     /// After running for a short time, stats.total_events > 0.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_stats_total_events_positive_after_running() {
         // Thread emits events every 10ms. After 200ms we should have ~20 events.
         let h = make_handle("id-events", "events_check", 500, Duration::from_millis(10));
@@ -1673,7 +1666,7 @@ scenarios:
     // ---- GET /scenarios/nonexistent: 404 -------------------------------------
 
     /// GET /scenarios/{id} with a nonexistent ID returns 404 with a JSON error body.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_nonexistent_returns_404_with_json_body() {
         let app = router_with_handles(vec![]);
 
@@ -1703,7 +1696,7 @@ scenarios:
     }
 
     /// GET /scenarios/{id} 404 response has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_nonexistent_returns_json_content_type() {
         let app = router_with_handles(vec![]);
 
@@ -1729,7 +1722,7 @@ scenarios:
 
     // ---- GET /scenarios/{id}: finished scenario reports "finished" ------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_finished_reports_finished_status() {
         let h = make_stopped_handle("id-stopped", "finished_scenario");
         if let Ok(mut s) = h.stats.write() {
@@ -1756,7 +1749,7 @@ scenarios:
     // ---- Stats update frequency: elapsed tracks real time --------------------
 
     /// Elapsed time reported by the endpoint must be within 1 second of real time.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn elapsed_secs_tracks_real_time_within_one_second() {
         let h = make_handle(
             "id-elapsed",
@@ -1796,7 +1789,7 @@ scenarios:
     // ---- Content-Type for scenario endpoints ---------------------------------
 
     /// GET /scenarios returns Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_sets_json_content_type() {
         let app = router_with_handles(vec![]);
 
@@ -1916,7 +1909,7 @@ scenarios:
     // ---- Test: POST valid metrics YAML -> 201, scenario ID returned, handle in AppState
 
     /// POST a valid metrics YAML body returns 201 Created with id, name, and status.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_valid_metrics_yaml_returns_201_with_id() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
@@ -1958,7 +1951,7 @@ scenarios:
     // ---- Test: POST valid logs YAML -> 201, scenario ID returned
 
     /// POST a valid logs YAML body returns 201 Created.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_valid_logs_yaml_returns_201() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "text/yaml", VALID_LOGS_YAML).await;
@@ -1990,7 +1983,7 @@ scenarios:
     // ---- Test: POST YAML with signal_type: metrics -> 201 (ScenarioEntry format)
 
     /// POST a YAML body with explicit signal_type: metrics returns 201.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_tagged_metrics_yaml_returns_201() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_TAGGED_METRICS_YAML).await;
@@ -2018,7 +2011,7 @@ scenarios:
     // ---- Test: POST invalid YAML -> 400 with error message
 
     /// POST garbage text as YAML returns 400 Bad Request.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_invalid_yaml_returns_400() {
         let (app, _state) = test_router();
         let response =
@@ -2042,7 +2035,7 @@ scenarios:
     }
 
     /// POST an empty body returns 400 Bad Request.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_empty_body_returns_400() {
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", "").await;
@@ -2055,7 +2048,7 @@ scenarios:
     }
 
     /// POST YAML that parses but is missing required fields returns 400.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_yaml_missing_required_fields_returns_400() {
         let (app, _state) = test_router();
         // Valid YAML but not a valid scenario (missing name, rate, generator).
@@ -2071,7 +2064,7 @@ scenarios:
     // ---- Test: POST valid YAML with rate=0 -> 422 with validation detail
 
     /// POST a valid YAML with rate=0 returns 422 Unprocessable Entity.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_yaml_with_zero_rate_returns_422() {
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", ZERO_RATE_YAML).await;
@@ -2096,7 +2089,7 @@ scenarios:
     // ---- Test: POST -> scenario thread is running (verify via handle.is_running())
 
     /// After POST, the scenario thread should be running in AppState.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_scenario_thread_is_running() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "text/yaml", VALID_METRICS_YAML).await;
@@ -2124,7 +2117,7 @@ scenarios:
     // ---- Test: Content-type handling: application/x-yaml, text/yaml, application/json
 
     /// POST with Content-Type: application/x-yaml is accepted as YAML.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_with_application_x_yaml_content_type_returns_201() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
@@ -2139,7 +2132,7 @@ scenarios:
     }
 
     /// POST with Content-Type: text/yaml is accepted as YAML.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_with_text_yaml_content_type_returns_201() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "text/yaml", VALID_METRICS_YAML).await;
@@ -2154,7 +2147,7 @@ scenarios:
     }
 
     /// POST with Content-Type: application/json and a valid v2 JSON metrics body returns 201.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_with_json_content_type_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
@@ -2196,7 +2189,7 @@ scenarios:
     }
 
     /// POST with Content-Type: application/json and invalid JSON returns 400.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_invalid_json_returns_400() {
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/json", "not json {{{").await;
@@ -2209,7 +2202,7 @@ scenarios:
     }
 
     /// POST with no Content-Type header defaults to YAML parsing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_with_no_content_type_defaults_to_yaml() {
         let (app, state) = test_router();
         let request = Request::builder()
@@ -2232,7 +2225,7 @@ scenarios:
     // ---- Test: Response body structure -----------------------------------------
 
     /// The 201 response body contains exactly three keys: id, name, status.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_response_body_has_expected_keys() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "text/yaml", VALID_METRICS_YAML).await;
@@ -2258,7 +2251,7 @@ scenarios:
     }
 
     /// The returned scenario ID is a valid UUID v4.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_response_id_is_valid_uuid() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "text/yaml", VALID_METRICS_YAML).await;
@@ -2275,7 +2268,7 @@ scenarios:
     // ---- Test: Negative rate -> 422 -------------------------------------------
 
     /// POST v2 YAML with a negative rate returns 422.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_yaml_with_negative_rate_returns_422() {
         let yaml = "\
 version: 2
@@ -2492,7 +2485,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_scenario_resolves_pack_reference_when_catalog_set() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
         write_catalog_pack(tmp.path());
@@ -2510,7 +2503,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_scenario_pack_reference_without_catalog_returns_4xx() {
         let (app, _state) = test_router();
         let resp = post_scenarios(app, "application/x-yaml", PACK_REF_BODY).await;
@@ -2521,7 +2514,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_scenario_plain_body_works_with_catalog_set() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
         write_catalog_pack(tmp.path());
@@ -2627,7 +2620,7 @@ scenarios:
 
     /// Start a running scenario, DELETE it, and verify the thread exits
     /// with status "stopped".
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_running_scenario_returns_stopped_status() {
         // Thread runs for a long time (1000 events x 50ms = 50s) so it is
         // definitely running when we hit DELETE.
@@ -2658,7 +2651,7 @@ scenarios:
     // ---- DELETE returns final stats (total_events) -------------------------
 
     /// DELETE returns total_events reflecting events emitted before stop.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_returns_final_stats_with_total_events() {
         // Thread emits events every 10ms. Wait 200ms so some events accumulate.
         let h = make_handle("id-del-stats", "del_stats", 1000, Duration::from_millis(10));
@@ -2689,7 +2682,7 @@ scenarios:
     // ---- DELETE already-stopped scenario -> 200 OK -------------------------
 
     /// DELETE on an already-stopped scenario returns 200 OK with status "stopped".
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_already_stopped_returns_200_ok() {
         let h = make_stopped_handle("id-del-stopped", "del_stopped");
         let state = AppState::new();
@@ -2718,7 +2711,7 @@ scenarios:
     // ---- DELETE unknown ID -> 404 ------------------------------------------
 
     /// DELETE on a nonexistent scenario ID returns 404.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_unknown_scenario_returns_404() {
         let app = router_with_handles(vec![]);
         let resp = delete_scenario_req(app, "nonexistent-id").await;
@@ -2744,7 +2737,7 @@ scenarios:
     // ---- DELETE response JSON shape: id, status, total_events ---------------
 
     /// The DELETE response body has exactly three keys: id, status, total_events.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_response_has_expected_json_shape() {
         let h = make_handle("id-del-shape", "del_shape", 1000, Duration::from_millis(50));
         let state = AppState::new();
@@ -2783,7 +2776,7 @@ scenarios:
     // ---- DELETE returns correct id in response ------------------------------
 
     /// The DELETE response id field matches the requested scenario ID.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_response_id_matches_requested_id() {
         let h = make_handle("id-del-match", "del_match", 1000, Duration::from_millis(50));
         let state = AppState::new();
@@ -2808,7 +2801,7 @@ scenarios:
     // ---- DELETE twice: second DELETE returns 404 after handle removal --------
 
     /// DELETE removes the handle from the map, so a second DELETE returns 404.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_twice_on_same_id_returns_404_on_second() {
         let h = make_handle("id-del-twice", "del_twice", 1000, Duration::from_millis(50));
         let state = AppState::new();
@@ -2841,7 +2834,7 @@ scenarios:
     // ---- DELETE removes handle from HashMap -----------------------------------
 
     /// DELETE removes the scenario handle from the internal HashMap.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_removes_handle_from_hashmap() {
         let h = make_handle("id-del-map", "del_map", 1000, Duration::from_millis(50));
         let state = AppState::new();
@@ -2873,7 +2866,7 @@ scenarios:
     // ---- DELETE excludes scenario from GET /scenarios list -------------------
 
     /// After deleting one of two scenarios, GET /scenarios returns only the remaining one.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_scenario_excluded_from_list() {
         let h_keep = make_handle("id-keep", "keep_scenario", 1000, Duration::from_millis(50));
         let h_delete = make_handle(
@@ -2954,7 +2947,7 @@ scenarios:
     // ---- DELETE returns Content-Type application/json -----------------------
 
     /// DELETE response has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_scenario_returns_json_content_type() {
         let h = make_handle("id-del-ct", "del_ct", 1000, Duration::from_millis(50));
         let state = AppState::new();
@@ -2983,7 +2976,7 @@ scenarios:
     // ---- DELETE 404 returns JSON Content-Type ------------------------------
 
     /// DELETE 404 response has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_unknown_returns_json_content_type() {
         let app = router_with_handles(vec![]);
         let resp = delete_scenario_req(app, "missing-id").await;
@@ -3017,34 +3010,23 @@ scenarios:
         initial_stats: ScenarioStats,
         running: bool,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(running));
+        let cancel = CancellationToken::new();
+        if !running {
+            cancel.cancel();
+        }
         let stats = Arc::new(RwLock::new(initial_stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_for_task = cancel.clone();
 
-        let thread = if running {
-            // Long-running thread that waits for shutdown.
-            thread::Builder::new()
-                .name(format!("test-stats-{name}"))
-                .spawn(move || -> Result<(), sonda_core::SondaError> {
-                    while shutdown_clone.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Ok(())
-                })
-                .expect("thread must spawn")
+        let task = if running {
+            tokio::task::spawn(async move {
+                cancel_for_task.cancelled().await;
+                Ok::<(), sonda_core::SondaError>(())
+            })
         } else {
-            // Thread exits immediately.
-            thread::Builder::new()
-                .name(format!("test-stats-stopped-{name}"))
-                .spawn(move || -> Result<(), sonda_core::SondaError> {
-                    let _ = shutdown_clone.load(Ordering::SeqCst);
-                    Ok(())
-                })
-                .expect("thread must spawn")
+            tokio::task::spawn(async { Ok::<(), sonda_core::SondaError>(()) })
         };
 
         if !running {
-            // Give the thread time to exit.
             thread::sleep(Duration::from_millis(50));
         }
 
@@ -3052,8 +3034,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             target_rate,
@@ -3079,7 +3061,7 @@ scenarios:
     // ---- Stats endpoint returns all expected fields -------------------------
 
     /// GET /scenarios/{id}/stats returns a JSON body with all expected fields.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_returns_all_expected_fields() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 500;
@@ -3132,7 +3114,7 @@ scenarios:
 
     // ---- /stats endpoint: degraded field --------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_degraded_false_for_healthy_scenario() {
         let h = make_handle_with_stats(
             "id-stats-healthy",
@@ -3154,7 +3136,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_degraded_true_when_failures_and_no_delivery() {
         let mut stats = ScenarioStats::default();
         stats.total_sink_failures = 3;
@@ -3177,7 +3159,7 @@ scenarios:
     // ---- Fields update as scenario progresses --------------------------------
 
     /// Stats fields update as the scenario background thread emits events.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_fields_update_as_scenario_progresses() {
         // Thread emits events every 10ms.
         let h = make_handle(
@@ -3235,7 +3217,7 @@ scenarios:
     // ---- in_gap is true during gap window ------------------------------------
 
     /// When in_gap is set to true in the stats, the endpoint reflects it.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_in_gap_true_when_stats_indicate_gap() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 10;
@@ -3263,7 +3245,7 @@ scenarios:
 
     // ---- After scenario finished: returns final stats with state "finished" ----
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_returns_finished_state_for_finished_scenario() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 1000;
@@ -3304,7 +3286,7 @@ scenarios:
     // ---- Unknown ID returns 404 -----------------------------------------------
 
     /// GET /scenarios/{id}/stats with an unknown ID returns 404.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_unknown_id_returns_404() {
         let app = router_with_handles(vec![]);
 
@@ -3326,7 +3308,7 @@ scenarios:
     // ---- Stats 404 returns JSON Content-Type ----------------------------------
 
     /// GET /scenarios/{id}/stats 404 has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_404_returns_json_content_type() {
         let app = router_with_handles(vec![]);
 
@@ -3348,7 +3330,7 @@ scenarios:
     // ---- Stats endpoint returns correct target_rate ---------------------------
 
     /// The target_rate field reflects the configured rate on the handle, not measured rate.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_target_rate_reflects_configured_rate() {
         let mut stats = ScenarioStats::default();
         stats.total_events = 0;
@@ -3378,7 +3360,7 @@ scenarios:
     // ---- Stats endpoint uptime_secs is positive --------------------------------
 
     /// uptime_secs is positive for a running scenario.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_uptime_secs_is_positive() {
         let h = make_handle_with_stats(
             "id-stats-uptime",
@@ -3443,7 +3425,7 @@ scenarios:
     // ---- Stats 200 returns JSON Content-Type ----------------------------------
 
     /// GET /scenarios/{id}/stats success response has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_success_returns_json_content_type() {
         let h = make_handle_with_stats(
             "id-stats-ct",
@@ -3489,30 +3471,25 @@ scenarios:
         name: &str,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_for_task = cancel.clone();
 
-        let thread = thread::Builder::new()
-            .name(format!("test-metrics-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async move {
+            cancel_for_task.cancelled().await;
+            Ok::<(), sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -3544,7 +3521,7 @@ scenarios:
     // ---- Metrics scrape: 404 for unknown scenario ID ------------------------
 
     /// GET /scenarios/{id}/metrics with a nonexistent ID returns 404.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_unknown_id_returns_404() {
         let app = router_with_handles(vec![]);
 
@@ -3568,7 +3545,7 @@ scenarios:
     /// Empty buffer must render as `200 OK` with an empty Prometheus exposition
     /// (the contract Prometheus / vmagent / Telegraf scrapers expect). 204
     /// breaks scrapers that use `curl --fail`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_empty_buffer_returns_200_empty_body() {
         let h = make_handle_with_metrics("id-metrics-empty", "empty_metrics", vec![]);
         let app = router_with_handles(vec![h]);
@@ -3584,7 +3561,7 @@ scenarios:
 
     // ---- Metrics scrape: returns Prometheus text format ----------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_returns_prometheus_text_format() {
         let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
         let h = make_handle_with_metrics("id-metrics-prom", "prom_text", events);
@@ -3607,7 +3584,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_emits_one_sample_per_series_no_timestamp() {
         let events = vec![make_metric_event("up", 42.0)];
         let h = make_handle_with_metrics("id-no-ts", "no_ts", events);
@@ -3630,7 +3607,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_distinct_series_emit_distinct_samples() {
         let events = vec![
             labeled_metric_event("up", 1.0, &[("host", "a")]),
@@ -3646,7 +3623,7 @@ scenarios:
         assert_eq!(sample_lines.len(), 2, "got: {body:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_idempotent_across_scrapes() {
         let events = vec![make_metric_event("up", 1.0), make_metric_event("up", 2.0)];
         let h = make_handle_with_metrics("id-idem", "idem", events);
@@ -3672,7 +3649,7 @@ scenarios:
     // ---- Metrics scrape: correct Content-Type header ------------------------
 
     /// GET /scenarios/{id}/metrics sets Content-Type to Prometheus text exposition format.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_sets_prometheus_content_type() {
         let events = vec![make_metric_event("cpu_usage", 42.0)];
         let h = make_handle_with_metrics("id-metrics-ct", "ct_check", events);
@@ -3696,7 +3673,7 @@ scenarios:
     // ---- Metrics scrape: 404 returns JSON Content-Type ----------------------
 
     /// GET /scenarios/{id}/metrics 404 has Content-Type application/json.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_404_returns_json_content_type() {
         let app = router_with_handles(vec![]);
 
@@ -3715,7 +3692,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_emits_one_sample_per_distinct_series() {
         let events: Vec<_> = (0..5)
             .map(|i| labeled_metric_event("up", i as f64, &[("host", &format!("h{i}"))]))
@@ -3738,7 +3715,7 @@ scenarios:
     // ---- Metrics scrape: output ends with newline ---------------------------
 
     /// Each Prometheus text line ends with a newline.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn metrics_endpoint_output_ends_with_newline() {
         let events = vec![make_metric_event("up", 1.0)];
         let h = make_handle_with_metrics("id-metrics-nl", "newline_test", events);
@@ -3764,23 +3741,18 @@ scenarios:
         labels: Vec<(&str, &str)>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_for_task = cancel.clone();
 
-        let thread = thread::Builder::new()
-            .name(format!("test-agg-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async move {
+            cancel_for_task.cancelled().await;
+            Ok::<(), sonda_core::SondaError>(())
+        });
 
         let mut label_map = std::collections::HashMap::new();
         for (k, v) in labels {
@@ -3791,8 +3763,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -3819,7 +3791,7 @@ scenarios:
         app.oneshot(req).await.unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_empty_state_returns_200_empty_body() {
         let app = router_with_handles(vec![]);
         let resp = get_aggregate_req(app, "").await;
@@ -3840,7 +3812,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_single_scenario_no_filter_returns_events() {
         let events = vec![
             labeled_metric_event("up", 1.0, &[("host", "a")]),
@@ -3867,7 +3839,7 @@ scenarios:
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_emits_one_sample_per_series_no_timestamp() {
         let h1 = make_handle_with_labels_and_metrics(
             "agg-no-ts-1",
@@ -3896,7 +3868,7 @@ scenarios:
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_idempotent_across_scrapes() {
         let h = make_handle_with_labels_and_metrics(
             "agg-idem",
@@ -3920,7 +3892,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_and_per_scenario_scrapes_are_both_idempotent() {
         let h = make_handle_with_labels_and_metrics(
             "agg-both",
@@ -3952,7 +3924,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_filter_single_label_match_included() {
         let h1 = make_handle_with_labels_and_metrics(
             "agg-srl1",
@@ -3985,7 +3957,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_filter_single_label_no_match_excluded() {
         let h1 = make_handle_with_labels_and_metrics(
             "agg-nm-1",
@@ -4011,7 +3983,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_filter_multi_label_and_semantics() {
         let h1 = make_handle_with_labels_and_metrics(
             "agg-ml-1",
@@ -4050,7 +4022,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_handle_with_no_labels_never_matches_filter() {
         let h = make_handle_with_labels_and_metrics(
             "agg-nolabels",
@@ -4070,7 +4042,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_malformed_filter_returns_400() {
         let h = make_handle_with_labels_and_metrics(
             "agg-bad",
@@ -4102,7 +4074,7 @@ scenarios:
         assert_eq!(body2["error"].as_str().unwrap(), "bad_request");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_auth_gate_enforced() {
         let state = AppState::with_api_key(Some("the-key".to_string()));
         let app = router(state);
@@ -4326,24 +4298,20 @@ scenarios:
     /// the shutdown flag. This simulates a scenario that cannot be stopped
     /// gracefully within the join timeout.
     fn make_unjoinable_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let thread = thread::Builder::new()
-            .name(format!("test-unjoinable-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                // Ignore shutdown — sleep for a very long time.
-                thread::sleep(Duration::from_secs(300));
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            Ok::<(), sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             50.0,
@@ -4357,27 +4325,23 @@ scenarios:
         )
     }
 
-    /// Build a ScenarioHandle whose thread panics immediately.
     fn make_panicking_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let thread = thread::Builder::new()
-            .name(format!("test-panic-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
+        let task: tokio::task::JoinHandle<Result<(), sonda_core::SondaError>> =
+            tokio::task::spawn(async {
                 panic!("intentional panic for testing");
-            })
-            .expect("thread must spawn");
+            });
 
-        // Give the thread time to panic.
         thread::sleep(Duration::from_millis(50));
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -4395,7 +4359,7 @@ scenarios:
 
     /// When the scenario thread does not exit within the join timeout,
     /// DELETE returns status "force_stopped".
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_unjoinable_thread_returns_force_stopped() {
         let h = make_unjoinable_handle("id-force", "force_stop");
         let state = AppState::new();
@@ -4437,7 +4401,7 @@ scenarios:
 
     /// When the scenario thread has panicked, DELETE returns 200 OK with status
     /// "stopped" (the thread has already exited, just abnormally).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_panicked_thread_returns_stopped() {
         let h = make_panicking_handle("id-panic", "panic_scenario");
         let state = AppState::new();
@@ -4491,7 +4455,7 @@ scenarios:
     }
 
     /// GET /scenarios returns 500 when the map lock is poisoned.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_scenarios_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4517,7 +4481,7 @@ scenarios:
     }
 
     /// GET /scenarios/{id} returns 500 when the map lock is poisoned.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4536,7 +4500,7 @@ scenarios:
     }
 
     /// GET /scenarios/{id}/stats returns 500 when the map lock is poisoned.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_stats_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4550,7 +4514,7 @@ scenarios:
     }
 
     /// GET /scenarios/{id}/metrics returns 500 when the map lock is poisoned.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_metrics_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4564,7 +4528,7 @@ scenarios:
     }
 
     /// DELETE /scenarios/{id} returns 500 when the map lock is poisoned.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_scenario_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4579,7 +4543,7 @@ scenarios:
 
     /// POST /scenarios returns 500 when the map lock is poisoned (lock
     /// acquisition for storing the handle fails).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_scenario_poisoned_lock_returns_500() {
         let state = make_poisoned_state();
         let app = router(state);
@@ -4664,7 +4628,7 @@ scenarios:
 ";
 
     /// Multi-scenario YAML POST returns 201 with a scenarios array.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_yaml_returns_201_with_scenarios_array() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
@@ -4710,7 +4674,7 @@ scenarios:
     }
 
     /// Multi-scenario POST stores all handles in AppState.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_stores_all_handles() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
@@ -4733,7 +4697,7 @@ scenarios:
     }
 
     /// Multi-scenario POST with v2 JSON content type returns 201.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_json_returns_201() {
         let json_body = serde_json::json!({
             "version": 2,
@@ -4781,7 +4745,7 @@ scenarios:
     }
 
     /// Empty v2 scenarios array returns 400 with a descriptive error.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_empty_array_returns_400() {
         let yaml = "version: 2\nkind: runnable\nscenarios: []\n";
         let (app, _state) = test_router();
@@ -4802,7 +4766,7 @@ scenarios:
     }
 
     /// Invalid entry in a v2 batch returns 422 and nothing is launched.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_invalid_entry_returns_422_nothing_launched() {
         let yaml = "\
 version: 2
@@ -4847,7 +4811,7 @@ scenarios:
     }
 
     /// Multi-scenario POST with phase_offset honored per entry.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_phase_offset_honored() {
         let (app, state) = test_router();
         let response =
@@ -4869,7 +4833,7 @@ scenarios:
     }
 
     /// Single-scenario POST still returns backward-compatible response.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_single_scenario_backward_compat() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_METRICS_YAML).await;
@@ -4895,7 +4859,7 @@ scenarios:
     }
 
     /// All launched multi-scenario entries are visible in GET /scenarios.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_entries_visible_in_get_list() {
         let state = AppState::new();
         let app = router(state.clone());
@@ -4939,7 +4903,7 @@ scenarios:
     }
 
     /// Multi-scenario entries are stoppable via DELETE.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_entries_stoppable_via_delete() {
         let state = AppState::new();
         let app = router(state.clone());
@@ -4975,7 +4939,7 @@ scenarios:
     }
 
     /// Multi-scenario response has unique IDs for each entry.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_ids_are_unique() {
         let (app, state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", VALID_MULTI_YAML).await;
@@ -5003,7 +4967,7 @@ scenarios:
     }
 
     /// Multi-scenario with mixed signal types (metrics + logs) returns 201.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_multi_scenario_mixed_signal_types() {
         let yaml = "\
 version: 2
@@ -5125,7 +5089,7 @@ scenarios:
 
     /// Single-scenario POST with phase_offset returns 201 (verifies the
     /// single-scenario path now uses prepare_entries which resolves phase_offset).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_single_scenario_with_phase_offset_returns_201() {
         let yaml = "\
 version: 2
@@ -5168,7 +5132,7 @@ scenarios:
 
     /// Single-scenario POST with rate=0 returns 422 (verifies validation
     /// through prepare_entries).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn post_single_scenario_with_zero_rate_returns_422_via_prepare_entries() {
         let (app, _state) = test_router();
         let response = post_scenarios(app, "application/x-yaml", ZERO_RATE_YAML).await;
@@ -5276,28 +5240,23 @@ scenarios:
         meta: Option<sonda_core::PromMeta>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
-        let thread = thread::Builder::new()
-            .name(format!("test-meta-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let cancel_for_task = cancel.clone();
+        let task = tokio::task::spawn(async move {
+            cancel_for_task.cancelled().await;
+            Ok::<(), sonda_core::SondaError>(())
+        });
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -5317,7 +5276,7 @@ scenarios:
         .expect("metric name must be valid")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_emits_type_line() {
         let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
         let h = handle_with_meta(
@@ -5336,7 +5295,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_emits_help_line_when_set() {
         let meta = sonda_core::PromMeta::new(
             sonda_core::PromMetricType::Gauge,
@@ -5360,7 +5319,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_omits_help_when_unset() {
         let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
         let h = handle_with_meta(
@@ -5379,7 +5338,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn per_scenario_metrics_log_scenario_returns_empty() {
         let h = handle_with_meta("id-log", "log_scenario", None, vec![]);
         let app = router_with_handles(vec![h]);
@@ -5399,22 +5358,18 @@ scenarios:
         labels: Vec<(&str, &str)>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
-        let thread = thread::Builder::new()
-            .name(format!("test-agg-meta-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let cancel_for_task = cancel.clone();
+        let task = tokio::task::spawn(async move {
+            cancel_for_task.cancelled().await;
+            Ok::<(), sonda_core::SondaError>(())
+        });
+        let _ = name;
         let mut label_map = std::collections::HashMap::new();
         for (k, v) in labels {
             label_map.insert(k.to_string(), v.to_string());
@@ -5423,8 +5378,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -5435,7 +5390,7 @@ scenarios:
         )
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_emits_one_type_block_per_name() {
         let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
         let h1 = handle_with_meta_and_labels(
@@ -5473,7 +5428,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_groups_samples_by_name() {
         let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
         let h1 = handle_with_meta_and_labels(
@@ -5518,7 +5473,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_mixed_type_collision_emits_untyped_and_warns() {
         let h1 = handle_with_meta_and_labels(
             "mix-1",
@@ -5550,7 +5505,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_label_filter_still_works_with_type_lines() {
         let meta = sonda_core::PromMeta::new(sonda_core::PromMetricType::Gauge, None);
         let h1 = handle_with_meta_and_labels(
@@ -5599,7 +5554,7 @@ scenarios:
             .expect("metric name must be valid")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_histogram_scenario_exposes_buckets_sum_and_count() {
         let events = vec![
             labeled_metric_event("req_latency_bucket", 12.0, &[("le", "0.1")]),
@@ -5638,7 +5593,7 @@ scenarios:
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn aggregate_metrics_summary_scenario_exposes_quantiles_sum_and_count() {
         let events = vec![
             labeled_metric_event("rpc_duration", 0.05, &[("quantile", "0.5")]),
@@ -5753,7 +5708,7 @@ scenarios:
         body_json(resp).await
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t14_validate_strict_with_typo_returns_422_and_unresolved_refs() {
         let (_, state) = test_router();
         let bad = DOWNSTREAM_YAML.replace("upstream_post", "totally_wrong");
@@ -5775,7 +5730,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t15_validate_strict_with_mixed_refs_rejects_whole_body() {
         let (_, state) = test_router();
         let mixed = "\
@@ -5840,7 +5795,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t16_validate_strict_with_all_resolvable_returns_201() {
         let (_, state) = test_router();
         let up_resp = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
@@ -5857,7 +5812,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t18_get_scenario_for_unresolved_returns_pending_ref() {
         let (_, state) = test_router();
         let resp = post_with_query(
@@ -5907,7 +5862,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t19_stats_endpoint_has_current_state_secs_and_cumulative_attempts() {
         let (_, state) = test_router();
         let resp = post_with_query(
@@ -5964,7 +5919,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t20_duplicate_scenario_name_returns_409_via_registry() {
         let (_, state) = test_router();
         let first = post_with_query(router(state.clone()), "text/yaml", UPSTREAM_YAML, "").await;
