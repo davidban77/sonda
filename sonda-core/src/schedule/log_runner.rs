@@ -33,9 +33,9 @@ use crate::SondaError;
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run_logs(config: &LogScenarioConfig) -> Result<(), SondaError> {
+pub async fn run_logs(config: &LogScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
-    run_logs_with_sink(config, sink.as_mut(), None, None)
+    run_logs_with_sink(config, &mut sink, None, None).await
 }
 
 /// Run a log scenario to completion, writing encoded events into the provided sink.
@@ -64,22 +64,22 @@ pub fn run_logs(config: &LogScenarioConfig) -> Result<(), SondaError> {
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 /// If an error occurs during the loop and flushing also fails, the loop error
 /// is returned (the flush error is discarded to preserve the original cause).
-pub fn run_logs_with_sink(
+pub async fn run_logs_with_sink(
     config: &LogScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_logs_with_sink_gated(config, sink, shutdown, stats, None)
+    run_logs_with_sink_gated(config, sink, shutdown, stats, None).await
 }
 
 /// Run a log scenario with optional `while:` / `after:` gating.
 ///
 /// Logs cannot be `while:` upstreams (compile-time `NonMetricsTarget`),
 /// but they can be `while:`-gated downstreams.
-pub fn run_logs_with_sink_gated(
+pub async fn run_logs_with_sink_gated(
     config: &LogScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: Option<GateContext>,
@@ -144,36 +144,65 @@ pub fn run_logs_with_sink_gated(
     };
 
     match gate_ctx {
-        None => core_loop::run_schedule_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            sink,
-            &mut tick_fn,
-        ),
-        Some(ctx) => core_loop::gated_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            ctx,
-            sink,
-            &mut tick_fn,
-        ),
+        None => {
+            core_loop::run_schedule_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
+        Some(ctx) => {
+            core_loop::gated_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                ctx,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::config::{BaseScheduleConfig, GapConfig, LogScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::{LogGeneratorConfig, TemplateConfig};
-    use crate::sink::memory::MemorySink;
     use crate::sink::SinkConfig;
+
+    type SharedBuf = Arc<Mutex<Vec<u8>>>;
+
+    struct ProbeSink(SharedBuf);
+
+    impl Sink for ProbeSink {
+        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.0
+                .lock()
+                .expect("probe sink mutex poisoned")
+                .extend_from_slice(data);
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
+        let buf: SharedBuf = Arc::new(Mutex::new(Vec::new()));
+        let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
+        (sink, buf)
+    }
 
     /// Build a minimal valid `LogScenarioConfig` for use in tests.
     ///
@@ -220,15 +249,18 @@ mod tests {
     ///
     /// At rate=10 and duration=1s we expect 10 events (within ±3 tolerance to
     /// accommodate OS scheduling jitter without making the test fragile).
-    #[test]
-    fn run_logs_with_sink_rate_10_duration_1s_produces_approx_10_lines() {
+    #[tokio::test]
+    async fn run_logs_with_sink_rate_10_duration_1s_produces_approx_10_lines() {
         let config = make_config(10.0, Some("1s"));
-        let mut sink = MemorySink::new();
+        let (mut sink, buf) = probe_sink();
 
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
         // Count newline-terminated JSON lines.
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let line_count = output.lines().count();
         assert!(
             (7..=13).contains(&line_count),
@@ -237,14 +269,17 @@ mod tests {
     }
 
     /// Every emitted line must be non-empty valid JSON with a `message` key.
-    #[test]
-    fn run_logs_with_sink_each_line_is_valid_json() {
+    #[tokio::test]
+    async fn run_logs_with_sink_each_line_is_valid_json() {
         let config = make_config(10.0, Some("1s"));
-        let mut sink = MemorySink::new();
+        let (mut sink, buf) = probe_sink();
 
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
@@ -261,15 +296,15 @@ mod tests {
 
     /// If the shutdown flag is cleared (false) before the scenario would
     /// naturally finish, the runner must exit cleanly without error.
-    #[test]
-    fn run_logs_with_sink_shutdown_flag_stops_runner() {
+    #[tokio::test]
+    async fn run_logs_with_sink_shutdown_flag_stops_runner() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
 
         let config = make_config(5.0, None); // runs indefinitely without shutdown
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
         let shutdown = Arc::new(AtomicBool::new(true));
 
         let flag_clone = Arc::clone(&shutdown);
@@ -279,7 +314,7 @@ mod tests {
             flag_clone.store(false, Ordering::SeqCst);
         });
 
-        let result = run_logs_with_sink(&config, &mut sink, Some(shutdown.as_ref()), None);
+        let result = run_logs_with_sink(&config, &mut sink, Some(shutdown.as_ref()), None).await;
         assert!(
             result.is_ok(),
             "runner must return Ok when stopped via shutdown flag"
@@ -296,8 +331,8 @@ mod tests {
     /// and run for 500ms — the scenario starts in a non-gap period initially
     /// but then immediately transitions into the gap for the rest of the run,
     /// so zero or very few events are emitted.
-    #[test]
-    fn run_logs_with_sink_gap_suppresses_output() {
+    #[tokio::test]
+    async fn run_logs_with_sink_gap_suppresses_output() {
         // gap: every=10s, for=9s → gap starts at 1s.
         // duration=2s → after 1s of normal events, 1s is spent in a gap.
         let mut config = make_config(100.0, Some("2s"));
@@ -306,10 +341,13 @@ mod tests {
             r#for: "9s".to_string(), // gap from second 1 to second 10
         });
 
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         let line_count = output.lines().count();
         // Only ~100 events from the first second (before the gap). The gap covers
         // seconds 1–10, so the remaining 1s of the 2s run is silent.
@@ -325,15 +363,17 @@ mod tests {
 
     /// When a finite duration is set, the runner must exit at the right time.
     /// Verify this is respected by running at low rate for 500ms.
-    #[test]
-    fn run_logs_with_sink_duration_500ms_exits_promptly() {
+    #[tokio::test]
+    async fn run_logs_with_sink_duration_500ms_exits_promptly() {
         use std::time::Instant;
 
         let config = make_config(5.0, Some("500ms"));
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
 
         let t0 = Instant::now();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("must not error");
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("must not error");
         let elapsed = t0.elapsed();
 
         // Should exit within 2 seconds of the 500ms duration.
@@ -503,18 +543,21 @@ sink:
 
     /// When labels are configured, every emitted JSON line must include the
     /// labels object with the correct key-value pairs.
-    #[test]
-    fn run_logs_with_sink_labels_appear_in_json_output() {
+    #[tokio::test]
+    async fn run_logs_with_sink_labels_appear_in_json_output() {
         let mut config = make_config(10.0, Some("1s"));
         let mut label_map = HashMap::new();
         label_map.insert("device".to_string(), "wlan0".to_string());
         label_map.insert("hostname".to_string(), "router_01".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(
             !lines.is_empty(),
@@ -537,13 +580,16 @@ sink:
 
     /// When no labels are configured, the labels object in JSON output must be
     /// empty (not absent).
-    #[test]
-    fn run_logs_with_sink_no_labels_produces_empty_labels_object() {
+    #[tokio::test]
+    async fn run_logs_with_sink_no_labels_produces_empty_labels_object() {
         let config = make_config(10.0, Some("500ms"));
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
@@ -556,8 +602,8 @@ sink:
     }
 
     /// Labels in syslog encoder should appear as structured data.
-    #[test]
-    fn run_logs_with_sink_labels_appear_in_syslog_output() {
+    #[tokio::test]
+    async fn run_logs_with_sink_labels_appear_in_syslog_output() {
         let mut config = make_config(10.0, Some("500ms"));
         config.encoder = EncoderConfig::Syslog {
             hostname: None,
@@ -567,10 +613,13 @@ sink:
         label_map.insert("env".to_string(), "prod".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(
             !lines.is_empty(),
@@ -616,8 +665,8 @@ sink:
 
     /// When the entire run is inside a spike window, every JSON line must
     /// contain the spike label key in the labels object.
-    #[test]
-    fn run_logs_with_sink_spike_labels_appear_during_spike_window() {
+    #[tokio::test]
+    async fn run_logs_with_sink_spike_labels_appear_during_spike_window() {
         let spike = crate::config::CardinalitySpikeConfig {
             label: "pod_name".to_string(),
             every: "10s".to_string(),
@@ -628,11 +677,14 @@ sink:
             seed: None,
         };
         let config = make_config_with_spike(10.0, Some("1s"), spike);
-        let mut sink = MemorySink::new();
+        let (mut sink, buf) = probe_sink();
 
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(
             !lines.is_empty(),
@@ -655,13 +707,16 @@ sink:
     }
 
     /// When no spike windows are configured, labels object must not contain spike keys.
-    #[test]
-    fn run_logs_with_sink_no_spike_config_produces_no_spike_labels() {
+    #[tokio::test]
+    async fn run_logs_with_sink_no_spike_config_produces_no_spike_labels() {
         let config = make_config(10.0, Some("500ms"));
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
@@ -688,8 +743,8 @@ sink:
     }
 
     /// Dynamic labels with counter strategy appear in every JSON log line.
-    #[test]
-    fn run_logs_dynamic_labels_counter_appear_in_output() {
+    #[tokio::test]
+    async fn run_logs_dynamic_labels_counter_appear_in_output() {
         let config = make_config_with_dynamic_labels(
             10.0,
             Some("1s"),
@@ -701,10 +756,13 @@ sink:
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(!lines.is_empty(), "runner must produce output");
 
@@ -724,8 +782,8 @@ sink:
     }
 
     /// Dynamic labels with values list cycle through values in log output.
-    #[test]
-    fn run_logs_dynamic_labels_values_list_cycle_in_output() {
+    #[tokio::test]
+    async fn run_logs_dynamic_labels_values_list_cycle_in_output() {
         let config = make_config_with_dynamic_labels(
             10.0,
             Some("1s"),
@@ -736,10 +794,13 @@ sink:
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(!lines.is_empty());
 
@@ -768,8 +829,8 @@ sink:
     }
 
     /// Cardinality ceiling is respected in log output.
-    #[test]
-    fn run_logs_dynamic_labels_respects_cardinality_ceiling() {
+    #[tokio::test]
+    async fn run_logs_dynamic_labels_respects_cardinality_ceiling() {
         let config = make_config_with_dynamic_labels(
             50.0,
             Some("1s"),
@@ -781,10 +842,13 @@ sink:
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let mut distinct_values = std::collections::HashSet::new();
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -801,8 +865,8 @@ sink:
     }
 
     /// Dynamic labels and static labels coexist in log output.
-    #[test]
-    fn run_logs_dynamic_labels_and_static_labels_coexist() {
+    #[tokio::test]
+    async fn run_logs_dynamic_labels_and_static_labels_coexist() {
         let mut config = make_config_with_dynamic_labels(
             10.0,
             Some("1s"),
@@ -818,10 +882,13 @@ sink:
         label_map.insert("env".to_string(), "staging".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));
@@ -837,8 +904,8 @@ sink:
     }
 
     /// Dynamic label wins on key collision with static label in log output.
-    #[test]
-    fn run_logs_dynamic_label_wins_on_key_collision() {
+    #[tokio::test]
+    async fn run_logs_dynamic_label_wins_on_key_collision() {
         let mut config = make_config_with_dynamic_labels(
             10.0,
             Some("500ms"),
@@ -854,10 +921,13 @@ sink:
         label_map.insert("hostname".to_string(), "static-value".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        run_logs_with_sink(&config, &mut sink, None, None).expect("log runner must not error");
+        let (mut sink, buf) = probe_sink();
+        run_logs_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("log runner must not error");
 
-        let output = String::from_utf8(sink.buffer.clone()).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             let parsed: serde_json::Value = serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("line is not valid JSON: {e}\nline: {line}"));

@@ -36,9 +36,9 @@ use crate::SondaError;
 /// # Errors
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
+pub async fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, None)?;
-    run_with_sink(config, sink.as_mut(), None, None)
+    run_with_sink(config, &mut sink, None, None).await
 }
 
 /// Run a scenario to completion, writing encoded events into the provided sink.
@@ -68,13 +68,13 @@ pub fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 /// If an error occurs during the loop and flushing also fails, the loop error
 /// is returned (the flush error is discarded to preserve the original cause).
-pub fn run_with_sink(
+pub async fn run_with_sink(
     config: &ScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_with_sink_gated(config, sink, shutdown, stats, None, None)
+    run_with_sink_gated(config, sink, shutdown, stats, None, None).await
 }
 
 /// Run a metric scenario with optional `while:` / `after:` gating.
@@ -83,9 +83,9 @@ pub fn run_with_sink(
 /// gates to subscribe to). `gate_ctx` is what THIS scenario consumes from
 /// an upstream bus. Both are independent — a scenario can be both an
 /// upstream (publishing) and a downstream (gated).
-pub fn run_with_sink_gated(
+pub async fn run_with_sink_gated(
     config: &ScenarioConfig,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     upstream_bus: Option<Arc<GateBus>>,
@@ -168,14 +168,17 @@ pub fn run_with_sink_gated(
     };
 
     match gate_ctx {
-        None => core_loop::run_schedule_loop(
-            &schedule,
-            config.rate,
-            shutdown,
-            stats,
-            sink,
-            &mut tick_fn,
-        ),
+        None => {
+            core_loop::run_schedule_loop(
+                &schedule,
+                config.rate,
+                shutdown,
+                stats,
+                sink,
+                &mut tick_fn,
+            )
+            .await
+        }
         Some(mut ctx) => {
             ctx.close_emit = build_close_emit(
                 config,
@@ -193,6 +196,7 @@ pub fn run_with_sink_gated(
                 sink,
                 &mut tick_fn,
             )
+            .await
         }
     }
 }
@@ -289,11 +293,36 @@ fn is_remote_write_sink(_sink: &SinkConfig) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use crate::config::{BaseScheduleConfig, GapConfig, ScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::GeneratorConfig;
-    use crate::sink::memory::MemorySink;
-    use crate::sink::SinkConfig;
+    use crate::sink::{Sink, SinkConfig};
+    use crate::SondaError;
+
+    type SharedBuf = std::sync::Arc<Mutex<Vec<u8>>>;
+
+    struct ProbeSink(SharedBuf);
+
+    impl Sink for ProbeSink {
+        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            self.0
+                .lock()
+                .expect("probe sink mutex poisoned")
+                .extend_from_slice(data);
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
+        let buf: SharedBuf = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
+        (sink, buf)
+    }
 
     /// Build a minimal ScenarioConfig suitable for a short integration run.
     fn make_config(rate: f64, duration: &str, gaps: Option<GapConfig>) -> ScenarioConfig {
@@ -326,10 +355,10 @@ mod tests {
     // ---- run: basic correctness ----------------------------------------------
 
     /// run() with a short duration should complete without error.
-    #[test]
-    fn run_completes_without_error_for_short_duration() {
+    #[tokio::test]
+    async fn run_completes_without_error_for_short_duration() {
         let config = make_config(100.0, "100ms", None);
-        let result = super::run(&config);
+        let result = super::run(&config).await;
         assert!(
             result.is_ok(),
             "run must succeed for valid config: {result:?}"
@@ -340,13 +369,16 @@ mod tests {
 
     /// At rate=100 for 1 second we expect approximately 100 newline-terminated events.
     /// We allow a ±20% window to accommodate scheduling jitter.
-    #[test]
-    fn integration_rate_100_duration_1s_emits_approximately_100_events() {
+    #[tokio::test]
+    async fn integration_rate_100_duration_1s_emits_approximately_100_events() {
         let config = make_config(100.0, "1s", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         assert!(
             (80..=120).contains(&newlines),
             "expected ~100 events (80–120), got {newlines}"
@@ -354,13 +386,16 @@ mod tests {
     }
 
     /// Each emitted line is valid UTF-8 and starts with the metric name.
-    #[test]
-    fn integration_output_lines_start_with_metric_name() {
+    #[tokio::test]
+    async fn integration_output_lines_start_with_metric_name() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             assert!(
                 line.starts_with("up"),
@@ -370,16 +405,16 @@ mod tests {
     }
 
     /// Each emitted Prometheus line ends with a newline.
-    #[test]
-    fn integration_output_ends_with_newline() {
+    #[tokio::test]
+    async fn integration_output_ends_with_newline() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        assert!(
-            sink.buffer.ends_with(b"\n"),
-            "output must end with a newline"
-        );
+        let captured = buf.lock().unwrap();
+        assert!(captured.ends_with(b"\n"), "output must end with a newline");
     }
 
     // ---- Integration: gap suppresses events ----------------------------------
@@ -388,8 +423,8 @@ mod tests {
     /// 500 events because the gap suppresses approximately 1 second of output per
     /// 3-second cycle (~100 events lost from the first gap, plus ~100 from the
     /// second). We use 380 as a conservative upper bound below 500.
-    #[test]
-    fn integration_gap_suppresses_events() {
+    #[tokio::test]
+    async fn integration_gap_suppresses_events() {
         let config = make_config(
             100.0,
             "5s",
@@ -398,10 +433,13 @@ mod tests {
                 r#for: "1s".to_string(),
             }),
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         assert!(
             newlines < 500,
             "gap must suppress events: expected < 500, got {newlines}"
@@ -416,41 +454,44 @@ mod tests {
     // ---- run: invalid config is rejected -------------------------------------
 
     /// A config with an unparseable duration returns Err.
-    #[test]
-    fn run_with_invalid_duration_returns_err() {
+    #[tokio::test]
+    async fn run_with_invalid_duration_returns_err() {
         let mut config = make_config(100.0, "bad_duration", None);
         // Manually set an invalid duration string.
         config.duration = Some("not_a_duration".to_string());
-        let result = super::run(&config);
+        let result = super::run(&config).await;
         assert!(result.is_err(), "invalid duration must return Err");
     }
 
     /// A config with an invalid gap duration returns Err.
-    #[test]
-    fn run_with_invalid_gap_every_returns_err() {
+    #[tokio::test]
+    async fn run_with_invalid_gap_every_returns_err() {
         let mut config = make_config(100.0, "1s", None);
         config.gaps = Some(GapConfig {
             every: "bad".to_string(),
             r#for: "1s".to_string(),
         });
-        let result = super::run(&config);
+        let result = super::run(&config).await;
         assert!(result.is_err(), "invalid gap.every must return Err");
     }
 
     // ---- run: labels appear in output ---------------------------------------
 
     /// When labels are configured they appear in the encoded output.
-    #[test]
-    fn integration_labels_appear_in_output() {
+    #[tokio::test]
+    async fn integration_labels_appear_in_output() {
         let mut config = make_config(50.0, "100ms", None);
         let mut label_map = std::collections::HashMap::new();
         label_map.insert("host".to_string(), "server1".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         assert!(
             output.contains("host=\"server1\""),
             "label must appear in output, got:\n{output}"
@@ -499,8 +540,8 @@ mod tests {
     /// The burst occupies [0, burst_for) of each burst_every cycle.
     /// With burst_every=10s and burst_for=9s, the first 1s of the run is always
     /// inside a burst (cycle_pos=0..1 < 9), so effective_interval = base/5.
-    #[test]
-    fn integration_burst_increases_event_count() {
+    #[tokio::test]
+    async fn integration_burst_increases_event_count() {
         let config = make_config_with_burst(
             10.0,
             "1s",
@@ -511,10 +552,13 @@ mod tests {
                 multiplier: 5.0,
             }),
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         // Without burst: ~10 events. With 5x burst for entire 1s: ~50 events.
         // We allow a wide range to accommodate scheduling jitter.
         assert!(
@@ -531,8 +575,8 @@ mod tests {
     /// The first 1s of the run is in a burst (rate=500), the second 1s is not (rate=100).
     /// Total expected events: ~500 + ~100 = ~600.
     /// We use a range of 400–800 to accommodate scheduling jitter.
-    #[test]
-    fn integration_burst_then_normal_produces_mixed_rate() {
+    #[tokio::test]
+    async fn integration_burst_then_normal_produces_mixed_rate() {
         let config = make_config_with_burst(
             100.0,
             "2s",
@@ -543,10 +587,13 @@ mod tests {
                 multiplier: 5.0,
             }),
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         // Without any burst: ~200 events. With burst for first 1s: ~600.
         assert!(
             newlines > 200,
@@ -588,8 +635,8 @@ mod tests {
     /// During [1s, 3s): gap wins → 0 events.
     /// Total: only ~500 events (much less than 100*3=300 without gap/burst,
     /// and much less than 500*2+100*1 with burst only).
-    #[test]
-    fn integration_gap_wins_over_burst_suppresses_events() {
+    #[tokio::test]
+    async fn integration_gap_wins_over_burst_suppresses_events() {
         // Gap occupies [every-for, every) = [3-2, 3) = [1s, 3s) per cycle.
         // Burst occupies [0, burst_for) = [0, 2.5s) per cycle.
         // Overlap: [1s, 2.5s) — gap wins here.
@@ -607,10 +654,13 @@ mod tests {
                 multiplier: 5.0,
             }),
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
 
         // During gap: 0 events. During [0,1s) with burst (5x): ~500 events.
         // But the run exits after 3s total, and the gap sleeps through most of it.
@@ -634,8 +684,8 @@ mod tests {
     /// Simpler gap-wins-over-burst test: run for 100ms with no gap and burst
     /// to establish a baseline, then run with both gap and burst where the
     /// gap covers the entire duration — expect zero events.
-    #[test]
-    fn integration_gap_covering_full_window_produces_zero_events_even_with_burst() {
+    #[tokio::test]
+    async fn integration_gap_covering_full_window_produces_zero_events_even_with_burst() {
         // Gap: every=1s, for=500ms → gap occupies [500ms, 1000ms) in each 1s cycle.
         // Run for 200ms starting at cycle_pos approaching 500ms.
         //
@@ -664,10 +714,16 @@ mod tests {
                 multiplier: 5.0,
             }),
         );
-        let mut sink_no_gap = MemorySink::new();
+        let (mut sink_no_gap, buf_no_gap) = probe_sink();
         super::run_with_sink(&config_no_gap_burst, &mut sink_no_gap, None, None)
+            .await
             .expect("run must succeed");
-        let events_burst_only = sink_no_gap.buffer.iter().filter(|&&b| b == b'\n').count();
+        let events_burst_only = buf_no_gap
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count();
 
         // With the burst for 900ms of each 1s cycle, over 500ms we'd expect ~4500 events.
         // This shows burst is working.
@@ -684,11 +740,13 @@ mod tests {
                 multiplier: 5.0,
             }),
         );
-        let mut sink_gap_burst = MemorySink::new();
+        let (mut sink_gap_burst, buf_gap_burst) = probe_sink();
         super::run_with_sink(&config_gap_and_burst, &mut sink_gap_burst, None, None)
+            .await
             .expect("run must succeed");
-        let events_gap_and_burst = sink_gap_burst
-            .buffer
+        let events_gap_and_burst = buf_gap_burst
+            .lock()
+            .unwrap()
             .iter()
             .filter(|&&b| b == b'\n')
             .count();
@@ -706,15 +764,16 @@ mod tests {
 
     // ---- Integration: stats buffer receives metric events ---------------------
 
-    #[test]
-    fn runner_pushes_metric_events_to_stats_current_values() {
+    #[tokio::test]
+    async fn runner_pushes_metric_events_to_stats_current_values() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
         super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .await
             .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
@@ -726,30 +785,34 @@ mod tests {
 
     /// When no stats arc is provided (None), the runner does not panic and
     /// still produces output normally.
-    #[test]
-    fn runner_without_stats_does_not_push_metrics() {
+    #[tokio::test]
+    async fn runner_without_stats_does_not_push_metrics() {
         let config = make_config(50.0, "100ms", None);
-        let mut sink = MemorySink::new();
+        let (mut sink, buf) = probe_sink();
 
         // Pass None for stats — should work fine without buffering.
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         assert!(
             newlines > 0,
             "runner without stats must still produce output"
         );
     }
 
-    #[test]
-    fn runner_stats_current_values_have_correct_metric_name() {
+    #[tokio::test]
+    async fn runner_stats_current_values_have_correct_metric_name() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(50.0, "100ms", None);
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
         super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .await
             .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
@@ -759,8 +822,8 @@ mod tests {
     }
 
     /// The shutdown flag stops the runner even during a burst window.
-    #[test]
-    fn shutdown_flag_stops_run_during_burst() {
+    #[tokio::test]
+    async fn shutdown_flag_stops_run_during_burst() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
@@ -784,15 +847,18 @@ mod tests {
             shutdown_clone.store(false, Ordering::SeqCst);
         });
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, Some(&shutdown), None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, Some(&shutdown), None)
+            .await
+            .expect("run must succeed");
         handle.join().expect("thread must complete");
 
         // The run stopped after ~200ms due to shutdown flag.
         // At rate=1000 with 5x burst: ~1000 events in 200ms.
         // We just assert it stopped without hanging (the test would time out otherwise)
         // and produced some output.
-        let newlines = sink.buffer.iter().filter(|&&b| b == b'\n').count();
+        let captured = buf.lock().unwrap();
+        let newlines = captured.iter().filter(|&&b| b == b'\n').count();
         assert!(
             newlines > 0,
             "some events must have been emitted before shutdown"
@@ -835,8 +901,8 @@ mod tests {
 
     /// When the entire run is inside a spike window, every output line must
     /// contain the spike label key.
-    #[test]
-    fn integration_spike_labels_appear_during_spike_window() {
+    #[tokio::test]
+    async fn integration_spike_labels_appear_during_spike_window() {
         let spike = crate::config::CardinalitySpikeConfig {
             label: "pod_name".to_string(),
             every: "10s".to_string(),
@@ -848,10 +914,13 @@ mod tests {
         };
         // Run for 500ms inside a spike window (spike occupies 0..9s of each 10s cycle)
         let config = make_config_with_spike(50.0, "500ms", spike);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             assert!(
                 line.contains("pod_name="),
@@ -861,13 +930,16 @@ mod tests {
     }
 
     /// When no spike windows are configured, output does not contain spike labels.
-    #[test]
-    fn integration_no_spike_config_produces_no_spike_labels() {
+    #[tokio::test]
+    async fn integration_no_spike_config_produces_no_spike_labels() {
         let config = make_config(50.0, "200ms", None);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         for line in output.lines() {
             assert!(
                 !line.contains("pod_name="),
@@ -877,8 +949,8 @@ mod tests {
     }
 
     /// Counter strategy produces unique values bounded by cardinality.
-    #[test]
-    fn integration_spike_counter_strategy_produces_bounded_values() {
+    #[tokio::test]
+    async fn integration_spike_counter_strategy_produces_bounded_values() {
         let spike = crate::config::CardinalitySpikeConfig {
             label: "pod_name".to_string(),
             every: "10s".to_string(),
@@ -889,10 +961,13 @@ mod tests {
             seed: None,
         };
         let config = make_config_with_spike(50.0, "500ms", spike);
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("output must be valid UTF-8");
         let mut seen_values = std::collections::HashSet::new();
         for line in output.lines() {
             // Extract value of pod_name from Prometheus output like: pod_name="pod-0"
@@ -917,8 +992,8 @@ mod tests {
     }
 
     /// Stats correctly reports `in_cardinality_spike` during a spike window.
-    #[test]
-    fn integration_spike_stats_reports_in_cardinality_spike() {
+    #[tokio::test]
+    async fn integration_spike_stats_reports_in_cardinality_spike() {
         use std::sync::{Arc, RwLock};
 
         let spike = crate::config::CardinalitySpikeConfig {
@@ -931,10 +1006,11 @@ mod tests {
             seed: None,
         };
         let config = make_config_with_spike(50.0, "200ms", spike);
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
         super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .await
             .expect("run must succeed");
 
         // The entire 200ms run is inside the spike window (0..9s of 10s cycle).
@@ -949,15 +1025,16 @@ mod tests {
     // ---- Arc sharing: name and labels are reference-counted, not deep-cloned ---
 
     /// All metric events buffered in stats must share the same Arc<str> name
-    #[test]
-    fn current_values_holds_one_entry_for_single_series_scenario() {
+    #[tokio::test]
+    async fn current_values_holds_one_entry_for_single_series_scenario() {
         use std::sync::{Arc, RwLock};
 
         let config = make_config(200.0, "100ms", None);
-        let mut sink = MemorySink::new();
+        let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
         super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
+            .await
             .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
@@ -975,8 +1052,8 @@ mod tests {
     }
 
     /// Invalid metric name in config is caught before the hot loop, not during.
-    #[test]
-    fn invalid_metric_name_returns_config_error_before_loop() {
+    #[tokio::test]
+    async fn invalid_metric_name_returns_config_error_before_loop() {
         let config = ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "123-invalid".to_string(),
@@ -1001,8 +1078,8 @@ mod tests {
             metric_type: None,
             help: None,
         };
-        let mut sink = MemorySink::new();
-        let result = super::run_with_sink(&config, &mut sink, None, None);
+        let (mut sink, _buf) = probe_sink();
+        let result = super::run_with_sink(&config, &mut sink, None, None).await;
         assert!(
             matches!(result, Err(crate::SondaError::Config(ref e)) if e.to_string().contains("123-invalid")),
             "expected Config error for invalid name, got: {result:?}"
@@ -1044,8 +1121,8 @@ mod tests {
     }
 
     /// Dynamic labels with counter strategy appear in every Prometheus line.
-    #[test]
-    fn dynamic_labels_counter_appear_in_metric_output() {
+    #[tokio::test]
+    async fn dynamic_labels_counter_appear_in_metric_output() {
         let config = make_config_with_dynamic_labels(
             10.0,
             "1s",
@@ -1057,10 +1134,13 @@ mod tests {
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(
             !lines.is_empty(),
@@ -1076,8 +1156,8 @@ mod tests {
     }
 
     /// Dynamic labels with values list cycle through the values.
-    #[test]
-    fn dynamic_labels_values_list_cycle_in_metric_output() {
+    #[tokio::test]
+    async fn dynamic_labels_values_list_cycle_in_metric_output() {
         let config = make_config_with_dynamic_labels(
             10.0,
             "1s",
@@ -1088,10 +1168,13 @@ mod tests {
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         let lines: Vec<&str> = output.lines().collect();
         assert!(!lines.is_empty());
 
@@ -1113,8 +1196,8 @@ mod tests {
     }
 
     /// Cardinality ceiling is respected: only cardinality distinct values appear.
-    #[test]
-    fn dynamic_labels_counter_respects_cardinality_ceiling_in_output() {
+    #[tokio::test]
+    async fn dynamic_labels_counter_respects_cardinality_ceiling_in_output() {
         let config = make_config_with_dynamic_labels(
             50.0,
             "1s",
@@ -1126,10 +1209,13 @@ mod tests {
                 },
             }],
         );
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         let mut distinct_values = std::collections::HashSet::new();
         for line in output.lines() {
             // Extract the hostname="..." value
@@ -1149,8 +1235,8 @@ mod tests {
     }
 
     /// Dynamic labels and static labels coexist: both appear in output.
-    #[test]
-    fn dynamic_labels_and_static_labels_coexist_in_output() {
+    #[tokio::test]
+    async fn dynamic_labels_and_static_labels_coexist_in_output() {
         let mut config = make_config_with_dynamic_labels(
             10.0,
             "1s",
@@ -1166,10 +1252,13 @@ mod tests {
         label_map.insert("env".to_string(), "prod".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         for line in output.lines() {
             assert!(
                 line.contains("env=\"prod\""),
@@ -1183,8 +1272,8 @@ mod tests {
     }
 
     /// Dynamic label wins on key collision with static label.
-    #[test]
-    fn dynamic_label_wins_on_key_collision_with_static() {
+    #[tokio::test]
+    async fn dynamic_label_wins_on_key_collision_with_static() {
         let mut config = make_config_with_dynamic_labels(
             10.0,
             "500ms",
@@ -1200,10 +1289,13 @@ mod tests {
         label_map.insert("hostname".to_string(), "static-value".to_string());
         config.labels = Some(label_map);
 
-        let mut sink = MemorySink::new();
-        super::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+        let (mut sink, buf) = probe_sink();
+        super::run_with_sink(&config, &mut sink, None, None)
+            .await
+            .expect("run must succeed");
 
-        let output = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+        let captured = buf.lock().unwrap();
+        let output = std::str::from_utf8(&captured).expect("valid UTF-8");
         for line in output.lines() {
             assert!(
                 line.contains("hostname=\"dynamic-"),

@@ -251,9 +251,9 @@ pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
                     }
                 }
 
-                let mut sink = CapturingSink {
+                let mut sink: Box<dyn Sink> = Box::new(CapturingSink {
                     buffer: buffer_for_thread,
-                };
+                });
                 run_entry_with_sink(&entry, &mut sink)
             })
             .expect("failed to spawn parity harness thread");
@@ -345,22 +345,36 @@ pub fn normalize_timestamps(bytes: &[u8]) -> Vec<u8> {
 ///
 /// The runner is driven with `shutdown: None` (the scenario's own
 /// `duration:` field bounds the run) and `stats: None` (parity tests do
-/// not inspect stats).
-fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut dyn Sink) -> Result<(), SondaError> {
-    // All four runners take the same shape: &Config, &mut dyn Sink,
-    // Option<&AtomicBool>, Option<Arc<RwLock<ScenarioStats>>>.
+/// not inspect stats). The async runner is driven from a per-call
+/// `current_thread` Tokio runtime so callers stay sync.
+fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut Box<dyn Sink>) -> Result<(), SondaError> {
     const NONE_ATOMIC: Option<&AtomicBool> = None;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime for test runner must build");
     match entry {
-        ScenarioEntry::Metrics(config) => runner::run_with_sink(config, sink, NONE_ATOMIC, None),
-        ScenarioEntry::Logs(config) => {
-            log_runner::run_logs_with_sink(config, sink, NONE_ATOMIC, None)
+        ScenarioEntry::Metrics(config) => {
+            rt.block_on(runner::run_with_sink(config, sink, NONE_ATOMIC, None))
         }
-        ScenarioEntry::Histogram(config) => {
-            histogram_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
-        }
-        ScenarioEntry::Summary(config) => {
-            summary_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
-        }
+        ScenarioEntry::Logs(config) => rt.block_on(log_runner::run_logs_with_sink(
+            config,
+            sink,
+            NONE_ATOMIC,
+            None,
+        )),
+        ScenarioEntry::Histogram(config) => rt.block_on(histogram_runner::run_with_sink(
+            config,
+            sink,
+            NONE_ATOMIC,
+            None,
+        )),
+        ScenarioEntry::Summary(config) => rt.block_on(summary_runner::run_with_sink(
+            config,
+            sink,
+            NONE_ATOMIC,
+            None,
+        )),
         // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary
         // (integration tests are a separate crate), so a wildcard arm is
         // required. A future signal variant has no runner wired in here yet.

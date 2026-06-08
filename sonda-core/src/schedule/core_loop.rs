@@ -189,30 +189,66 @@ pub type CloseEmitFn = Box<dyn FnMut(&mut TickOutput) -> Result<(), SondaError> 
 
 /// Run the shared schedule loop until duration expires or shutdown is
 /// signalled, then flush the sink and apply the sink-error policy.
-pub(crate) fn run_schedule_loop(
+pub(crate) async fn run_schedule_loop(
     schedule: &ParsedSchedule,
     rate: f64,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let stats_for_flush = stats.clone();
     let loop_result = run_schedule_loop_with_initial_tick(
         schedule, rate, shutdown, stats, 0, None, None, sink, tick_fn,
-    );
-    finalize_sink(schedule, stats_for_flush.as_ref(), sink, loop_result)
+    )
+    .await;
+    finalize_sink(schedule, stats_for_flush.as_ref(), sink, loop_result).await
 }
 
-fn finalize_sink(
+/// Placeholder sink swapped in for the brief window each `Box<dyn Sink>` is
+/// owned by a `spawn_blocking` task. Lives only inside `drain_writes` /
+/// `finalize_sink`; never reachable from user code. If either helper returns
+/// `Err`, the caller's `Box<dyn Sink>` may still hold this placeholder —
+/// do not retry sink operations after an error return, propagate it.
+struct NullSink;
+
+impl Sink for NullSink {
+    fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), SondaError> {
+        Ok(())
+    }
+}
+
+fn take_sink(sink: &mut Box<dyn Sink>) -> Box<dyn Sink> {
+    std::mem::replace(sink, Box::new(NullSink) as Box<dyn Sink>)
+}
+
+async fn finalize_sink(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     loop_result: Result<(), SondaError>,
 ) -> Result<(), SondaError> {
     match loop_result {
         Ok(()) => {
-            let flush_result = sink.flush();
+            let owned = take_sink(sink);
+            let join = tokio::task::spawn_blocking(move || {
+                let mut s = owned;
+                let r = s.flush();
+                (s, r)
+            })
+            .await;
+            let (returned_sink, flush_result) = match join {
+                Ok(pair) => pair,
+                Err(e) => {
+                    return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                        e.to_string(),
+                    )))
+                }
+            };
+            *sink = returned_sink;
             apply_flush_policy(schedule, stats, flush_result)
         }
         Err(e) => Err(e),
@@ -223,7 +259,7 @@ fn finalize_sink(
 /// last tick reached on exit through `last_tick_out`. Used by `gated_loop` to
 /// continue the tick counter across pause/resume instead of restarting at 0.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_schedule_loop_with_initial_tick(
+pub(crate) async fn run_schedule_loop_with_initial_tick(
     schedule: &ParsedSchedule,
     rate: f64,
     shutdown: Option<&AtomicBool>,
@@ -231,7 +267,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
     initial_tick: u64,
     last_tick_out: Option<&AtomicU64>,
     wall: Option<WallClock>,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let base_interval = Duration::from_secs_f64(1.0 / rate);
@@ -337,7 +373,7 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
         events_buf.clear();
         tick_output.clear();
         let tick_outcome = match tick_fn(&ctx, &mut tick_output, &mut events_buf) {
-            Ok(mut result) => match drain_writes(&mut tick_output, sink) {
+            Ok(mut result) => match drain_writes(&mut tick_output, sink).await {
                 Ok(Some(delivered)) => {
                     result.delivered = delivered;
                     Ok(result)
@@ -431,13 +467,32 @@ pub(crate) fn run_schedule_loop_with_initial_tick(
     Ok(())
 }
 
-fn drain_writes(output: &mut TickOutput, sink: &mut dyn Sink) -> Result<Option<bool>, SondaError> {
+async fn drain_writes(
+    output: &mut TickOutput,
+    sink: &mut Box<dyn Sink>,
+) -> Result<Option<bool>, SondaError> {
     let mut delivered: Option<bool> = None;
     for cmd in output.writes.drain(..) {
-        match cmd {
-            WriteCommand::Bytes(buf) => sink.write(&buf)?,
-            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(&event, &bytes)?,
-        }
+        let owned = take_sink(sink);
+        let join = tokio::task::spawn_blocking(move || {
+            let mut s = owned;
+            let r = match cmd {
+                WriteCommand::Bytes(buf) => s.write(&buf),
+                WriteCommand::LogEvent { event, bytes } => s.write_log_event(&event, &bytes),
+            };
+            (s, r)
+        })
+        .await;
+        let (returned_sink, write_result) = match join {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                    e.to_string(),
+                )))
+            }
+        };
+        *sink = returned_sink;
+        write_result?;
         delivered = Some(sink.last_write_delivered());
     }
     Ok(delivered)
@@ -521,25 +576,40 @@ fn apply_close_emit_policy_flush(
 
 /// Called on every committed `running → paused` transition AND on the
 /// single tail exit of `gated_loop`.
-fn invoke_close_emit(
+async fn invoke_close_emit(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     limiter: &mut SinkErrorRateLimiter,
     close_emit: Option<&mut CloseEmitFn>,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
 ) -> Result<(), SondaError> {
     let Some(emit) = close_emit else {
         return Ok(());
     };
     let mut output = TickOutput::default();
-    let outcome = emit(&mut output).and_then(|()| {
-        drain_writes(&mut output, sink)?;
-        Ok(())
-    });
+    let outcome = match emit(&mut output) {
+        Ok(()) => drain_writes(&mut output, sink).await.map(|_| ()),
+        Err(e) => Err(e),
+    };
     match outcome {
         Ok(()) => {
-            let flush = sink.flush();
-            apply_close_emit_policy_flush(schedule, stats, limiter, flush)?;
+            let owned = take_sink(sink);
+            let join = tokio::task::spawn_blocking(move || {
+                let mut s = owned;
+                let r = s.flush();
+                (s, r)
+            })
+            .await;
+            let (returned_sink, flush_result) = match join {
+                Ok(pair) => pair,
+                Err(e) => {
+                    return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                        e.to_string(),
+                    )))
+                }
+            };
+            *sink = returned_sink;
+            apply_close_emit_policy_flush(schedule, stats, limiter, flush_result)?;
         }
         Err(e) => apply_close_emit_policy(schedule, stats, limiter, e)?,
     }
@@ -644,19 +714,19 @@ impl GateContext {
 /// `current_rate` is reset to 0.0 and `elapsed_secs` keeps wall-clocking
 /// (the underlying `started_at` Instant inside `ScenarioHandle` runs
 /// against wall time regardless of pause state).
-pub(crate) fn gated_loop(
+pub(crate) async fn gated_loop(
     schedule: &ParsedSchedule,
     rate: f64,
     shutdown: Option<&AtomicBool>,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     mut gate_ctx: GateContext,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let mut close_warn_limiter = SinkErrorRateLimiter::new();
 
     let stats_for_flush = stats.clone();
-    let gated_result = run_on_thread_runtime(gated_loop_body(
+    let body_result = gated_loop_body(
         schedule,
         rate,
         shutdown,
@@ -665,30 +735,27 @@ pub(crate) fn gated_loop(
         &mut close_warn_limiter,
         sink,
         tick_fn,
-    ))
-    .and_then(|body_result| match body_result {
+    )
+    .await;
+    let gated_result = match body_result {
         Ok(LoopExit::Shutdown | LoopExit::DurationExpired | LoopExit::UpstreamFinished) => {
-            invoke_close_emit(
+            match invoke_close_emit(
                 schedule,
                 stats.as_ref(),
                 &mut close_warn_limiter,
                 gate_ctx.close_emit.as_mut(),
                 sink,
-            )?;
-            finish(stats)
+            )
+            .await
+            {
+                Ok(()) => finish(stats),
+                Err(e) => Err(e),
+            }
         }
         Err(e) => Err(e),
-    });
+    };
 
-    finalize_sink(schedule, stats_for_flush.as_ref(), sink, gated_result)
-}
-
-fn run_on_thread_runtime<F: std::future::Future>(fut: F) -> Result<F::Output, SondaError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
-    Ok(rt.block_on(fut))
+    finalize_sink(schedule, stats_for_flush.as_ref(), sink, gated_result).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -699,7 +766,7 @@ async fn gated_loop_body(
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
     close_warn_limiter: &mut SinkErrorRateLimiter,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<LoopExit, SondaError> {
     let started_at = Instant::now();
@@ -799,7 +866,8 @@ async fn gated_loop_body(
                     sink,
                     tick_fn,
                     false,
-                )?;
+                )
+                .await?;
                 next_tick = last_tick.load(Ordering::SeqCst);
 
                 if shutdown_requested(shutdown) {
@@ -818,7 +886,8 @@ async fn gated_loop_body(
                         close_warn_limiter,
                         gate_ctx.close_emit.as_mut(),
                         sink,
-                    )?;
+                    )
+                    .await?;
                     state = ScenarioState::Unresolved;
                     while_open = false;
                     write_state(stats, ScenarioState::Unresolved, true);
@@ -841,7 +910,8 @@ async fn gated_loop_body(
                         close_warn_limiter,
                         gate_ctx.close_emit.as_mut(),
                         sink,
-                    )?;
+                    )
+                    .await?;
                 }
                 let close_state = close_target_state(gate_ctx.holds_on_close, stats);
                 state = close_state;
@@ -919,7 +989,8 @@ async fn gated_loop_body(
                             sink,
                             tick_fn,
                             true,
-                        )?;
+                        )
+                        .await?;
                         next_tick = last_tick.load(Ordering::SeqCst);
 
                         if shutdown_requested(shutdown) {
@@ -936,7 +1007,8 @@ async fn gated_loop_body(
                                     close_warn_limiter,
                                     gate_ctx.close_emit.as_mut(),
                                     sink,
-                                )?;
+                                )
+                                .await?;
                                 let close_state =
                                     close_target_state(gate_ctx.holds_on_close, stats);
                                 state = close_state;
@@ -1146,7 +1218,7 @@ async fn debounce_close_to_paused(
 /// captures the next tick the inner loop would have fired so the next segment
 /// continues from there.
 #[allow(clippy::too_many_arguments)]
-fn run_running_segment(
+async fn run_running_segment(
     schedule: &ParsedSchedule,
     rate: f64,
     shutdown: Option<&AtomicBool>,
@@ -1156,7 +1228,7 @@ fn run_running_segment(
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
     wall: WallClock,
-    sink: &mut dyn Sink,
+    sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
     exit_on_while_open: bool,
 ) -> Result<SegmentExit, SondaError> {
@@ -1233,7 +1305,8 @@ fn run_running_segment(
         Some(wall),
         sink,
         wrapped.as_mut(),
-    )?;
+    )
+    .await?;
 
     Ok(if saw_gone.load(Ordering::SeqCst) {
         SegmentExit::UpstreamGone
@@ -1333,33 +1406,50 @@ impl DebounceState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::schedule::{BurstWindow, GapWindow};
 
-    struct NullSink;
-    impl Sink for NullSink {
-        fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
-            Ok(())
-        }
-        fn flush(&mut self) -> Result<(), SondaError> {
-            Ok(())
-        }
-    }
+    type WriteLog = Arc<Mutex<Vec<Vec<u8>>>>;
 
-    struct CapturingSink {
-        writes: Vec<Vec<u8>>,
+    /// Shared-buffer test sink. Owns nothing; the `Arc<Mutex<...>>` handles
+    /// let tests inspect outcomes after the runner has moved the sink in
+    /// and out of `spawn_blocking`.
+    struct SharedSink {
+        writes: WriteLog,
         fail_at: Option<usize>,
     }
-    impl Sink for CapturingSink {
+
+    fn shared_sink() -> (Box<dyn Sink>, WriteLog) {
+        let writes: WriteLog = Arc::new(Mutex::new(Vec::new()));
+        let sink = SharedSink {
+            writes: Arc::clone(&writes),
+            fail_at: None,
+        };
+        (Box::new(sink) as Box<dyn Sink>, writes)
+    }
+
+    fn shared_sink_failing(fail_at: usize) -> (Box<dyn Sink>, WriteLog) {
+        let writes: WriteLog = Arc::new(Mutex::new(Vec::new()));
+        let sink = SharedSink {
+            writes: Arc::clone(&writes),
+            fail_at: Some(fail_at),
+        };
+        (Box::new(sink) as Box<dyn Sink>, writes)
+    }
+
+    impl Sink for SharedSink {
         fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+            let mut writes = self.writes.lock().expect("shared sink mutex poisoned");
             if let Some(n) = self.fail_at {
-                if self.writes.len() == n {
+                if writes.len() == n {
                     return Err(SondaError::Sink(std::io::Error::other(
                         "capturing sink test failure",
                     )));
                 }
             }
-            self.writes.push(data.to_vec());
+            writes.push(data.to_vec());
             Ok(())
         }
         fn flush(&mut self) -> Result<(), SondaError> {
@@ -1367,44 +1457,88 @@ mod tests {
         }
     }
 
-    #[test]
-    fn drain_writes_preserves_command_order() {
-        let mut sink = CapturingSink {
-            writes: Vec::new(),
-            fail_at: None,
-        };
+    fn null_sink() -> Box<dyn Sink> {
+        Box::new(NullSink) as Box<dyn Sink>
+    }
+
+    #[tokio::test]
+    async fn drain_writes_preserves_command_order() {
+        let (mut sink, writes) = shared_sink();
         let mut output = TickOutput::default();
         output.writes.push(WriteCommand::Bytes(b"first".to_vec()));
         output.writes.push(WriteCommand::Bytes(b"second".to_vec()));
         output.writes.push(WriteCommand::Bytes(b"third".to_vec()));
-        let delivered = drain_writes(&mut output, &mut sink).expect("drain must succeed");
+        let delivered = drain_writes(&mut output, &mut sink)
+            .await
+            .expect("drain must succeed");
+        let captured = writes.lock().unwrap().clone();
         assert_eq!(
-            sink.writes,
+            captured,
             vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
         );
         assert!(output.writes.is_empty(), "queue must be empty after drain");
         assert_eq!(delivered, Some(true));
     }
 
-    #[test]
-    fn drain_writes_short_circuits_on_sink_error() {
-        let mut sink = CapturingSink {
-            writes: Vec::new(),
-            fail_at: Some(1),
-        };
+    #[tokio::test]
+    async fn drain_writes_short_circuits_on_sink_error() {
+        let (mut sink, writes) = shared_sink_failing(1);
         let mut output = TickOutput::default();
         output.writes.push(WriteCommand::Bytes(b"first".to_vec()));
         output.writes.push(WriteCommand::Bytes(b"second".to_vec()));
         output.writes.push(WriteCommand::Bytes(b"third".to_vec()));
-        let result = drain_writes(&mut output, &mut sink);
+        let result = drain_writes(&mut output, &mut sink).await;
         assert!(
             result.is_err(),
             "sink error must propagate from drain_writes"
         );
         assert_eq!(
-            sink.writes,
+            *writes.lock().unwrap(),
             vec![b"first".to_vec()],
             "only writes before the error must reach the sink"
+        );
+    }
+
+    /// A spawn_blocking task that panics surfaces as RuntimeError::TaskPanicked.
+    struct PanicSink;
+
+    impl Sink for PanicSink {
+        fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            panic!("synthetic sink panic");
+        }
+        fn flush(&mut self) -> Result<(), SondaError> {
+            panic!("synthetic flush panic");
+        }
+    }
+
+    #[tokio::test]
+    async fn drain_writes_panic_in_sink_propagates_as_task_panicked() {
+        let mut sink: Box<dyn Sink> = Box::new(PanicSink);
+        let mut output = TickOutput::default();
+        output
+            .writes
+            .push(WriteCommand::Bytes(b"panic-me".to_vec()));
+        let result = drain_writes(&mut output, &mut sink).await;
+        assert!(
+            matches!(
+                result,
+                Err(SondaError::Runtime(RuntimeError::TaskPanicked(_)))
+            ),
+            "spawn_blocking panic must surface as TaskPanicked, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_sink_panic_in_flush_propagates_as_task_panicked() {
+        let mut sink: Box<dyn Sink> = Box::new(PanicSink);
+        let schedule = minimal_schedule(None);
+        let result = finalize_sink(&schedule, None, &mut sink, Ok(())).await;
+        assert!(
+            matches!(
+                result,
+                Err(SondaError::Runtime(RuntimeError::TaskPanicked(_)))
+            ),
+            "flush panic must surface as TaskPanicked, got: {result:?}"
         );
     }
 
@@ -1439,8 +1573,8 @@ mod tests {
     // ---- Basic loop: runs for duration, emits events -------------------------
 
     /// The loop emits events at the configured rate for the configured duration.
-    #[test]
-    fn loop_emits_events_for_duration() {
+    #[tokio::test]
+    async fn loop_emits_events_for_duration() {
         let schedule = minimal_schedule(Some(Duration::from_millis(500)));
 
         let mut event_count: u64 = 0;
@@ -1455,14 +1589,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             20.0, // 20 events/sec for 500ms = ~10 events
             None,
             None,
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         assert!(
@@ -1478,8 +1614,8 @@ mod tests {
     // ---- Shutdown flag: stops the loop early --------------------------------
 
     /// Clearing the shutdown flag stops the loop before duration expires.
-    #[test]
-    fn loop_stops_on_shutdown_flag() {
+    #[tokio::test]
+    async fn loop_stops_on_shutdown_flag() {
         use std::sync::atomic::AtomicBool;
 
         let schedule = minimal_schedule(None); // indefinite
@@ -1504,14 +1640,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             Some(shutdown_arc.as_ref()),
             None,
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         handle.join().expect("thread must complete");
@@ -1525,8 +1663,8 @@ mod tests {
     // ---- Gap window: suppresses events during gap ---------------------------
 
     /// Events are suppressed during a gap window.
-    #[test]
-    fn loop_suppresses_events_during_gap() {
+    #[tokio::test]
+    async fn loop_suppresses_events_during_gap() {
         let schedule = ParsedSchedule {
             total_duration: Some(Duration::from_secs(2)),
             gap_window: Some(GapWindow {
@@ -1553,7 +1691,9 @@ mod tests {
             })
         };
 
-        run_schedule_loop(&schedule, 100.0, None, None, &mut NullSink, &mut tick_fn)
+        let mut sink = null_sink();
+        run_schedule_loop(&schedule, 100.0, None, None, &mut sink, &mut tick_fn)
+            .await
             .expect("loop must succeed");
 
         // Only ~100 events from the first 1s before the gap kicks in.
@@ -1566,8 +1706,8 @@ mod tests {
     // ---- Burst window: increases event rate ---------------------------------
 
     /// Burst window increases the effective rate.
-    #[test]
-    fn loop_increases_rate_during_burst() {
+    #[tokio::test]
+    async fn loop_increases_rate_during_burst() {
         let schedule = ParsedSchedule {
             total_duration: Some(Duration::from_secs(1)),
             gap_window: None,
@@ -1595,7 +1735,9 @@ mod tests {
             })
         };
 
-        run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn)
+        let mut sink = null_sink();
+        run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn)
+            .await
             .expect("loop must succeed");
 
         // Without burst: ~10 events. With 5x burst: ~50 events.
@@ -1608,8 +1750,8 @@ mod tests {
     // ---- Stats tracking: updates stats arc ----------------------------------
 
     /// Stats are updated correctly when a stats arc is provided.
-    #[test]
-    fn loop_updates_stats() {
+    #[tokio::test]
+    async fn loop_updates_stats() {
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
@@ -1623,14 +1765,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
@@ -1649,8 +1793,8 @@ mod tests {
     // ---- Stats tracking: metric events pushed to buffer ---------------------
 
     /// When the tick callback returns a MetricEvent, it is pushed to the stats buffer.
-    #[test]
-    fn loop_pushes_metric_events_to_stats_buffer() {
+    #[tokio::test]
+    async fn loop_pushes_metric_events_to_stats_buffer() {
         use crate::model::metric::{Labels, MetricEvent};
 
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
@@ -1669,14 +1813,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
@@ -1689,8 +1835,8 @@ mod tests {
     // ---- Tick context: spike windows are passed to callback -----------------
 
     /// The tick callback receives spike windows in the context.
-    #[test]
-    fn loop_passes_spike_windows_to_tick_fn() {
+    #[tokio::test]
+    async fn loop_passes_spike_windows_to_tick_fn() {
         use crate::config::SpikeStrategy;
         use crate::schedule::CardinalitySpikeWindow;
 
@@ -1727,7 +1873,9 @@ mod tests {
             })
         };
 
-        run_schedule_loop(&schedule, 100.0, None, None, &mut NullSink, &mut tick_fn)
+        let mut sink = null_sink();
+        run_schedule_loop(&schedule, 100.0, None, None, &mut sink, &mut tick_fn)
+            .await
             .expect("loop must succeed");
 
         assert!(
@@ -1738,8 +1886,8 @@ mod tests {
 
     // ---- Error propagation: encoder errors propagate regardless of policy ----
 
-    #[test]
-    fn loop_propagates_encoder_error_under_warn_policy() {
+    #[tokio::test]
+    async fn loop_propagates_encoder_error_under_warn_policy() {
         let schedule = minimal_schedule(Some(Duration::from_secs(10)));
 
         let mut tick_fn = |_ctx: &TickContext<'_>,
@@ -1751,7 +1899,8 @@ mod tests {
             )))
         };
 
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn);
+        let mut sink = null_sink();
+        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn).await;
 
         assert!(
             matches!(result, Err(SondaError::Encoder(_))),
@@ -1759,8 +1908,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn loop_propagates_sink_error_under_fail_policy() {
+    #[tokio::test]
+    async fn loop_propagates_sink_error_under_fail_policy() {
         let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
         schedule.on_sink_error = OnSinkError::Fail;
 
@@ -1771,7 +1920,8 @@ mod tests {
             Err(SondaError::Sink(std::io::Error::other("test error")))
         };
 
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut NullSink, &mut tick_fn);
+        let mut sink = null_sink();
+        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn).await;
 
         assert!(
             matches!(result, Err(SondaError::Sink(_))),
@@ -1779,8 +1929,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fail_policy_records_stats_before_propagating() {
+    #[tokio::test]
+    async fn fail_policy_records_stats_before_propagating() {
         let mut schedule = minimal_schedule(Some(Duration::from_secs(10)));
         schedule.on_sink_error = OnSinkError::Fail;
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
@@ -1795,14 +1945,16 @@ mod tests {
             )))
         };
 
+        let mut sink = null_sink();
         let result = run_schedule_loop(
             &schedule,
             10.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
-        );
+        )
+        .await;
 
         assert!(
             matches!(result, Err(SondaError::Sink(_))),
@@ -1832,8 +1984,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn loop_swallows_sink_error_under_warn_policy_and_continues() {
+    #[tokio::test]
+    async fn loop_swallows_sink_error_under_warn_policy_and_continues() {
         // 200ms run with rate=50: ~10 ticks. All return sink errors. Loop
         // must complete without propagating.
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
@@ -1845,7 +1997,8 @@ mod tests {
             Err(SondaError::Sink(std::io::Error::other("transient")))
         };
 
-        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut NullSink, &mut tick_fn);
+        let mut sink = null_sink();
+        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut sink, &mut tick_fn).await;
 
         assert!(
             result.is_ok(),
@@ -1853,8 +2006,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn warn_policy_updates_sink_failure_stats() {
+    #[tokio::test]
+    async fn warn_policy_updates_sink_failure_stats() {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
@@ -1868,14 +2021,16 @@ mod tests {
             )))
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("warn policy must complete");
 
         let st = stats.read().expect("stats lock");
@@ -1895,8 +2050,8 @@ mod tests {
         assert!(st.errors > 0, "errors counter must increment too");
     }
 
-    #[test]
-    fn alternating_ok_err_resets_consecutive_failures() {
+    #[tokio::test]
+    async fn alternating_ok_err_resets_consecutive_failures() {
         let schedule = minimal_schedule(Some(Duration::from_millis(300)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
         let mut counter: u64 = 0;
@@ -1916,14 +2071,16 @@ mod tests {
             }
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("warn must succeed");
 
         let st = stats.read().expect("stats lock");
@@ -1937,8 +2094,8 @@ mod tests {
         assert!(st.last_successful_write_at.is_some());
     }
 
-    #[test]
-    fn buffered_write_does_not_update_delivery_health_stats() {
+    #[tokio::test]
+    async fn buffered_write_does_not_update_delivery_health_stats() {
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
@@ -1952,14 +2109,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let st = stats.read().expect("stats lock");
@@ -1981,8 +2140,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn delivered_write_updates_delivery_health_stats() {
+    #[tokio::test]
+    async fn delivered_write_updates_delivery_health_stats() {
         let schedule = minimal_schedule(Some(Duration::from_millis(200)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
@@ -1996,14 +2155,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let st = stats.read().expect("stats lock");
@@ -2076,7 +2237,14 @@ mod tests {
             }
         };
 
-        let result = run_schedule_loop(&schedule, 30.0, None, None, &mut NullSink, &mut tick_fn);
+        let mut sink = null_sink();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_schedule_loop(
+            &schedule, 30.0, None, None, &mut sink, &mut tick_fn,
+        ));
 
         match expected {
             PolicyOutcome::Ok => assert!(result.is_ok(), "must complete: {result:?}"),
@@ -2141,8 +2309,8 @@ mod tests {
 
     // ---- Contract: TickResult fields ----------------------------------------
 
-    #[test]
-    fn run_schedule_loop_with_initial_tick_seeds_first_tick_value() {
+    #[tokio::test]
+    async fn run_schedule_loop_with_initial_tick_seeds_first_tick_value() {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let observed_first = std::sync::Mutex::new(None::<u64>);
 
@@ -2160,6 +2328,7 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop_with_initial_tick(
             &schedule,
             50.0,
@@ -2168,9 +2337,10 @@ mod tests {
             30,
             None,
             None,
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         assert_eq!(
@@ -2180,8 +2350,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_schedule_loop_with_initial_tick_reports_last_tick() {
+    #[tokio::test]
+    async fn run_schedule_loop_with_initial_tick_reports_last_tick() {
         let schedule = minimal_schedule(Some(Duration::from_millis(150)));
         let last_tick = AtomicU64::new(0);
 
@@ -2195,6 +2365,7 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop_with_initial_tick(
             &schedule,
             50.0,
@@ -2203,9 +2374,10 @@ mod tests {
             10,
             Some(&last_tick),
             None,
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let final_tick = last_tick.load(Ordering::SeqCst);
@@ -2226,8 +2398,8 @@ mod tests {
         assert!(result.delivered);
     }
 
-    #[test]
-    fn events_buf_capacity_does_not_grow_under_metrics_workload() {
+    #[tokio::test]
+    async fn events_buf_capacity_does_not_grow_under_metrics_workload() {
         use crate::model::metric::{Labels, MetricEvent};
         use std::cell::Cell;
 
@@ -2266,14 +2438,16 @@ mod tests {
             })
         };
 
+        let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
             50.0,
             None,
             Some(Arc::clone(&stats)),
-            &mut NullSink,
+            &mut sink,
             &mut tick_fn,
         )
+        .await
         .expect("loop must succeed");
 
         let st = stats.read().expect("lock");

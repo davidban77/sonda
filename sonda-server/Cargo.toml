@@ -47,3 +47,6 @@ libc = "0.2"
 tempfile = "3"
 insta = { workspace = true, features = ["filters", "redactions"] }
 rstest = { workspace = true }
+
+[lints]
+workspace = true
