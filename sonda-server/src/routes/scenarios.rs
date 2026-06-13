@@ -597,13 +597,15 @@ async fn launch_compiled(
     warnings: Vec<String>,
 ) -> Result<Response, Response> {
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
-    let mut handles = launch_multi_compiled(compiled, Some(resolver)).map_err(|e| {
-        warn!(error = %e, "POST /scenarios: failed to launch scenarios");
-        match e {
-            sonda_core::SondaError::Config(_) => unprocessable(e),
-            _ => internal_error(e),
-        }
-    })?;
+    let mut handles = launch_multi_compiled(compiled, Some(resolver))
+        .await
+        .map_err(|e| {
+            warn!(error = %e, "POST /scenarios: failed to launch scenarios");
+            match e {
+                sonda_core::SondaError::Config(_) => unprocessable(e),
+                _ => internal_error(e),
+            }
+        })?;
 
     if handles.is_empty() {
         warn!("POST /scenarios: gated launch produced zero handles");

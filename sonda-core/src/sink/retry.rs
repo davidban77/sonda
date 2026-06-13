@@ -173,6 +173,11 @@ impl RetryPolicy {
         Err(last_error)
     }
 
+    /// Configured retry-count cap (number of retries after the initial attempt).
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
     /// Compute a jittered backoff duration for the given attempt index (0-based).
     ///
     /// Uses exponential backoff with full jitter:
@@ -180,7 +185,7 @@ impl RetryPolicy {
     ///
     /// The jitter RNG is seeded from the backoff nanos and the current thread ID
     /// to avoid synchronized retries across sinks.
-    fn jittered_backoff(&self, attempt: u32) -> Duration {
+    pub fn jittered_backoff(&self, attempt: u32) -> Duration {
         // Compute the exponential base: initial_backoff * 2^attempt, capped at
         // max_backoff. Use checked_shl to avoid overflow for large attempt values.
         let multiplier: u32 = 1u32.checked_shl(attempt).unwrap_or(u32::MAX);

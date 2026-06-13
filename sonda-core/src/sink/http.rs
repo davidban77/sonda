@@ -7,9 +7,11 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
-use crate::SondaError;
+use crate::{RuntimeError, SondaError};
 
 /// Default batch size in bytes (4 KiB) — sized so low-rate scenarios flush within seconds.
 pub const DEFAULT_BATCH_SIZE: usize = 4 * 1024;
@@ -105,58 +107,6 @@ impl HttpPushSink {
         })
     }
 
-    /// Send the current batch to the configured endpoint.
-    ///
-    /// - 2xx responses are treated as success.
-    /// - 4xx (except 429) responses are logged as warnings and discarded (not
-    ///   retried — client-side errors should not block metric generation).
-    /// - 5xx, 429, and transport errors are retried according to the
-    ///   configured [`RetryPolicy`]. When no policy is configured, errors are
-    ///   returned immediately.
-    /// - The batch is always cleared (on success or failure) to prevent
-    ///   unbounded buffer growth.
-    fn send_batch(&mut self) -> Result<(), SondaError> {
-        if self.batch.is_empty() {
-            return Ok(());
-        }
-
-        // Reset on attempt, not success — the batch is cleared either way below.
-        self.last_flush_at = Instant::now();
-
-        let result = match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                let client = &self.client;
-                let url = &self.url;
-                let content_type = &self.content_type;
-                let headers = &self.headers;
-                let batch = &self.batch;
-                policy.execute(
-                    || Self::do_post_checked(client, url, content_type, headers, batch),
-                    Self::is_retryable,
-                )
-            }
-            None => {
-                let client = &self.client;
-                let url = &self.url;
-                let content_type = &self.content_type;
-                let headers = &self.headers;
-                Self::do_post_checked(client, url, content_type, headers, &self.batch)
-            }
-        };
-
-        self.batch.clear();
-
-        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
-        // The batch is already cleared; suppress the error so the sink continues.
-        match &result {
-            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
-                Ok(())
-            }
-            _ => result,
-        }
-    }
-
     /// Classify whether an error from `do_post_checked` is retryable.
     ///
     /// Transport errors and 5xx/429 HTTP errors are retryable. 4xx errors
@@ -242,35 +192,83 @@ impl HttpPushSink {
     }
 }
 
+#[async_trait]
 impl Sink for HttpPushSink {
-    /// Append encoded event data to the internal batch buffer.
-    ///
-    /// When the buffer reaches `batch_size`, the batch is automatically
-    /// flushed via an HTTP POST. Returns an error only if the auto-flush
-    /// fails.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.batch.extend_from_slice(data);
         let size_reached = self.batch.len() >= self.batch_size;
         let age_reached =
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
         let should_flush = size_reached || age_reached;
         if should_flush {
-            self.send_batch()?;
+            self.send_via_blocking().await?;
         }
         self.last_write_delivered = should_flush;
         Ok(())
     }
 
-    /// Flush any remaining buffered data to the HTTP endpoint.
-    ///
-    /// Safe to call multiple times. Returns `Ok(())` immediately if the
-    /// batch is empty.
-    fn flush(&mut self) -> Result<(), SondaError> {
-        self.send_batch()
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        self.send_via_blocking().await
     }
 
     fn last_write_delivered(&self) -> bool {
         self.last_write_delivered
+    }
+}
+
+impl HttpPushSink {
+    /// Drain the batch into a blocking task that owns the ureq round-trip.
+    async fn send_via_blocking(&mut self) -> Result<(), SondaError> {
+        if self.batch.is_empty() {
+            return Ok(());
+        }
+        self.last_flush_at = Instant::now();
+        let body = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
+        let client = self.client.clone();
+        let url = self.url.clone();
+        let content_type = self.content_type.clone();
+        let headers = self.headers.clone();
+        let retry_policy = self.retry_policy.clone();
+        let join = tokio::task::spawn_blocking(move || {
+            do_send(
+                &client,
+                &url,
+                &content_type,
+                &headers,
+                &body,
+                retry_policy.as_ref(),
+            )
+        })
+        .await;
+        match join {
+            Ok(r) => r,
+            Err(e) => Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                e.to_string(),
+            ))),
+        }
+    }
+}
+
+fn do_send(
+    client: &ureq::Agent,
+    url: &str,
+    content_type: &str,
+    headers: &HashMap<String, String>,
+    body: &[u8],
+    retry_policy: Option<&RetryPolicy>,
+) -> Result<(), SondaError> {
+    let result = match retry_policy {
+        Some(policy) => policy.execute(
+            || HttpPushSink::do_post_checked(client, url, content_type, headers, body),
+            HttpPushSink::is_retryable,
+        ),
+        None => HttpPushSink::do_post_checked(client, url, content_type, headers, body),
+    };
+    match &result {
+        Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
+            Ok(())
+        }
+        _ => result,
     }
 }
 
@@ -432,10 +430,8 @@ mod tests {
     // Batch accumulation — no HTTP call until threshold
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn write_below_batch_size_does_not_trigger_flush() {
-        // batch_size = 1000; write 3 × 100 bytes → no request should go out.
-        // We start a server that would panic if it received a connection.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_below_batch_size_does_not_trigger_flush() {
         let (listener, url) = mock_server_listener();
 
         let mut sink = HttpPushSink::new(
@@ -448,13 +444,12 @@ mod tests {
         )
         .expect("construct sink");
 
-        // Write 300 bytes total — below the 1000-byte threshold.
         for _ in 0..3 {
-            sink.write(&[b'x'; 100]).expect("write should succeed");
+            sink.write(&[b'x'; 100])
+                .await
+                .expect("write should succeed");
         }
 
-        // Set a very short timeout so the test does not hang waiting for a
-        // connection that should never arrive.
         listener.set_nonblocking(true).expect("set non-blocking");
         let accepted = listener.accept();
         assert!(
@@ -463,11 +458,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_at_batch_size_triggers_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_at_batch_size_triggers_flush() {
         let (listener, url) = mock_server_listener();
 
-        // Accept exactly one request in a background thread.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink = HttpPushSink::new(
@@ -479,16 +473,17 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        // Write exactly batch_size bytes → should auto-flush.
-        sink.write(&[b'a'; 100]).expect("write should succeed");
+        sink.write(&[b'a'; 100])
+            .await
+            .expect("write should succeed");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body.len(), 100, "server should receive exactly 100 bytes");
         assert!(body.iter().all(|&b| b == b'a'));
     }
 
-    #[test]
-    fn write_over_batch_size_triggers_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_over_batch_size_triggers_flush() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
@@ -496,19 +491,14 @@ mod tests {
         let mut sink =
             HttpPushSink::new(&url, "text/plain", 50, HashMap::new(), None, Duration::ZERO)
                 .expect("construct sink");
-        // Write 80 bytes → exceeds 50-byte threshold → auto-flush.
-        sink.write(&[b'z'; 80]).expect("write should succeed");
+        sink.write(&[b'z'; 80]).await.expect("write should succeed");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body.len(), 80);
     }
 
-    // -------------------------------------------------------------------------
-    // Explicit flush — remaining data sent
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn explicit_flush_sends_buffered_data() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_flush_sends_buffered_data() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
@@ -522,17 +512,17 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        // Write 42 bytes — well below 10 000-byte threshold.
-        sink.write(b"hello flush").expect("write");
-        sink.flush().expect("flush should send remaining data");
+        sink.write(b"hello flush").await.expect("write");
+        sink.flush()
+            .await
+            .expect("flush should send remaining data");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"hello flush");
     }
 
-    #[test]
-    fn flush_on_empty_batch_is_a_no_op() {
-        // No server running — if flush() sent a request it would fail.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_on_empty_batch_is_a_no_op() {
         let mut sink = HttpPushSink::new(
             "http://127.0.0.1:19999/push",
             "text/plain",
@@ -542,15 +532,16 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        // Empty batch: flush should return Ok without making any network call.
-        assert!(sink.flush().is_ok(), "flush on empty batch must be Ok");
+        assert!(
+            sink.flush().await.is_ok(),
+            "flush on empty batch must be Ok"
+        );
     }
 
-    #[test]
-    fn flush_is_idempotent() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_is_idempotent() {
         let (listener, url) = mock_server_listener();
 
-        // First flush sends data; second flush is a no-op.
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink = HttpPushSink::new(
@@ -562,21 +553,16 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"data").expect("write");
-        sink.flush().expect("first flush");
+        sink.write(b"data").await.expect("write");
+        sink.flush().await.expect("first flush");
 
         let _body = handle.join().expect("mock server thread panicked");
 
-        // Second flush — batch is now empty, must succeed without panicking.
-        assert!(sink.flush().is_ok(), "second flush must also be Ok");
+        assert!(sink.flush().await.is_ok(), "second flush must also be Ok");
     }
 
-    // -------------------------------------------------------------------------
-    // last_write_delivered — buffered vs flushed
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn last_write_delivered_is_false_when_write_only_buffers() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_false_when_write_only_buffers() {
         let (listener, url) = mock_server_listener();
 
         let mut sink = HttpPushSink::new(
@@ -588,7 +574,7 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"buffered").expect("write buffers");
+        sink.write(b"buffered").await.expect("write buffers");
 
         assert!(
             !sink.last_write_delivered(),
@@ -598,15 +584,15 @@ mod tests {
         assert!(listener.accept().is_err(), "no flush should have fired");
     }
 
-    #[test]
-    fn last_write_delivered_is_true_when_write_triggers_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_true_when_write_triggers_flush() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink =
             HttpPushSink::new(&url, "text/plain", 4, HashMap::new(), None, Duration::ZERO)
                 .expect("construct sink");
-        sink.write(b"abcd").expect("write triggers flush");
+        sink.write(b"abcd").await.expect("write triggers flush");
 
         handle.join().expect("mock server thread panicked");
         assert!(
@@ -615,44 +601,37 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Response handling
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn two_xx_response_clears_batch_and_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_xx_response_clears_batch_and_returns_ok() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink =
             HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
                 .expect("construct sink");
-        // batch_size=1 → immediate flush on write.
-        let result = sink.write(b"x");
+        let result = sink.write(b"x").await;
         let _body = handle.join().expect("mock server thread panicked");
         assert!(result.is_ok(), "2xx response must return Ok");
     }
 
-    #[test]
-    fn four_xx_response_warns_and_discards_batch_returning_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn four_xx_response_warns_and_discards_batch_returning_ok() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
         let mut sink =
             HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
                 .expect("construct sink");
-        let result = sink.write(b"x");
+        let result = sink.write(b"x").await;
         let _body = handle.join().expect("mock server thread panicked");
-        // 4xx → warn + discard, but NOT an error from the sink's perspective.
         assert!(
             result.is_ok(),
             "4xx response must return Ok (warn-and-continue)"
         );
     }
 
-    #[test]
-    fn five_xx_without_retry_returns_error_after_one_attempt() {
-        // With no retry policy, 5xx returns an error after a single attempt.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn five_xx_without_retry_returns_error_after_one_attempt() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || {
@@ -662,7 +641,7 @@ mod tests {
         let mut sink =
             HttpPushSink::new(&url, "text/plain", 1, HashMap::new(), None, Duration::ZERO)
                 .expect("construct sink");
-        let result = sink.write(b"x");
+        let result = sink.write(b"x").await;
         handle.join().expect("mock server thread panicked");
         assert!(result.is_err(), "5xx without retry must return Err");
         assert!(
@@ -671,9 +650,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn five_xx_with_retry_policy_retries_and_succeeds() {
-        // With a retry policy, 5xx is retried and succeeds on the second attempt.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn five_xx_with_retry_policy_retries_and_succeeds() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || {
@@ -698,14 +676,13 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        let result = sink.write(b"x");
+        let result = sink.write(b"x").await;
         handle.join().expect("mock server thread panicked");
         assert!(result.is_ok(), "5xx + successful retry must return Ok");
     }
 
-    #[test]
-    fn five_xx_with_retry_policy_exhausted_returns_error() {
-        // All retries exhausted on persistent 5xx.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn five_xx_with_retry_policy_exhausted_returns_error() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || {
@@ -730,18 +707,13 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        let result = sink.write(b"x");
+        let result = sink.write(b"x").await;
         handle.join().expect("mock server thread panicked");
         assert!(result.is_err(), "persistent 5xx must return Err");
     }
 
-    // -------------------------------------------------------------------------
-    // Connection refused
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn flush_to_refused_port_returns_sink_error() {
-        // Bind then immediately drop — port is unused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_to_refused_port_returns_sink_error() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         drop(listener);
@@ -756,8 +728,8 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"hello").expect("write buffered ok");
-        let result = sink.flush();
+        sink.write(b"hello").await.expect("write buffered ok");
+        let result = sink.flush().await;
         assert!(result.is_err(), "flush to refused port must fail");
         assert!(
             matches!(result.err().unwrap(), SondaError::Sink(_)),
@@ -765,12 +737,8 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Body content — mock server verifies exact bytes
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn body_sent_to_server_matches_written_data() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_sent_to_server_matches_written_data() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
@@ -784,15 +752,15 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(payload).expect("write");
-        sink.flush().expect("flush");
+        sink.write(payload).await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, payload);
     }
 
-    #[test]
-    fn multiple_writes_accumulated_correctly_before_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiple_writes_accumulated_correctly_before_flush() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
@@ -805,25 +773,20 @@ mod tests {
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"part1").expect("write 1");
-        sink.write(b"part2").expect("write 2");
-        sink.write(b"part3").expect("write 3");
-        sink.flush().expect("flush");
+        sink.write(b"part1").await.expect("write 1");
+        sink.write(b"part2").await.expect("write 2");
+        sink.write(b"part3").await.expect("write 3");
+        sink.flush().await.expect("flush");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"part1part2part3");
     }
 
-    // -------------------------------------------------------------------------
-    // Time-based flush
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn time_based_flush_fires_when_buffer_age_exceeded() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn time_based_flush_fires_when_buffer_age_exceeded() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        // batch_size large enough that size never triggers; short max_buffer_age.
         let mut sink = HttpPushSink::new(
             &url,
             "text/plain",
@@ -834,10 +797,9 @@ mod tests {
         )
         .expect("construct sink");
 
-        sink.write(b"first").expect("write 1");
+        sink.write(b"first").await.expect("write 1");
         thread::sleep(Duration::from_millis(200));
-        // Second write is past max_buffer_age → triggers a time-based flush.
-        sink.write(b"second").expect("write 2");
+        sink.write(b"second").await.expect("write 2");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(
@@ -846,8 +808,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zero_max_buffer_age_disables_time_based_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_max_buffer_age_disables_time_based_flush() {
         let (listener, url) = mock_server_listener();
 
         let mut sink = HttpPushSink::new(
@@ -860,11 +822,10 @@ mod tests {
         )
         .expect("construct sink");
 
-        sink.write(b"first").expect("write 1");
+        sink.write(b"first").await.expect("write 1");
         thread::sleep(Duration::from_millis(150));
-        sink.write(b"second").expect("write 2");
+        sink.write(b"second").await.expect("write 2");
 
-        // With time-based flush disabled, no request should have arrived.
         listener.set_nonblocking(true).expect("set non-blocking");
         assert!(
             listener.accept().is_err(),
@@ -872,12 +833,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn size_triggered_flush_resets_the_buffer_age_timer() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn size_triggered_flush_resets_the_buffer_age_timer() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        // Small batch_size, max_buffer_age comfortably longer than the test runs.
         let mut sink = HttpPushSink::new(
             &url,
             "text/plain",
@@ -888,15 +848,13 @@ mod tests {
         )
         .expect("construct sink");
 
-        // Write exactly batch_size bytes → the size trigger fires.
-        sink.write(b"abcd").expect("write fills batch");
+        sink.write(b"abcd").await.expect("write fills batch");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"abcd", "size-triggered flush must deliver the batch");
 
-        // The size flush reset last_flush_at; a subsequent partial-batch write
-        // must NOT immediately time-flush against the (now closed) listener.
         sink.write(b"e")
+            .await
             .expect("partial write after a size flush must not time-flush immediately");
     }
 
@@ -1005,8 +963,8 @@ batch_size: 8192
     // Factory wiring: create_sink for HttpPush config
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn create_sink_http_push_config_with_valid_url_returns_ok() {
+    #[tokio::test]
+    async fn create_sink_http_push_config_with_valid_url_returns_ok() {
         let config = SinkConfig::HttpPush {
             url: "http://127.0.0.1:19998/push".to_string(),
             content_type: None,
@@ -1015,17 +973,15 @@ batch_size: 8192
             headers: None,
             retry: None,
         };
-        // Construction must succeed (no network call yet).
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_ok(),
             "factory must return Ok for valid http_push config"
         );
     }
 
-    #[test]
-    fn create_sink_http_push_uses_default_batch_size_when_none() {
-        // No network call on construction, so any host is fine.
+    #[tokio::test]
+    async fn create_sink_http_push_uses_default_batch_size_when_none() {
         let config = SinkConfig::HttpPush {
             url: "http://127.0.0.1:19997/push".to_string(),
             content_type: None,
@@ -1034,11 +990,11 @@ batch_size: 8192
             headers: None,
             retry: None,
         };
-        assert!(create_sink(&config, None).is_ok());
+        assert!(create_sink(&config, None).await.is_ok());
     }
 
-    #[test]
-    fn create_sink_http_push_with_invalid_url_returns_err() {
+    #[tokio::test]
+    async fn create_sink_http_push_with_invalid_url_returns_err() {
         let config = SinkConfig::HttpPush {
             url: "not-http://bad".to_string(),
             content_type: None,
@@ -1047,12 +1003,12 @@ batch_size: 8192
             headers: None,
             retry: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(result.is_err(), "invalid URL must cause factory to fail");
     }
 
-    #[test]
-    fn create_sink_http_push_sends_data_end_to_end() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_sink_http_push_sends_data_end_to_end() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
@@ -1064,9 +1020,9 @@ batch_size: 8192
             headers: None,
             retry: None,
         };
-        let mut sink = create_sink(&config, None).expect("factory ok");
-        sink.write(b"end-to-end").expect("write");
-        sink.flush().expect("flush");
+        let mut sink = create_sink(&config, None).await.expect("factory ok");
+        sink.write(b"end-to-end").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body = handle.join().expect("mock server thread panicked");
         assert_eq!(body, b"end-to-end");
@@ -1121,8 +1077,8 @@ batch_size: 8192
         (headers_map, body)
     }
 
-    #[test]
-    fn custom_headers_are_sent_with_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn custom_headers_are_sent_with_request() {
         let (listener, url) = mock_server_listener();
 
         let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
@@ -1143,8 +1099,8 @@ batch_size: 8192
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"test-payload").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"test-payload").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let (headers, body) = handle.join().expect("mock server thread panicked");
 
@@ -1168,8 +1124,8 @@ batch_size: 8192
         assert_eq!(body, b"test-payload");
     }
 
-    #[test]
-    fn empty_custom_headers_does_not_break_request() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_custom_headers_does_not_break_request() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
 
@@ -1182,8 +1138,8 @@ batch_size: 8192
             Duration::ZERO,
         )
         .expect("construct sink");
-        sink.write(b"data").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"data").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let (headers, body) = handle.join().expect("mock server thread panicked");
         assert_eq!(
@@ -1194,8 +1150,8 @@ batch_size: 8192
         assert_eq!(body, b"data");
     }
 
-    #[test]
-    fn custom_headers_with_factory_config() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn custom_headers_with_factory_config() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_capture_headers(&listener, 200));
 
@@ -1210,9 +1166,9 @@ batch_size: 8192
             headers: Some(hdr),
             retry: None,
         };
-        let mut sink = create_sink(&config, None).expect("factory ok");
-        sink.write(b"factory-test").expect("write");
-        sink.flush().expect("flush");
+        let mut sink = create_sink(&config, None).await.expect("factory ok");
+        sink.write(b"factory-test").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let (headers, body) = handle.join().expect("mock server thread panicked");
         assert_eq!(

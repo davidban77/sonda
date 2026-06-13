@@ -200,10 +200,20 @@ fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
             })
             .collect();
         let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
         for (offset, p) in prepared.into_iter().enumerate() {
             let i = offset + 1;
             let shutdown = Arc::new(AtomicBool::new(true));
-            let handle = launch_scenario(format!("bench_{i}"), p.entry, shutdown, p.start_delay)
+            let handle = rt
+                .block_on(launch_scenario(
+                    format!("bench_{i}"),
+                    p.entry,
+                    shutdown,
+                    p.start_delay,
+                ))
                 .expect("launch_scenario must succeed");
             handles.push(handle);
         }

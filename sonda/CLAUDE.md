@@ -156,4 +156,4 @@ This crate depends on:
 - `owo-colors` for colored terminal output (with `supports-colors` feature for auto-detection)
 - `dialoguer` for interactive terminal prompts in `sonda new` (pure Rust, musl-compatible)
 
-It should NOT depend on: `axum`, `tokio`, `hyper`, or any server-related crate.
+It depends on `tokio` (runtime construction in `main` to drive the async `launch_scenario` API). It should NOT depend on: `axum`, `hyper`, or any server-specific HTTP crate.

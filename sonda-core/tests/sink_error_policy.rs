@@ -104,8 +104,8 @@ fn build_log_entry(name: &str, sink: SinkConfig, policy: OnSinkError) -> Scenari
     })
 }
 
-#[test]
-fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
+#[tokio::test(flavor = "multi_thread")]
+async fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
     let (listener, url) = mock_loki_listener();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_listener = Arc::clone(&stop);
@@ -131,6 +131,7 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
         Arc::clone(&shutdown),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(800));
@@ -166,8 +167,8 @@ fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
     );
 }
 
-#[test]
-fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
+#[tokio::test(flavor = "multi_thread")]
+async fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
     // Bind then drop a listener so the port is guaranteed free — every flush
     // against it will fail to connect.
     let dead_url = {
@@ -195,6 +196,7 @@ fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
         Arc::clone(&shutdown),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     handle.join(Some(Duration::from_secs(3))).expect("join Ok");
@@ -217,8 +219,8 @@ fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
     );
 }
 
-#[test]
-fn fail_policy_exits_thread_with_sink_error() {
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_policy_exits_thread_with_sink_error() {
     let (listener, url) = mock_loki_listener();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_listener = Arc::clone(&stop);
@@ -244,6 +246,7 @@ fn fail_policy_exits_thread_with_sink_error() {
         Arc::clone(&shutdown),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     let join_result = handle.join(Some(Duration::from_secs(5)));

@@ -128,8 +128,8 @@ fn label_value<'a>(ts: &'a TimeSeries, name: &str) -> Option<&'a str> {
         .map(|l| l.value.as_str())
 }
 
-#[test]
-fn workshop_paused_finished_cascade_emits_stale_marker_via_multi_runner() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_paused_finished_cascade_emits_stale_marker_via_multi_runner() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     // Workshop YAML compressed: 1500ms run, 200ms up / 400ms down (cycle 600ms).
@@ -191,7 +191,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     // Wait for both threads to finish (they exit when duration expires).
@@ -258,8 +260,8 @@ scenarios:
     );
 }
 
-#[test]
-fn workshop_paused_finished_cascade_default_batch_size_emits_stale_marker() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_paused_finished_cascade_default_batch_size_emits_stale_marker() {
     // Same scenario as above but WITHOUT explicit batch_size — falls to
     // DEFAULT_BATCH_SIZE = 5. close-emit writes one stale TimeSeries which
     // alone does NOT trigger auto-flush. Verifies invoke_close_emit's
@@ -309,7 +311,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut handles = handles;
@@ -363,8 +367,8 @@ scenarios:
 /// stats issue, this exposes it.
 ///
 /// Expectation: every gated metric has >=1 stale-NaN sample reach the wire.
-#[test]
-fn workshop_paused_finished_multi_entry_cascade_each_metric_emits_stale_marker() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_paused_finished_multi_entry_cascade_each_metric_emits_stale_marker() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     // Same compressed timing as Test workshop_paused_finished_cascade_emits_stale_marker_via_multi_runner
@@ -504,7 +508,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 8, "must launch primary + 7 downstream");
 
     let deadline = Instant::now() + Duration::from_secs(6);
@@ -587,8 +593,8 @@ scenarios:
 ///
 /// Compressed here: 5s duration, 600ms up / 1200ms down (cycle 1.8s), 200ms
 /// open / 0s close. ~2.7 cycles → at least 2 running→paused transitions.
-#[test]
-fn workshop_paused_finished_real_timescale_emits_stale_marker() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_paused_finished_real_timescale_emits_stale_marker() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     let yaml = format!(
@@ -635,7 +641,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1387,8 +1395,8 @@ scenarios:
     );
 }
 
-#[test]
-fn workshop_close_emit_timestamp_strictly_greater_than_active_emissions() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_close_emit_timestamp_strictly_greater_than_active_emissions() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     let yaml = format!(
@@ -1437,7 +1445,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1484,8 +1494,8 @@ scenarios:
     assert_close_ts_strictly_after_preceding_actives(&active_ts, &close_ts);
 }
 
-#[test]
-fn workshop_close_emit_stale_marker_timestamp_strictly_greater_than_active_emissions() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_close_emit_stale_marker_timestamp_strictly_greater_than_active_emissions() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     let yaml = format!(
@@ -1532,7 +1542,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + downstream");
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1693,8 +1705,8 @@ scenarios:
 /// TCP capture listener. Asserts at least one `bgp_oper_state` sample with
 /// value=0.0 reaches the wire AND that no stale-NaN sample is emitted (snap_to
 /// REPLACES the stale marker).
-#[test]
-fn workshop_snap_to_zero_reaches_wire_via_multi_runner() {
+#[tokio::test(flavor = "multi_thread")]
+async fn workshop_snap_to_zero_reaches_wire_via_multi_runner() {
     let (url, captured, stop_listener) = spawn_capture_listener();
 
     let yaml = format!(
@@ -1734,7 +1746,9 @@ scenarios:
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(&yaml, &resolver).expect("compile must succeed");
 
-    let handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2, "must launch primary + gated_metric");
 
     let deadline = Instant::now() + Duration::from_secs(5);

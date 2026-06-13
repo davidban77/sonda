@@ -47,27 +47,36 @@ fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
 }
 
 fn bench_baseline_ungated(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime must build");
     c.bench_function("baseline_ungated_300ms_at_1khz", |b| {
         b.iter(|| {
             let entry = metrics_entry("bench", 1000.0, 300);
             let shutdown = Arc::new(AtomicBool::new(true));
-            let mut handle = launch_scenario_with_gates(
-                "bench".to_string(),
-                None,
-                entry,
-                shutdown,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let mut handle = rt
+                .block_on(launch_scenario_with_gates(
+                    "bench".to_string(),
+                    None,
+                    entry,
+                    shutdown,
+                    None,
+                    None,
+                    None,
+                    None,
+                ))
+                .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();
         });
     });
 }
 
 fn bench_gated_open(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime must build");
     c.bench_function("gated_open_300ms_at_1khz", |b| {
         b.iter(|| {
             let bus = Arc::new(GateBus::new());
@@ -81,17 +90,18 @@ fn bench_gated_open(c: &mut Criterion) {
             });
             let entry = metrics_entry("gated", 1000.0, 300);
             let shutdown = Arc::new(AtomicBool::new(true));
-            let mut handle = launch_scenario_with_gates(
-                "gated".to_string(),
-                None,
-                entry,
-                shutdown,
-                None,
-                Some(Arc::clone(&bus)),
-                Some(GateContext::new(rx, init).with_has_while(true)),
-                None,
-            )
-            .unwrap();
+            let mut handle = rt
+                .block_on(launch_scenario_with_gates(
+                    "gated".to_string(),
+                    None,
+                    entry,
+                    shutdown,
+                    None,
+                    Some(Arc::clone(&bus)),
+                    Some(GateContext::new(rx, init).with_has_while(true)),
+                    None,
+                ))
+                .unwrap();
             handle.join(Some(Duration::from_secs(2))).unwrap();
         });
     });

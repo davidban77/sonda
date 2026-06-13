@@ -18,12 +18,11 @@ use crate::generator::GeneratorConfig;
 use crate::schedule::core_loop::GateContext;
 use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
-use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
-use crate::schedule::log_runner::run_logs_with_sink_gated;
-use crate::schedule::runner::run_with_sink_gated;
+use crate::schedule::histogram_runner::run_with_sink_gated_blocking as run_histogram_with_sink_gated_blocking;
+use crate::schedule::log_runner::run_logs_with_sink_gated_blocking;
+use crate::schedule::runner::run_with_sink_gated_blocking;
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
-use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
-use crate::sink::create_sink;
+use crate::schedule::summary_runner::run_with_sink_gated_blocking as run_summary_with_sink_gated_blocking;
 use crate::{ConfigError, RuntimeError, SondaError};
 
 /// Extract the inner message from a [`SondaError`] for re-wrapping.
@@ -167,51 +166,18 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
 }
 
 /// Launch a single scenario on a new OS thread.
-///
-/// Creates the sink, wires up the shutdown flag and the stats arc, spawns the
-/// appropriate runner (metrics, logs, histogram, or summary), and returns a
-/// [`ScenarioHandle`] for lifecycle management.
-///
-/// This is the single function that both the CLI and sonda-server call to
-/// start a scenario. No scenario launch logic exists outside this function.
-///
-/// # Parameters
-///
-/// * `id` — unique identifier for this scenario instance (e.g. a UUID string).
-/// * `entry` — the scenario configuration. The `signal_type` field selects
-///   the runner.
-/// * `shutdown` — shared shutdown flag. Pass `Arc::new(AtomicBool::new(true))`
-///   for a new scenario. The handle's [`ScenarioHandle::stop`] method sets this
-///   to `false` to request a clean exit.
-/// * `start_delay` — optional delay before the scenario begins emitting events.
-///   When `Some`, the spawned thread sleeps for this duration before entering the
-///   event loop. This enables temporal correlation in multi-scenario mode: "metric
-///   A starts immediately, metric B starts 30s later". The sleep happens inside
-///   the spawned thread, so it does not block the caller.
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if the sink cannot be created. Thread spawn failures
-/// are extremely rare on modern operating systems; if the OS refuses to spawn
-/// a thread it is treated as an unrecoverable condition.
-pub fn launch_scenario(
+pub async fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
     shutdown: Arc<AtomicBool>,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None, None)
+    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None, None).await
 }
 
 /// Launch a scenario with optional `while:` / `after:` gating wired in.
-///
-/// `scenario_name` surfaces on [`ScenarioHandle::scenario_name`]; pass `None`
-/// for anonymous bodies. `upstream_bus` is the bus this scenario PUBLISHES
-/// into (for downstream gates to read). `gate_ctx` is what THIS scenario
-/// consumes from an upstream bus. When `resolver` is `Some` AND `scenario_name`
-/// is `Some`, natural-exit cleanup unregisters the upstream bus on thread exit.
 #[allow(clippy::too_many_arguments)]
-pub fn launch_scenario_with_gates(
+pub async fn launch_scenario_with_gates(
     id: String,
     scenario_name: Option<String>,
     entry: ScenarioEntry,
@@ -311,57 +277,32 @@ pub fn launch_scenario_with_gates(
                 }
             }
 
-            // Per-scenario current-thread Tokio runtime: drives the async
-            // runner from inside the std::thread::spawn'd scenario thread.
-            // One runtime per thread keeps the blocking-task pool local to
-            // this scenario.
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
-
             match entry {
-                ScenarioEntry::Metrics(config) => {
-                    let mut sink = create_sink(&config.sink, None)?;
-                    rt.block_on(run_with_sink_gated(
-                        &config,
-                        &mut sink,
-                        Some(shutdown_for_thread.as_ref()),
-                        Some(Arc::clone(&stats_for_thread)),
-                        upstream_bus,
-                        gate_ctx,
-                    ))
-                }
-                ScenarioEntry::Logs(config) => {
-                    let mut sink = create_sink(&config.sink, config.labels.as_ref())?;
-                    rt.block_on(run_logs_with_sink_gated(
-                        &config,
-                        &mut sink,
-                        Some(shutdown_for_thread.as_ref()),
-                        Some(Arc::clone(&stats_for_thread)),
-                        gate_ctx,
-                    ))
-                }
-                ScenarioEntry::Histogram(config) => {
-                    let mut sink = create_sink(&config.sink, None)?;
-                    rt.block_on(run_histogram_with_sink_gated(
-                        &config,
-                        &mut sink,
-                        Some(shutdown_for_thread.as_ref()),
-                        Some(Arc::clone(&stats_for_thread)),
-                        gate_ctx,
-                    ))
-                }
-                ScenarioEntry::Summary(config) => {
-                    let mut sink = create_sink(&config.sink, None)?;
-                    rt.block_on(run_summary_with_sink_gated(
-                        &config,
-                        &mut sink,
-                        Some(shutdown_for_thread.as_ref()),
-                        Some(Arc::clone(&stats_for_thread)),
-                        gate_ctx,
-                    ))
-                }
+                ScenarioEntry::Metrics(config) => run_with_sink_gated_blocking(
+                    &config,
+                    Some(shutdown_for_thread.as_ref()),
+                    Some(Arc::clone(&stats_for_thread)),
+                    upstream_bus,
+                    gate_ctx,
+                ),
+                ScenarioEntry::Logs(config) => run_logs_with_sink_gated_blocking(
+                    &config,
+                    Some(shutdown_for_thread.as_ref()),
+                    Some(Arc::clone(&stats_for_thread)),
+                    gate_ctx,
+                ),
+                ScenarioEntry::Histogram(config) => run_histogram_with_sink_gated_blocking(
+                    &config,
+                    Some(shutdown_for_thread.as_ref()),
+                    Some(Arc::clone(&stats_for_thread)),
+                    gate_ctx,
+                ),
+                ScenarioEntry::Summary(config) => run_summary_with_sink_gated_blocking(
+                    &config,
+                    Some(shutdown_for_thread.as_ref()),
+                    Some(Arc::clone(&stats_for_thread)),
+                    gate_ctx,
+                ),
             }
         })
         .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
@@ -759,13 +700,14 @@ mod tests {
     // ---- launch_scenario: returns a running handle --------------------------
 
     /// launch_scenario with a metrics entry returns a handle whose thread is alive.
-    #[test]
-    fn launch_scenario_metrics_returns_running_handle() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_scenario_metrics_returns_running_handle() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("launch_metrics");
 
         let mut handle =
             launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown), None)
+                .await
                 .expect("launch must succeed for valid metrics entry");
 
         // The thread must be alive immediately after launch.
@@ -786,13 +728,14 @@ mod tests {
     }
 
     /// launch_scenario with a logs entry returns a handle whose thread is alive.
-    #[test]
-    fn launch_scenario_logs_returns_running_handle() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_scenario_logs_returns_running_handle() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("launch_logs");
 
         let mut handle =
             launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown), None)
+                .await
                 .expect("launch must succeed for valid logs entry");
 
         assert!(
@@ -810,11 +753,12 @@ mod tests {
     // ---- stop() + join() exits cleanly --------------------------------------
 
     /// stop() followed by join() on a metrics scenario exits cleanly (Ok).
-    #[test]
-    fn stop_then_join_metrics_scenario_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_then_join_metrics_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("stop_join_metrics");
         let mut handle = launch_scenario("id-stop-1".to_string(), entry, shutdown, None)
+            .await
             .expect("launch must succeed");
 
         handle.stop();
@@ -830,11 +774,12 @@ mod tests {
     }
 
     /// stop() followed by join() on a logs scenario exits cleanly (Ok).
-    #[test]
-    fn stop_then_join_logs_scenario_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_then_join_logs_scenario_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = logs_entry_indefinite("stop_join_logs");
         let mut handle = launch_scenario("id-stop-2".to_string(), entry, shutdown, None)
+            .await
             .expect("launch must succeed");
 
         handle.stop();
@@ -846,11 +791,12 @@ mod tests {
     }
 
     /// A finite-duration scenario exits on its own and join() returns Ok.
-    #[test]
-    fn finite_duration_scenario_exits_naturally_and_join_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn finite_duration_scenario_exits_naturally_and_join_returns_ok() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry("natural_exit");
         let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown, None)
+            .await
             .expect("launch must succeed");
 
         // 200ms duration — wait for it to finish, then join.
@@ -864,8 +810,8 @@ mod tests {
     // ---- stats_snapshot(): non-zero total_events after brief run ------------
 
     /// After letting a launched scenario run briefly, stats show non-zero events.
-    #[test]
-    fn stats_snapshot_shows_nonzero_events_after_brief_run() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stats_snapshot_shows_nonzero_events_after_brief_run() {
         use std::thread;
 
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -897,6 +843,7 @@ mod tests {
 
         let mut handle =
             launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown), None)
+                .await
                 .expect("launch must succeed");
 
         // Wait long enough for at least a few events to be emitted and stats updated.
@@ -919,8 +866,8 @@ mod tests {
     }
 
     /// Stats are also tracked for logs scenarios.
-    #[test]
-    fn stats_snapshot_shows_nonzero_events_for_logs_scenario() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stats_snapshot_shows_nonzero_events_for_logs_scenario() {
         use std::thread;
 
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -960,6 +907,7 @@ mod tests {
             Arc::clone(&shutdown),
             None,
         )
+        .await
         .expect("launch must succeed");
 
         thread::sleep(Duration::from_millis(200));
@@ -978,11 +926,12 @@ mod tests {
     // ---- elapsed(): positive duration after launch --------------------------
 
     /// elapsed() is positive immediately after launch.
-    #[test]
-    fn elapsed_is_positive_after_launch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn elapsed_is_positive_after_launch() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("elapsed_test");
         let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown, None)
+            .await
             .expect("launch must succeed");
 
         let d = handle.elapsed();
@@ -999,13 +948,14 @@ mod tests {
 
     /// launch_scenario sets the shared shutdown flag to true (SeqCst), regardless
     /// of what the caller set it to beforehand.
-    #[test]
-    fn launch_scenario_resets_shutdown_flag_to_true() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_scenario_resets_shutdown_flag_to_true() {
         // Intentionally start the flag as false to verify launch forces it true.
         let shutdown = Arc::new(AtomicBool::new(false));
         let entry = metrics_entry_indefinite("flag_reset");
 
         let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown), None)
+            .await
             .expect("launch must succeed");
 
         assert!(
@@ -1020,8 +970,8 @@ mod tests {
     // ---- start_delay: None starts immediately -------------------------------
 
     /// launch_scenario with start_delay=None starts emitting events immediately.
-    #[test]
-    fn launch_with_no_start_delay_emits_events_immediately() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_with_no_start_delay_emits_events_immediately() {
         use std::thread;
 
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -1052,6 +1002,7 @@ mod tests {
 
         let mut handle =
             launch_scenario("id-nodelay".to_string(), entry, Arc::clone(&shutdown), None)
+                .await
                 .expect("launch must succeed");
 
         // Wait briefly and check events have already been emitted.
@@ -1071,8 +1022,8 @@ mod tests {
 
     /// launch_scenario with start_delay=Some(500ms) does not emit events for
     /// the first ~400ms (allowing margin for thread scheduling).
-    #[test]
-    fn launch_with_start_delay_does_not_emit_during_delay() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_with_start_delay_does_not_emit_during_delay() {
         use std::thread;
 
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -1108,6 +1059,7 @@ mod tests {
             Arc::clone(&shutdown),
             Some(delay),
         )
+        .await
         .expect("launch must succeed");
 
         // Check after 100ms — should still be in the delay period.
@@ -1136,8 +1088,8 @@ mod tests {
 
     /// Sending shutdown during start_delay causes the thread to exit cleanly
     /// without hanging.
-    #[test]
-    fn shutdown_during_start_delay_exits_cleanly() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shutdown_during_start_delay_exits_cleanly() {
         use std::thread;
         use std::time::Instant;
 
@@ -1152,6 +1104,7 @@ mod tests {
             Arc::clone(&shutdown),
             Some(delay),
         )
+        .await
         .expect("launch must succeed");
 
         // Wait 100ms then signal shutdown.
@@ -1185,8 +1138,8 @@ mod tests {
     // ---- start_delay with logs scenario -------------------------------------
 
     /// launch_scenario with start_delay works for logs scenarios too.
-    #[test]
-    fn launch_logs_with_start_delay_does_not_emit_during_delay() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_logs_with_start_delay_does_not_emit_during_delay() {
         use std::thread;
 
         let shutdown = Arc::new(AtomicBool::new(true));
@@ -1227,6 +1180,7 @@ mod tests {
             Arc::clone(&shutdown),
             Some(delay),
         )
+        .await
         .expect("launch must succeed");
 
         // Check during the delay.
@@ -1323,8 +1277,8 @@ mod tests {
     // ---- launch_scenario: histogram runs to completion ----------------------
 
     /// A short histogram scenario launches, runs to completion, and join returns Ok.
-    #[test]
-    fn launch_histogram_scenario_runs_to_completion() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_histogram_scenario_runs_to_completion() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = histogram_entry("launch_histogram");
         let mut handle = launch_scenario(
@@ -1333,6 +1287,7 @@ mod tests {
             Arc::clone(&shutdown),
             None,
         )
+        .await
         .expect("launch must succeed for valid histogram entry");
 
         let result = handle.join(Some(Duration::from_secs(5)));
@@ -1345,12 +1300,13 @@ mod tests {
     // ---- launch_scenario: summary runs to completion -----------------------
 
     /// A short summary scenario launches, runs to completion, and join returns Ok.
-    #[test]
-    fn launch_summary_scenario_runs_to_completion() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_summary_scenario_runs_to_completion() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = summary_entry("launch_summary");
         let mut handle =
             launch_scenario("id-summary".to_string(), entry, Arc::clone(&shutdown), None)
+                .await
                 .expect("launch must succeed for valid summary entry");
 
         let result = handle.join(Some(Duration::from_secs(5)));
@@ -1653,8 +1609,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn state_remains_pending_during_start_delay_then_transitions_to_running() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_remains_pending_during_start_delay_then_transitions_to_running() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry_indefinite("delayed_state");
         let mut handle = launch_scenario(
@@ -1663,6 +1619,7 @@ mod tests {
             Arc::clone(&shutdown),
             Some(Duration::from_millis(200)),
         )
+        .await
         .expect("launch must succeed");
 
         std::thread::sleep(Duration::from_millis(50));
@@ -1683,11 +1640,12 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_non_gated_scenario_state_transitions_through_running_to_finished() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_non_gated_scenario_state_transitions_through_running_to_finished() {
         let shutdown = Arc::new(AtomicBool::new(true));
         let entry = metrics_entry("state_lifecycle");
         let mut handle = launch_scenario("state-id".to_string(), entry, shutdown, None)
+            .await
             .expect("launch must succeed");
 
         let mut saw_running = false;
@@ -1862,8 +1820,8 @@ mod tests {
         })
     }
 
-    #[test]
-    fn launch_metrics_scenario_with_no_type_defaults_to_gauge() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_metrics_scenario_with_no_type_defaults_to_gauge() {
         let entry = entry_with_metric_type(None);
         let mut handle = launch_scenario(
             "id-meta-gauge".to_string(),
@@ -1871,6 +1829,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         let meta = handle
             .prometheus_meta
@@ -1881,8 +1840,8 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_metrics_scenario_with_step_generator_defaults_to_counter() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_metrics_scenario_with_step_generator_defaults_to_counter() {
         let entry = step_entry("step_counter");
         let mut handle = launch_scenario(
             "id-meta-step".to_string(),
@@ -1890,6 +1849,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         let meta = handle
             .prometheus_meta
@@ -1900,8 +1860,8 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_histogram_scenario_defaults_to_histogram() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_histogram_scenario_defaults_to_histogram() {
         let entry = histogram_entry("hist_default");
         let mut handle = launch_scenario(
             "id-meta-hist".to_string(),
@@ -1909,6 +1869,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         let meta = handle
             .prometheus_meta
@@ -1918,8 +1879,8 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_summary_scenario_defaults_to_summary() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_summary_scenario_defaults_to_summary() {
         let entry = summary_entry("summary_default");
         let mut handle = launch_scenario(
             "id-meta-sum".to_string(),
@@ -1927,6 +1888,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         let meta = handle
             .prometheus_meta
@@ -1936,8 +1898,8 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_scenario_explicit_metric_type_overrides_default() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_scenario_explicit_metric_type_overrides_default() {
         let entry = entry_with_metric_type(Some(PromMetricType::Counter));
         let mut handle = launch_scenario(
             "id-meta-explicit".to_string(),
@@ -1945,6 +1907,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         let meta = handle
             .prometheus_meta
@@ -1955,8 +1918,8 @@ mod tests {
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn launch_log_scenario_has_no_prometheus_meta() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_log_scenario_has_no_prometheus_meta() {
         let entry = logs_entry("log_no_meta");
         let mut handle = launch_scenario(
             "id-meta-logs".to_string(),
@@ -1964,6 +1927,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         assert!(
             handle.prometheus_meta.is_none(),

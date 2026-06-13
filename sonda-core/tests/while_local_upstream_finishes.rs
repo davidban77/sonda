@@ -55,8 +55,8 @@ fn wait_for_not_alive(handle: &ScenarioHandle, timeout: Duration) {
     );
 }
 
-#[test]
-fn local_downstream_finishes_when_upstream_duration_expires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn local_downstream_finishes_when_upstream_duration_expires() {
     let yaml = r#"
 version: 2
 kind: runnable
@@ -89,7 +89,9 @@ scenarios:
 
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
-    let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let mut handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2);
 
     {
@@ -108,8 +110,8 @@ scenarios:
     }
 }
 
-#[test]
-fn local_cascade_a_b_c_all_finish_when_a_finishes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn local_cascade_a_b_c_all_finish_when_a_finishes() {
     let yaml = r#"
 version: 2
 kind: runnable
@@ -153,7 +155,9 @@ scenarios:
 
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
-    let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let mut handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 3);
 
     for id in ["a", "b", "c"] {
@@ -169,8 +173,8 @@ scenarios:
     }
 }
 
-#[test]
-fn local_downstream_paused_finishes_when_upstream_finishes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn local_downstream_paused_finishes_when_upstream_finishes() {
     // A non-repeating sequence drops below threshold on tick 1 and stays
     // there for the rest of the upstream's life. The downstream is
     // therefore reliably Paused (not Running) at the moment the upstream
@@ -209,7 +213,9 @@ scenarios:
 
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
-    let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let mut handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2);
 
     {
@@ -229,8 +235,8 @@ scenarios:
     }
 }
 
-#[test]
-fn local_downstream_running_finishes_when_upstream_finishes() {
+#[tokio::test(flavor = "multi_thread")]
+async fn local_downstream_running_finishes_when_upstream_finishes() {
     // Constant value > threshold keeps the downstream Running until the
     // upstream's duration expires.
     let yaml = r#"
@@ -265,7 +271,9 @@ scenarios:
 
     let resolver = InMemoryPackResolver::new();
     let compiled = compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
-    let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+    let mut handles = launch_multi_compiled(compiled, None)
+        .await
+        .expect("launch must succeed");
     assert_eq!(handles.len(), 2);
 
     {

@@ -10,19 +10,14 @@
 //!    accumulated items into an `ExportMetricsServiceRequest` or
 //!    `ExportLogsServiceRequest`, and sends it via gRPC unary call.
 //!
-//! Async gRPC operations are driven by a dedicated single-threaded
-//! [`tokio::runtime::Runtime`] stored in the struct, keeping the public
-//! [`Sink`] interface fully synchronous. This is the same pattern used by
-//! the Kafka sink.
-//!
 //! Requires the `otlp` feature flag.
 
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use bytes::Buf;
 use prost::Message;
-use tokio::runtime::Runtime;
 use tonic::client::Grpc;
 use tonic::codec::{Codec, Decoder, Encoder as TonicEncoder};
 use tonic::transport::Channel;
@@ -150,38 +145,21 @@ pub enum OtlpSignalType {
 
 /// Delivers OTLP protobuf telemetry to an OpenTelemetry Collector via gRPC.
 ///
-/// The sink accumulates encoded data points in an internal batch. When the
-/// batch reaches `batch_size` entries, or when `flush()` is called, the batch
-/// is wrapped in the appropriate OTLP export request and sent via gRPC unary
-/// call to the configured endpoint.
-///
-/// Uses a private single-threaded [`Runtime`] to drive async tonic calls,
-/// keeping the [`Sink`] trait interface fully synchronous.
+/// Encoded data points accumulate in an internal batch. When the batch reaches
+/// `batch_size`, or when `flush()` is called, the batch is wrapped in the
+/// appropriate OTLP export request and sent via a tonic gRPC unary call.
 pub struct OtlpGrpcSink {
-    /// Tokio runtime used to drive async tonic calls synchronously.
-    runtime: Runtime,
-    /// The gRPC channel (connection) to the OTLP endpoint.
     channel: Channel,
-    /// Accumulated metrics waiting to be sent.
     metric_batch: Vec<Metric>,
-    /// Accumulated log records waiting to be sent.
     log_batch: Vec<LogRecord>,
-    /// Flush threshold in number of data points / log records.
     batch_size: usize,
-    /// Whether this sink handles metrics or logs.
     signal_type: OtlpSignalType,
-    /// Resource attributes derived from scenario labels.
     resource_attrs: Vec<KeyValue>,
-    /// The endpoint URL string (stored for error messages).
     endpoint: String,
-    /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
-    /// Maximum age a non-empty batch may reach before a time-based flush.
     /// `Duration::ZERO` disables time-based flushing.
     max_buffer_age: Duration,
-    /// When a batch was last sent — drives the time-based flush check.
     last_flush_at: Instant,
-    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
     last_write_delivered: bool,
 }
 
@@ -199,13 +177,7 @@ impl OtlpGrpcSink {
     /// - `max_buffer_age` — maximum age a non-empty batch may reach before a
     ///   time-based flush. `Duration::ZERO` disables time-based flushing.
     ///
-    /// # Errors
-    ///
-    /// Returns [`SondaError::Sink`] if:
-    /// - The tokio runtime cannot be created.
-    /// - The endpoint URL cannot be parsed.
-    /// - The gRPC connection cannot be established.
-    pub fn new(
+    pub async fn new(
         endpoint: &str,
         signal_type: OtlpSignalType,
         batch_size: usize,
@@ -213,46 +185,29 @@ impl OtlpGrpcSink {
         retry_policy: Option<RetryPolicy>,
         max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
-        // Build a minimal single-threaded tokio runtime.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+        let endpoint_str = endpoint.to_owned();
+        let channel = Channel::from_shared(endpoint_str.clone())
             .map_err(|e| {
                 std::io::Error::other(format!(
-                    "otlp grpc sink: failed to build tokio runtime for '{}': {}",
-                    endpoint, e
+                    "otlp grpc sink: invalid endpoint '{}': {}",
+                    endpoint_str, e
                 ))
             })
-            .map_err(SondaError::Sink)?;
-
-        let endpoint_str = endpoint.to_owned();
-
-        // Connect to the gRPC endpoint.
-        let channel = runtime
-            .block_on(async {
-                Channel::from_shared(endpoint_str.clone())
-                    .map_err(|e| {
-                        std::io::Error::other(format!(
-                            "otlp grpc sink: invalid endpoint '{}': {}",
-                            endpoint_str, e
-                        ))
-                    })?
-                    .connect()
-                    .await
-                    .map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::ConnectionRefused,
-                            format!(
-                                "otlp grpc sink: failed to connect to '{}': {}",
-                                endpoint_str, e
-                            ),
-                        )
-                    })
+            .map_err(SondaError::Sink)?
+            .connect()
+            .await
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!(
+                        "otlp grpc sink: failed to connect to '{}': {}",
+                        endpoint_str, e
+                    ),
+                )
             })
             .map_err(SondaError::Sink)?;
 
         Ok(Self {
-            runtime,
             channel,
             metric_batch: Vec::with_capacity(batch_size),
             log_batch: Vec::with_capacity(batch_size),
@@ -282,114 +237,70 @@ impl OtlpGrpcSink {
         }
     }
 
-    /// Flush the metric batch as an `ExportMetricsServiceRequest` via gRPC.
-    ///
-    /// Uses the configured [`RetryPolicy`] for transient gRPC failures.
-    fn flush_metrics(&mut self) -> Result<(), SondaError> {
+    async fn flush_metrics(&mut self) -> Result<(), SondaError> {
         if self.metric_batch.is_empty() {
             return Ok(());
         }
-
-        // Reset on attempt, not success — the batch is cleared either way below.
         self.last_flush_at = Instant::now();
-
         let metrics =
             std::mem::replace(&mut self.metric_batch, Vec::with_capacity(self.batch_size));
 
-        match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                // Clone metrics for potential retries since send_grpc_unary
-                // consumes the request.
-                policy.execute(
-                    || {
-                        let request = ExportMetricsServiceRequest {
-                            resource_metrics: vec![ResourceMetrics {
-                                resource: Some(self.build_resource()),
-                                scope_metrics: vec![ScopeMetrics {
-                                    scope: Some(Self::build_scope()),
-                                    metrics: metrics.clone(),
-                                }],
-                            }],
-                        };
-                        self.send_grpc_unary::<
-                            ExportMetricsServiceRequest,
-                            ExportMetricsServiceResponse,
-                        >(request, METRICS_EXPORT_PATH)
-                    },
-                    Self::is_retryable,
-                )
-            }
-            None => {
-                let request = ExportMetricsServiceRequest {
-                    resource_metrics: vec![ResourceMetrics {
-                        resource: Some(self.build_resource()),
-                        scope_metrics: vec![ScopeMetrics {
-                            scope: Some(Self::build_scope()),
-                            metrics,
-                        }],
+        let channel = self.channel.clone();
+        let endpoint = self.endpoint.clone();
+        let resource = self.build_resource();
+        let send_once = || async {
+            let request = ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    resource: Some(resource.clone()),
+                    scope_metrics: vec![ScopeMetrics {
+                        scope: Some(Self::build_scope()),
+                        metrics: metrics.clone(),
                     }],
-                };
-                self.send_grpc_unary::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>(
-                    request,
-                    METRICS_EXPORT_PATH,
-                )
-            }
-        }
+                }],
+            };
+            send_grpc_unary::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>(
+                channel.clone(),
+                &endpoint,
+                request,
+                METRICS_EXPORT_PATH,
+            )
+            .await
+        };
+
+        run_with_retry(self.retry_policy.as_ref(), send_once).await
     }
 
-    /// Flush the log batch as an `ExportLogsServiceRequest` via gRPC.
-    ///
-    /// Uses the configured [`RetryPolicy`] for transient gRPC failures.
-    fn flush_logs(&mut self) -> Result<(), SondaError> {
+    async fn flush_logs(&mut self) -> Result<(), SondaError> {
         if self.log_batch.is_empty() {
             return Ok(());
         }
-
-        // Reset on attempt, not success — the batch is cleared either way below.
         self.last_flush_at = Instant::now();
-
         let log_records =
             std::mem::replace(&mut self.log_batch, Vec::with_capacity(self.batch_size));
 
-        match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                policy.execute(
-                    || {
-                        let request = ExportLogsServiceRequest {
-                            resource_logs: vec![ResourceLogs {
-                                resource: Some(self.build_resource()),
-                                scope_logs: vec![ScopeLogs {
-                                    scope: Some(Self::build_scope()),
-                                    log_records: log_records.clone(),
-                                }],
-                            }],
-                        };
-                        self.send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
-                            request,
-                            LOGS_EXPORT_PATH,
-                        )
-                    },
-                    Self::is_retryable,
-                )
-            }
-            None => {
-                let request = ExportLogsServiceRequest {
-                    resource_logs: vec![ResourceLogs {
-                        resource: Some(self.build_resource()),
-                        scope_logs: vec![ScopeLogs {
-                            scope: Some(Self::build_scope()),
-                            log_records,
-                        }],
+        let channel = self.channel.clone();
+        let endpoint = self.endpoint.clone();
+        let resource = self.build_resource();
+        let send_once = || async {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(resource.clone()),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(Self::build_scope()),
+                        log_records: log_records.clone(),
                     }],
-                };
-                self.send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
-                    request,
-                    LOGS_EXPORT_PATH,
-                )
-            }
-        }
+                }],
+            };
+            send_grpc_unary::<ExportLogsServiceRequest, ExportLogsServiceResponse>(
+                channel.clone(),
+                &endpoint,
+                request,
+                LOGS_EXPORT_PATH,
+            )
+            .await
+        };
+
+        run_with_retry(self.retry_policy.as_ref(), send_once).await
     }
 
     /// Classify whether a gRPC error is retryable.
@@ -417,52 +328,91 @@ impl OtlpGrpcSink {
         }
         false
     }
-
-    /// Send a gRPC unary call using the custom prost codec.
-    fn send_grpc_unary<T, U>(&mut self, request: T, path: &'static str) -> Result<(), SondaError>
-    where
-        T: Message + 'static,
-        U: Message + Default + 'static,
-    {
-        let channel = self.channel.clone();
-        let endpoint = self.endpoint.clone();
-
-        let result = self.runtime.block_on(async {
-            let mut client = Grpc::new(channel);
-            client.ready().await.map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    format!("otlp grpc sink: service not ready at '{}': {}", endpoint, e),
-                )
-            })?;
-
-            let grpc_path = http::uri::PathAndQuery::from_static(path);
-            let codec: OtlpCodec<T, U> = OtlpCodec::default();
-            let tonic_request = tonic::Request::new(request);
-
-            client
-                .unary(tonic_request, grpc_path, codec)
-                .await
-                .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::BrokenPipe,
-                        format!("otlp grpc sink: gRPC call to '{}' failed: {}", endpoint, e),
-                    )
-                })?;
-
-            Ok::<(), std::io::Error>(())
-        });
-
-        result.map_err(SondaError::Sink)
-    }
 }
 
+async fn send_grpc_unary<T, U>(
+    channel: Channel,
+    endpoint: &str,
+    request: T,
+    path: &'static str,
+) -> Result<(), SondaError>
+where
+    T: Message + 'static,
+    U: Message + Default + 'static,
+{
+    let mut client = Grpc::new(channel);
+    client
+        .ready()
+        .await
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                format!("otlp grpc sink: service not ready at '{}': {}", endpoint, e),
+            )
+        })
+        .map_err(SondaError::Sink)?;
+
+    let grpc_path = http::uri::PathAndQuery::from_static(path);
+    let codec: OtlpCodec<T, U> = OtlpCodec::default();
+    let tonic_request = tonic::Request::new(request);
+
+    client
+        .unary(tonic_request, grpc_path, codec)
+        .await
+        .map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                format!("otlp grpc sink: gRPC call to '{}' failed: {}", endpoint, e),
+            )
+        })
+        .map_err(SondaError::Sink)?;
+    Ok(())
+}
+
+async fn run_with_retry<F, Fut>(
+    policy: Option<&RetryPolicy>,
+    mut send_once: F,
+) -> Result<(), SondaError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), SondaError>>,
+{
+    let mut last_error = match send_once().await {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    let Some(policy) = policy else {
+        return Err(last_error);
+    };
+    for attempt in 0..policy.max_attempts() {
+        if !OtlpGrpcSink::is_retryable(&last_error) {
+            return Err(last_error);
+        }
+        let backoff = policy.jittered_backoff(attempt);
+        eprintln!(
+            "sonda: retry {}/{} after {}ms (error: {})",
+            attempt + 1,
+            policy.max_attempts(),
+            backoff.as_millis(),
+            last_error,
+        );
+        tokio::time::sleep(backoff).await;
+        match send_once().await {
+            Ok(()) => return Ok(()),
+            Err(e) => last_error = e,
+        }
+    }
+    eprintln!(
+        "sonda: all {} retries exhausted (last error: {})",
+        policy.max_attempts(),
+        last_error,
+    );
+    Err(last_error)
+}
+
+#[async_trait]
 impl Sink for OtlpGrpcSink {
-    /// Accept length-prefixed OTLP protobuf bytes from the encoder.
-    ///
-    /// Parses each message from the data and adds it to the internal batch.
-    /// When the batch reaches `batch_size` entries, an automatic flush is triggered.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         match self.signal_type {
             OtlpSignalType::Metrics => {
                 let metrics = otlp::parse_length_prefixed_metrics(data)?;
@@ -472,7 +422,7 @@ impl Sink for OtlpGrpcSink {
                     && self.last_flush_at.elapsed() >= self.max_buffer_age;
                 let should_flush = size_reached || age_reached;
                 if should_flush {
-                    self.flush_metrics()?;
+                    self.flush_metrics().await?;
                 }
                 self.last_write_delivered = should_flush;
             }
@@ -484,7 +434,7 @@ impl Sink for OtlpGrpcSink {
                     && self.last_flush_at.elapsed() >= self.max_buffer_age;
                 let should_flush = size_reached || age_reached;
                 if should_flush {
-                    self.flush_logs()?;
+                    self.flush_logs().await?;
                 }
                 self.last_write_delivered = should_flush;
             }
@@ -492,14 +442,10 @@ impl Sink for OtlpGrpcSink {
         Ok(())
     }
 
-    /// Flush any remaining buffered data to the OTLP endpoint.
-    ///
-    /// Safe to call multiple times. Returns `Ok(())` immediately if the batch
-    /// is empty.
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         match self.signal_type {
-            OtlpSignalType::Metrics => self.flush_metrics(),
-            OtlpSignalType::Logs => self.flush_logs(),
+            OtlpSignalType::Metrics => self.flush_metrics().await,
+            OtlpSignalType::Logs => self.flush_logs().await,
         }
     }
 
@@ -520,24 +466,14 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// Build a sink with a lazy (non-connecting) channel pointed at a dead
-    /// address. `write()` buffers without network I/O; only a triggered flush
-    /// reaches the channel, where it fails — letting tests assert on buffer
-    /// state and on whether a flush was attempted, without a live collector.
+    /// Build a sink with a lazy (non-connecting) channel pointed at a dead address.
     fn lazy_sink(
         signal_type: OtlpSignalType,
         batch_size: usize,
         max_buffer_age: Duration,
     ) -> OtlpGrpcSink {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build runtime");
-        let channel = runtime.block_on(async {
-            tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy()
-        });
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         OtlpGrpcSink {
-            runtime,
             channel,
             metric_batch: Vec::with_capacity(batch_size),
             log_batch: Vec::with_capacity(batch_size),
@@ -821,11 +757,9 @@ signal_type: logs
     // Construction failure: unreachable endpoint
     // -----------------------------------------------------------------------
 
-    /// Connecting to a port where no OTLP collector is listening must return a
-    /// SondaError::Sink.
-    #[test]
+    #[tokio::test]
     #[ignore = "requires network timeout; run with --ignored when desired"]
-    fn new_with_unreachable_endpoint_returns_sink_error() {
+    async fn new_with_unreachable_endpoint_returns_sink_error() {
         let result = OtlpGrpcSink::new(
             "http://127.0.0.1:1",
             OtlpSignalType::Metrics,
@@ -833,7 +767,8 @@ signal_type: logs
             vec![],
             None,
             Duration::ZERO,
-        );
+        )
+        .await;
         match result {
             Err(err) => {
                 let msg = err.to_string();
@@ -846,9 +781,8 @@ signal_type: logs
         }
     }
 
-    /// An invalid endpoint URL (not parseable) should return an error.
-    #[test]
-    fn new_with_invalid_endpoint_returns_error() {
+    #[tokio::test]
+    async fn new_with_invalid_endpoint_returns_error() {
         let result = OtlpGrpcSink::new(
             "not a url",
             OtlpSignalType::Metrics,
@@ -856,7 +790,8 @@ signal_type: logs
             vec![],
             None,
             Duration::ZERO,
-        );
+        )
+        .await;
         assert!(result.is_err(), "invalid endpoint URL must be rejected");
     }
 
@@ -939,22 +874,21 @@ sink:
     // Time-based flush
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn time_based_flush_fires_when_buffer_age_exceeded() {
-        // Large batch_size so size never triggers; short max_buffer_age.
+    #[tokio::test]
+    async fn time_based_flush_fires_when_buffer_age_exceeded() {
         let mut sink = lazy_sink(
             OtlpSignalType::Metrics,
             1_000_000,
             Duration::from_millis(50),
         );
 
-        sink.write(&one_metric_bytes("first")).expect("write 1");
+        sink.write(&one_metric_bytes("first"))
+            .await
+            .expect("write 1");
         assert_eq!(sink.metric_batch.len(), 1, "first write only buffers");
 
-        std::thread::sleep(Duration::from_millis(200));
-        // Second write is past max_buffer_age → triggers a time-based flush.
-        // The lazy channel has no peer, so the flush attempt fails.
-        let result = sink.write(&one_metric_bytes("second"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let result = sink.write(&one_metric_bytes("second")).await;
         assert!(
             result.is_err(),
             "second write past max_buffer_age must attempt a flush"
@@ -965,15 +899,15 @@ sink:
         );
     }
 
-    #[test]
-    fn time_based_flush_fires_for_log_signal() {
+    #[tokio::test]
+    async fn time_based_flush_fires_for_log_signal() {
         let mut sink = lazy_sink(OtlpSignalType::Logs, 1_000_000, Duration::from_millis(50));
 
-        sink.write(&one_log_bytes()).expect("write 1");
+        sink.write(&one_log_bytes()).await.expect("write 1");
         assert_eq!(sink.log_batch.len(), 1, "first write only buffers");
 
-        std::thread::sleep(Duration::from_millis(200));
-        let result = sink.write(&one_log_bytes());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let result = sink.write(&one_log_bytes()).await;
         assert!(
             result.is_err(),
             "second log write past max_buffer_age must attempt a flush"
@@ -984,16 +918,21 @@ sink:
         );
     }
 
-    #[test]
-    fn zero_max_buffer_age_disables_time_based_flush() {
-        // Large batch_size, zero max_buffer_age — neither trigger should fire.
+    #[tokio::test]
+    async fn zero_max_buffer_age_disables_time_based_flush() {
         let mut sink = lazy_sink(OtlpSignalType::Metrics, 1_000_000, Duration::ZERO);
 
-        sink.write(&one_metric_bytes("first")).expect("write 1");
-        std::thread::sleep(Duration::from_millis(150));
-        sink.write(&one_metric_bytes("second")).expect("write 2");
-        std::thread::sleep(Duration::from_millis(150));
-        sink.write(&one_metric_bytes("third")).expect("write 3");
+        sink.write(&one_metric_bytes("first"))
+            .await
+            .expect("write 1");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        sink.write(&one_metric_bytes("second"))
+            .await
+            .expect("write 2");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        sink.write(&one_metric_bytes("third"))
+            .await
+            .expect("write 3");
 
         assert_eq!(
             sink.metric_batch.len(),
@@ -1002,41 +941,35 @@ sink:
         );
     }
 
-    #[test]
-    fn size_triggered_flush_still_works_and_resets_the_timer() {
-        // Small batch_size, max_buffer_age longer than the test runs.
+    #[tokio::test]
+    async fn size_triggered_flush_still_works_and_resets_the_timer() {
         let mut sink = lazy_sink(OtlpSignalType::Metrics, 2, Duration::from_secs(60));
 
-        sink.write(&one_metric_bytes("a")).expect("write 1 buffers");
+        sink.write(&one_metric_bytes("a"))
+            .await
+            .expect("write 1 buffers");
         assert_eq!(sink.metric_batch.len(), 1, "below batch_size: no flush");
 
-        // Second write fills the batch → size-triggered flush attempt.
-        let result = sink.write(&one_metric_bytes("b"));
+        let result = sink.write(&one_metric_bytes("b")).await;
         assert!(result.is_err(), "filling the batch must attempt a flush");
         assert!(
             sink.metric_batch.is_empty(),
             "size-triggered flush must drain the batch"
         );
 
-        // The size flush reset last_flush_at; a subsequent partial write must
-        // not immediately time-flush.
         sink.write(&one_metric_bytes("c"))
+            .await
             .expect("partial write after a size flush must not time-flush immediately");
         assert_eq!(sink.metric_batch.len(), 1, "partial write only buffers");
     }
 
-    // -----------------------------------------------------------------------
-    // last_write_delivered — buffered case
-    //
-    // Only the buffered case is unit-testable: the lazy channel has no peer,
-    // so a triggered flush always fails. Flushed-success is verified live.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn last_write_delivered_is_false_when_metric_write_only_buffers() {
+    #[tokio::test]
+    async fn last_write_delivered_is_false_when_metric_write_only_buffers() {
         let mut sink = lazy_sink(OtlpSignalType::Metrics, 1_000_000, Duration::ZERO);
 
-        sink.write(&one_metric_bytes("buffered")).expect("write 1");
+        sink.write(&one_metric_bytes("buffered"))
+            .await
+            .expect("write 1");
 
         assert!(
             !sink.last_write_delivered(),
@@ -1044,11 +977,11 @@ sink:
         );
     }
 
-    #[test]
-    fn last_write_delivered_is_false_when_log_write_only_buffers() {
+    #[tokio::test]
+    async fn last_write_delivered_is_false_when_log_write_only_buffers() {
         let mut sink = lazy_sink(OtlpSignalType::Logs, 1_000_000, Duration::ZERO);
 
-        sink.write(&one_log_bytes()).expect("write 1");
+        sink.write(&one_log_bytes()).await.expect("write 1");
 
         assert!(
             !sink.last_write_delivered(),
@@ -1056,12 +989,8 @@ sink:
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Factory wiring: create_sink max_buffer_age parsing
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn create_sink_otlp_grpc_with_invalid_max_buffer_age_returns_err() {
+    #[tokio::test]
+    async fn create_sink_otlp_grpc_with_invalid_max_buffer_age_returns_err() {
         let config = SinkConfig::OtlpGrpc {
             endpoint: "http://127.0.0.1:1".to_string(),
             signal_type: OtlpSignalType::Metrics,
@@ -1070,7 +999,7 @@ sink:
             retry: None,
         };
         assert!(
-            create_sink(&config, None).is_err(),
+            create_sink(&config, None).await.is_err(),
             "invalid max_buffer_age must cause the factory to fail"
         );
     }

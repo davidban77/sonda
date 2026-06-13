@@ -25,9 +25,10 @@ serde_yaml_ng = { workspace = true, optional = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = "0.1"
+async-trait = "0.1"
 ureq = { workspace = true, optional = true }
 rskafka = { version = "0.6.0", default-features = false, features = ["transport-tls"], optional = true }
-tokio = { version = "1", features = ["rt", "sync", "net", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "net", "time", "macros", "fs", "io-std", "io-util"] }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"], optional = true }
 rustls-pki-types = { version = "1", features = ["std"], optional = true }
@@ -45,6 +46,7 @@ rstest = { workspace = true }
 criterion = { version = "0.8", default-features = false }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tracing-test = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [[bench]]
 name = "while_steady_state"

@@ -41,7 +41,7 @@ use crate::SondaError;
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub async fn run(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
-    let mut sink = create_sink(&config.sink, None)?;
+    let mut sink = create_sink(&config.sink, None).await?;
     run_with_sink(config, &mut sink, None, None).await
 }
 
@@ -75,6 +75,22 @@ pub async fn run_with_sink(
 ///
 /// Histograms cannot be `while:` upstreams (compile-time
 /// `NonMetricsTarget`), but they can be `while:`-gated downstreams.
+pub fn run_with_sink_gated_blocking(
+    config: &HistogramScenarioConfig,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    gate_ctx: Option<GateContext>,
+) -> Result<(), SondaError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| crate::SondaError::Runtime(crate::RuntimeError::SpawnFailed(e)))?;
+    rt.block_on(async {
+        let mut sink = create_sink(&config.sink, None).await?;
+        run_with_sink_gated(config, &mut sink, shutdown, stats, gate_ctx).await
+    })
+}
+
 pub async fn run_with_sink_gated(
     config: &HistogramScenarioConfig,
     sink: &mut Box<dyn Sink>,
@@ -320,6 +336,8 @@ fn format_le_value(bound: f64) -> String {
 mod tests {
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
+
     use crate::config::{BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::sink::{Sink, SinkConfig};
@@ -329,15 +347,16 @@ mod tests {
 
     struct ProbeSink(SharedBuf);
 
+    #[async_trait]
     impl Sink for ProbeSink {
-        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
             self.0
                 .lock()
                 .expect("probe sink mutex poisoned")
                 .extend_from_slice(data);
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), SondaError> {
+        async fn flush(&mut self) -> Result<(), SondaError> {
             Ok(())
         }
     }

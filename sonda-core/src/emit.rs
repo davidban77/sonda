@@ -1,4 +1,4 @@
-//! Synchronous single-event emission.
+//! Single-event emission helpers.
 
 use std::collections::HashMap;
 
@@ -9,33 +9,33 @@ use crate::sink::{create_sink, SinkConfig};
 use crate::SondaError;
 
 /// Encode a [`LogEvent`] and deliver it through a one-shot sink.
-pub fn emit_log(
+pub async fn emit_log(
     event: &LogEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
     let encoder = create_encoder(encoder)?;
-    let mut sink = create_sink(sink, labels)?;
+    let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_log(event, &mut buf)?;
-    sink.write_log_event(event, &buf)?;
-    sink.flush()
+    sink.write_log_event(event, &buf).await?;
+    sink.flush().await
 }
 
 /// Encode a [`MetricEvent`] and deliver it through a one-shot sink.
-pub fn emit_metric(
+pub async fn emit_metric(
     event: &MetricEvent,
     encoder: &EncoderConfig,
     sink: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<(), SondaError> {
     let encoder = create_encoder(encoder)?;
-    let mut sink = create_sink(sink, labels)?;
+    let mut sink = create_sink(sink, labels).await?;
     let mut buf: Vec<u8> = Vec::new();
     encoder.encode_metric(event, &mut buf)?;
-    sink.write(&buf)?;
-    sink.flush()
+    sink.write(&buf).await?;
+    sink.flush().await
 }
 
 #[cfg(test)]
@@ -58,8 +58,8 @@ mod tests {
         p
     }
 
-    #[test]
-    fn emit_log_writes_encoded_line_to_sink() {
+    #[tokio::test]
+    async fn emit_log_writes_encoded_line_to_sink() {
         let path = temp_path("emit_log_writes");
         let _ = std::fs::remove_file(&path);
 
@@ -78,6 +78,7 @@ mod tests {
             },
             None,
         )
+        .await
         .expect("emit_log must succeed");
 
         let contents = std::fs::read_to_string(&path).expect("read written file");
@@ -97,8 +98,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emit_metric_writes_encoded_line_to_sink() {
+    #[tokio::test]
+    async fn emit_metric_writes_encoded_line_to_sink() {
         let path = temp_path("emit_metric_writes");
         let _ = std::fs::remove_file(&path);
 
@@ -117,6 +118,7 @@ mod tests {
             },
             None,
         )
+        .await
         .expect("emit_metric must succeed");
 
         let contents = std::fs::read_to_string(&path).expect("read written file");
@@ -132,8 +134,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emit_log_propagates_config_error_for_invalid_sink_config() {
+    #[tokio::test]
+    async fn emit_log_propagates_config_error_for_invalid_sink_config() {
         let event = LogEvent::new(
             Severity::Info,
             "msg".to_string(),
@@ -156,6 +158,7 @@ mod tests {
             &bad_sink,
             None,
         )
+        .await
         .expect_err("invalid retry config must fail sink construction");
 
         assert!(
@@ -165,8 +168,8 @@ mod tests {
     }
 
     #[cfg(feature = "http")]
-    #[test]
-    fn emit_log_routes_event_labels_to_loki_sink_stream() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn emit_log_routes_event_labels_to_loki_sink_stream() {
         use std::io::{BufRead, BufReader, Read, Write};
         use std::net::{TcpListener, TcpStream};
         use std::thread;
@@ -222,6 +225,7 @@ mod tests {
             },
             None,
         )
+        .await
         .expect("emit_log must succeed");
 
         let body_bytes = handle.join().expect("mock server");
@@ -238,8 +242,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emit_metric_propagates_config_error_for_invalid_sink_config() {
+    #[tokio::test]
+    async fn emit_metric_propagates_config_error_for_invalid_sink_config() {
         let event =
             MetricEvent::new("test_metric".to_string(), 1.0, Labels::default()).expect("metric");
 
@@ -258,6 +262,7 @@ mod tests {
             &bad_sink,
             None,
         )
+        .await
         .expect_err("invalid retry config must fail sink construction");
 
         assert!(

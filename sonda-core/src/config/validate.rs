@@ -1551,8 +1551,8 @@ sink:
     // ---- Round-trip: deserialize -> validate -> create factories -------------
 
     #[cfg(feature = "config")]
-    #[test]
-    fn round_trip_creates_generator_encoder_sink_successfully() {
+    #[tokio::test]
+    async fn round_trip_creates_generator_encoder_sink_successfully() {
         use crate::encoder::create_encoder;
         use crate::generator::create_generator;
         use crate::sink::create_sink;
@@ -1587,7 +1587,7 @@ sink:
         // Encoder must exist (just check it does not panic on creation)
         drop(encoder);
 
-        let sink = create_sink(&config.sink, None);
+        let sink = create_sink(&config.sink, None).await;
         assert!(sink.is_ok(), "sink must be created without error");
     }
 

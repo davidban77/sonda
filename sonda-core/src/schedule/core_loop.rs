@@ -14,7 +14,7 @@ use crate::schedule::gate_bus::{GateEdge, GateReceiver, InitialState};
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
 use crate::schedule::{is_in_burst, is_in_gap, is_in_spike, time_until_gap_end};
 use crate::sink::Sink;
-use crate::{RuntimeError, SondaError};
+use crate::SondaError;
 
 use super::ParsedSchedule;
 
@@ -205,26 +205,6 @@ pub(crate) async fn run_schedule_loop(
     finalize_sink(schedule, stats_for_flush.as_ref(), sink, loop_result).await
 }
 
-/// Placeholder sink swapped in for the brief window each `Box<dyn Sink>` is
-/// owned by a `spawn_blocking` task. Lives only inside `drain_writes` /
-/// `finalize_sink`; never reachable from user code. If either helper returns
-/// `Err`, the caller's `Box<dyn Sink>` may still hold this placeholder —
-/// do not retry sink operations after an error return, propagate it.
-struct NullSink;
-
-impl Sink for NullSink {
-    fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
-        Ok(())
-    }
-    fn flush(&mut self) -> Result<(), SondaError> {
-        Ok(())
-    }
-}
-
-fn take_sink(sink: &mut Box<dyn Sink>) -> Box<dyn Sink> {
-    std::mem::replace(sink, Box::new(NullSink) as Box<dyn Sink>)
-}
-
 async fn finalize_sink(
     schedule: &ParsedSchedule,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
@@ -233,22 +213,7 @@ async fn finalize_sink(
 ) -> Result<(), SondaError> {
     match loop_result {
         Ok(()) => {
-            let owned = take_sink(sink);
-            let join = tokio::task::spawn_blocking(move || {
-                let mut s = owned;
-                let r = s.flush();
-                (s, r)
-            })
-            .await;
-            let (returned_sink, flush_result) = match join {
-                Ok(pair) => pair,
-                Err(e) => {
-                    return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
-                        e.to_string(),
-                    )))
-                }
-            };
-            *sink = returned_sink;
+            let flush_result = sink.flush().await;
             apply_flush_policy(schedule, stats, flush_result)
         }
         Err(e) => Err(e),
@@ -473,26 +438,10 @@ async fn drain_writes(
 ) -> Result<Option<bool>, SondaError> {
     let mut delivered: Option<bool> = None;
     for cmd in output.writes.drain(..) {
-        let owned = take_sink(sink);
-        let join = tokio::task::spawn_blocking(move || {
-            let mut s = owned;
-            let r = match cmd {
-                WriteCommand::Bytes(buf) => s.write(&buf),
-                WriteCommand::LogEvent { event, bytes } => s.write_log_event(&event, &bytes),
-            };
-            (s, r)
-        })
-        .await;
-        let (returned_sink, write_result) = match join {
-            Ok(pair) => pair,
-            Err(e) => {
-                return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
-                    e.to_string(),
-                )))
-            }
-        };
-        *sink = returned_sink;
-        write_result?;
+        match cmd {
+            WriteCommand::Bytes(buf) => sink.write(&buf).await?,
+            WriteCommand::LogEvent { event, bytes } => sink.write_log_event(&event, &bytes).await?,
+        }
         delivered = Some(sink.last_write_delivered());
     }
     Ok(delivered)
@@ -593,22 +542,7 @@ async fn invoke_close_emit(
     };
     match outcome {
         Ok(()) => {
-            let owned = take_sink(sink);
-            let join = tokio::task::spawn_blocking(move || {
-                let mut s = owned;
-                let r = s.flush();
-                (s, r)
-            })
-            .await;
-            let (returned_sink, flush_result) = match join {
-                Ok(pair) => pair,
-                Err(e) => {
-                    return Err(SondaError::Runtime(RuntimeError::TaskPanicked(
-                        e.to_string(),
-                    )))
-                }
-            };
-            *sink = returned_sink;
+            let flush_result = sink.flush().await;
             apply_close_emit_policy_flush(schedule, stats, limiter, flush_result)?;
         }
         Err(e) => apply_close_emit_policy(schedule, stats, limiter, e)?,
@@ -1408,14 +1342,14 @@ impl DebounceState {
 mod tests {
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
+
     use super::*;
     use crate::schedule::{BurstWindow, GapWindow};
 
     type WriteLog = Arc<Mutex<Vec<Vec<u8>>>>;
 
-    /// Shared-buffer test sink. Owns nothing; the `Arc<Mutex<...>>` handles
-    /// let tests inspect outcomes after the runner has moved the sink in
-    /// and out of `spawn_blocking`.
+    /// Shared-buffer test sink that lets tests inspect captured writes.
     struct SharedSink {
         writes: WriteLog,
         fail_at: Option<usize>,
@@ -1439,8 +1373,9 @@ mod tests {
         (Box::new(sink) as Box<dyn Sink>, writes)
     }
 
+    #[async_trait]
     impl Sink for SharedSink {
-        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
             let mut writes = self.writes.lock().expect("shared sink mutex poisoned");
             if let Some(n) = self.fail_at {
                 if writes.len() == n {
@@ -1452,7 +1387,19 @@ mod tests {
             writes.push(data.to_vec());
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), SondaError> {
+        async fn flush(&mut self) -> Result<(), SondaError> {
+            Ok(())
+        }
+    }
+
+    struct NullSink;
+
+    #[async_trait]
+    impl Sink for NullSink {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+            Ok(())
+        }
+        async fn flush(&mut self) -> Result<(), SondaError> {
             Ok(())
         }
     }
@@ -1499,47 +1446,35 @@ mod tests {
         );
     }
 
-    /// A spawn_blocking task that panics surfaces as RuntimeError::TaskPanicked.
     struct PanicSink;
 
+    #[async_trait]
     impl Sink for PanicSink {
-        fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
+        async fn write(&mut self, _data: &[u8]) -> Result<(), SondaError> {
             panic!("synthetic sink panic");
         }
-        fn flush(&mut self) -> Result<(), SondaError> {
+        async fn flush(&mut self) -> Result<(), SondaError> {
             panic!("synthetic flush panic");
         }
     }
 
     #[tokio::test]
-    async fn drain_writes_panic_in_sink_propagates_as_task_panicked() {
+    #[should_panic(expected = "synthetic sink panic")]
+    async fn drain_writes_panic_in_sink_propagates() {
         let mut sink: Box<dyn Sink> = Box::new(PanicSink);
         let mut output = TickOutput::default();
         output
             .writes
             .push(WriteCommand::Bytes(b"panic-me".to_vec()));
-        let result = drain_writes(&mut output, &mut sink).await;
-        assert!(
-            matches!(
-                result,
-                Err(SondaError::Runtime(RuntimeError::TaskPanicked(_)))
-            ),
-            "spawn_blocking panic must surface as TaskPanicked, got: {result:?}"
-        );
+        let _ = drain_writes(&mut output, &mut sink).await;
     }
 
     #[tokio::test]
-    async fn finalize_sink_panic_in_flush_propagates_as_task_panicked() {
+    #[should_panic(expected = "synthetic flush panic")]
+    async fn finalize_sink_panic_in_flush_propagates() {
         let mut sink: Box<dyn Sink> = Box::new(PanicSink);
         let schedule = minimal_schedule(None);
-        let result = finalize_sink(&schedule, None, &mut sink, Ok(())).await;
-        assert!(
-            matches!(
-                result,
-                Err(SondaError::Runtime(RuntimeError::TaskPanicked(_)))
-            ),
-            "flush panic must surface as TaskPanicked, got: {result:?}"
-        );
+        let _ = finalize_sink(&schedule, None, &mut sink, Ok(())).await;
     }
 
     #[test]

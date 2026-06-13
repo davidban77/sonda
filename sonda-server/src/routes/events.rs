@@ -95,9 +95,7 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
             };
             let sink_type = sink_kind(&sink);
             let labels_for_sink = (!labels.is_empty()).then_some(labels);
-            let result =
-                run_blocking(move || emit_log(&event, &encoder, &sink, labels_for_sink.as_ref()))
-                    .await;
+            let result = emit_log(&event, &encoder, &sink, labels_for_sink.as_ref()).await;
             ("logs", sink_type, result)
         }
         EventRequest::Metrics {
@@ -112,10 +110,7 @@ pub async fn post_events(State(_state): State<AppState>, body: axum::body::Bytes
             };
             let sink_type = sink_kind(&sink);
             let labels_for_sink = (!labels.is_empty()).then_some(labels);
-            let result = run_blocking(move || {
-                emit_metric(&event, &encoder, &sink, labels_for_sink.as_ref())
-            })
-            .await;
+            let result = emit_metric(&event, &encoder, &sink, labels_for_sink.as_ref()).await;
             ("metrics", sink_type, result)
         }
     };
@@ -178,18 +173,6 @@ fn labels_from_map(map: &HashMap<String, String>) -> Result<Labels, SondaError> 
     }
     let pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     Labels::from_pairs(&pairs)
-}
-
-async fn run_blocking<F>(f: F) -> Result<(), SondaError>
-where
-    F: FnOnce() -> Result<(), SondaError> + Send + 'static,
-{
-    match tokio::task::spawn_blocking(f).await {
-        Ok(r) => r,
-        Err(_join_err) => Err(SondaError::Runtime(
-            sonda_core::RuntimeError::ThreadPanicked,
-        )),
-    }
 }
 
 fn error_response(err: SondaError) -> Response {

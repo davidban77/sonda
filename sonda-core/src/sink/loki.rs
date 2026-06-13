@@ -4,10 +4,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
+
 use crate::model::log::LogEvent;
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
-use crate::SondaError;
+use crate::{RuntimeError, SondaError};
 
 pub const DEFAULT_BATCH_SIZE: usize = 5;
 
@@ -123,13 +125,11 @@ impl LokiSink {
             .join(",")
     }
 
-    fn flush_batch(&mut self) -> Result<(), SondaError> {
+    async fn flush_batch(&mut self) -> Result<(), SondaError> {
         if self.batch.is_empty() {
             return Ok(());
         }
 
-        // Scoped so `groups`' borrows into `self.batch` drop before we mutate
-        // other `self` fields below.
         let body = {
             let groups = self.group_by_overlay();
             let stream_count = groups.len();
@@ -150,31 +150,20 @@ impl LokiSink {
         };
 
         let push_url = format!("{}/loki/api/v1/push", self.url);
-
-        // Reset on attempt, not success — the batch is cleared either way below.
         self.last_flush_at = Instant::now();
-
-        let result = match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                let client = &self.client;
-                policy.execute(
-                    || Self::do_post_checked(client, &push_url, &body),
-                    Self::is_retryable,
-                )
-            }
-            None => Self::do_post_checked(&self.client, &push_url, &body),
-        };
-
         self.batch.clear();
 
-        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
-        // The batch is already cleared; suppress the error so the sink continues.
-        match &result {
-            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
-                Ok(())
-            }
-            _ => result,
+        let client = self.client.clone();
+        let retry_policy = self.retry_policy.clone();
+        let join = tokio::task::spawn_blocking(move || {
+            do_send(&client, &push_url, &body, retry_policy.as_ref())
+        })
+        .await;
+        match join {
+            Ok(r) => r,
+            Err(e) => Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                e.to_string(),
+            ))),
         }
     }
 
@@ -229,14 +218,8 @@ impl LokiSink {
         }
     }
 
-    /// Classify whether an error from `do_post_checked` is retryable.
-    ///
-    /// Transport errors and 5xx/429 HTTP errors are retryable. 4xx errors
-    /// (except 429) are not — they are tagged with `ErrorKind::InvalidInput`
-    /// by `do_post_checked`.
     fn is_retryable(err: &SondaError) -> bool {
         if let SondaError::Sink(io_err) = err {
-            // 4xx (except 429) are tagged InvalidInput → not retryable.
             if io_err.kind() == std::io::ErrorKind::InvalidInput {
                 return false;
             }
@@ -246,19 +229,43 @@ impl LokiSink {
     }
 }
 
+fn do_send(
+    client: &ureq::Agent,
+    push_url: &str,
+    body: &str,
+    retry_policy: Option<&RetryPolicy>,
+) -> Result<(), SondaError> {
+    let result = match retry_policy {
+        Some(policy) => policy.execute(
+            || LokiSink::do_post_checked(client, push_url, body),
+            LokiSink::is_retryable,
+        ),
+        None => LokiSink::do_post_checked(client, push_url, body),
+    };
+    match &result {
+        Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
+            Ok(())
+        }
+        _ => result,
+    }
+}
+
+#[async_trait]
 impl Sink for LokiSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         let ts_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
             .to_string();
-        self.push_entry(ts_ns, data, BTreeMap::new())
+        self.push_entry(ts_ns, data, BTreeMap::new()).await
     }
 
-    fn write_log_event(&mut self, event: &LogEvent, encoded: &[u8]) -> Result<(), SondaError> {
-        // Prefer event-time over wall-clock — meaningful for log-replay
-        // scenarios where the generator sets a deterministic timestamp.
+    async fn write_log_event(
+        &mut self,
+        event: &LogEvent,
+        encoded: &[u8],
+    ) -> Result<(), SondaError> {
         let ts_ns = event
             .timestamp
             .duration_since(UNIX_EPOCH)
@@ -270,11 +277,11 @@ impl Sink for LokiSink {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        self.push_entry(ts_ns, encoded, overlay)
+        self.push_entry(ts_ns, encoded, overlay).await
     }
 
-    fn flush(&mut self) -> Result<(), SondaError> {
-        self.flush_batch()
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        self.flush_batch().await
     }
 
     fn last_write_delivered(&self) -> bool {
@@ -283,13 +290,12 @@ impl Sink for LokiSink {
 }
 
 impl LokiSink {
-    fn push_entry(
+    async fn push_entry(
         &mut self,
         timestamp_ns: String,
         data: &[u8],
         overlay: BTreeMap<String, String>,
     ) -> Result<(), SondaError> {
-        // Strip any trailing newline so log lines are clean in the Loki UI.
         let line = String::from_utf8_lossy(data);
         let line = line.trim_end_matches('\n').to_string();
 
@@ -304,7 +310,7 @@ impl LokiSink {
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
         let should_flush = size_reached || age_reached;
         if should_flush {
-            self.flush_batch()?;
+            self.flush_batch().await?;
         }
         self.last_write_delivered = should_flush;
 
@@ -489,8 +495,8 @@ mod tests {
 
     /// `build_envelope()` is private, so we test it indirectly by flushing a
     /// batch to a mock server and inspecting the body that arrives.
-    #[test]
-    fn flush_produces_valid_loki_push_json_envelope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_produces_valid_loki_push_json_envelope() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -499,8 +505,8 @@ mod tests {
 
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"hello loki\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"hello loki\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("valid UTF-8");
@@ -548,8 +554,8 @@ mod tests {
     // Labels in stream object
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn labels_appear_in_stream_object_of_push_envelope() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn labels_appear_in_stream_object_of_push_envelope() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -559,8 +565,8 @@ mod tests {
 
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"test\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"test\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8 body");
@@ -579,15 +585,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_labels_produce_empty_stream_object() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_labels_produce_empty_stream_object() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"line\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -604,8 +610,8 @@ mod tests {
     // Batch accumulation — no HTTP call until batch_size reached
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn write_below_batch_size_does_not_trigger_http_call() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_below_batch_size_does_not_trigger_http_call() {
         let (listener, url) = mock_loki_listener();
 
         let mut sink = LokiSink::new(url, HashMap::new(), 50, u32::MAX, None, Duration::ZERO)
@@ -614,6 +620,7 @@ mod tests {
         // Write 49 lines — one short of the 50-entry threshold.
         for i in 0..49 {
             sink.write(format!("line {i}\n").as_bytes())
+                .await
                 .expect("write should buffer");
         }
 
@@ -626,8 +633,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_at_batch_size_triggers_exactly_one_http_call() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_at_batch_size_triggers_exactly_one_http_call() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -636,7 +643,9 @@ mod tests {
 
         // Write exactly 50 lines → must trigger an auto-flush.
         for i in 0..50 {
-            sink.write(format!("line {i}\n").as_bytes()).expect("write");
+            sink.write(format!("line {i}\n").as_bytes())
+                .await
+                .expect("write");
         }
 
         let body_bytes = handle.join().expect("mock server thread panicked");
@@ -655,8 +664,8 @@ mod tests {
     // Explicit flush — sends remaining entries below batch_size
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn explicit_flush_sends_partial_batch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_flush_sends_partial_batch() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -664,10 +673,10 @@ mod tests {
             .expect("construct sink");
 
         // Write only 3 lines (far below batch_size of 100).
-        sink.write(b"alpha\n").expect("write 1");
-        sink.write(b"beta\n").expect("write 2");
-        sink.write(b"gamma\n").expect("write 3");
-        sink.flush().expect("explicit flush");
+        sink.write(b"alpha\n").await.expect("write 1");
+        sink.write(b"beta\n").await.expect("write 2");
+        sink.write(b"gamma\n").await.expect("write 3");
+        sink.flush().await.expect("explicit flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -679,27 +688,27 @@ mod tests {
         assert_eq!(values.len(), 3, "all 3 partial lines must be flushed");
     }
 
-    #[test]
-    fn flush_is_idempotent() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_is_idempotent() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"once\n").expect("write");
-        sink.flush().expect("first flush sends data");
+        sink.write(b"once\n").await.expect("write");
+        sink.flush().await.expect("first flush sends data");
         let _body = handle.join().expect("mock server thread panicked");
 
         // After the first flush the batch is empty — second flush must be a no-op.
-        assert!(sink.flush().is_ok(), "second flush must return Ok");
+        assert!(sink.flush().await.is_ok(), "second flush must return Ok");
     }
 
     // -------------------------------------------------------------------------
     // Empty batch flush — no HTTP call
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn flush_on_empty_batch_is_a_noop() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_on_empty_batch_is_a_noop() {
         // Use a URL where no server is running; if flush() makes a network call it will fail.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -711,7 +720,7 @@ mod tests {
 
         // Empty batch — must return Ok without any network I/O.
         assert!(
-            sink.flush().is_ok(),
+            sink.flush().await.is_ok(),
             "flush on empty batch must return Ok without making a network call"
         );
     }
@@ -720,13 +729,13 @@ mod tests {
     // last_write_delivered — buffered vs flushed
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn last_write_delivered_is_false_when_write_only_buffers() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_false_when_write_only_buffers() {
         let (listener, url) = mock_loki_listener();
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"buffered\n").expect("write buffers");
+        sink.write(b"buffered\n").await.expect("write buffers");
 
         assert!(
             !sink.last_write_delivered(),
@@ -736,14 +745,16 @@ mod tests {
         assert!(listener.accept().is_err(), "no flush should have fired");
     }
 
-    #[test]
-    fn last_write_delivered_is_true_when_write_triggers_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_true_when_write_triggers_flush() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 1, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"flushed\n").expect("write triggers flush");
+        sink.write(b"flushed\n")
+            .await
+            .expect("write triggers flush");
 
         handle.join().expect("mock server thread panicked");
         assert!(
@@ -756,15 +767,17 @@ mod tests {
     // Log line trailing newline stripping
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn trailing_newline_is_stripped_from_log_lines() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn trailing_newline_is_stripped_from_log_lines() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"my log line\n").expect("write with newline");
-        sink.flush().expect("flush");
+        sink.write(b"my log line\n")
+            .await
+            .expect("write with newline");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -783,15 +796,15 @@ mod tests {
     // HTTP error handling
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn five_xx_response_returns_sink_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn five_xx_response_returns_sink_error() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 500));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line\n").expect("write buffered");
-        let result = sink.flush();
+        sink.write(b"line\n").await.expect("write buffered");
+        let result = sink.flush().await;
         handle.join().expect("mock server thread panicked");
 
         assert!(result.is_err(), "5xx response must return Err");
@@ -801,15 +814,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn four_xx_response_warns_and_discards_batch_returning_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn four_xx_response_warns_and_discards_batch_returning_ok() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line\n").expect("write buffered");
-        let result = sink.flush();
+        sink.write(b"line\n").await.expect("write buffered");
+        let result = sink.flush().await;
         handle.join().expect("mock server thread panicked");
 
         // 4xx → warn + discard, but NOT an error from the sink's perspective.
@@ -819,8 +832,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn flush_to_refused_port_returns_sink_error() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_to_refused_port_returns_sink_error() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         drop(listener);
@@ -828,8 +841,8 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}");
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line\n").expect("write buffered");
-        let result = sink.flush();
+        sink.write(b"line\n").await.expect("write buffered");
+        let result = sink.flush().await;
 
         assert!(result.is_err(), "connection refused must return Err");
         assert!(
@@ -842,16 +855,16 @@ mod tests {
     // JSON escaping in log lines and label values
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn log_line_with_double_quotes_is_properly_escaped() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn log_line_with_double_quotes_is_properly_escaped() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
         let mut sink = LokiSink::new(url, HashMap::new(), 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
         // A log line containing a JSON double-quote character.
-        sink.write(b"msg=\"hello world\"").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"msg=\"hello world\"").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -864,8 +877,8 @@ mod tests {
         assert_eq!(log_line, r#"msg="hello world""#);
     }
 
-    #[test]
-    fn label_value_with_special_characters_is_properly_escaped() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn label_value_with_special_characters_is_properly_escaped() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -874,8 +887,8 @@ mod tests {
 
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"line\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -892,8 +905,8 @@ mod tests {
     // Batch cleared after flush
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn batch_is_cleared_after_auto_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn batch_is_cleared_after_auto_flush() {
         let (listener, url) = mock_loki_listener();
         // Expect two sequential flushes.
         let handle = thread::spawn(move || {
@@ -905,13 +918,11 @@ mod tests {
         let mut sink = LokiSink::new(url, HashMap::new(), 2, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
 
-        // First batch: lines 0-1 → triggers auto-flush at batch_size=2.
-        sink.write(b"line 0\n").expect("write 0");
-        sink.write(b"line 1\n").expect("write 1");
+        sink.write(b"line 0\n").await.expect("write 0");
+        sink.write(b"line 1\n").await.expect("write 1");
 
-        // Second batch: lines 2-3 → triggers second auto-flush.
-        sink.write(b"line 2\n").expect("write 2");
-        sink.write(b"line 3\n").expect("write 3");
+        sink.write(b"line 2\n").await.expect("write 2");
+        sink.write(b"line 3\n").await.expect("write 3");
 
         let (first_body, second_body) = handle.join().expect("mock server thread panicked");
 
@@ -938,8 +949,8 @@ mod tests {
     // Time-based flush
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn time_based_flush_fires_when_buffer_age_exceeded() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn time_based_flush_fires_when_buffer_age_exceeded() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -954,10 +965,9 @@ mod tests {
         )
         .expect("construct sink");
 
-        sink.write(b"first\n").expect("write 1");
+        sink.write(b"first\n").await.expect("write 1");
         thread::sleep(Duration::from_millis(200));
-        // Second write is past max_buffer_age → triggers a time-based flush.
-        sink.write(b"second\n").expect("write 2");
+        sink.write(b"second\n").await.expect("write 2");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -972,16 +982,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zero_max_buffer_age_disables_time_based_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_max_buffer_age_disables_time_based_flush() {
         let (listener, url) = mock_loki_listener();
 
         let mut sink = LokiSink::new(url, HashMap::new(), 10_000, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
 
-        sink.write(b"first\n").expect("write 1");
+        sink.write(b"first\n").await.expect("write 1");
         thread::sleep(Duration::from_millis(150));
-        sink.write(b"second\n").expect("write 2");
+        sink.write(b"second\n").await.expect("write 2");
 
         // With time-based flush disabled, no request should have arrived.
         listener.set_nonblocking(true).expect("set non-blocking");
@@ -991,8 +1001,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn size_triggered_flush_resets_the_buffer_age_timer() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn size_triggered_flush_resets_the_buffer_age_timer() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1007,9 +1017,8 @@ mod tests {
         )
         .expect("construct sink");
 
-        // Fill the batch immediately — the size trigger fires.
-        sink.write(b"a\n").expect("write 1");
-        sink.write(b"b\n").expect("write 2"); // batch_size reached → size flush
+        sink.write(b"a\n").await.expect("write 1");
+        sink.write(b"b\n").await.expect("write 2");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -1020,9 +1029,8 @@ mod tests {
             "size-triggered flush must deliver the full batch"
         );
 
-        // The size flush reset last_flush_at; a subsequent partial-batch write
-        // must NOT immediately time-flush against the (now closed) listener.
         sink.write(b"c\n")
+            .await
             .expect("partial write after a size flush must not time-flush immediately");
     }
 
@@ -1118,8 +1126,8 @@ max_buffer_age: 10s
     // Factory: create_sink for Loki config
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn create_sink_loki_with_valid_url_returns_ok() {
+    #[tokio::test]
+    async fn create_sink_loki_with_valid_url_returns_ok() {
         let config = SinkConfig::Loki {
             url: "http://localhost:3100".to_string(),
             batch_size: None,
@@ -1128,13 +1136,13 @@ max_buffer_age: 10s
             retry: None,
         };
         assert!(
-            create_sink(&config, None).is_ok(),
+            create_sink(&config, None).await.is_ok(),
             "factory must return Ok for valid loki config"
         );
     }
 
-    #[test]
-    fn create_sink_loki_with_invalid_max_buffer_age_returns_err() {
+    #[tokio::test]
+    async fn create_sink_loki_with_invalid_max_buffer_age_returns_err() {
         let config = SinkConfig::Loki {
             url: "http://localhost:3100".to_string(),
             batch_size: None,
@@ -1142,15 +1150,15 @@ max_buffer_age: 10s
             max_buffer_age: Some("garbage".to_string()),
             retry: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_err(),
             "invalid max_buffer_age must cause the factory to fail"
         );
     }
 
-    #[test]
-    fn create_sink_loki_with_labels_passes_them_to_sink() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_sink_loki_with_labels_passes_them_to_sink() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1163,10 +1171,12 @@ max_buffer_age: 10s
         };
         let mut labels = HashMap::new();
         labels.insert("job".to_string(), "sonda".to_string());
-        let mut sink = create_sink(&config, Some(&labels)).expect("factory ok");
+        let mut sink = create_sink(&config, Some(&labels))
+            .await
+            .expect("factory ok");
 
-        sink.write(b"test\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"test\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -1178,8 +1188,8 @@ max_buffer_age: 10s
         );
     }
 
-    #[test]
-    fn create_sink_loki_with_none_labels_uses_empty_labels() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_sink_loki_with_none_labels_uses_empty_labels() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1190,10 +1200,10 @@ max_buffer_age: 10s
             max_buffer_age: None,
             retry: None,
         };
-        let mut sink = create_sink(&config, None).expect("factory ok");
+        let mut sink = create_sink(&config, None).await.expect("factory ok");
 
-        sink.write(b"test\n").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"test\n").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body_bytes = handle.join().expect("mock server thread panicked");
         let body = String::from_utf8(body_bytes).expect("UTF-8");
@@ -1210,11 +1220,8 @@ max_buffer_age: 10s
         assert_eq!(DEFAULT_BATCH_SIZE, 5);
     }
 
-    #[test]
-    fn create_sink_loki_with_no_batch_size_uses_default() {
-        // Construction succeeds with `batch_size: None`; writing fewer entries
-        // than DEFAULT_BATCH_SIZE must not trigger a flush attempt against the
-        // non-existent server.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_sink_loki_with_no_batch_size_uses_default() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         drop(listener);
@@ -1227,16 +1234,17 @@ max_buffer_age: 10s
             max_buffer_age: None,
             retry: None,
         };
-        let mut sink = create_sink(&config, None).expect("factory ok");
+        let mut sink = create_sink(&config, None).await.expect("factory ok");
 
         for i in 0..(DEFAULT_BATCH_SIZE - 1) as u32 {
             sink.write(format!("line {i}\n").as_bytes())
+                .await
                 .expect("write must succeed below batch_size");
         }
     }
 
-    #[test]
-    fn create_sink_loki_with_invalid_url_returns_err() {
+    #[tokio::test]
+    async fn create_sink_loki_with_invalid_url_returns_err() {
         let config = SinkConfig::Loki {
             url: "not-http://bad".to_string(),
             batch_size: None,
@@ -1244,7 +1252,7 @@ max_buffer_age: 10s
             max_buffer_age: None,
             retry: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(result.is_err(), "invalid URL must cause factory to fail");
     }
 
@@ -1339,8 +1347,8 @@ sink:
             .clone()
     }
 
-    #[test]
-    fn write_log_event_single_stream_when_no_per_event_labels() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_log_event_single_stream_when_no_per_event_labels() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1350,8 +1358,8 @@ sink:
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
         let event = make_log_event(&[], "hello");
-        sink.write_log_event(&event, b"hello").expect("write");
-        sink.flush().expect("flush");
+        sink.write_log_event(&event, b"hello").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let streams = parse_streams(handle.join().expect("mock server"));
         assert_eq!(streams.len(), 1, "no overlay → exactly one stream");
@@ -1360,8 +1368,8 @@ sink:
         assert_eq!(stream_obj["job"].as_str(), Some("sonda"));
     }
 
-    #[test]
-    fn write_log_event_multi_stream_grouping_by_event_labels() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_log_event_multi_stream_grouping_by_event_labels() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1374,10 +1382,16 @@ sink:
         let ev1 = make_log_event(&[("peer_address", "10.1.2.2")], "to peer 1");
         let ev2 = make_log_event(&[("peer_address", "10.1.7.2")], "to peer 2");
         let ev1b = make_log_event(&[("peer_address", "10.1.2.2")], "to peer 1 again");
-        sink.write_log_event(&ev1, b"line-a").expect("write 1");
-        sink.write_log_event(&ev2, b"line-b").expect("write 2");
-        sink.write_log_event(&ev1b, b"line-c").expect("write 3");
-        sink.flush().expect("flush");
+        sink.write_log_event(&ev1, b"line-a")
+            .await
+            .expect("write 1");
+        sink.write_log_event(&ev2, b"line-b")
+            .await
+            .expect("write 2");
+        sink.write_log_event(&ev1b, b"line-c")
+            .await
+            .expect("write 3");
+        sink.flush().await.expect("flush");
 
         let streams = parse_streams(handle.join().expect("mock server"));
         assert_eq!(
@@ -1404,8 +1418,8 @@ sink:
         assert_eq!(by_peer.get("10.1.7.2"), Some(&1), "ev2 alone");
     }
 
-    #[test]
-    fn write_log_event_overlay_overrides_constructor_label_on_conflict() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_log_event_overlay_overrides_constructor_label_on_conflict() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1416,8 +1430,8 @@ sink:
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
         let event = make_log_event(&[("region", "eu-west")], "overridden");
-        sink.write_log_event(&event, b"line").expect("write");
-        sink.flush().expect("flush");
+        sink.write_log_event(&event, b"line").await.expect("write");
+        sink.flush().await.expect("flush");
 
         let streams = parse_streams(handle.join().expect("mock server"));
         assert_eq!(streams.len(), 1);
@@ -1434,8 +1448,8 @@ sink:
         );
     }
 
-    #[test]
-    fn flush_with_stream_count_at_cap_succeeds() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_with_stream_count_at_cap_succeeds() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1444,9 +1458,10 @@ sink:
         for i in 0..3 {
             let ev = make_log_event(&[("peer", &format!("p{i}"))], "line");
             sink.write_log_event(&ev, format!("line-{i}").as_bytes())
+                .await
                 .expect("write");
         }
-        let flush_result = sink.flush();
+        let flush_result = sink.flush().await;
         assert!(
             flush_result.is_ok(),
             "exactly-at-cap must succeed: {flush_result:?}"
@@ -1456,8 +1471,8 @@ sink:
         assert_eq!(streams.len(), 3, "all three streams must be sent");
     }
 
-    #[test]
-    fn flush_exceeding_cap_returns_helpful_error_and_clears_batch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flush_exceeding_cap_returns_helpful_error_and_clears_batch() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
         drop(listener);
@@ -1468,9 +1483,10 @@ sink:
         for i in 0..3 {
             let ev = make_log_event(&[("peer", &format!("p{i}"))], "line");
             sink.write_log_event(&ev, format!("line-{i}").as_bytes())
+                .await
                 .expect("write");
         }
-        let err = sink.flush().expect_err("over-cap flush must Err");
+        let err = sink.flush().await.expect_err("over-cap flush must Err");
         let msg = err.to_string();
         assert!(
             msg.contains("3 streams"),
@@ -1486,13 +1502,13 @@ sink:
         );
 
         assert!(
-            sink.flush().is_ok(),
+            sink.flush().await.is_ok(),
             "batch must be cleared after cap error"
         );
     }
 
-    #[test]
-    fn direct_write_falls_back_to_constructor_labels_only() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn direct_write_falls_back_to_constructor_labels_only() {
         let (listener, url) = mock_loki_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 204));
 
@@ -1501,9 +1517,11 @@ sink:
 
         let mut sink = LokiSink::new(url, labels, 100, u32::MAX, None, Duration::ZERO)
             .expect("construct sink");
-        sink.write(b"line via direct write").expect("write");
-        sink.write(b"another line via direct write").expect("write");
-        sink.flush().expect("flush");
+        sink.write(b"line via direct write").await.expect("write");
+        sink.write(b"another line via direct write")
+            .await
+            .expect("write");
+        sink.flush().await.expect("flush");
 
         let streams = parse_streams(handle.join().expect("mock server"));
         assert_eq!(streams.len(), 1, "direct write produces a single stream");
