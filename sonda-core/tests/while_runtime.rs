@@ -92,8 +92,8 @@ fn while_gt_zero() -> SubscriptionSpec {
     }
 }
 
-#[test]
-fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     // Upstream metric oscillates 0 → 1 → 0 across 600ms; downstream gated
     // by `while: ref=upstream op=">" value=0`. Drive the bus directly so
     // the test is deterministic.
@@ -115,6 +115,7 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
         Some(gate_ctx),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Initially paused.
@@ -145,8 +146,8 @@ fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscription() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscription() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0); // gate open before subscription
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -164,6 +165,7 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(150));
@@ -181,8 +183,8 @@ fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subscriptio
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -200,6 +202,7 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(150));
@@ -211,8 +214,8 @@ fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_no_catch_up_burst_on_resume() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_no_catch_up_burst_on_resume() {
     // Verify A1h: after a long pause, resume must emit at the configured
     // rate, not "catch up" with a burst of events.
     let bus = Arc::new(GateBus::new());
@@ -231,6 +234,7 @@ fn while_runtime_no_catch_up_burst_on_resume() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Phase 1: open then close after 200ms running.
@@ -299,8 +303,8 @@ fn metrics_entry_with_generator(
     })
 }
 
-#[test]
-fn while_runtime_sequence_generator_preserves_position_across_pause() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_sequence_generator_preserves_position_across_pause() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -326,6 +330,7 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Phase 1: emit ~3 events (150ms at 20/s). Single series → one entry.
@@ -368,8 +373,8 @@ fn while_runtime_sequence_generator_preserves_position_across_pause() {
     );
 }
 
-#[test]
-fn while_runtime_ramp_generator_slope_preserved_across_pause() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -396,6 +401,7 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Phase 1: ~10 ticks emitted (200ms at 50/s). Single series → one entry.
@@ -436,8 +442,8 @@ fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     );
 }
 
-#[test]
-fn while_runtime_finished_state_after_duration_expires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_finished_state_after_duration_expires() {
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -454,6 +460,7 @@ fn while_runtime_finished_state_after_duration_expires() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     handle
@@ -463,8 +470,8 @@ fn while_runtime_finished_state_after_duration_expires() {
     assert!(matches!(snap.state, ScenarioState::Finished));
 }
 
-#[test]
-fn while_runtime_multiple_downstreams_share_one_upstream() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_multiple_downstreams_share_one_upstream() {
     // A2: two downstreams subscribe to the same upstream bus. Both must
     // transition together when the gate edge arrives.
     let bus = Arc::new(GateBus::new());
@@ -485,6 +492,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
         Some(GateContext::new(rx_a, init_a).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch a must succeed");
 
     let mut handle_b = launch_scenario_with_gates(
@@ -497,6 +505,7 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
         Some(GateContext::new(rx_b, init_b).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch b must succeed");
 
     // Both paused.
@@ -516,8 +525,8 @@ fn while_runtime_multiple_downstreams_share_one_upstream() {
     handle_b.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_logs_signal_can_be_gated_downstream() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_logs_signal_can_be_gated_downstream() {
     // BGP UPDOWN log scenario: a logs entry gated by `while:` must
     // transition through pending/running/paused.
     let bus = Arc::new(GateBus::new());
@@ -536,6 +545,7 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(50));
@@ -564,8 +574,8 @@ fn while_runtime_logs_signal_can_be_gated_downstream() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_delay_open_debounces_pause_to_running_transition() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     // A2a: delay.open debounces close→open. Sub during gate-closed
     // (pending → paused), then open: must wait at least delay.open
     // before emitting events.
@@ -596,6 +606,7 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     bus.tick(1.0);
@@ -622,8 +633,8 @@ fn while_runtime_delay_open_debounces_pause_to_running_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_strict_lt_threshold_gating() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_strict_lt_threshold_gating() {
     // Inverse direction: `while: ref=src op="<" value=10` opens when
     // upstream drops below threshold.
     let bus = Arc::new(GateBus::new());
@@ -650,6 +661,7 @@ fn while_runtime_strict_lt_threshold_gating() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(50));
@@ -663,8 +675,8 @@ fn while_runtime_strict_lt_threshold_gating() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn scenario_restart_does_not_leak_gate_bus() {
+#[tokio::test(flavor = "multi_thread")]
+async fn scenario_restart_does_not_leak_gate_bus() {
     // Risk #4 from phases.md: spawn 50 short-lived gated scenarios in
     // a loop, assert the bus's Arc count returns to baseline after each
     // scenario finishes.
@@ -685,6 +697,7 @@ fn scenario_restart_does_not_leak_gate_bus() {
             Some(GateContext::new(rx, init).with_has_while(true)),
             None,
         )
+        .await
         .expect("launch must succeed");
         handle
             .join(Some(Duration::from_secs(2)))
@@ -700,8 +713,8 @@ fn scenario_restart_does_not_leak_gate_bus() {
     );
 }
 
-#[test]
-fn while_runtime_delay_close_debounces_running_to_paused_transition() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     // delay.close: a brief gate-close-then-reopen within the debounce
     // window must NOT pause the scenario; a sustained close (≥ delay.close)
     // does. Mirrors the delay.open debounce test but for the opposite
@@ -733,6 +746,7 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(150));
@@ -767,8 +781,8 @@ fn while_runtime_delay_close_debounces_running_to_paused_transition() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     // Subscribe with both after: and while: on the same upstream. Initial
     // value 1 → after-not-fired (op="<", threshold=1, strict), gate closed
     // (op="<", threshold=1, strict) — state = Pending. Drive value to 0
@@ -809,6 +823,7 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(80));
@@ -834,8 +849,8 @@ fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     // Use a single upstream where after.op=">" threshold=100 and
     // while.op="<" threshold=10. Sequence:
     //
@@ -879,6 +894,7 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Pending: gate is initially open but after has not fired.
@@ -918,8 +934,8 @@ fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     // While Pending (after not yet satisfied), repeated WhileOpen /
     // WhileClose edges on the same upstream must not transition the
     // scenario out of Pending. Single-bus approach: after.op=">"
@@ -960,6 +976,7 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Toggle the gate several times while still Pending. None of these
@@ -998,8 +1015,8 @@ fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     // Subscribe with after.op=">" threshold=100 at value=5: after has not
     // fired, gate is irrelevant (after gates Pending entry). Broadcast
     // UpstreamGone while still Pending. With if_unresolved=None, the
@@ -1037,6 +1054,7 @@ fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
         ),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(80));
@@ -1073,12 +1091,12 @@ fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() {
     handle.join(Some(Duration::from_secs(2))).ok();
 }
 
-#[test]
-fn while_runtime_steady_within_5pct_of_baseline() {
+#[tokio::test(flavor = "multi_thread")]
+async fn while_runtime_steady_within_5pct_of_baseline() {
     // Perf-regression gate (A10): a scenario with `while:` open the entire
     // run must produce within 5% of the event count of the same scenario
     // without `while:`. Both runs are short (300ms) to keep the test fast.
-    fn run_baseline() -> u64 {
+    async fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 1000.0, 300);
         let shutdown = Arc::new(AtomicBool::new(true));
         let mut handle = launch_scenario_with_gates(
@@ -1091,12 +1109,13 @@ fn while_runtime_steady_within_5pct_of_baseline() {
             None,
             None,
         )
+        .await
         .unwrap();
         handle.join(Some(Duration::from_secs(2))).unwrap();
         handle.stats_snapshot().total_events
     }
 
-    fn run_gated_open() -> u64 {
+    async fn run_gated_open() -> u64 {
         let bus = Arc::new(GateBus::new());
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
@@ -1112,17 +1131,18 @@ fn while_runtime_steady_within_5pct_of_baseline() {
             Some(GateContext::new(rx, init).with_has_while(true)),
             None,
         )
+        .await
         .unwrap();
         handle.join(Some(Duration::from_secs(2))).unwrap();
         handle.stats_snapshot().total_events
     }
 
     // Warm-up to stabilize TLB / page-fault behavior.
-    let _ = run_baseline();
-    let _ = run_gated_open();
+    let _ = run_baseline().await;
+    let _ = run_gated_open().await;
 
-    let baseline = run_baseline();
-    let gated = run_gated_open();
+    let baseline = run_baseline().await;
+    let gated = run_gated_open().await;
 
     let baseline_f = baseline as f64;
     let gated_f = gated as f64;
@@ -1231,8 +1251,8 @@ scenarios:
         .expect("legacy delay.close shorthand must still parse");
 }
 
-#[test]
-fn nan_upstream_value_keeps_downstream_paused() {
+#[tokio::test(flavor = "multi_thread")]
+async fn nan_upstream_value_keeps_downstream_paused() {
     let bus = Arc::new(GateBus::new());
     bus.tick(f64::NAN);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -1254,6 +1274,7 @@ fn nan_upstream_value_keeps_downstream_paused() {
         Some(GateContext::new(rx, init).with_has_while(true)),
         None,
     )
+    .await
     .expect("launch must succeed");
 
     // Re-publish NaN periodically to confirm the runtime defense holds

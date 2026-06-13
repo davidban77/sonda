@@ -37,7 +37,7 @@ use crate::SondaError;
 ///
 /// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub async fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
-    let mut sink = create_sink(&config.sink, None)?;
+    let mut sink = create_sink(&config.sink, None).await?;
     run_with_sink(config, &mut sink, None, None).await
 }
 
@@ -83,6 +83,23 @@ pub async fn run_with_sink(
 /// gates to subscribe to). `gate_ctx` is what THIS scenario consumes from
 /// an upstream bus. Both are independent — a scenario can be both an
 /// upstream (publishing) and a downstream (gated).
+pub fn run_with_sink_gated_blocking(
+    config: &ScenarioConfig,
+    shutdown: Option<&AtomicBool>,
+    stats: Option<Arc<RwLock<ScenarioStats>>>,
+    upstream_bus: Option<Arc<GateBus>>,
+    gate_ctx: Option<GateContext>,
+) -> Result<(), SondaError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| crate::SondaError::Runtime(crate::RuntimeError::SpawnFailed(e)))?;
+    rt.block_on(async {
+        let mut sink = create_sink(&config.sink, None).await?;
+        run_with_sink_gated(config, &mut sink, shutdown, stats, upstream_bus, gate_ctx).await
+    })
+}
+
 pub async fn run_with_sink_gated(
     config: &ScenarioConfig,
     sink: &mut Box<dyn Sink>,
@@ -295,6 +312,8 @@ fn is_remote_write_sink(_sink: &SinkConfig) -> bool {
 mod tests {
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
+
     use crate::config::{BaseScheduleConfig, GapConfig, ScenarioConfig};
     use crate::encoder::EncoderConfig;
     use crate::generator::GeneratorConfig;
@@ -305,15 +324,16 @@ mod tests {
 
     struct ProbeSink(SharedBuf);
 
+    #[async_trait]
     impl Sink for ProbeSink {
-        fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
             self.0
                 .lock()
                 .expect("probe sink mutex poisoned")
                 .extend_from_slice(data);
             Ok(())
         }
-        fn flush(&mut self) -> Result<(), SondaError> {
+        async fn flush(&mut self) -> Result<(), SondaError> {
             Ok(())
         }
     }
@@ -1308,7 +1328,7 @@ mod tests {
         }
     }
 
-    fn drain_emit_to_memory(
+    async fn drain_emit_to_memory(
         emit: &mut crate::schedule::core_loop::CloseEmitFn,
         dest: &mut crate::sink::memory::MemorySink,
     ) {
@@ -1318,16 +1338,20 @@ mod tests {
         emit(&mut output).expect("close-emit must succeed");
         for cmd in output.writes.drain(..) {
             match cmd {
-                WriteCommand::Bytes(buf) => SinkTrait::write(dest, &buf).expect("memory write ok"),
+                WriteCommand::Bytes(buf) => {
+                    SinkTrait::write(dest, &buf).await.expect("memory write ok")
+                }
                 WriteCommand::LogEvent { event, bytes } => {
-                    SinkTrait::write_log_event(dest, &event, &bytes).expect("memory log write ok")
+                    SinkTrait::write_log_event(dest, &event, &bytes)
+                        .await
+                        .expect("memory log write ok")
                 }
             }
         }
     }
 
-    #[test]
-    fn close_emitter_is_idempotent_after_draining_series() {
+    #[tokio::test]
+    async fn close_emitter_is_idempotent_after_draining_series() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
@@ -1355,7 +1379,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut first = MemorySink::new();
-        drain_emit_to_memory(&mut emit, &mut first);
+        drain_emit_to_memory(&mut emit, &mut first).await;
         assert!(
             !first.buffer.is_empty(),
             "first invocation must emit the tracked series"
@@ -1373,15 +1397,15 @@ mod tests {
         }
 
         let mut second = MemorySink::new();
-        drain_emit_to_memory(&mut emit, &mut second);
+        drain_emit_to_memory(&mut emit, &mut second).await;
         assert!(
             second.buffer.is_empty(),
             "second invocation with no new series must emit nothing"
         );
     }
 
-    #[test]
-    fn close_emit_timestamp_strictly_after_recent_active_emissions() {
+    #[tokio::test]
+    async fn close_emit_timestamp_strictly_after_recent_active_emissions() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
@@ -1413,7 +1437,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        drain_emit_to_memory(&mut emit, &mut sink);
+        drain_emit_to_memory(&mut emit, &mut sink).await;
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
@@ -1441,8 +1465,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn close_emit_emits_every_distinct_series_regardless_of_count() {
+    #[tokio::test]
+    async fn close_emit_emits_every_distinct_series_regardless_of_count() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
@@ -1474,15 +1498,15 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        drain_emit_to_memory(&mut emit, &mut sink);
+        drain_emit_to_memory(&mut emit, &mut sink).await;
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines = output.lines().filter(|l| !l.is_empty()).count();
         assert_eq!(lines, series_count);
     }
 
-    #[test]
-    fn close_emit_dedups_repeated_series_to_one_marker() {
+    #[tokio::test]
+    async fn close_emit_dedups_repeated_series_to_one_marker() {
         use crate::encoder::create_encoder;
         use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
         use crate::schedule::core_loop::CloseSignal;
@@ -1512,7 +1536,7 @@ mod tests {
         let mut emit = super::make_close_emitter(stats.clone(), encoder, CloseSignal::SnapTo(0.0));
 
         let mut sink = MemorySink::new();
-        drain_emit_to_memory(&mut emit, &mut sink);
+        drain_emit_to_memory(&mut emit, &mut sink).await;
 
         let output = std::str::from_utf8(&sink.buffer).expect("output must be valid UTF-8");
         let lines = output.lines().filter(|l| !l.is_empty()).count();

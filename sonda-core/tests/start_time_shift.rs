@@ -25,15 +25,16 @@ type SharedBuf = Arc<Mutex<Vec<u8>>>;
 
 struct ProbeSink(SharedBuf);
 
+#[async_trait::async_trait]
 impl Sink for ProbeSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.0
             .lock()
             .expect("probe sink mutex poisoned")
             .extend_from_slice(data);
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }

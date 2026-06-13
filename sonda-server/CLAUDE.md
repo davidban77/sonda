@@ -26,7 +26,7 @@ src/
 │   ├── health.rs       ← GET /health → {"status": "ok"}
 │   ├── events.rs       ← POST /events: synchronous single-event emission. Tagged-enum
 │                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
-│                         delegates to sonda_core::emit::{emit_log, emit_metric} via spawn_blocking.
+│                         awaits sonda_core::emit::{emit_log, emit_metric} directly.
 │                         Maps SondaError variants to HTTP status (Config→422, Sink→502, others→500).
 │   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
 │                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,

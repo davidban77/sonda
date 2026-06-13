@@ -162,8 +162,9 @@ struct CapturingSink {
     buffer: Arc<Mutex<Vec<u8>>>,
 }
 
+#[async_trait::async_trait]
 impl Sink for CapturingSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         let mut guard = self
             .buffer
             .lock()
@@ -172,7 +173,7 @@ impl Sink for CapturingSink {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }

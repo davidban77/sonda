@@ -1,9 +1,7 @@
 //! Kafka sink — batches encoded telemetry and delivers it as Kafka records.
 //!
 //! Uses [`rskafka`] (pure Rust, no C dependencies) to produce records to a
-//! configured topic and partition. Async operations are driven by a dedicated
-//! single-threaded [`tokio::runtime::Runtime`] stored in the struct, keeping
-//! the public [`Sink`] interface fully synchronous.
+//! configured topic and partition.
 //!
 //! Encoded bytes are accumulated in an internal buffer. When the buffer
 //! reaches [`KAFKA_BUFFER_SIZE`] bytes the buffer is automatically flushed as
@@ -27,6 +25,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use chrono::Utc;
 use rskafka::{
     client::{
@@ -36,7 +35,6 @@ use rskafka::{
     record::Record,
 };
 use rustls_pki_types::pem::PemObject;
-use tokio::runtime::Runtime;
 
 use crate::sink::retry::RetryPolicy;
 use crate::sink::{KafkaSaslConfig, KafkaTlsConfig, Sink};
@@ -53,30 +51,18 @@ pub const KAFKA_BUFFER_SIZE: usize = 64 * 1024;
 /// remaining buffered data.
 ///
 /// The sink uses [`rskafka`], a pure-Rust Kafka client with no C dependencies.
-/// Async operations are driven by a private single-threaded [`Runtime`],
-/// keeping the [`Sink`] trait interface fully synchronous.
 ///
 /// TLS and SASL authentication are supported for connecting to managed Kafka
 /// services (Confluent Cloud, AWS MSK, Aiven, etc.).
 pub struct KafkaSink {
-    /// The Kafka topic to produce records to.
     topic: String,
-    /// The broker address string (stored for error messages).
     brokers: String,
-    /// Async client for the target topic partition.
     client: rskafka::client::partition::PartitionClient,
-    /// Encoded bytes waiting to be published.
     buffer: Vec<u8>,
-    /// Tokio runtime used to drive async rskafka calls synchronously.
-    runtime: Runtime,
-    /// Optional retry policy for transient failures.
     retry_policy: Option<RetryPolicy>,
-    /// Maximum age a non-empty buffer may reach before a time-based flush.
     /// `Duration::ZERO` disables time-based flushing.
     max_buffer_age: Duration,
-    /// When the buffer was last published — drives the time-based flush check.
     last_flush_at: Instant,
-    /// Whether the most recent `write()` triggered a successful flush rather than only buffering.
     last_write_delivered: bool,
 }
 
@@ -204,7 +190,7 @@ impl KafkaSink {
     /// broker-side auto-topic-creation (`auto.create.topics.enable=true`)
     /// works out of the box. This may cause the constructor to briefly block
     /// while the broker creates the topic.
-    pub fn new(
+    pub async fn new(
         brokers: &str,
         topic: &str,
         retry_policy: Option<RetryPolicy>,
@@ -212,20 +198,6 @@ impl KafkaSink {
         sasl_config: Option<&KafkaSaslConfig>,
         max_buffer_age: Duration,
     ) -> Result<Self, SondaError> {
-        // Build a minimal single-threaded tokio runtime. This drives all
-        // async rskafka calls without making the Sink trait async.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| {
-                std::io::Error::other(format!(
-                    "kafka sink: failed to build tokio runtime for broker '{}': {}",
-                    brokers, e
-                ))
-            })
-            .map_err(SondaError::Sink)?;
-
-        // Parse broker list: split on commas and trim whitespace.
         let bootstrap_brokers: Vec<String> = brokers
             .split(',')
             .map(|s| s.trim().to_owned())
@@ -239,7 +211,6 @@ impl KafkaSink {
             )));
         }
 
-        // Build optional TLS config.
         let tls_rustls = match tls_config {
             Some(tls) if tls.enabled => {
                 let cfg = build_rustls_config(tls.ca_cert.as_deref())?;
@@ -248,10 +219,8 @@ impl KafkaSink {
             _ => None,
         };
 
-        // Build optional SASL config.
         let sasl = sasl_config.map(map_sasl_config).transpose()?;
 
-        // Warn when SASL credentials will be sent over an unencrypted connection.
         if sasl.is_some() && tls_rustls.is_none() {
             eprintln!(
                 "WARNING: kafka sink: SASL authentication is configured without TLS — \
@@ -262,45 +231,39 @@ impl KafkaSink {
         let topic_str = topic.to_owned();
         let brokers_str = brokers.to_owned();
 
-        // Build the rskafka client and partition client inside the runtime.
-        let client = runtime
-            .block_on(async {
-                let mut builder = ClientBuilder::new(bootstrap_brokers);
+        let mut builder = ClientBuilder::new(bootstrap_brokers);
+        if let Some(tls) = tls_rustls {
+            builder = builder.tls_config(tls);
+        }
+        if let Some(sasl) = sasl {
+            builder = builder.sasl_config(sasl);
+        }
 
-                if let Some(tls) = tls_rustls {
-                    builder = builder.tls_config(tls);
-                }
+        let kafka_client = builder
+            .build()
+            .await
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    format!(
+                        "kafka sink: failed to connect to broker(s) '{}': {}",
+                        brokers_str, e
+                    ),
+                )
+            })
+            .map_err(SondaError::Sink)?;
 
-                if let Some(sasl) = sasl {
-                    builder = builder.sasl_config(sasl);
-                }
-
-                let kafka_client = builder.build().await.map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::ConnectionRefused,
-                        format!(
-                            "kafka sink: failed to connect to broker(s) '{}': {}",
-                            brokers_str, e
-                        ),
-                    )
-                })?;
-
-                kafka_client
-                    .partition_client(
-                        topic_str.clone(),
-                        0, // partition 0
-                        UnknownTopicHandling::Retry,
-                    )
-                    .await
-                    .map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!(
-                                "kafka sink: failed to get partition client for topic '{}' at broker(s) '{}': {}",
-                                topic_str, brokers_str, e
-                            ),
-                        )
-                    })
+        let client = kafka_client
+            .partition_client(topic_str.clone(), 0, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "kafka sink: failed to get partition client for topic '{}' at broker(s) '{}': {}",
+                        topic_str, brokers_str, e
+                    ),
+                )
             })
             .map_err(SondaError::Sink)?;
 
@@ -309,7 +272,6 @@ impl KafkaSink {
             brokers: brokers.to_owned(),
             client,
             buffer: Vec::with_capacity(KAFKA_BUFFER_SIZE),
-            runtime,
             retry_policy,
             max_buffer_age,
             last_flush_at: Instant::now(),
@@ -317,94 +279,93 @@ impl KafkaSink {
         })
     }
 
-    /// Publish the internal buffer as a single Kafka record and clear it.
-    ///
-    /// Uses the configured [`RetryPolicy`] for transient produce failures.
-    /// When no policy is configured, errors are returned immediately.
-    ///
-    /// Returns immediately without making a network call if the buffer is
-    /// empty (idempotent).
-    fn publish_buffer(&mut self) -> Result<(), SondaError> {
+    async fn publish_buffer(&mut self) -> Result<(), SondaError> {
         if self.buffer.is_empty() {
             return Ok(());
         }
-
-        // Reset on attempt, not success — the buffer is cleared either way below.
         self.last_flush_at = Instant::now();
-
-        // Swap out the buffer for a fresh pre-allocated vec. Using replace
-        // avoids an intermediate zero-capacity state that take() would produce.
         let payload = std::mem::replace(&mut self.buffer, Vec::with_capacity(KAFKA_BUFFER_SIZE));
 
-        match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                // The payload must be cloneable for retries — Kafka's produce
-                // consumes the Record, so we re-create it on each attempt.
-                policy.execute(
-                    || self.do_produce(&payload),
-                    |_| true, // all Kafka produce errors are retryable
-                )
-            }
-            None => self.do_produce(&payload),
-        }
-    }
-
-    /// Produce a single Kafka record from the given payload bytes.
-    fn do_produce(&mut self, payload: &[u8]) -> Result<(), SondaError> {
-        let record = Record {
-            key: None,
-            value: Some(payload.to_vec()),
-            headers: BTreeMap::new(),
-            timestamp: Utc::now(),
+        let send_once = || async {
+            let record = Record {
+                key: None,
+                value: Some(payload.clone()),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            };
+            self.client
+                .produce(vec![record], Compression::NoCompression)
+                .await
+                .map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        format!(
+                            "kafka sink: failed to produce record to topic '{}' at broker(s) '{}': {}",
+                            self.topic, self.brokers, e
+                        ),
+                    )
+                })
+                .map_err(SondaError::Sink)?;
+            Ok(())
         };
 
-        self.runtime
-            .block_on(async {
-                self.client
-                    .produce(vec![record], Compression::NoCompression)
-                    .await
-            })
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    format!(
-                        "kafka sink: failed to produce record to topic '{}' at broker(s) '{}': {}",
-                        self.topic, self.brokers, e
-                    ),
-                )
-            })
-            .map_err(SondaError::Sink)?;
-
-        Ok(())
+        if let Some(policy) = self.retry_policy.clone() {
+            run_with_retry(&policy, send_once).await
+        } else {
+            send_once().await
+        }
     }
 }
 
+async fn run_with_retry<F, Fut>(policy: &RetryPolicy, mut send_once: F) -> Result<(), SondaError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), SondaError>>,
+{
+    let mut last_error = match send_once().await {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    for attempt in 0..policy.max_attempts() {
+        let backoff = policy.jittered_backoff(attempt);
+        eprintln!(
+            "sonda: retry {}/{} after {}ms (error: {})",
+            attempt + 1,
+            policy.max_attempts(),
+            backoff.as_millis(),
+            last_error,
+        );
+        tokio::time::sleep(backoff).await;
+        match send_once().await {
+            Ok(()) => return Ok(()),
+            Err(e) => last_error = e,
+        }
+    }
+    eprintln!(
+        "sonda: all {} retries exhausted (last error: {})",
+        policy.max_attempts(),
+        last_error,
+    );
+    Err(last_error)
+}
+
+#[async_trait]
 impl Sink for KafkaSink {
-    /// Append encoded event data to the internal buffer.
-    ///
-    /// When the buffer reaches [`KAFKA_BUFFER_SIZE`] bytes, the buffer is
-    /// automatically published as a single Kafka record. Returns an error
-    /// only if the automatic flush fails.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.buffer.extend_from_slice(data);
         let size_reached = self.buffer.len() >= KAFKA_BUFFER_SIZE;
         let age_reached =
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
         let should_flush = size_reached || age_reached;
         if should_flush {
-            self.publish_buffer()?;
+            self.publish_buffer().await?;
         }
         self.last_write_delivered = should_flush;
         Ok(())
     }
 
-    /// Flush any remaining buffered data as a Kafka record.
-    ///
-    /// Safe to call multiple times. Returns `Ok(())` immediately if the
-    /// buffer is empty.
-    fn flush(&mut self) -> Result<(), SondaError> {
-        self.publish_buffer()
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        self.publish_buffer().await
     }
 
     fn last_write_delivered(&self) -> bool {
@@ -553,17 +514,9 @@ mod tests {
     // Construction failure: unreachable broker
     // -----------------------------------------------------------------------
 
-    /// Connecting to a port where no Kafka broker is listening must return a
-    /// SondaError::Sink containing the broker address in the error message.
-    ///
-    /// Ignored by default because rskafka may wait for a long TCP timeout
-    /// before returning an error. Run with `cargo test -- --ignored` when a
-    /// local Kafka broker is available and the test environment can tolerate
-    /// network delays.
-    #[test]
+    #[tokio::test]
     #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
-    fn new_with_unreachable_broker_returns_sink_error() {
-        // Port 1 is privileged and will always refuse connections.
+    async fn new_with_unreachable_broker_returns_sink_error() {
         let result = KafkaSink::new(
             "127.0.0.1:1",
             "sonda-test",
@@ -571,7 +524,8 @@ mod tests {
             None,
             None,
             Duration::ZERO,
-        );
+        )
+        .await;
         match result {
             Err(err) => {
                 let msg = err.to_string();
@@ -584,11 +538,9 @@ mod tests {
         }
     }
 
-    /// An empty broker string (after trimming) should return an error before
-    /// attempting any network connection.
-    #[test]
-    fn new_with_empty_broker_string_returns_error() {
-        let result = KafkaSink::new("", "sonda-test", None, None, None, Duration::ZERO);
+    #[tokio::test]
+    async fn new_with_empty_broker_string_returns_error() {
+        let result = KafkaSink::new("", "sonda-test", None, None, None, Duration::ZERO).await;
         match result {
             Err(err) => {
                 let msg = err.to_string();
@@ -601,11 +553,10 @@ mod tests {
         }
     }
 
-    /// A broker string composed only of commas and whitespace has no valid
-    /// entries; this must be caught before any network call.
-    #[test]
-    fn new_with_whitespace_only_broker_string_returns_error() {
-        let result = KafkaSink::new("  ,  ,  ", "sonda-test", None, None, None, Duration::ZERO);
+    #[tokio::test]
+    async fn new_with_whitespace_only_broker_string_returns_error() {
+        let result =
+            KafkaSink::new("  ,  ,  ", "sonda-test", None, None, None, Duration::ZERO).await;
         assert!(
             result.is_err(),
             "broker string with only separators must be rejected"

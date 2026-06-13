@@ -56,8 +56,12 @@ fn run() -> anyhow::Result<()> {
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let catalog = cli.catalog.as_deref();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     match cli.command {
-        Commands::Run(ref args) => run_scenario(args, &cli, catalog, verbosity, &running)?,
+        Commands::Run(ref args) => run_scenario(&rt, args, &cli, catalog, verbosity, &running)?,
         Commands::List(ref args) => list_catalog(args, catalog)?,
         Commands::Show(ref args) => show_entry(args, catalog)?,
         Commands::New(ref args) => new::run(args)?,
@@ -67,6 +71,7 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn run_scenario(
+    rt: &tokio::runtime::Runtime,
     args: &cli::RunArgs,
     cli_opts: &Cli,
     catalog: Option<&std::path::Path>,
@@ -87,7 +92,7 @@ fn run_scenario(
         if verbosity == Verbosity::Verbose {
             status::print_version();
         }
-        run_compiled_with_progress(compiled, running, verbosity)?;
+        run_compiled_with_progress(rt, compiled, running, verbosity)?;
         return Ok(());
     }
 
@@ -101,9 +106,9 @@ fn run_scenario(
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
-        run_single_scenario("cli-run".to_string(), p, running, verbosity)?;
+        run_single_scenario(rt, "cli-run".to_string(), p, running, verbosity)?;
     } else {
-        launch_and_join_prepared("cli-run", prepared, running, verbosity)?;
+        launch_and_join_prepared(rt, "cli-run", prepared, running, verbosity)?;
     }
     Ok(())
 }
@@ -196,19 +201,21 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
 }
 
 fn run_single_scenario(
+    rt: &tokio::runtime::Runtime,
     name: String,
     prepared: PreparedEntry,
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
     status::print_start(&prepared.entry, verbosity, None);
-    let mut handle = sonda_core::launch_scenario(
-        name,
-        prepared.entry,
-        Arc::clone(running),
-        prepared.start_delay,
-    )
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut handle = rt
+        .block_on(sonda_core::launch_scenario(
+            name,
+            prepared.entry,
+            Arc::clone(running),
+            prepared.start_delay,
+        ))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let progress = maybe_start_progress(&handle, verbosity);
     let join_result = handle.join(None);
     if let Some(p) = progress {
@@ -268,6 +275,7 @@ struct StopInfo {
 }
 
 fn launch_and_join_prepared(
+    rt: &tokio::runtime::Runtime,
     id_prefix: &str,
     prepared: Vec<PreparedEntry>,
     running: &Arc<AtomicBool>,
@@ -286,7 +294,13 @@ fn launch_and_join_prepared(
             p.entry.clock_group_is_auto(),
         ));
         let id = format!("{id_prefix}-{i}");
-        let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
+        let handle = rt
+            .block_on(sonda_core::launch_scenario(
+                id,
+                p.entry,
+                Arc::clone(running),
+                p.start_delay,
+            ))
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
@@ -346,11 +360,15 @@ fn launch_and_join_prepared(
 }
 
 fn run_compiled_with_progress(
+    rt: &tokio::runtime::Runtime,
     compiled: sonda_core::compiler::compile_after::CompiledFile,
     running: &Arc<AtomicBool>,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
-    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, None)
+    let handles = rt
+        .block_on(sonda_core::schedule::multi_runner::launch_multi_compiled(
+            compiled, None,
+        ))
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let per_handle_shutdowns: Vec<Arc<AtomicBool>> =

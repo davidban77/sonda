@@ -308,12 +308,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sink_file_error_produces_sink_variant() {
-        // Opening a file at an invalid path must produce SondaError::Sink.
+    #[tokio::test]
+    async fn sink_file_error_produces_sink_variant() {
         let result = sink::file::FileSink::new(std::path::Path::new(
             "/nonexistent/deeply/nested/path/output.txt",
-        ));
+        ))
+        .await;
         match result {
             Err(ref err) => {
                 assert!(
@@ -622,9 +622,8 @@ generator:
     }
 
     /// EncoderConfig, SinkConfig, and GeneratorConfig are all constructible
-    /// without deserialization and can be passed to their respective factory functions.
-    #[test]
-    fn factory_functions_work_without_deserialization() {
+    #[tokio::test]
+    async fn factory_functions_work_without_deserialization() {
         use crate::encoder::{create_encoder, EncoderConfig};
         use crate::generator::{create_generator, GeneratorConfig};
         use crate::sink::{create_sink, SinkConfig};
@@ -637,7 +636,9 @@ generator:
         let _enc = create_encoder(&enc_config).expect("encoder factory must succeed");
 
         let sink_config = SinkConfig::Stdout;
-        let _sink = create_sink(&sink_config, None).expect("sink factory must succeed");
+        let _sink = create_sink(&sink_config, None)
+            .await
+            .expect("sink factory must succeed");
     }
 
     #[test]

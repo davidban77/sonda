@@ -36,12 +36,13 @@ struct CaptureSink {
     buf: Arc<Mutex<Vec<u8>>>,
 }
 
+#[async_trait::async_trait]
 impl Sink for CaptureSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.buf.lock().unwrap().extend_from_slice(data);
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }
