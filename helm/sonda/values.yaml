@@ -138,6 +138,12 @@ serviceMonitor:
   scrapeTimeout: 10s
   path: "/server/metrics"
   additionalLabels: {}
+  # When SONDA_API_KEY auth is enabled on the server, set both fields below to
+  # point at a Kubernetes Secret holding the bearer token. Prometheus Operator
+  # reads the secret from the same namespace as the ServiceMonitor.
+  bearerTokenSecret:
+    name: ""
+    key: ""
 
 # Node selector for pod scheduling.
 nodeSelector: {}

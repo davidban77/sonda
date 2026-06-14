@@ -37,17 +37,53 @@ For server-side setup (passing the flag, env var, Kubernetes Secret pattern), se
 
 ### Error response shape
 
-All error responses share the format `{"error": "<short_code>", "detail": "<message>"}`. Common short codes:
+Most error responses share the format `{"error": "<short_code>", "detail": "<message>"}`. The 408 and 413 capacity errors come from the request-handling layer and carry a status code with no JSON body; check the status, not the body. Common codes:
 
 | Status | Short code | When |
 |--------|------------|------|
 | 400 | (parser-specific) | Malformed body, missing `version: 2`, validation error |
 | 401 | `unauthorized` | Missing or invalid `Authorization: Bearer <key>` |
 | 404 | `not_found` | Unknown scenario ID |
+| 408 | (no JSON body) | Handler exceeded [`--request-timeout`](server.md#tuning-resource-limits). See [Capacity and resource errors](#capacity-and-resource-errors). |
 | 409 | (conflict-specific) | Duplicate `scenario_name` already running |
+| 413 | (no JSON body) | Body larger than [`--max-body-bytes`](server.md#tuning-resource-limits). See [Capacity and resource errors](#capacity-and-resource-errors). |
 | 422 | (validator-specific) | Runtime validation failure |
+| 429 | `capacity_exceeded` | Scenario row cap from [`--max-scenarios`](server.md#tuning-resource-limits) is full. See [Capacity and resource errors](#capacity-and-resource-errors). |
 | 502 | (sink-specific) | Sink push or flush returned an error |
 | 500 | (internal-specific) | Unexpected server error |
+
+### Capacity and resource errors
+
+Three status codes signal that a request was rejected by the server's resource-limit guards rather than by validation. They apply only to the control-plane sub-router (`POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, list/inspect). The observability endpoints (`/server/metrics`, `/metrics`, `/scenarios/{id}/metrics`, `/scenarios/{id}/stats`, `/health`) are not subject to these limits and stay reachable under saturation. Every rejection is counted on [`sonda_server_requests_total{status="..."}`](server-metrics.md#sonda_server_requests_total).
+
+#### `429 Too Many Requests` — capacity_exceeded
+
+`POST /scenarios` returns 429 when [`--max-scenarios`](server.md#tuning-resource-limits) is set and the scenario row cap is full. The body identifies where the slots went so you know which scenarios to `DELETE`:
+
+```json title="Response (429 Too Many Requests)"
+{
+  "error": "capacity_exceeded",
+  "detail": "500 scenarios active (max 500); DELETE finished or stuck scenarios to free slots",
+  "by_state": {
+    "pending": 0,
+    "running": 312,
+    "paused": 0,
+    "held": 0,
+    "unresolved": 47,
+    "finished": 141
+  }
+}
+```
+
+`finished` rows still occupy slots. If the count is non-zero, your automation forgot to `DELETE /scenarios/{id}` after those scenarios completed; the cleanest fix is to delete them and re-POST. Alert on `rate(sonda_server_requests_total{status="429"}[5m]) > 0` to catch this before the next deploy.
+
+#### `408 Request Timeout`
+
+A control-plane request exceeded [`--request-timeout`](server.md#tuning-resource-limits) (default 30 seconds). Returned by the request-handling layer with no JSON body — clients should check the status code, not parse the response. The most common trigger is `POST /events` to a slow or unreachable sink; the handler builds the sink in-band and waits for the first connect to succeed.
+
+#### `413 Payload Too Large`
+
+The request body exceeded [`--max-body-bytes`](server.md#tuning-resource-limits) (default 1 MB). Returned by the request-handling layer with no JSON body. Either the caller is sending an oversized scenario file or the cap is set too tight for legitimate traffic. Catalog-resident scenarios are a better fit than inlining a 1 MB body — start the server with [`--catalog <DIR>`](server.md#server-flags) and reference packs by name.
 
 ### Sink URL gotchas
 
@@ -1010,11 +1046,13 @@ scrape_configs:
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state, sink-failure counters |
 | GET | `/scenarios/{id}/metrics` | Current per-series values for one scenario in Prometheus text format |
 | GET | `/metrics` | Aggregate Prometheus scrape across all running scenarios. Supports `?label=k:v` filtering |
+| GET | `/server/metrics` | Server-process RED and saturation telemetry. See [Server metrics](server-metrics.md). |
 | POST | `/events` | Emit one log or metric event synchronously |
 
 ## Where to next
 
 - [Deploy as a server](server.md) — install, configure, network, and operate the server itself.
+- [Server metrics](server-metrics.md) — the nine `/server/metrics` series and the alerts that matter.
 - [Scenario file format](../build/scenario-files.md) — what to put in the body of `POST /scenarios`.
 - [Encoders](../build/encoders.md) and [Sinks](../build/sinks.md) — every encoder/sink option you can declare in a posted body.
 - [Cross-POST `while:` refs (YAML schema)](../build/scenario-files.md#cross-post-while-refs) — the file-side counterpart to the HTTP cross-POST surface.
