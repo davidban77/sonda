@@ -63,7 +63,7 @@ Full design rationale is in `docs/architecture.md`. Key decisions:
 - Cargo workspace for parallel compilation and clean dep isolation.
 - Trait objects (`Box<dyn Trait>`) for generators, encoders, sinks — extensible without dispatch changes.
 - YAML for all scenario config; CLI flags and `SONDA_*` env vars override.
-- Sync-first (std::thread + mpsc). Tokio only in sonda-server.
+- Tokio-first: scenarios run as `tokio::task::spawn` tasks on a shared multi-thread runtime.
 - Static binary (musl). Pure-Rust deps only (rustls, not openssl).
 
 ## Extension Points

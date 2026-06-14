@@ -1,22 +1,8 @@
 //! The histogram scenario event loop.
-//!
-//! The histogram runner ties together the [`HistogramGenerator`], encoder, and
-//! sink with the shared schedule loop from
-//! [`core_loop::run_schedule_loop`](super::core_loop::run_schedule_loop).
-//!
-//! Each tick, the runner:
-//! 1. Advances the histogram generator to get a [`HistogramSample`].
-//! 2. For each bucket boundary, creates a `MetricEvent` with name
-//!    `{base}_bucket` and an `le="{bound}"` label.
-//! 3. Creates a `+Inf` bucket event (`le="+Inf"`, value = total count).
-//! 4. Creates `{base}_count` and `{base}_sum` events.
-//! 5. Encodes all events and writes them to the sink.
-//!
-//! The core loop is unchanged — all histogram-specific logic lives in the
-//! per-tick closure.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
+
+use tokio_util::sync::CancellationToken;
 
 use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
@@ -31,70 +17,26 @@ use crate::schedule::ParsedSchedule;
 use crate::sink::{create_sink, Sink};
 use crate::SondaError;
 
-/// Run a histogram scenario to completion, emitting encoded histogram events
-/// at the configured rate.
-///
-/// This is the primary entry point. It constructs a sink from the config and
-/// delegates to [`run_with_sink`] with no shutdown flag and no stats collection.
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
+/// Run a histogram scenario to completion at the configured rate.
 pub async fn run(config: &HistogramScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, None).await?;
-    run_with_sink(config, &mut sink, None, None).await
+    let cancel = CancellationToken::new();
+    run_with_sink(config, &mut sink, &cancel, None).await
 }
 
-/// Run a histogram scenario to completion, writing encoded events into the
-/// provided sink.
-///
-/// Builds the histogram generator, encoder, and label sets from the config,
-/// then delegates to the shared schedule loop. The per-tick closure generates
-/// multiple `MetricEvent`s per tick (one per bucket + `+Inf` + `_count` + `_sum`).
-///
-/// # Parameters
-///
-/// * `config` — the histogram scenario configuration.
-/// * `sink` — the destination for encoded metric events.
-/// * `shutdown` — optional atomic flag for clean shutdown.
-/// * `stats` — optional shared stats for live telemetry.
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub async fn run_with_sink(
     config: &HistogramScenarioConfig,
     sink: &mut Box<dyn Sink>,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_with_sink_gated(config, sink, shutdown, stats, None).await
-}
-
-/// Run a histogram scenario with optional `while:` / `after:` gating.
-///
-/// Histograms cannot be `while:` upstreams (compile-time
-/// `NonMetricsTarget`), but they can be `while:`-gated downstreams.
-pub fn run_with_sink_gated_blocking(
-    config: &HistogramScenarioConfig,
-    shutdown: Option<&AtomicBool>,
-    stats: Option<Arc<RwLock<ScenarioStats>>>,
-    gate_ctx: Option<GateContext>,
-) -> Result<(), SondaError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| crate::SondaError::Runtime(crate::RuntimeError::SpawnFailed(e)))?;
-    rt.block_on(async {
-        let mut sink = create_sink(&config.sink, None).await?;
-        run_with_sink_gated(config, &mut sink, shutdown, stats, gate_ctx).await
-    })
+    run_with_sink_gated(config, sink, cancel, stats, None).await
 }
 
 pub async fn run_with_sink_gated(
     config: &HistogramScenarioConfig,
     sink: &mut Box<dyn Sink>,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: Option<GateContext>,
 ) -> Result<(), SondaError> {
@@ -294,21 +236,14 @@ pub async fn run_with_sink_gated(
 
     match gate_ctx {
         None => {
-            core_loop::run_schedule_loop(
-                &schedule,
-                config.rate,
-                shutdown,
-                stats,
-                sink,
-                &mut tick_fn,
-            )
-            .await
+            core_loop::run_schedule_loop(&schedule, config.rate, cancel, stats, sink, &mut tick_fn)
+                .await
         }
         Some(ctx) => {
             core_loop::gated_loop(
                 &schedule,
                 config.rate,
-                shutdown,
+                cancel,
                 stats,
                 ctx,
                 sink,
@@ -337,6 +272,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
 
     use crate::config::{BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig};
     use crate::encoder::EncoderConfig;
@@ -409,7 +345,7 @@ mod tests {
     async fn run_completes_for_short_duration() {
         let config = make_config(50.0, "200ms", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("histogram run must succeed");
         assert!(
@@ -424,7 +360,7 @@ mod tests {
     async fn output_contains_bucket_count_sum_series() {
         let config = make_config(50.0, "200ms", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -451,7 +387,7 @@ mod tests {
     async fn bucket_events_have_le_label() {
         let config = make_config(50.0, "100ms", Some(vec![0.1, 0.5, 1.0]));
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -480,7 +416,7 @@ mod tests {
         });
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -498,7 +434,7 @@ mod tests {
     async fn custom_buckets_appear_in_output() {
         let config = make_config(50.0, "100ms", Some(vec![1.0, 5.0, 10.0]));
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -537,7 +473,7 @@ mod tests {
         config.base.labels = Some(label_map);
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 

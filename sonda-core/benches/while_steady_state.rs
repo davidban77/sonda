@@ -5,7 +5,6 @@
 //! lives separately as a `#[test] fn` in `tests/while_runtime.rs`; this
 //! bench is the developer-facing profiler.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,13 +53,13 @@ fn bench_baseline_ungated(c: &mut Criterion) {
     c.bench_function("baseline_ungated_300ms_at_1khz", |b| {
         b.iter(|| {
             let entry = metrics_entry("bench", 1000.0, 300);
-            let shutdown = Arc::new(AtomicBool::new(true));
+            let cancel = sonda_core::CancellationToken::new();
             let mut handle = rt
                 .block_on(launch_scenario_with_gates(
                     "bench".to_string(),
                     None,
                     entry,
-                    shutdown,
+                    cancel,
                     None,
                     None,
                     None,
@@ -89,13 +88,13 @@ fn bench_gated_open(c: &mut Criterion) {
                 }),
             });
             let entry = metrics_entry("gated", 1000.0, 300);
-            let shutdown = Arc::new(AtomicBool::new(true));
+            let cancel = sonda_core::CancellationToken::new();
             let mut handle = rt
                 .block_on(launch_scenario_with_gates(
                     "gated".to_string(),
                     None,
                     entry,
-                    shutdown,
+                    cancel,
                     None,
                     Some(Arc::clone(&bus)),
                     Some(GateContext::new(rx, init).with_has_while(true)),

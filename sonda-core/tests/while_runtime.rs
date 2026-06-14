@@ -8,7 +8,6 @@
 
 mod common;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +21,7 @@ use sonda_core::schedule::launch::launch_scenario_with_gates;
 use sonda_core::schedule::stats::ScenarioState;
 use sonda_core::schedule::GateContext;
 use sonda_core::sink::SinkConfig;
+use sonda_core::CancellationToken;
 
 fn metrics_entry(name: &str, rate: f64, duration_ms: u64) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
@@ -101,7 +101,7 @@ async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let gate_ctx = GateContext::new(rx, init).with_has_while(true);
 
     let entry = metrics_entry("downstream", 200.0, 600);
@@ -109,7 +109,7 @@ async fn issue_295_repro_gated_scenario_emits_only_when_gate_open() {
         "downstream".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(gate_ctx),
@@ -153,13 +153,13 @@ async fn while_runtime_state_starts_pending_then_running_when_gate_open_at_subsc
     let (rx, init) = bus.subscribe(while_gt_zero());
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d1", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d1".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -190,13 +190,13 @@ async fn while_runtime_state_starts_paused_when_gate_closed_at_subscription() {
     let (rx, init) = bus.subscribe(while_gt_zero());
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d2", 100.0, 300);
     let mut handle = launch_scenario_with_gates(
         "d2".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -222,13 +222,13 @@ async fn while_runtime_no_catch_up_burst_on_resume() {
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d3", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "d3".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -309,7 +309,7 @@ async fn while_runtime_sequence_generator_preserves_position_across_pause() {
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let values = vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0];
     let entry = metrics_entry_with_generator(
         "seq_gated",
@@ -324,7 +324,7 @@ async fn while_runtime_sequence_generator_preserves_position_across_pause() {
         "seq_gated".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -379,7 +379,7 @@ async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     // Sawtooth (saturation desugars to this): 0 → 100 over 4s at 50/s.
     let entry = metrics_entry_with_generator(
         "sat_gated",
@@ -395,7 +395,7 @@ async fn while_runtime_ramp_generator_slope_preserved_across_pause() {
         "sat_gated".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -448,13 +448,13 @@ async fn while_runtime_finished_state_after_duration_expires() {
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("d4", 50.0, 200);
     let mut handle = launch_scenario_with_gates(
         "d4".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -480,13 +480,13 @@ async fn while_runtime_multiple_downstreams_share_one_upstream() {
     let (rx_a, init_a) = bus.subscribe(while_gt_zero());
     let (rx_b, init_b) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
 
     let mut handle_a = launch_scenario_with_gates(
         "a".to_string(),
         None,
         metrics_entry("a", 100.0, 500),
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx_a, init_a).with_has_while(true)),
@@ -499,7 +499,7 @@ async fn while_runtime_multiple_downstreams_share_one_upstream() {
         "b".to_string(),
         None,
         metrics_entry("b", 100.0, 500),
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx_b, init_b).with_has_while(true)),
@@ -533,13 +533,13 @@ async fn while_runtime_logs_signal_can_be_gated_downstream() {
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = logs_entry("bgp_log", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "bgp_log".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -590,13 +590,13 @@ async fn while_runtime_delay_open_debounces_pause_to_running_transition() {
         close_snap_to: None,
     };
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("debounced", 200.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "debounced".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -649,13 +649,13 @@ async fn while_runtime_strict_lt_threshold_gating() {
     let (rx, init) = bus.subscribe(spec);
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("inv", 100.0, 500);
     let mut handle = launch_scenario_with_gates(
         "inv".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
@@ -685,13 +685,13 @@ async fn scenario_restart_does_not_leak_gate_bus() {
 
     for i in 0..20 {
         let (rx, init) = bus.subscribe(while_gt_zero());
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry(&format!("ephemeral_{i}"), 50.0, 80);
         let mut handle = launch_scenario_with_gates(
             format!("ephemeral_{i}"),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
@@ -730,13 +730,13 @@ async fn while_runtime_delay_close_debounces_running_to_paused_transition() {
         close_snap_to: None,
     };
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("debounced_close", 200.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "debounced_close".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -807,13 +807,13 @@ async fn while_runtime_pending_to_running_when_after_fires_with_gate_open() {
         "gate must be closed at value=1"
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("after_open", 100.0, 1000);
     let mut handle = launch_scenario_with_gates(
         "after_open".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -878,13 +878,13 @@ async fn while_runtime_pending_to_paused_when_after_fires_with_gate_closed() {
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("after_paused", 100.0, 1500);
     let mut handle = launch_scenario_with_gates(
         "after_paused".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -960,13 +960,13 @@ async fn while_runtime_pending_absorbs_while_edges_before_after_fires() {
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(false));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("absorb", 100.0, 2000);
     let mut handle = launch_scenario_with_gates(
         "absorb".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -1038,13 +1038,13 @@ async fn while_runtime_pending_finishes_when_upstream_gone_before_after_fires() 
     assert!(!init.after_already_fired);
     assert_eq!(init.while_gate_open, Some(true));
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("pending_upstream_gone", 100.0, 5000);
     let mut handle = launch_scenario_with_gates(
         "pending_upstream_gone".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(
@@ -1098,12 +1098,12 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
     // without `while:`. Both runs are short (300ms) to keep the test fast.
     async fn run_baseline() -> u64 {
         let entry = metrics_entry("baseline", 1000.0, 300);
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "baseline".to_string(),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             None,
             None,
@@ -1120,12 +1120,12 @@ async fn while_runtime_steady_within_5pct_of_baseline() {
         bus.tick(1.0);
         let (rx, init) = bus.subscribe(while_gt_zero());
         let entry = metrics_entry("gated", 1000.0, 300);
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut handle = launch_scenario_with_gates(
             "gated".to_string(),
             None,
             entry,
-            shutdown,
+            cancel,
             None,
             Some(Arc::clone(&bus)),
             Some(GateContext::new(rx, init).with_has_while(true)),
@@ -1262,13 +1262,13 @@ async fn nan_upstream_value_keeps_downstream_paused() {
         "NaN upstream must close the gate at subscription"
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     let entry = metrics_entry("nan_paused", 200.0, 600);
     let mut handle = launch_scenario_with_gates(
         "nan_paused".to_string(),
         None,
         entry,
-        Arc::clone(&shutdown),
+        cancel.clone(),
         None,
         None,
         Some(GateContext::new(rx, init).with_has_while(true)),
