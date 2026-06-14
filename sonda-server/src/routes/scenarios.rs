@@ -751,49 +751,34 @@ pub async fn delete_scenario(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, Response> {
-    // Acquire a write lock so we can mutate the handle (join requires &mut self).
-    let mut scenarios = state
-        .scenarios
-        .write()
-        .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+    let (mut handle, scenario_name_to_unregister) = {
+        let mut scenarios = state
+            .scenarios
+            .write()
+            .map_err(|e| internal_error(format!("scenarios lock is poisoned: {e}")))?;
+        let handle = scenarios
+            .remove(&id)
+            .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
+        handle
+            .cleaned_up
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let scenario_name_to_unregister = handle.scenario_name.clone();
+        handle.stop();
+        (handle, scenario_name_to_unregister)
+    };
 
-    let handle = scenarios
-        .get_mut(&id)
-        .ok_or_else(|| not_found(format!("scenario not found: {id}")))?;
-
-    // Pre-mark so the StateGuard skips its own unregister; Phase 1 owns it.
-    handle
-        .cleaned_up
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let scenario_name_to_unregister = handle.scenario_name.clone();
-
-    // Signal the scenario to stop (idempotent — safe to call on already-stopped).
-    handle.stop();
-
-    // Wait for the thread to exit, with a 5-second timeout.
-    let was_running_before_join = handle.is_running();
-    if let Err(e) = handle.join(Some(Duration::from_secs(5))) {
-        warn!(id = %id, error = %e, "DELETE /scenarios/{id}: scenario thread returned an error");
+    if let Err(e) = handle.join_async(Some(Duration::from_secs(5))).await {
+        warn!(id = %id, error = %e, "DELETE /scenarios/{id}: scenario task returned an error");
     }
 
-    // Determine the final status based on whether the thread exited in time.
     let status = if handle.is_running() {
         warn!(id = %id, "DELETE /scenarios/{id}: join timed out after 5s, scenario force-stopped");
         "force_stopped".to_string()
-    } else if was_running_before_join {
-        "stopped".to_string()
     } else {
-        // Thread had already exited before DELETE was called.
         "stopped".to_string()
     };
 
-    // Read final stats before responding.
     let final_stats = handle.stats_snapshot();
-
-    // Remove the handle from the map to free resources (fixes memory leak).
-    scenarios.remove(&id);
-    // Lock order: scenarios then registry.
-    drop(scenarios);
 
     if let Some(name) = scenario_name_to_unregister {
         state.gate_bus_registry.unregister(&name);
@@ -1140,8 +1125,7 @@ mod tests {
     use axum::body::Body;
     use http_body_util::BodyExt;
     use hyper::{Request, StatusCode};
-    use sonda_core::ScenarioHandle;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use sonda_core::{CancellationToken, ScenarioHandle};
     use std::sync::{Arc, RwLock};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -1149,39 +1133,33 @@ mod tests {
 
     // ---- Helpers ---------------------------------------------------------------
 
-    /// Build a ScenarioHandle with a background thread that increments stats.
-    ///
-    /// The thread emits `event_count` events at `interval` apart, incrementing
-    /// total_events and bytes_emitted on each tick.
+    /// Build a ScenarioHandle with a background task that increments stats.
     fn make_handle(id: &str, name: &str, event_count: u64, interval: Duration) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_clone = cancel.clone();
         let stats_clone = Arc::clone(&stats);
 
-        let thread = thread::Builder::new()
-            .name(format!("test-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                for _ in 0..event_count {
-                    if !shutdown_clone.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    thread::sleep(interval);
-                    if let Ok(mut st) = stats_clone.write() {
-                        st.total_events += 1;
-                        st.bytes_emitted += 64;
-                    }
+        let task = tokio::task::spawn(async move {
+            for _ in 0..event_count {
+                if cancel_clone.is_cancelled() {
+                    break;
                 }
-                Ok(())
-            })
-            .expect("thread must spawn");
+                tokio::time::sleep(interval).await;
+                if let Ok(mut st) = stats_clone.write() {
+                    st.total_events += 1;
+                    st.bytes_emitted += 64;
+                }
+            }
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             100.0,
@@ -1195,30 +1173,22 @@ mod tests {
         )
     }
 
-    /// Build a ScenarioHandle that has already finished (thread exits immediately).
+    /// Build a ScenarioHandle whose task exits immediately.
     fn make_stopped_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let shutdown_clone = Arc::clone(&shutdown);
 
-        let thread = thread::Builder::new()
-            .name(format!("test-stopped-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                // Check shutdown immediately and exit.
-                let _ = shutdown_clone.load(Ordering::SeqCst);
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async { Ok::<_, sonda_core::SondaError>(()) });
 
-        // Give thread time to finish.
         thread::sleep(Duration::from_millis(50));
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             100.0,
@@ -1643,7 +1613,7 @@ scenarios:
     // ---- GET /scenarios/{id}: stats.total_events > 0 after running ------------
 
     /// After running for a short time, stats.total_events > 0.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_scenario_stats_total_events_positive_after_running() {
         // Thread emits events every 10ms. After 200ms we should have ~20 events.
         let h = make_handle("id-events", "events_check", 500, Duration::from_millis(10));
@@ -2660,7 +2630,7 @@ scenarios:
     // ---- DELETE returns final stats (total_events) -------------------------
 
     /// DELETE returns total_events reflecting events emitted before stop.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_returns_final_stats_with_total_events() {
         // Thread emits events every 10ms. Wait 200ms so some events accumulate.
         let h = make_handle("id-del-stats", "del_stats", 1000, Duration::from_millis(10));
@@ -3019,34 +2989,19 @@ scenarios:
         initial_stats: ScenarioStats,
         running: bool,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(running));
+        let cancel = CancellationToken::new();
+        if !running {
+            cancel.cancel();
+        }
         let stats = Arc::new(RwLock::new(initial_stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_clone = cancel.clone();
 
-        let thread = if running {
-            // Long-running thread that waits for shutdown.
-            thread::Builder::new()
-                .name(format!("test-stats-{name}"))
-                .spawn(move || -> Result<(), sonda_core::SondaError> {
-                    while shutdown_clone.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Ok(())
-                })
-                .expect("thread must spawn")
-        } else {
-            // Thread exits immediately.
-            thread::Builder::new()
-                .name(format!("test-stats-stopped-{name}"))
-                .spawn(move || -> Result<(), sonda_core::SondaError> {
-                    let _ = shutdown_clone.load(Ordering::SeqCst);
-                    Ok(())
-                })
-                .expect("thread must spawn")
-        };
+        let task = tokio::task::spawn(async move {
+            cancel_clone.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
         if !running {
-            // Give the thread time to exit.
             thread::sleep(Duration::from_millis(50));
         }
 
@@ -3054,8 +3009,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             target_rate,
@@ -3179,7 +3134,7 @@ scenarios:
     // ---- Fields update as scenario progresses --------------------------------
 
     /// Stats fields update as the scenario background thread emits events.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stats_endpoint_fields_update_as_scenario_progresses() {
         // Thread emits events every 10ms.
         let h = make_handle(
@@ -3485,36 +3440,31 @@ scenarios:
         .expect("test metric name must be valid")
     }
 
-    /// Helper: build a ScenarioHandle with pre-populated metric events in the buffer.
+    /// Build a ScenarioHandle with pre-populated metric events in the buffer.
     fn make_handle_with_metrics(
         id: &str,
         name: &str,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_clone = cancel.clone();
 
-        let thread = thread::Builder::new()
-            .name(format!("test-metrics-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async move {
+            cancel_clone.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -3766,23 +3716,18 @@ scenarios:
         labels: Vec<(&str, &str)>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel_clone = cancel.clone();
 
-        let thread = thread::Builder::new()
-            .name(format!("test-agg-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async move {
+            cancel_clone.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
         let mut label_map = std::collections::HashMap::new();
         for (k, v) in labels {
@@ -3793,8 +3738,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -4324,28 +4269,22 @@ scenarios:
 
     // ---- Helper: build a handle whose thread ignores the shutdown flag ------
 
-    /// Build a ScenarioHandle whose thread sleeps for a long time, ignoring
-    /// the shutdown flag. This simulates a scenario that cannot be stopped
-    /// gracefully within the join timeout.
+    /// Build a ScenarioHandle whose task sleeps for a long time, ignoring cancel.
     fn make_unjoinable_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let thread = thread::Builder::new()
-            .name(format!("test-unjoinable-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                // Ignore shutdown — sleep for a very long time.
-                thread::sleep(Duration::from_secs(300));
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async {
+            tokio::time::sleep(Duration::from_secs(300)).await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             50.0,
@@ -4359,27 +4298,25 @@ scenarios:
         )
     }
 
-    /// Build a ScenarioHandle whose thread panics immediately.
+    /// Build a ScenarioHandle whose task panics immediately.
     fn make_panicking_handle(id: &str, name: &str) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        let thread = thread::Builder::new()
-            .name(format!("test-panic-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                panic!("intentional panic for testing");
-            })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async {
+            panic!("intentional panic for testing");
+            #[allow(unreachable_code)]
+            Ok::<_, sonda_core::SondaError>(())
+        });
 
-        // Give the thread time to panic.
         thread::sleep(Duration::from_millis(50));
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -5278,28 +5215,23 @@ scenarios:
         meta: Option<sonda_core::PromMeta>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
-        let thread = thread::Builder::new()
-            .name(format!("test-meta-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let cancel_clone = cancel.clone();
+        let task = tokio::task::spawn(async move {
+            cancel_clone.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -5401,22 +5333,17 @@ scenarios:
         labels: Vec<(&str, &str)>,
         events: Vec<sonda_core::model::metric::MetricEvent>,
     ) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut stats = ScenarioStats::default();
         for event in events {
             stats.push_metric(event);
         }
         let stats = Arc::new(RwLock::new(stats));
-        let shutdown_clone = Arc::clone(&shutdown);
-        let thread = thread::Builder::new()
-            .name(format!("test-agg-meta-{name}"))
-            .spawn(move || -> Result<(), sonda_core::SondaError> {
-                while shutdown_clone.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(())
-            })
-            .expect("thread must spawn");
+        let cancel_clone = cancel.clone();
+        let task = tokio::task::spawn(async move {
+            cancel_clone.cancelled().await;
+            Ok::<_, sonda_core::SondaError>(())
+        });
         let mut label_map = std::collections::HashMap::new();
         for (k, v) in labels {
             label_map.insert(k.to_string(), v.to_string());
@@ -5425,8 +5352,8 @@ scenarios:
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -5859,7 +5786,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t18_get_scenario_for_unresolved_returns_pending_ref() {
         let (_, state) = test_router();
         let resp = post_with_query(
@@ -5909,7 +5836,7 @@ scenarios:
         cleanup_scenarios(&state);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn t19_stats_endpoint_has_current_state_secs_and_cumulative_attempts() {
         let (_, state) = test_router();
         let resp = post_with_query(

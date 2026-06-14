@@ -1,12 +1,10 @@
 //! Unified scenario launch API.
-//!
-//! This module is the single authoritative location for the "validate →
-//! create sink → spawn runner → manage lifecycle" pattern. Both the CLI and
-//! sonda-server call [`launch_scenario`]; neither duplicates this logic.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+use tokio_util::sync::CancellationToken;
 
 use crate::compiler::{DelayClause, WhileClause};
 use crate::config::aliases::desugar_entry;
@@ -18,12 +16,13 @@ use crate::generator::GeneratorConfig;
 use crate::schedule::core_loop::GateContext;
 use crate::schedule::gate_bus::{GateBus, GateBusResolver};
 use crate::schedule::handle::ScenarioHandle;
-use crate::schedule::histogram_runner::run_with_sink_gated_blocking as run_histogram_with_sink_gated_blocking;
-use crate::schedule::log_runner::run_logs_with_sink_gated_blocking;
-use crate::schedule::runner::run_with_sink_gated_blocking;
+use crate::schedule::histogram_runner::run_with_sink_gated as run_histogram_with_sink_gated;
+use crate::schedule::log_runner::run_logs_with_sink_gated;
+use crate::schedule::runner::run_with_sink_gated;
 use crate::schedule::stats::{ScenarioState, ScenarioStats};
-use crate::schedule::summary_runner::run_with_sink_gated_blocking as run_summary_with_sink_gated_blocking;
-use crate::{ConfigError, RuntimeError, SondaError};
+use crate::schedule::summary_runner::run_with_sink_gated as run_summary_with_sink_gated;
+use crate::sink::create_sink;
+use crate::{ConfigError, SondaError};
 
 /// Extract the inner message from a [`SondaError`] for re-wrapping.
 ///
@@ -165,14 +164,14 @@ pub fn prepare_entries(entries: Vec<ScenarioEntry>) -> Result<Vec<PreparedEntry>
     Ok(prepared)
 }
 
-/// Launch a single scenario on a new OS thread.
+/// Launch a single scenario as a tokio task.
 pub async fn launch_scenario(
     id: String,
     entry: ScenarioEntry,
-    shutdown: Arc<AtomicBool>,
+    cancel: CancellationToken,
     start_delay: Option<Duration>,
 ) -> Result<ScenarioHandle, SondaError> {
-    launch_scenario_with_gates(id, None, entry, shutdown, start_delay, None, None, None).await
+    launch_scenario_with_gates(id, None, entry, cancel, start_delay, None, None, None).await
 }
 
 /// Launch a scenario with optional `while:` / `after:` gating wired in.
@@ -181,19 +180,18 @@ pub async fn launch_scenario_with_gates(
     id: String,
     scenario_name: Option<String>,
     entry: ScenarioEntry,
-    shutdown: Arc<AtomicBool>,
+    cancel: CancellationToken,
     start_delay: Option<Duration>,
     upstream_bus: Option<Arc<GateBus>>,
     gate_ctx: Option<GateContext>,
     resolver: Option<Arc<dyn GateBusResolver>>,
 ) -> Result<ScenarioHandle, SondaError> {
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-    let stats_for_thread = Arc::clone(&stats);
-    let shutdown_for_thread = Arc::clone(&shutdown);
+    let stats_for_task = Arc::clone(&stats);
     let alive = Arc::new(AtomicBool::new(true));
-    let alive_for_thread = Arc::clone(&alive);
+    let alive_for_task = Arc::clone(&alive);
+    let cancel_for_task = cancel.clone();
 
-    // Extract the name and target rate before moving `entry` into the thread closure.
     let (name, target_rate) = match &entry {
         ScenarioEntry::Metrics(c) => (c.name.clone(), c.rate),
         ScenarioEntry::Logs(c) => (c.name.clone(), c.rate),
@@ -205,114 +203,123 @@ pub async fn launch_scenario_with_gates(
 
     let started_at = Instant::now();
 
-    // Validate shutdown flag is currently set to `true` (running). The caller
-    // is responsible for ensuring this; we document the contract but do not
-    // enforce it here to avoid a redundant check on every launch.
-    //
-    // Ensure `running` ordering is visible from the new thread.
-    shutdown.store(true, Ordering::SeqCst);
-
     let stats_for_state = Arc::clone(&stats);
     let is_gated = gate_ctx.is_some();
     let cleaned_up = Arc::new(AtomicBool::new(false));
-    let cleaned_up_for_thread = Arc::clone(&cleaned_up);
-    let resolver_for_thread = resolver.clone();
-    let scenario_name_for_thread = scenario_name.clone();
+    let cleaned_up_for_task = Arc::clone(&cleaned_up);
+    let resolver_for_task = resolver.clone();
+    let scenario_name_for_task = scenario_name.clone();
 
     // Cross-POST scenarios broadcast via resolver.unregister; broadcasting
     // here too races the registry's subscriber migration.
-    let bus_for_finish_guard =
-        if scenario_name_for_thread.is_some() && resolver_for_thread.is_some() {
-            None
-        } else {
-            upstream_bus.as_ref().map(Arc::clone)
+    let bus_for_finish_guard = if scenario_name_for_task.is_some() && resolver_for_task.is_some() {
+        None
+    } else {
+        upstream_bus.as_ref().map(Arc::clone)
+    };
+
+    let task = tokio::task::spawn(async move {
+        // Drop guard clears the alive flag on every exit path, including
+        // panics — observers polling `is_alive()` see a single clean
+        // transition `true → false` regardless of how the task terminates.
+        let _alive_guard = AliveGuard {
+            flag: alive_for_task,
         };
 
-    let thread = std::thread::Builder::new()
-        .name(format!("sonda-{}", name))
-        .spawn(move || -> Result<(), SondaError> {
-            // Drop guard clears the alive flag on every exit path, including
-            // panics — observers polling `is_alive()` see a single clean
-            // transition `true → false` regardless of how the thread terminates.
-            let _guard = AliveGuard {
-                flag: alive_for_thread,
-            };
+        // Marks Finished on drop; unregisters when a resolver is wired.
+        let _state_guard = StateGuard {
+            stats: Arc::clone(&stats_for_state),
+            resolver: resolver_for_task,
+            scenario_name: scenario_name_for_task,
+            cleaned_up: cleaned_up_for_task,
+        };
 
-            // Marks Finished on drop; unregisters when a resolver is wired.
-            let _state_guard = StateGuard {
-                stats: Arc::clone(&stats_for_state),
-                resolver: resolver_for_thread,
-                scenario_name: scenario_name_for_thread,
-                cleaned_up: cleaned_up_for_thread,
-            };
+        // Drops before _state_guard so downstreams see UpstreamGone
+        // before the scenario flips to Finished.
+        let _bus_finish_guard = BusFinishGuard {
+            bus: bus_for_finish_guard,
+        };
 
-            // Drops before _state_guard so downstreams see UpstreamGone
-            // before the scenario flips to Finished.
-            let _bus_finish_guard = BusFinishGuard {
-                bus: bus_for_finish_guard,
-            };
-
-            // Sleep through the start_delay before entering the event loop.
-            // State stays `Pending` for the delay window so /stats reports
-            // `pending` until the first tick is actually due.
+        let cancel_for_outer = cancel_for_task.clone();
+        let runner = async move {
             if let Some(delay) = start_delay {
-                let deadline = std::time::Instant::now() + delay;
-                while std::time::Instant::now() < deadline {
-                    if !shutdown_for_thread.load(Ordering::SeqCst) {
-                        return Ok(());
+                tokio::select! {
+                    _ = cancel_for_task.cancelled() => {
+                        return Ok::<_, SondaError>(());
                     }
-                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                    let sleep_chunk = remaining.min(Duration::from_millis(50));
-                    if sleep_chunk > Duration::ZERO {
-                        std::thread::sleep(sleep_chunk);
-                    }
+                    _ = tokio::time::sleep(delay) => {}
                 }
             }
 
-            // gated_loop owns its own state transitions; non-gated runs
-            // need someone to mark Running once the start_delay has elapsed.
             if !is_gated {
                 if let Ok(mut st) = stats_for_state.write() {
                     st.transition_state(ScenarioState::Running);
                 }
             }
 
+            let sink_labels = entry.base().labels.clone();
+            let mut sink = create_sink(&entry.base().sink, sink_labels.as_ref()).await?;
+
             match entry {
-                ScenarioEntry::Metrics(config) => run_with_sink_gated_blocking(
-                    &config,
-                    Some(shutdown_for_thread.as_ref()),
-                    Some(Arc::clone(&stats_for_thread)),
-                    upstream_bus,
-                    gate_ctx,
-                ),
-                ScenarioEntry::Logs(config) => run_logs_with_sink_gated_blocking(
-                    &config,
-                    Some(shutdown_for_thread.as_ref()),
-                    Some(Arc::clone(&stats_for_thread)),
-                    gate_ctx,
-                ),
-                ScenarioEntry::Histogram(config) => run_histogram_with_sink_gated_blocking(
-                    &config,
-                    Some(shutdown_for_thread.as_ref()),
-                    Some(Arc::clone(&stats_for_thread)),
-                    gate_ctx,
-                ),
-                ScenarioEntry::Summary(config) => run_summary_with_sink_gated_blocking(
-                    &config,
-                    Some(shutdown_for_thread.as_ref()),
-                    Some(Arc::clone(&stats_for_thread)),
-                    gate_ctx,
-                ),
+                ScenarioEntry::Metrics(config) => {
+                    run_with_sink_gated(
+                        &config,
+                        &mut sink,
+                        &cancel_for_task,
+                        Some(Arc::clone(&stats_for_task)),
+                        upstream_bus,
+                        gate_ctx,
+                    )
+                    .await
+                }
+                ScenarioEntry::Logs(config) => {
+                    run_logs_with_sink_gated(
+                        &config,
+                        &mut sink,
+                        &cancel_for_task,
+                        Some(Arc::clone(&stats_for_task)),
+                        gate_ctx,
+                    )
+                    .await
+                }
+                ScenarioEntry::Histogram(config) => {
+                    run_histogram_with_sink_gated(
+                        &config,
+                        &mut sink,
+                        &cancel_for_task,
+                        Some(Arc::clone(&stats_for_task)),
+                        gate_ctx,
+                    )
+                    .await
+                }
+                ScenarioEntry::Summary(config) => {
+                    run_summary_with_sink_gated(
+                        &config,
+                        &mut sink,
+                        &cancel_for_task,
+                        Some(Arc::clone(&stats_for_task)),
+                        gate_ctx,
+                    )
+                    .await
+                }
             }
-        })
-        .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
+        };
+
+        // `biased` polls the cancel arm first, so an in-flight `tokio::time::sleep`
+        // inside the runner is dropped on cancel rather than awaited to completion.
+        tokio::select! {
+            biased;
+            _ = cancel_for_outer.cancelled() => Ok::<_, SondaError>(()),
+            result = runner => result,
+        }
+    });
 
     Ok(ScenarioHandle::new(
         id,
         name,
         scenario_name,
-        shutdown,
-        Some(thread),
+        cancel,
+        Some(task),
         started_at,
         stats,
         target_rate,
@@ -397,12 +404,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::config::{
-        BaseScheduleConfig, DistributionConfig, HistogramScenarioConfig, LogScenarioConfig,
-        ScenarioConfig, ScenarioEntry, SummaryScenarioConfig,
+        BaseScheduleConfig, DistributionConfig, GapConfig, HistogramScenarioConfig,
+        LogScenarioConfig, ScenarioConfig, ScenarioEntry, SummaryScenarioConfig,
     };
     use crate::encoder::EncoderConfig;
     use crate::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig};
@@ -702,13 +709,12 @@ mod tests {
     /// launch_scenario with a metrics entry returns a handle whose thread is alive.
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_scenario_metrics_returns_running_handle() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry_indefinite("launch_metrics");
 
-        let mut handle =
-            launch_scenario("test-id-1".to_string(), entry, Arc::clone(&shutdown), None)
-                .await
-                .expect("launch must succeed for valid metrics entry");
+        let mut handle = launch_scenario("test-id-1".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed for valid metrics entry");
 
         // The thread must be alive immediately after launch.
         assert!(
@@ -730,13 +736,12 @@ mod tests {
     /// launch_scenario with a logs entry returns a handle whose thread is alive.
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_scenario_logs_returns_running_handle() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = logs_entry_indefinite("launch_logs");
 
-        let mut handle =
-            launch_scenario("test-id-2".to_string(), entry, Arc::clone(&shutdown), None)
-                .await
-                .expect("launch must succeed for valid logs entry");
+        let mut handle = launch_scenario("test-id-2".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed for valid logs entry");
 
         assert!(
             handle.is_running(),
@@ -755,9 +760,9 @@ mod tests {
     /// stop() followed by join() on a metrics scenario exits cleanly (Ok).
     #[tokio::test(flavor = "multi_thread")]
     async fn stop_then_join_metrics_scenario_returns_ok() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry_indefinite("stop_join_metrics");
-        let mut handle = launch_scenario("id-stop-1".to_string(), entry, shutdown, None)
+        let mut handle = launch_scenario("id-stop-1".to_string(), entry, cancel, None)
             .await
             .expect("launch must succeed");
 
@@ -776,9 +781,9 @@ mod tests {
     /// stop() followed by join() on a logs scenario exits cleanly (Ok).
     #[tokio::test(flavor = "multi_thread")]
     async fn stop_then_join_logs_scenario_returns_ok() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = logs_entry_indefinite("stop_join_logs");
-        let mut handle = launch_scenario("id-stop-2".to_string(), entry, shutdown, None)
+        let mut handle = launch_scenario("id-stop-2".to_string(), entry, cancel, None)
             .await
             .expect("launch must succeed");
 
@@ -793,9 +798,9 @@ mod tests {
     /// A finite-duration scenario exits on its own and join() returns Ok.
     #[tokio::test(flavor = "multi_thread")]
     async fn finite_duration_scenario_exits_naturally_and_join_returns_ok() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry("natural_exit");
-        let mut handle = launch_scenario("id-natural".to_string(), entry, shutdown, None)
+        let mut handle = launch_scenario("id-natural".to_string(), entry, cancel, None)
             .await
             .expect("launch must succeed");
 
@@ -814,7 +819,7 @@ mod tests {
     async fn stats_snapshot_shows_nonzero_events_after_brief_run() {
         use std::thread;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         // High rate so events accumulate quickly.
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
@@ -841,10 +846,9 @@ mod tests {
             help: None,
         });
 
-        let mut handle =
-            launch_scenario("id-stats".to_string(), entry, Arc::clone(&shutdown), None)
-                .await
-                .expect("launch must succeed");
+        let mut handle = launch_scenario("id-stats".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed");
 
         // Wait long enough for at least a few events to be emitted and stats updated.
         thread::sleep(Duration::from_millis(200));
@@ -870,7 +874,7 @@ mod tests {
     async fn stats_snapshot_shows_nonzero_events_for_logs_scenario() {
         use std::thread;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
                 name: "logs_stats_test".to_string(),
@@ -901,14 +905,9 @@ mod tests {
             encoder: EncoderConfig::JsonLines { precision: None },
         });
 
-        let mut handle = launch_scenario(
-            "id-log-stats".to_string(),
-            entry,
-            Arc::clone(&shutdown),
-            None,
-        )
-        .await
-        .expect("launch must succeed");
+        let mut handle = launch_scenario("id-log-stats".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed");
 
         thread::sleep(Duration::from_millis(200));
 
@@ -928,9 +927,9 @@ mod tests {
     /// elapsed() is positive immediately after launch.
     #[tokio::test(flavor = "multi_thread")]
     async fn elapsed_is_positive_after_launch() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry_indefinite("elapsed_test");
-        let mut handle = launch_scenario("id-elapsed".to_string(), entry, shutdown, None)
+        let mut handle = launch_scenario("id-elapsed".to_string(), entry, cancel, None)
             .await
             .expect("launch must succeed");
 
@@ -944,29 +943,6 @@ mod tests {
         handle.join(None).ok();
     }
 
-    // ---- shutdown flag is set to true on launch -----------------------------
-
-    /// launch_scenario sets the shared shutdown flag to true (SeqCst), regardless
-    /// of what the caller set it to beforehand.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn launch_scenario_resets_shutdown_flag_to_true() {
-        // Intentionally start the flag as false to verify launch forces it true.
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let entry = metrics_entry_indefinite("flag_reset");
-
-        let mut handle = launch_scenario("id-flag".to_string(), entry, Arc::clone(&shutdown), None)
-            .await
-            .expect("launch must succeed");
-
-        assert!(
-            shutdown.load(Ordering::SeqCst),
-            "launch_scenario must reset the shutdown flag to true"
-        );
-
-        handle.stop();
-        handle.join(None).ok();
-    }
-
     // ---- start_delay: None starts immediately -------------------------------
 
     /// launch_scenario with start_delay=None starts emitting events immediately.
@@ -974,7 +950,7 @@ mod tests {
     async fn launch_with_no_start_delay_emits_events_immediately() {
         use std::thread;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "no_delay_test".to_string(),
@@ -1000,10 +976,9 @@ mod tests {
             help: None,
         });
 
-        let mut handle =
-            launch_scenario("id-nodelay".to_string(), entry, Arc::clone(&shutdown), None)
-                .await
-                .expect("launch must succeed");
+        let mut handle = launch_scenario("id-nodelay".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed");
 
         // Wait briefly and check events have already been emitted.
         thread::sleep(Duration::from_millis(200));
@@ -1026,7 +1001,7 @@ mod tests {
     async fn launch_with_start_delay_does_not_emit_during_delay() {
         use std::thread;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "delay_test".to_string(),
@@ -1053,14 +1028,10 @@ mod tests {
         });
 
         let delay = Duration::from_millis(500);
-        let mut handle = launch_scenario(
-            "id-delay".to_string(),
-            entry,
-            Arc::clone(&shutdown),
-            Some(delay),
-        )
-        .await
-        .expect("launch must succeed");
+        let mut handle =
+            launch_scenario("id-delay".to_string(), entry, cancel.clone(), Some(delay))
+                .await
+                .expect("launch must succeed");
 
         // Check after 100ms — should still be in the delay period.
         thread::sleep(Duration::from_millis(100));
@@ -1093,7 +1064,7 @@ mod tests {
         use std::thread;
         use std::time::Instant;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry_indefinite("shutdown_delay");
 
         // Set a long delay (10 seconds) so we can verify the shutdown works.
@@ -1101,7 +1072,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-shutdown-delay".to_string(),
             entry,
-            Arc::clone(&shutdown),
+            cancel.clone(),
             Some(delay),
         )
         .await
@@ -1142,7 +1113,7 @@ mod tests {
     async fn launch_logs_with_start_delay_does_not_emit_during_delay() {
         use std::thread;
 
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = ScenarioEntry::Logs(LogScenarioConfig {
             base: BaseScheduleConfig {
                 name: "log_delay_test".to_string(),
@@ -1177,7 +1148,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-log-delay".to_string(),
             entry,
-            Arc::clone(&shutdown),
+            cancel.clone(),
             Some(delay),
         )
         .await
@@ -1279,16 +1250,11 @@ mod tests {
     /// A short histogram scenario launches, runs to completion, and join returns Ok.
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_histogram_scenario_runs_to_completion() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = histogram_entry("launch_histogram");
-        let mut handle = launch_scenario(
-            "id-histogram".to_string(),
-            entry,
-            Arc::clone(&shutdown),
-            None,
-        )
-        .await
-        .expect("launch must succeed for valid histogram entry");
+        let mut handle = launch_scenario("id-histogram".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed for valid histogram entry");
 
         let result = handle.join(Some(Duration::from_secs(5)));
         assert!(
@@ -1302,12 +1268,11 @@ mod tests {
     /// A short summary scenario launches, runs to completion, and join returns Ok.
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_summary_scenario_runs_to_completion() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = summary_entry("launch_summary");
-        let mut handle =
-            launch_scenario("id-summary".to_string(), entry, Arc::clone(&shutdown), None)
-                .await
-                .expect("launch must succeed for valid summary entry");
+        let mut handle = launch_scenario("id-summary".to_string(), entry, cancel.clone(), None)
+            .await
+            .expect("launch must succeed for valid summary entry");
 
         let result = handle.join(Some(Duration::from_secs(5)));
         assert!(
@@ -1611,12 +1576,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn state_remains_pending_during_start_delay_then_transitions_to_running() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry_indefinite("delayed_state");
         let mut handle = launch_scenario(
             "delayed-state-id".to_string(),
             entry,
-            Arc::clone(&shutdown),
+            cancel.clone(),
             Some(Duration::from_millis(200)),
         )
         .await
@@ -1642,9 +1607,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn launch_non_gated_scenario_state_transitions_through_running_to_finished() {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let entry = metrics_entry("state_lifecycle");
-        let mut handle = launch_scenario("state-id".to_string(), entry, shutdown, None)
+        let mut handle = launch_scenario("state-id".to_string(), entry, cancel, None)
             .await
             .expect("launch must succeed");
 
@@ -1826,7 +1791,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-gauge".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1846,7 +1811,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-step".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1866,7 +1831,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-hist".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1885,7 +1850,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-sum".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1904,7 +1869,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-explicit".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1924,7 +1889,7 @@ mod tests {
         let mut handle = launch_scenario(
             "id-meta-logs".to_string(),
             entry,
-            Arc::new(AtomicBool::new(true)),
+            CancellationToken::new(),
             None,
         )
         .await
@@ -1935,5 +1900,62 @@ mod tests {
         );
         handle.stop();
         handle.join(Some(Duration::from_secs(2))).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_during_gap_sleep_exits_within_200ms() {
+        let cancel = CancellationToken::new();
+        let entry = ScenarioEntry::Metrics(ScenarioConfig {
+            base: BaseScheduleConfig {
+                name: "cancel_during_gap_sleep".to_string(),
+                rate: 100.0,
+                duration: None,
+                gaps: Some(GapConfig {
+                    every: "3s".to_string(),
+                    r#for: "2900ms".to_string(),
+                }),
+                bursts: None,
+                cardinality_spikes: None,
+                dynamic_labels: None,
+                labels: None,
+                sink: SinkConfig::Stdout,
+                phase_offset: None,
+                clock_group: None,
+                clock_group_is_auto: None,
+                start_time: None,
+                jitter: None,
+                jitter_seed: None,
+                on_sink_error: crate::OnSinkError::Warn,
+            },
+            generator: GeneratorConfig::Constant { value: 1.0 },
+            encoder: EncoderConfig::PrometheusText { precision: None },
+            metric_type: None,
+            help: None,
+        });
+
+        let mut handle = launch_scenario(
+            "cancel-gap-sleep-id".to_string(),
+            entry,
+            cancel.clone(),
+            None,
+        )
+        .await
+        .expect("launch must succeed");
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let cancel_at = Instant::now();
+        handle.stop();
+        let join_result = handle.join_async(Some(Duration::from_millis(500))).await;
+        let exit_duration = cancel_at.elapsed();
+
+        assert!(
+            join_result.is_ok(),
+            "join_async must complete within 500ms; got {join_result:?}"
+        );
+        assert!(
+            exit_duration < Duration::from_millis(200),
+            "cancel-to-exit must be under 200ms; took {exit_duration:?}"
+        );
     }
 }

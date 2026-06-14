@@ -1,9 +1,10 @@
 //! Shared schedule loop for metrics, logs, histograms, and summaries.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use tokio_util::sync::CancellationToken;
 
 use crate::compiler::{DelayClause, UnresolvedBehavior};
 use crate::config::validate::StartTime;
@@ -131,6 +132,7 @@ pub(crate) type TickFn<'a> = dyn FnMut(
         &mut TickOutput,
         &mut Vec<MetricEvent>,
     ) -> Result<TickResult, SondaError>
+    + Send
     + 'a;
 
 /// Scenario-level wall-clock anchor: the resolved emission-time base plus the
@@ -187,19 +189,19 @@ pub enum CloseSignal {
 /// transition. Closures push markers into the supplied [`TickOutput`].
 pub type CloseEmitFn = Box<dyn FnMut(&mut TickOutput) -> Result<(), SondaError> + Send>;
 
-/// Run the shared schedule loop until duration expires or shutdown is
+/// Run the shared schedule loop until duration expires or cancellation is
 /// signalled, then flush the sink and apply the sink-error policy.
 pub(crate) async fn run_schedule_loop(
     schedule: &ParsedSchedule,
     rate: f64,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     sink: &mut Box<dyn Sink>,
     tick_fn: &mut TickFn<'_>,
 ) -> Result<(), SondaError> {
     let stats_for_flush = stats.clone();
     let loop_result = run_schedule_loop_with_initial_tick(
-        schedule, rate, shutdown, stats, 0, None, None, sink, tick_fn,
+        schedule, rate, cancel, stats, 0, None, None, sink, tick_fn,
     )
     .await;
     finalize_sink(schedule, stats_for_flush.as_ref(), sink, loop_result).await
@@ -227,7 +229,7 @@ async fn finalize_sink(
 pub(crate) async fn run_schedule_loop_with_initial_tick(
     schedule: &ParsedSchedule,
     rate: f64,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     initial_tick: u64,
     last_tick_out: Option<&AtomicU64>,
@@ -260,11 +262,8 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
     };
 
     loop {
-        // Check shutdown flag first — highest priority exit path.
-        if let Some(flag) = shutdown {
-            if !flag.load(Ordering::SeqCst) {
-                break;
-            }
+        if cancel.is_cancelled() {
+            break;
         }
 
         let elapsed = start.elapsed();
@@ -289,7 +288,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
                 }
                 let sleep_for = time_until_gap_end(elapsed, gap);
                 if sleep_for > Duration::ZERO {
-                    thread::sleep(sleep_for);
+                    tokio::time::sleep(sleep_for).await;
                 }
                 // After sleeping through the gap, reset the deadline so we
                 // don't try to catch up for suppressed events. Re-derive
@@ -324,7 +323,7 @@ pub(crate) async fn run_schedule_loop_with_initial_tick(
         // Deadline-based rate control.
         let now = Instant::now();
         if now < next_deadline {
-            thread::sleep(next_deadline - now);
+            tokio::time::sleep(next_deadline - now).await;
         }
 
         // Invoke the signal-specific tick callback.
@@ -651,7 +650,7 @@ impl GateContext {
 pub(crate) async fn gated_loop(
     schedule: &ParsedSchedule,
     rate: f64,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     mut gate_ctx: GateContext,
     sink: &mut Box<dyn Sink>,
@@ -663,7 +662,7 @@ pub(crate) async fn gated_loop(
     let body_result = gated_loop_body(
         schedule,
         rate,
-        shutdown,
+        cancel,
         stats.as_ref(),
         &mut gate_ctx,
         &mut close_warn_limiter,
@@ -696,7 +695,7 @@ pub(crate) async fn gated_loop(
 async fn gated_loop_body(
     schedule: &ParsedSchedule,
     rate: f64,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<&Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
     close_warn_limiter: &mut SinkErrorRateLimiter,
@@ -733,7 +732,7 @@ async fn gated_loop_body(
     write_state(stats, state, paused_zero_rate);
 
     loop {
-        if shutdown_requested(shutdown) {
+        if cancel.is_cancelled() {
             return Ok(LoopExit::Shutdown);
         }
         if duration_expired(schedule, started_at) {
@@ -744,7 +743,14 @@ async fn gated_loop_body(
             ScenarioState::Pending => {
                 if !after_satisfied {
                     let wait = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
-                    match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
+                    let edge = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            return Ok(LoopExit::Shutdown);
+                        }
+                        e = gate_ctx.gate_rx.recv_edge_timeout(wait) => e,
+                    };
+                    match edge {
                         Some(GateEdge::AfterFired) => {
                             after_satisfied = true;
                         }
@@ -785,15 +791,13 @@ async fn gated_loop_body(
                 }
             }
             ScenarioState::Running => {
-                let segment_running = Arc::new(AtomicBool::new(true));
                 let last_tick = Arc::new(AtomicU64::new(next_tick));
                 let exit = run_running_segment(
                     schedule,
                     rate,
-                    shutdown,
+                    cancel,
                     stats.cloned(),
                     gate_ctx,
-                    &segment_running,
                     next_tick,
                     Arc::clone(&last_tick),
                     wall,
@@ -804,7 +808,7 @@ async fn gated_loop_body(
                 .await?;
                 next_tick = last_tick.load(Ordering::SeqCst);
 
-                if shutdown_requested(shutdown) {
+                if cancel.is_cancelled() {
                     return Ok(LoopExit::Shutdown);
                 }
                 if duration_expired(schedule, started_at) {
@@ -829,10 +833,8 @@ async fn gated_loop_body(
                     continue;
                 }
                 if exit == SegmentExit::WhileClose
-                    && !debounce_close_to_paused(
-                        schedule, started_at, shutdown, gate_ctx, &debounce,
-                    )
-                    .await
+                    && !debounce_close_to_paused(schedule, started_at, cancel, gate_ctx, &debounce)
+                        .await
                 {
                     while_open = true;
                     continue;
@@ -863,7 +865,13 @@ async fn gated_loop_body(
                     wakeup = wakeup.min(remaining);
                 }
 
-                let recv = gate_ctx.gate_rx.recv_edge_timeout(wakeup).await;
+                let recv = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        return Ok(LoopExit::Shutdown);
+                    }
+                    r = gate_ctx.gate_rx.recv_edge_timeout(wakeup) => r,
+                };
                 let now = Instant::now();
                 match recv {
                     Some(GateEdge::WhileOpen) => {
@@ -908,15 +916,13 @@ async fn gated_loop_body(
                 let mode = gate_ctx.if_unresolved.unwrap_or_default();
                 match mode {
                     UnresolvedBehavior::Open => {
-                        let segment_running = Arc::new(AtomicBool::new(true));
                         let last_tick = Arc::new(AtomicU64::new(next_tick));
                         let exit = run_running_segment(
                             schedule,
                             rate,
-                            shutdown,
+                            cancel,
                             stats.cloned(),
                             gate_ctx,
-                            &segment_running,
                             next_tick,
                             Arc::clone(&last_tick),
                             wall,
@@ -927,7 +933,7 @@ async fn gated_loop_body(
                         .await?;
                         next_tick = last_tick.load(Ordering::SeqCst);
 
-                        if shutdown_requested(shutdown) {
+                        if cancel.is_cancelled() {
                             return Ok(LoopExit::Shutdown);
                         }
                         if duration_expired(schedule, started_at) {
@@ -964,7 +970,14 @@ async fn gated_loop_body(
                     }
                     UnresolvedBehavior::Closed | UnresolvedBehavior::Pending => {
                         let wakeup = remaining_until(schedule, started_at, PAUSED_POLL_INTERVAL);
-                        match gate_ctx.gate_rx.recv_edge_timeout(wakeup).await {
+                        let recv = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                return Ok(LoopExit::Shutdown);
+                            }
+                            r = gate_ctx.gate_rx.recv_edge_timeout(wakeup) => r,
+                        };
+                        match recv {
                             Some(GateEdge::WhileOpen) => {
                                 while_open = true;
                                 state = ScenarioState::Pending;
@@ -1011,10 +1024,6 @@ fn close_target_state(
     } else {
         ScenarioState::Paused
     }
-}
-
-fn shutdown_requested(shutdown: Option<&AtomicBool>) -> bool {
-    shutdown.map(|f| !f.load(Ordering::SeqCst)).unwrap_or(false)
 }
 
 fn duration_expired(schedule: &ParsedSchedule, started_at: Instant) -> bool {
@@ -1112,7 +1121,7 @@ enum LoopExit {
 async fn debounce_close_to_paused(
     schedule: &ParsedSchedule,
     started_at: Instant,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     gate_ctx: &mut GateContext,
     debounce: &DebounceState,
 ) -> bool {
@@ -1122,7 +1131,7 @@ async fn debounce_close_to_paused(
 
     let deadline = Instant::now() + debounce.delay_close;
     loop {
-        if shutdown_requested(shutdown) || duration_expired(schedule, started_at) {
+        if cancel.is_cancelled() || duration_expired(schedule, started_at) {
             return true;
         }
         let now = Instant::now();
@@ -1133,7 +1142,12 @@ async fn debounce_close_to_paused(
         if let Some(remaining) = remaining_duration(schedule, started_at) {
             wait = wait.min(remaining);
         }
-        match gate_ctx.gate_rx.recv_edge_timeout(wait).await {
+        let recv = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return true,
+            r = gate_ctx.gate_rx.recv_edge_timeout(wait) => r,
+        };
+        match recv {
             Some(GateEdge::WhileOpen) => return false,
             Some(GateEdge::WhileClose) => {}
             Some(GateEdge::AfterFired) => {}
@@ -1145,7 +1159,7 @@ async fn debounce_close_to_paused(
 
 /// Run one `Running` segment: a fresh `run_schedule_loop` with a wrapped
 /// `tick_fn` that polls the gate channel after every successful tick.
-/// On `WhileClose` the segment_running flag is cleared so the inner loop
+/// On `WhileClose` the segment cancellation token fires so the inner loop
 /// exits at its top-of-loop shutdown check.
 ///
 /// `initial_tick` seeds the inner loop's tick counter on resume; `last_tick`
@@ -1155,10 +1169,9 @@ async fn debounce_close_to_paused(
 async fn run_running_segment(
     schedule: &ParsedSchedule,
     rate: f64,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     gate_ctx: &mut GateContext,
-    segment_running: &Arc<AtomicBool>,
     initial_tick: u64,
     last_tick: Arc<AtomicU64>,
     wall: WallClock,
@@ -1166,18 +1179,11 @@ async fn run_running_segment(
     tick_fn: &mut TickFn<'_>,
     exit_on_while_open: bool,
 ) -> Result<SegmentExit, SondaError> {
-    let saw_close = Arc::new(AtomicBool::new(false));
-    let saw_gone = Arc::new(AtomicBool::new(false));
-    let saw_open = Arc::new(AtomicBool::new(false));
+    let segment_cancel = cancel.child_token();
+    let observed: Arc<AtomicU8> = Arc::new(AtomicU8::new(SEGMENT_EXIT_NONE));
 
-    // The inner loop's `shutdown` parameter wants "true = keep running."
-    // We pass our segment flag, and we additionally drain the user
-    // shutdown into the segment flag inside the wrapped tick.
-    let user_shutdown_for_wrapper = shutdown;
-    let segment_for_wrapper = Arc::clone(segment_running);
-    let saw_close_for_wrapper = Arc::clone(&saw_close);
-    let saw_gone_for_wrapper = Arc::clone(&saw_gone);
-    let saw_open_for_wrapper = Arc::clone(&saw_open);
+    let segment_for_wrapper = segment_cancel.clone();
+    let observed_for_wrapper = Arc::clone(&observed);
     let gate_rx = &mut gate_ctx.gate_rx;
 
     type WrappedTick<'a> = Box<
@@ -1186,6 +1192,7 @@ async fn run_running_segment(
                 &mut TickOutput,
                 &mut Vec<MetricEvent>,
             ) -> Result<TickResult, SondaError>
+            + Send
             + 'a,
     >;
     let mut wrapped: WrappedTick<'_> = Box::new(
@@ -1195,33 +1202,23 @@ async fn run_running_segment(
               -> Result<TickResult, SondaError> {
             let outcome = tick_fn(ctx, output, events_buf);
 
-            // Poll for gate edges after the tick. On WhileClose, break out.
             while let Some(edge) = gate_rx.try_recv() {
                 match edge {
                     GateEdge::WhileClose => {
-                        saw_close_for_wrapper.store(true, Ordering::SeqCst);
-                        segment_for_wrapper.store(false, Ordering::SeqCst);
+                        observed_for_wrapper.store(SEGMENT_EXIT_WHILE_CLOSE, Ordering::SeqCst);
+                        segment_for_wrapper.cancel();
                     }
                     GateEdge::WhileOpen => {
                         if exit_on_while_open {
-                            saw_open_for_wrapper.store(true, Ordering::SeqCst);
-                            segment_for_wrapper.store(false, Ordering::SeqCst);
+                            observed_for_wrapper.store(SEGMENT_EXIT_WHILE_OPEN, Ordering::SeqCst);
+                            segment_for_wrapper.cancel();
                         }
                     }
-                    GateEdge::AfterFired => {
-                        // Already past the after gate.
-                    }
+                    GateEdge::AfterFired => {}
                     GateEdge::UpstreamGone => {
-                        saw_gone_for_wrapper.store(true, Ordering::SeqCst);
-                        segment_for_wrapper.store(false, Ordering::SeqCst);
+                        observed_for_wrapper.store(SEGMENT_EXIT_UPSTREAM_GONE, Ordering::SeqCst);
+                        segment_for_wrapper.cancel();
                     }
-                }
-            }
-
-            // Honor user shutdown immediately (don't wait for next loop iter).
-            if let Some(user) = user_shutdown_for_wrapper {
-                if !user.load(Ordering::SeqCst) {
-                    segment_for_wrapper.store(false, Ordering::SeqCst);
                 }
             }
 
@@ -1232,7 +1229,7 @@ async fn run_running_segment(
     run_schedule_loop_with_initial_tick(
         schedule,
         rate,
-        Some(segment_running.as_ref()),
+        &segment_cancel,
         stats,
         initial_tick,
         Some(last_tick.as_ref()),
@@ -1242,15 +1239,21 @@ async fn run_running_segment(
     )
     .await?;
 
-    Ok(if saw_gone.load(Ordering::SeqCst) {
-        SegmentExit::UpstreamGone
-    } else if saw_close.load(Ordering::SeqCst) {
-        SegmentExit::WhileClose
-    } else if saw_open.load(Ordering::SeqCst) {
-        SegmentExit::WhileOpen
-    } else {
-        SegmentExit::ShutdownOrDuration
-    })
+    Ok(decode_segment_exit(observed.load(Ordering::SeqCst)))
+}
+
+const SEGMENT_EXIT_NONE: u8 = 0;
+const SEGMENT_EXIT_WHILE_CLOSE: u8 = 1;
+const SEGMENT_EXIT_UPSTREAM_GONE: u8 = 2;
+const SEGMENT_EXIT_WHILE_OPEN: u8 = 3;
+
+fn decode_segment_exit(code: u8) -> SegmentExit {
+    match code {
+        SEGMENT_EXIT_UPSTREAM_GONE => SegmentExit::UpstreamGone,
+        SEGMENT_EXIT_WHILE_CLOSE => SegmentExit::WhileClose,
+        SEGMENT_EXIT_WHILE_OPEN => SegmentExit::WhileOpen,
+        _ => SegmentExit::ShutdownOrDuration,
+    }
 }
 
 /// Open / close debounce timers for `while:` transitions.
@@ -1527,8 +1530,8 @@ mod tests {
         let mut sink = null_sink();
         run_schedule_loop(
             &schedule,
-            20.0, // 20 events/sec for 500ms = ~10 events
-            None,
+            20.0,
+            &CancellationToken::new(),
             None,
             &mut sink,
             &mut tick_fn,
@@ -1548,20 +1551,17 @@ mod tests {
 
     // ---- Shutdown flag: stops the loop early --------------------------------
 
-    /// Clearing the shutdown flag stops the loop before duration expires.
+    /// Cancelling the token stops the loop before duration expires.
     #[tokio::test]
-    async fn loop_stops_on_shutdown_flag() {
-        use std::sync::atomic::AtomicBool;
-
-        let schedule = minimal_schedule(None); // indefinite
+    async fn loop_stops_on_cancel() {
+        let schedule = minimal_schedule(None);
         let mut event_count: u64 = 0;
 
-        // Spawn a thread to clear the flag after 200ms.
-        let shutdown_arc = Arc::new(AtomicBool::new(true));
-        let flag_clone = Arc::clone(&shutdown_arc);
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            flag_clone.store(false, Ordering::SeqCst);
+            cancel_for_thread.cancel();
         });
 
         let mut tick_fn = |_ctx: &TickContext<'_>,
@@ -1576,23 +1576,13 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        run_schedule_loop(
-            &schedule,
-            50.0,
-            Some(shutdown_arc.as_ref()),
-            None,
-            &mut sink,
-            &mut tick_fn,
-        )
-        .await
-        .expect("loop must succeed");
+        run_schedule_loop(&schedule, 50.0, &cancel, None, &mut sink, &mut tick_fn)
+            .await
+            .expect("loop must succeed");
 
         handle.join().expect("thread must complete");
 
-        assert!(
-            event_count > 0,
-            "some events should have been emitted before shutdown"
-        );
+        assert!(event_count > 0);
     }
 
     // ---- Gap window: suppresses events during gap ---------------------------
@@ -1627,9 +1617,16 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        run_schedule_loop(&schedule, 100.0, None, None, &mut sink, &mut tick_fn)
-            .await
-            .expect("loop must succeed");
+        run_schedule_loop(
+            &schedule,
+            100.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await
+        .expect("loop must succeed");
 
         // Only ~100 events from the first 1s before the gap kicks in.
         assert!(
@@ -1671,9 +1668,16 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn)
-            .await
-            .expect("loop must succeed");
+        run_schedule_loop(
+            &schedule,
+            10.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await
+        .expect("loop must succeed");
 
         // Without burst: ~10 events. With 5x burst: ~50 events.
         assert!(
@@ -1704,7 +1708,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -1752,7 +1756,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -1809,9 +1813,16 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        run_schedule_loop(&schedule, 100.0, None, None, &mut sink, &mut tick_fn)
-            .await
-            .expect("loop must succeed");
+        run_schedule_loop(
+            &schedule,
+            100.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await
+        .expect("loop must succeed");
 
         assert!(
             saw_spike_windows,
@@ -1835,7 +1846,15 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn).await;
+        let result = run_schedule_loop(
+            &schedule,
+            10.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await;
 
         assert!(
             matches!(result, Err(SondaError::Encoder(_))),
@@ -1856,7 +1875,15 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        let result = run_schedule_loop(&schedule, 10.0, None, None, &mut sink, &mut tick_fn).await;
+        let result = run_schedule_loop(
+            &schedule,
+            10.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await;
 
         assert!(
             matches!(result, Err(SondaError::Sink(_))),
@@ -1884,7 +1911,7 @@ mod tests {
         let result = run_schedule_loop(
             &schedule,
             10.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -1933,7 +1960,15 @@ mod tests {
         };
 
         let mut sink = null_sink();
-        let result = run_schedule_loop(&schedule, 50.0, None, None, &mut sink, &mut tick_fn).await;
+        let result = run_schedule_loop(
+            &schedule,
+            50.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -1960,7 +1995,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -2010,7 +2045,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -2048,7 +2083,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -2094,7 +2129,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -2178,7 +2213,12 @@ mod tests {
             .build()
             .unwrap();
         let result = rt.block_on(run_schedule_loop(
-            &schedule, 30.0, None, None, &mut sink, &mut tick_fn,
+            &schedule,
+            30.0,
+            &CancellationToken::new(),
+            None,
+            &mut sink,
+            &mut tick_fn,
         ));
 
         match expected {
@@ -2267,7 +2307,7 @@ mod tests {
         run_schedule_loop_with_initial_tick(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             None,
             30,
             None,
@@ -2304,7 +2344,7 @@ mod tests {
         run_schedule_loop_with_initial_tick(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             None,
             10,
             Some(&last_tick),
@@ -2336,11 +2376,10 @@ mod tests {
     #[tokio::test]
     async fn events_buf_capacity_does_not_grow_under_metrics_workload() {
         use crate::model::metric::{Labels, MetricEvent};
-        use std::cell::Cell;
 
         let schedule = minimal_schedule(Some(Duration::from_millis(500)));
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let first_ptr: Cell<Option<usize>> = Cell::new(None);
+        let mut first_ptr: Option<usize> = None;
 
         let mut tick_fn = |_ctx: &TickContext<'_>,
                            _output: &mut TickOutput,
@@ -2348,23 +2387,12 @@ mod tests {
          -> Result<TickResult, SondaError> {
             let event =
                 MetricEvent::new("test".to_string(), 1.0, Labels::default()).expect("valid name");
-            assert_eq!(
-                events_buf.len(),
-                0,
-                "events_buf must be cleared by the loop before each tick"
-            );
-            assert_eq!(
-                events_buf.capacity(),
-                16,
-                "events_buf capacity must stay at the pre-allocated 16 for a 1-event-per-tick workload"
-            );
+            assert_eq!(events_buf.len(), 0);
+            assert_eq!(events_buf.capacity(), 16);
             let ptr = events_buf.as_ptr() as usize;
-            match first_ptr.get() {
-                None => first_ptr.set(Some(ptr)),
-                Some(p) => assert_eq!(
-                    ptr, p,
-                    "events_buf backing allocation must be reused across ticks"
-                ),
+            match first_ptr {
+                None => first_ptr = Some(ptr),
+                Some(p) => assert_eq!(ptr, p, "events_buf backing allocation must be reused"),
             }
             events_buf.push(event);
             Ok(TickResult {
@@ -2377,7 +2405,7 @@ mod tests {
         run_schedule_loop(
             &schedule,
             50.0,
-            None,
+            &CancellationToken::new(),
             Some(Arc::clone(&stats)),
             &mut sink,
             &mut tick_fn,
@@ -2390,10 +2418,7 @@ mod tests {
             st.total_events > 1,
             "loop must have executed multiple ticks to exercise the buffer reuse"
         );
-        assert!(
-            first_ptr.get().is_some(),
-            "tick_fn must have observed at least one events_buf pointer"
-        );
+        assert!(first_ptr.is_some());
     }
 
     #[test]

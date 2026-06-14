@@ -63,6 +63,7 @@ pub use schedule::gate_bus::{
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::{ScenarioState, ScenarioStats};
+pub use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "config")]
 pub use compiler::prepare::PrepareError;
@@ -245,6 +246,13 @@ pub enum RuntimeError {
     /// A `tokio::task::spawn_blocking` task panicked or was cancelled.
     #[error("blocking task failed: {0}")]
     TaskPanicked(String),
+
+    /// A scenario task could not be joined safely in the current runtime context.
+    #[error("scenario task aborted: {reason}")]
+    TaskAborted {
+        /// Why the task could not be joined (e.g., called from a current_thread runtime).
+        reason: &'static str,
+    },
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+
+use sonda_core::CancellationToken;
 use std::thread;
 use std::time::Duration;
 
@@ -124,15 +126,10 @@ async fn warn_policy_keeps_thread_alive_under_persistent_sink_failure() {
         OnSinkError::Warn,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "warn-persistent".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .await
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("warn-persistent".to_string(), entry, cancel.clone(), None)
+        .await
+        .expect("launch must succeed");
 
     thread::sleep(Duration::from_millis(800));
     let snap_mid = handle.stats_snapshot();
@@ -189,15 +186,10 @@ async fn warn_policy_keeps_delivery_health_gated_on_real_flush() {
         OnSinkError::Warn,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "warn-dead-url".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .await
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("warn-dead-url".to_string(), entry, cancel.clone(), None)
+        .await
+        .expect("launch must succeed");
 
     handle.join(Some(Duration::from_secs(3))).expect("join Ok");
 
@@ -239,15 +231,10 @@ async fn fail_policy_exits_thread_with_sink_error() {
         OnSinkError::Fail,
     );
 
-    let shutdown = Arc::new(AtomicBool::new(true));
-    let mut handle = launch_scenario(
-        "fail-propagates".to_string(),
-        entry,
-        Arc::clone(&shutdown),
-        None,
-    )
-    .await
-    .expect("launch must succeed");
+    let cancel = CancellationToken::new();
+    let mut handle = launch_scenario("fail-propagates".to_string(), entry, cancel.clone(), None)
+        .await
+        .expect("launch must succeed");
 
     let join_result = handle.join(Some(Duration::from_secs(5)));
 

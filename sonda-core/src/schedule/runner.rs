@@ -1,15 +1,9 @@
 //! The metric scenario event loop.
-//!
-//! The runner ties together all sonda-core components: it reads a
-//! [`ScenarioConfig`], builds the generator, encoder, and sink, then delegates
-//! to the shared [`core_loop::run_schedule_loop`](super::core_loop::run_schedule_loop)
-//! for rate control, gap/burst/spike window handling, stats tracking, and
-//! shutdown management. Only the metric-specific event generation and encoding
-//! logic lives here.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
+
+use tokio_util::sync::CancellationToken;
 
 use crate::config::ScenarioConfig;
 use crate::encoder::create_encoder;
@@ -26,84 +20,26 @@ use crate::sink::{create_sink, Sink, SinkConfig};
 use crate::SondaError;
 
 /// Run a scenario to completion, emitting encoded metric events at the configured rate.
-///
-/// This is the primary entry point. It constructs a sink from the config and then
-/// delegates to [`run_with_sink`] with no shutdown flag and no stats collection.
-///
-/// This function blocks the calling thread until the scenario duration has
-/// elapsed. If no duration is specified in the config it runs indefinitely.
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
 pub async fn run(config: &ScenarioConfig) -> Result<(), SondaError> {
     let mut sink = create_sink(&config.sink, None).await?;
-    run_with_sink(config, &mut sink, None, None).await
+    let cancel = CancellationToken::new();
+    run_with_sink(config, &mut sink, &cancel, None).await
 }
 
 /// Run a scenario to completion, writing encoded events into the provided sink.
-///
-/// This function builds the metric generator, encoder, and label set from the
-/// config, then delegates to the shared schedule loop via
-/// [`core_loop::run_schedule_loop`](super::core_loop::run_schedule_loop).
-/// The metric-specific per-tick work (value generation, label spike injection,
-/// `MetricEvent` construction, encoding, and sink writing) is captured in a
-/// closure passed to the shared loop.
-///
-/// # Parameters
-///
-/// * `config` — the scenario configuration.
-/// * `sink` — the destination for encoded metric events.
-/// * `shutdown` — an optional atomic flag; when set to `false` the loop exits
-///   cleanly after the current tick, flushes the sink, and returns `Ok(())`.
-///   Pass `None` if no external shutdown signal is needed (e.g., in tests).
-/// * `stats` — an optional shared stats object. When `Some`, the runner updates
-///   `total_events`, `bytes_emitted`, `current_rate`, `in_gap`, `in_burst`, and
-///   `errors` on each tick. The write lock is held only for the brief counter
-///   update, not during encode/write. Pass `None` to skip stats collection with
-///   no overhead (e.g., in direct CLI usage or tests).
-///
-/// # Errors
-///
-/// Returns [`SondaError`] if config validation, encoding, or sink I/O fails.
-/// If an error occurs during the loop and flushing also fails, the loop error
-/// is returned (the flush error is discarded to preserve the original cause).
 pub async fn run_with_sink(
     config: &ScenarioConfig,
     sink: &mut Box<dyn Sink>,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
 ) -> Result<(), SondaError> {
-    run_with_sink_gated(config, sink, shutdown, stats, None, None).await
-}
-
-/// Run a metric scenario with optional `while:` / `after:` gating.
-///
-/// `upstream_bus` is the bus this scenario PUBLISHES into (for downstream
-/// gates to subscribe to). `gate_ctx` is what THIS scenario consumes from
-/// an upstream bus. Both are independent — a scenario can be both an
-/// upstream (publishing) and a downstream (gated).
-pub fn run_with_sink_gated_blocking(
-    config: &ScenarioConfig,
-    shutdown: Option<&AtomicBool>,
-    stats: Option<Arc<RwLock<ScenarioStats>>>,
-    upstream_bus: Option<Arc<GateBus>>,
-    gate_ctx: Option<GateContext>,
-) -> Result<(), SondaError> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| crate::SondaError::Runtime(crate::RuntimeError::SpawnFailed(e)))?;
-    rt.block_on(async {
-        let mut sink = create_sink(&config.sink, None).await?;
-        run_with_sink_gated(config, &mut sink, shutdown, stats, upstream_bus, gate_ctx).await
-    })
+    run_with_sink_gated(config, sink, cancel, stats, None, None).await
 }
 
 pub async fn run_with_sink_gated(
     config: &ScenarioConfig,
     sink: &mut Box<dyn Sink>,
-    shutdown: Option<&AtomicBool>,
+    cancel: &CancellationToken,
     stats: Option<Arc<RwLock<ScenarioStats>>>,
     upstream_bus: Option<Arc<GateBus>>,
     gate_ctx: Option<GateContext>,
@@ -186,15 +122,8 @@ pub async fn run_with_sink_gated(
 
     match gate_ctx {
         None => {
-            core_loop::run_schedule_loop(
-                &schedule,
-                config.rate,
-                shutdown,
-                stats,
-                sink,
-                &mut tick_fn,
-            )
-            .await
+            core_loop::run_schedule_loop(&schedule, config.rate, cancel, stats, sink, &mut tick_fn)
+                .await
         }
         Some(mut ctx) => {
             ctx.close_emit = build_close_emit(
@@ -207,7 +136,7 @@ pub async fn run_with_sink_gated(
             core_loop::gated_loop(
                 &schedule,
                 config.rate,
-                shutdown,
+                cancel,
                 stats,
                 ctx,
                 sink,
@@ -313,6 +242,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
 
     use crate::config::{BaseScheduleConfig, GapConfig, ScenarioConfig};
     use crate::encoder::EncoderConfig;
@@ -393,7 +323,7 @@ mod tests {
     async fn integration_rate_100_duration_1s_emits_approximately_100_events() {
         let config = make_config(100.0, "1s", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -410,7 +340,7 @@ mod tests {
     async fn integration_output_lines_start_with_metric_name() {
         let config = make_config(50.0, "200ms", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -429,7 +359,7 @@ mod tests {
     async fn integration_output_ends_with_newline() {
         let config = make_config(50.0, "200ms", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -454,7 +384,7 @@ mod tests {
             }),
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -506,7 +436,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -573,7 +503,7 @@ mod tests {
             }),
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -608,7 +538,7 @@ mod tests {
             }),
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -675,7 +605,7 @@ mod tests {
             }),
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -735,9 +665,14 @@ mod tests {
             }),
         );
         let (mut sink_no_gap, buf_no_gap) = probe_sink();
-        super::run_with_sink(&config_no_gap_burst, &mut sink_no_gap, None, None)
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config_no_gap_burst,
+            &mut sink_no_gap,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("run must succeed");
         let events_burst_only = buf_no_gap
             .lock()
             .unwrap()
@@ -761,9 +696,14 @@ mod tests {
             }),
         );
         let (mut sink_gap_burst, buf_gap_burst) = probe_sink();
-        super::run_with_sink(&config_gap_and_burst, &mut sink_gap_burst, None, None)
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config_gap_and_burst,
+            &mut sink_gap_burst,
+            &CancellationToken::new(),
+            None,
+        )
+        .await
+        .expect("run must succeed");
         let events_gap_and_burst = buf_gap_burst
             .lock()
             .unwrap()
@@ -792,9 +732,14 @@ mod tests {
         let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
-        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await
+        .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
         assert!(
@@ -811,7 +756,7 @@ mod tests {
         let (mut sink, buf) = probe_sink();
 
         // Pass None for stats — should work fine without buffering.
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -831,9 +776,14 @@ mod tests {
         let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
-        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await
+        .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
         for event in st.current_values.values() {
@@ -841,15 +791,12 @@ mod tests {
         }
     }
 
-    /// The shutdown flag stops the runner even during a burst window.
+    /// Cancelling the token stops the runner even during a burst window.
     #[tokio::test]
-    async fn shutdown_flag_stops_run_during_burst() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
+    async fn cancel_stops_run_during_burst() {
         let config = make_config_with_burst(
             1000.0,
-            "60s", // long duration — shutdown flag stops it
+            "60s",
             None,
             Some(crate::config::BurstConfig {
                 every: "10s".to_string(),
@@ -858,17 +805,16 @@ mod tests {
             }),
         );
 
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let shutdown_clone = Arc::clone(&shutdown);
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
 
-        // Set the flag to false after a short delay to trigger shutdown.
         let handle = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(200));
-            shutdown_clone.store(false, Ordering::SeqCst);
+            cancel_for_thread.cancel();
         });
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, Some(&shutdown), None)
+        super::run_with_sink(&config, &mut sink, &cancel, None)
             .await
             .expect("run must succeed");
         handle.join().expect("thread must complete");
@@ -935,7 +881,7 @@ mod tests {
         // Run for 500ms inside a spike window (spike occupies 0..9s of each 10s cycle)
         let config = make_config_with_spike(50.0, "500ms", spike);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -954,7 +900,7 @@ mod tests {
     async fn integration_no_spike_config_produces_no_spike_labels() {
         let config = make_config(50.0, "200ms", None);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -982,7 +928,7 @@ mod tests {
         };
         let config = make_config_with_spike(50.0, "500ms", spike);
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -1029,9 +975,14 @@ mod tests {
         let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
-        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await
+        .expect("run must succeed");
 
         // The entire 200ms run is inside the spike window (0..9s of 10s cycle).
         // The final stats snapshot should show in_cardinality_spike = true.
@@ -1053,9 +1004,14 @@ mod tests {
         let (mut sink, _buf) = probe_sink();
         let stats = Arc::new(RwLock::new(crate::schedule::stats::ScenarioStats::default()));
 
-        super::run_with_sink(&config, &mut sink, None, Some(Arc::clone(&stats)))
-            .await
-            .expect("run must succeed");
+        super::run_with_sink(
+            &config,
+            &mut sink,
+            &CancellationToken::new(),
+            Some(Arc::clone(&stats)),
+        )
+        .await
+        .expect("run must succeed");
 
         let st = stats.read().expect("lock must not be poisoned");
         assert_eq!(
@@ -1099,7 +1055,8 @@ mod tests {
             help: None,
         };
         let (mut sink, _buf) = probe_sink();
-        let result = super::run_with_sink(&config, &mut sink, None, None).await;
+        let result =
+            super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None).await;
         assert!(
             matches!(result, Err(crate::SondaError::Config(ref e)) if e.to_string().contains("123-invalid")),
             "expected Config error for invalid name, got: {result:?}"
@@ -1155,7 +1112,7 @@ mod tests {
             }],
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -1189,7 +1146,7 @@ mod tests {
             }],
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -1230,7 +1187,7 @@ mod tests {
             }],
         );
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -1273,7 +1230,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 
@@ -1310,7 +1267,7 @@ mod tests {
         config.labels = Some(label_map);
 
         let (mut sink, buf) = probe_sink();
-        super::run_with_sink(&config, &mut sink, None, None)
+        super::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
             .await
             .expect("run must succeed");
 

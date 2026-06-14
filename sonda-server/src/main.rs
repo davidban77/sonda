@@ -231,13 +231,17 @@ async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signa
         }
     }
 
-    // Write lock: join() consumes the inner JoinHandle.
+    // Write lock: join consumes the inner JoinHandle.
+    let mut ids_handles: Vec<(String, sonda_core::ScenarioHandle)> = Vec::new();
     if let Ok(mut scenarios) = state.scenarios.write() {
-        for (id, handle) in scenarios.iter_mut() {
-            match handle.join(Some(Duration::from_secs(5))) {
-                Ok(_) => info!(scenario = %id, "scenario thread joined"),
-                Err(e) => warn!(scenario = %id, error = %e, "scenario thread join failed"),
-            }
+        for (id, handle) in scenarios.drain() {
+            ids_handles.push((id, handle));
+        }
+    }
+    for (id, mut handle) in ids_handles {
+        match handle.join_async(Some(Duration::from_secs(5))).await {
+            Ok(_) => info!(scenario = %id, "scenario task joined"),
+            Err(e) => warn!(scenario = %id, error = %e, "scenario task join failed"),
         }
     }
 }

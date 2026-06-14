@@ -3,8 +3,9 @@
 
 #![cfg(feature = "config")]
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
+
+use sonda_core::CancellationToken;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -111,7 +112,7 @@ async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() 
     let config = metric_config("up", 5.0, "1s", Some("2026-05-08T14:00:00Z"));
 
     let (mut sink, buf) = probe_sink();
-    runner::run_with_sink(&config, &mut sink, None, None)
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
 
@@ -167,7 +168,7 @@ async fn metric_relative_future_offset_shifts_events_ahead() {
     let config = metric_config("up", 10.0, "400ms", Some("+24h"));
 
     let (mut sink, buf) = probe_sink();
-    runner::run_with_sink(&config, &mut sink, None, None)
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let after = now_ms();
@@ -194,7 +195,7 @@ async fn metric_relative_past_offset_shifts_events_back() {
     let config = metric_config("up", 10.0, "400ms", Some("-7d"));
 
     let (mut sink, buf) = probe_sink();
-    runner::run_with_sink(&config, &mut sink, None, None)
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let after = now_ms();
@@ -226,7 +227,7 @@ async fn metric_without_start_time_emits_at_real_now() {
     let config = metric_config("up", 10.0, "400ms", None);
 
     let (mut sink, buf) = probe_sink();
-    runner::run_with_sink(&config, &mut sink, None, None)
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let after = now_ms();
@@ -264,7 +265,7 @@ fn assert_all_in_past_window(timestamps: &[i128]) {
 async fn metric_signal_honours_absolute_past_shift() {
     let config = metric_config("up", 5.0, "600ms", Some(ANCHOR_RFC3339));
     let (mut sink, buf) = probe_sink();
-    runner::run_with_sink(&config, &mut sink, None, None)
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let captured = buf.lock().unwrap();
@@ -287,7 +288,7 @@ async fn log_signal_honours_absolute_past_shift() {
     };
 
     let (mut sink, buf) = probe_sink();
-    log_runner::run_logs_with_sink(&config, &mut sink, None, None)
+    log_runner::run_logs_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
 
@@ -323,7 +324,7 @@ async fn histogram_signal_honours_absolute_past_shift() {
     };
 
     let (mut sink, buf) = probe_sink();
-    histogram_runner::run_with_sink(&config, &mut sink, None, None)
+    histogram_runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let captured = buf.lock().unwrap();
@@ -348,7 +349,7 @@ async fn summary_signal_honours_absolute_past_shift() {
     };
 
     let (mut sink, buf) = probe_sink();
-    summary_runner::run_with_sink(&config, &mut sink, None, None)
+    summary_runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
         .await
         .expect("run must succeed");
     let captured = buf.lock().unwrap();
@@ -385,7 +386,7 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
 
     let runner_handle = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let mut sink = sink_init;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -394,7 +395,7 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
         rt.block_on(runner::run_with_sink_gated(
             &config,
             &mut sink,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(

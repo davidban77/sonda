@@ -20,7 +20,7 @@ use sonda_core::schedule::runner::run_with_sink;
 use sonda_core::schedule::stats::ScenarioStats;
 use sonda_core::sink::memory::{CapturedRing, MemorySink};
 use sonda_core::sink::{Sink, SinkConfig};
-use sonda_core::{launch_scenario, prepare_entries, OnSinkError, RuntimeError, SondaError};
+use sonda_core::{launch_scenario, prepare_entries, OnSinkError};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 const DEFAULT_SCENARIO_COUNTS: &[usize] = &[1, 10, 50, 100, 250, 500];
@@ -180,8 +180,15 @@ fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
     assert!(n >= 1, "launch_n requires at least one scenario");
     let capture_handle = Arc::new(Mutex::new(CapturedRing::new(CAPTURE_RING_SIZE)));
 
+    let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build"),
+    ));
     let mut handles = Vec::with_capacity(n);
     handles.push(launch_capturing_scenario(
+        rt,
         "bench_0".to_string(),
         Arc::clone(&capture_handle),
     ));
@@ -200,18 +207,14 @@ fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
             })
             .collect();
         let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime must build");
         for (offset, p) in prepared.into_iter().enumerate() {
             let i = offset + 1;
-            let shutdown = Arc::new(AtomicBool::new(true));
+            let cancel = sonda_core::CancellationToken::new();
             let handle = rt
                 .block_on(launch_scenario(
                     format!("bench_{i}"),
                     p.entry,
-                    shutdown,
+                    cancel,
                     p.start_delay,
                 ))
                 .expect("launch_scenario must succeed");
@@ -223,53 +226,42 @@ fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
 
 // Mirrors launch_scenario for the shared-capture path; bench-local replica.
 fn launch_capturing_scenario(
+    rt: &tokio::runtime::Runtime,
     id: String,
     capture_handle: Arc<Mutex<CapturedRing>>,
 ) -> ScenarioHandle {
     let config = metrics_config_for_capture(id.clone(), RATE_HZ);
     let name = config.base.name.clone();
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = sonda_core::CancellationToken::new();
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let cleaned_up = Arc::new(AtomicBool::new(true));
     let labels: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
 
-    let shutdown_for_thread = Arc::clone(&shutdown);
-    let stats_for_thread = Arc::clone(&stats);
-    let alive_for_thread = Arc::clone(&alive);
+    let cancel_for_task = cancel.clone();
+    let stats_for_task = Arc::clone(&stats);
+    let alive_for_task = Arc::clone(&alive);
 
-    let thread = std::thread::Builder::new()
-        .name(format!("sonda-{name}"))
-        .spawn(move || -> Result<(), SondaError> {
-            struct AliveGuard(Arc<AtomicBool>);
-            impl Drop for AliveGuard {
-                fn drop(&mut self) {
-                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-                }
+    let task = rt.spawn(async move {
+        struct AliveGuard(Arc<AtomicBool>);
+        impl Drop for AliveGuard {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
             }
-            let _guard = AliveGuard(alive_for_thread);
+        }
+        let _guard = AliveGuard(alive_for_task);
 
-            let sink_inner = MemorySink::with_shared_capture(capture_handle);
-            let mut sink: Box<dyn Sink> = Box::new(sink_inner);
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| SondaError::Runtime(RuntimeError::SpawnFailed(e)))?;
-            rt.block_on(run_with_sink(
-                &config,
-                &mut sink,
-                Some(shutdown_for_thread.as_ref()),
-                Some(stats_for_thread),
-            ))
-        })
-        .expect("scenario thread must spawn");
+        let sink_inner = MemorySink::with_shared_capture(capture_handle);
+        let mut sink: Box<dyn Sink> = Box::new(sink_inner);
+        run_with_sink(&config, &mut sink, &cancel_for_task, Some(stats_for_task)).await
+    });
 
     ScenarioHandle::new(
         id,
         name,
         None,
-        shutdown,
-        Some(thread),
+        cancel,
+        Some(task),
         Instant::now(),
         stats,
         RATE_HZ,
