@@ -200,6 +200,7 @@ pub async fn launch_scenario_with_gates(
     };
     let labels = Arc::new(entry.base().labels.clone().unwrap_or_default());
     let prometheus_meta = derive_prometheus_meta(&entry);
+    let sink_type = sink_type_label(&entry.base().sink);
 
     let started_at = Instant::now();
 
@@ -327,7 +328,43 @@ pub async fn launch_scenario_with_gates(
         labels,
         prometheus_meta,
         cleaned_up,
-    ))
+    )
+    .with_sink_type(sink_type))
+}
+
+fn sink_type_label(sink: &crate::sink::SinkConfig) -> &'static str {
+    use crate::sink::SinkConfig;
+    // Catch-all guards against future #[non_exhaustive] variants; in-crate
+    // the match is exhaustive today.
+    #[allow(unreachable_patterns)]
+    match sink {
+        SinkConfig::Stdout => "stdout",
+        SinkConfig::File { .. } => "file",
+        SinkConfig::Tcp { .. } => "tcp",
+        SinkConfig::Udp { .. } => "udp",
+        SinkConfig::Memory { .. } => "memory",
+        #[cfg(feature = "http")]
+        SinkConfig::HttpPush { .. } => "http_push",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::HttpPushDisabled {} => "http_push",
+        #[cfg(feature = "remote-write")]
+        SinkConfig::RemoteWrite { .. } => "remote_write",
+        #[cfg(not(feature = "remote-write"))]
+        SinkConfig::RemoteWriteDisabled {} => "remote_write",
+        #[cfg(feature = "kafka")]
+        SinkConfig::Kafka { .. } => "kafka",
+        #[cfg(not(feature = "kafka"))]
+        SinkConfig::KafkaDisabled {} => "kafka",
+        #[cfg(feature = "http")]
+        SinkConfig::Loki { .. } => "loki",
+        #[cfg(not(feature = "http"))]
+        SinkConfig::LokiDisabled {} => "loki",
+        #[cfg(feature = "otlp")]
+        SinkConfig::OtlpGrpc { .. } => "otlp_grpc",
+        #[cfg(not(feature = "otlp"))]
+        SinkConfig::OtlpGrpcDisabled {} => "otlp_grpc",
+        _ => "unknown",
+    }
 }
 
 fn derive_prometheus_meta(entry: &ScenarioEntry) -> Option<Arc<PromMeta>> {
