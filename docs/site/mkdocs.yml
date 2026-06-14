@@ -208,6 +208,7 @@ nav:
       - As a CLI: deploy/cli.md
       - As a server: deploy/server.md
       - HTTP API reference: deploy/http-api.md
+      - Server metrics: deploy/server-metrics.md
       - Docker: deploy/docker.md
       - Kubernetes: deploy/kubernetes.md
   - Reference:

@@ -30,6 +30,7 @@ use sonda_core::compiler::parse::detect_version;
 use sonda_core::encoder::prometheus::PrometheusText;
 use sonda_core::encoder::Encoder;
 use sonda_core::{GateBusResolver, ScenarioState, ScenarioStats};
+use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -585,16 +586,78 @@ pub async fn post_scenario(
     log_warnings("POST /scenarios", &warnings);
     drop(warning_entries);
 
-    launch_compiled(state, *compiled, warnings).await
+    let needed = compiled.entries.len();
+    let permits = match acquire_permits(&state, needed) {
+        Ok(p) => p,
+        Err(PermitError::CapacityExceeded) => {
+            warn!(
+                needed,
+                "POST /scenarios: scenario cap reached, returning 429"
+            );
+            return Err(capacity_exceeded_response(&state, needed));
+        }
+        Err(PermitError::SemaphoreClosed) => {
+            warn!("POST /scenarios: scenario_permits semaphore is closed");
+            return Err(internal_error("scenario permit semaphore is closed"));
+        }
+    };
+
+    launch_compiled(state, *compiled, warnings, permits).await
 }
 
-/// Launch every entry in `compiled` through the gated multi-runner and store
-/// the resulting handles in [`AppState`]. Single-vs-multi response shape is
-/// decided post-launch from the count of returned handles.
+enum PermitError {
+    CapacityExceeded,
+    SemaphoreClosed,
+}
+
+fn acquire_permits(
+    state: &AppState,
+    needed: usize,
+) -> Result<Vec<OwnedSemaphorePermit>, PermitError> {
+    let mut permits = Vec::with_capacity(needed);
+    for _ in 0..needed {
+        match state.scenario_permits.clone().try_acquire_owned() {
+            Ok(p) => permits.push(p),
+            Err(TryAcquireError::NoPermits) => return Err(PermitError::CapacityExceeded),
+            Err(TryAcquireError::Closed) => return Err(PermitError::SemaphoreClosed),
+        }
+    }
+    Ok(permits)
+}
+
+fn capacity_exceeded_response(state: &AppState, _needed: usize) -> Response {
+    let mut by_state = serde_json::Map::new();
+    for op in ScenarioState::operational_states() {
+        by_state.insert(op.as_label().to_string(), json!(0));
+    }
+    by_state.insert(ScenarioState::Finished.as_label().to_string(), json!(0));
+    let mut total = 0u64;
+    if let Ok(scenarios) = state.scenarios.read() {
+        for handle in scenarios.values() {
+            total += 1;
+            let label = handle.stats_snapshot().state.as_label();
+            if let Some(v) = by_state.get_mut(label) {
+                *v = json!(v.as_u64().unwrap_or(0) + 1);
+            }
+        }
+    }
+    let max = state.max_scenarios;
+    let detail = format!(
+        "{total} scenarios active (max {max}); DELETE finished or stuck scenarios to free slots"
+    );
+    let body = json!({
+        "error": "capacity_exceeded",
+        "detail": detail,
+        "by_state": by_state,
+    });
+    (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+}
+
 async fn launch_compiled(
     state: AppState,
     compiled: CompiledFile,
     warnings: Vec<String>,
+    mut permits: Vec<OwnedSemaphorePermit>,
 ) -> Result<Response, Response> {
     let resolver: Arc<dyn sonda_core::GateBusResolver> = state.gate_bus_registry.clone();
     let mut handles = launch_multi_compiled(compiled, Some(resolver))
@@ -622,6 +685,9 @@ async fn launch_compiled(
         let name = handle.name.clone();
         let state_str = state_string(&handle.stats_snapshot()).to_string();
         info!(id = %new_id, name = %name, state = %state_str, "scenario launched");
+        if let Some(permit) = permits.pop() {
+            handle.attach_permit(permit);
+        }
         created.push(CreatedScenario {
             id: new_id,
             name,
@@ -766,6 +832,9 @@ pub async fn delete_scenario(
         handle.stop();
         (handle, scenario_name_to_unregister)
     };
+
+    // Release the slot before the join window — row cap, not task-CPU cap.
+    drop(handle.take_permit());
 
     if let Err(e) = handle.join_async(Some(Duration::from_secs(5))).await {
         warn!(id = %id, error = %e, "DELETE /scenarios/{id}: scenario task returned an error");

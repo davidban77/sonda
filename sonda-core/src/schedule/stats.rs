@@ -40,6 +40,35 @@ pub enum ScenarioState {
     Finished,
 }
 
+impl ScenarioState {
+    /// Operational states surfaced as separate gauge rows by the server metrics emitter.
+    pub fn operational_states() -> &'static [ScenarioState] {
+        &[
+            ScenarioState::Pending,
+            ScenarioState::Running,
+            ScenarioState::Paused,
+            ScenarioState::Held,
+            ScenarioState::Unresolved,
+        ]
+    }
+
+    /// Stable lowercase label text for Prometheus exposition.
+    pub fn as_label(&self) -> &'static str {
+        // Catch-all guards against future #[non_exhaustive] variants added by
+        // Phase 5; in-crate the match is exhaustive today.
+        #[allow(unreachable_patterns)]
+        match self {
+            ScenarioState::Pending => "pending",
+            ScenarioState::Running => "running",
+            ScenarioState::Paused => "paused",
+            ScenarioState::Held => "held",
+            ScenarioState::Unresolved => "unresolved",
+            ScenarioState::Finished => "finished",
+            _ => "unknown",
+        }
+    }
+}
+
 /// Live statistics for a running scenario, updated by the runner each tick.
 ///
 /// These counters are written by the scenario thread and read by callers
@@ -643,5 +672,52 @@ mod tests {
             ..Default::default()
         };
         assert!(!s.is_degraded(last - 1_000_000_000));
+    }
+
+    #[test]
+    fn operational_states_returns_five_states_in_documented_order() {
+        let states = ScenarioState::operational_states();
+        assert_eq!(states.len(), 5);
+        assert_eq!(states[0], ScenarioState::Pending);
+        assert_eq!(states[1], ScenarioState::Running);
+        assert_eq!(states[2], ScenarioState::Paused);
+        assert_eq!(states[3], ScenarioState::Held);
+        assert_eq!(states[4], ScenarioState::Unresolved);
+    }
+
+    #[test]
+    fn operational_states_excludes_finished() {
+        let states = ScenarioState::operational_states();
+        assert!(!states.contains(&ScenarioState::Finished));
+    }
+
+    #[test]
+    fn as_label_maps_every_variant_to_lowercase_text() {
+        assert_eq!(ScenarioState::Pending.as_label(), "pending");
+        assert_eq!(ScenarioState::Running.as_label(), "running");
+        assert_eq!(ScenarioState::Paused.as_label(), "paused");
+        assert_eq!(ScenarioState::Held.as_label(), "held");
+        assert_eq!(ScenarioState::Unresolved.as_label(), "unresolved");
+        assert_eq!(ScenarioState::Finished.as_label(), "finished");
+    }
+
+    #[test]
+    fn as_label_matches_serde_lowercase_rename() {
+        for state in [
+            ScenarioState::Pending,
+            ScenarioState::Running,
+            ScenarioState::Paused,
+            ScenarioState::Held,
+            ScenarioState::Unresolved,
+            ScenarioState::Finished,
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            let serialized = json.trim_matches('"').to_string();
+            assert_eq!(
+                serialized,
+                state.as_label(),
+                "as_label must match serde rename for {state:?}"
+            );
+        }
     }
 }

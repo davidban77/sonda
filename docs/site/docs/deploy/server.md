@@ -220,7 +220,7 @@ The scenario runs in the background inside the server until its `duration` expir
 
 ## Server flags
 
-`sonda-server` accepts four flags: `--port <PORT>` (default `8080`), `--bind <ADDR>` (default `0.0.0.0`), `--api-key <KEY>` (or `SONDA_API_KEY`), and `--catalog <DIR>` (or `SONDA_CATALOG`). Use the `RUST_LOG` environment variable to control log verbosity (default `info`):
+`sonda-server` accepts nine flags. The first four are the network and addressing surface; the remaining five control resource limits and runtime sizing. Use the `RUST_LOG` environment variable to control log verbosity (default `info`):
 
 ```bash
 RUST_LOG=debug sonda-server --port 8080
@@ -230,12 +230,64 @@ RUST_LOG=debug sonda-server --port 8080
 |------|---------|---------|---------|
 | `--port <PORT>` | -- | `8080` | Port the server listens on |
 | `--bind <ADDR>` | -- | `0.0.0.0` | Bind address |
-| `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/metrics`, and `/events`. See [Authentication](#authentication). |
+| `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/events`, and metrics endpoints. See [Authentication](#authentication). |
 | `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](http-api.md#pack-references-over-http). |
+| `--workers <N>` | -- | `available_parallelism()` | Tokio worker thread count. See [Tuning resource limits](#tuning-resource-limits). |
+| `--max-scenarios <N>` | -- | `0` (unlimited) | Maximum concurrent scenario rows. POSTs beyond the cap return [`429 capacity_exceeded`](http-api.md#capacity-and-resource-errors). |
+| `--max-inflight-requests <N>` | -- | `4 * workers` | Maximum concurrent in-flight control-plane HTTP requests. |
+| `--request-timeout <SECS>` | -- | `30` | Per-request timeout on control-plane routes. Returns [`408 request_timeout`](http-api.md#capacity-and-resource-errors) on expiry. |
+| `--max-body-bytes <N>` | -- | `1048576` (1 MB) | Maximum request body size on control-plane routes. Returns [`413 payload_too_large`](http-api.md#capacity-and-resource-errors) when exceeded. |
 
 When you pass `--catalog`, point it at a directory that holds your `kind: composable` pack YAML files. The path must exist. A missing directory makes the server fail at startup with a clear error.
 
 Press Ctrl+C for graceful shutdown. The server signals all running scenarios to stop before exiting.
+
+### Tuning resource limits
+
+The five resource-limit flags shape what the server accepts, how many scenarios it holds, and how it spends CPU. Their defaults work for a developer laptop. Production deployments should pick values per the guidance below.
+
+#### `--workers <N>`
+
+The size of the tokio multi-thread runtime. Bound: `N >= 1`. The default is `std::thread::available_parallelism()`, which respects cgroup CPU quotas — so the same binary picks 16 workers on a 16-core host and 2 workers on a Kubernetes pod with `cpu: 2000m` set. Override only when you want to deviate from the cgroup setting (for example, pin a workload to one worker to reduce context-switching noise during benchmarking).
+
+The configured value is exported on [`sonda_server_worker_threads`](server-metrics.md#sonda_server_worker_threads) — use it to confirm the runtime sees the value you expect.
+
+#### `--max-scenarios <N>`
+
+A **row cap**, not a CPU-task cap. Every entry in the server's scenario map consumes one slot, including scenarios in `pending`, `running`, `paused`, `held`, `unresolved`, and `finished` state. Reaching the cap returns `429 capacity_exceeded` with a `by_state` breakdown of where the slots went.
+
+Pick `N` from the memory you are willing to dedicate. Each scenario row holds runtime state plus a per-scenario stats buffer; an order-of-magnitude estimate is ~1 MB per scenario at moderate rates. Production deployments commonly use values in the `100` to `1000` range; CI runners often run with `--max-scenarios 50` so a runaway test cannot OOM the runner.
+
+`0` disables the cap entirely. The server emits a `WARN` log line at startup so the choice is visible:
+
+```text
+WARN sonda_server: --max-scenarios 0 — scenario row cap disabled (unlimited)
+```
+
+The cap is exported on [`sonda_server_max_scenarios`](server-metrics.md#sonda_server_max_scenarios). Live row usage is in [`sonda_server_active_scenarios`](server-metrics.md#sonda_server_active_scenarios) plus [`sonda_server_scenarios_finished_total`](server-metrics.md#sonda_server_scenarios_finished_total).
+
+!!! warning "Finished scenarios still occupy a slot"
+    A scenario in `finished` state holds its slot until `DELETE /scenarios/{id}` removes it. Automation that forgets to delete completed scenarios will fill the cap and start serving 429s on every new POST. Either DELETE after a scenario completes, or set `--max-scenarios` high enough to absorb the backlog you expect between cleanups.
+
+#### `--max-inflight-requests <N>`
+
+A global concurrency cap across the control-plane sub-router — `POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, and the list/inspect routes. The default `4 * workers` keeps a healthy queue depth without overcommitting. Raise it when the server has CPU and memory headroom and you see request latency climbing under load. Lower it when control-plane work is starving scenario runners.
+
+The cap does **not** apply to the observability sub-router. `/server/metrics`, `/metrics`, `/scenarios/{id}/metrics`, and `/scenarios/{id}/stats` stay scrape-able under saturation — exactly when your alerts need them.
+
+Back-pressure is implicit. `tower::limit::ConcurrencyLimitLayer` does not return a 503; it back-pressures via the tokio runtime, and requests queue at the listener until a slot frees. The visible symptom is rising P99 on [`sonda_server_request_duration_seconds`](server-metrics.md#sonda_server_request_duration_seconds), not an error spike. Alert on the histogram, not on a status code.
+
+#### `--request-timeout <SECS>`
+
+Per-request handler bound on control-plane routes. Requests that exceed the limit return `408 request_timeout`. The default `30` covers the slowest legitimate POST (a large multi-scenario body with cross-POST `while:` resolution). Raise it when you regularly post bodies with many entries; lower it when you want a tighter SLO on the control plane.
+
+This is a handler-execution timeout, not a TCP read timeout — slow clients shipping a body bit-by-bit are not the trigger. The flag does not apply to the observability sub-router.
+
+#### `--max-body-bytes <N>`
+
+The maximum request body size on control-plane routes. Bodies above the limit return `413 payload_too_large`. The default 1 MB fits any realistic scenario YAML and most multi-scenario batches. Raise it when you post very large catalogs by-value (rare — prefer `--catalog <DIR>` for that). Lower it as a hardening measure on internet-facing deployments.
+
+The flag does not apply to the observability sub-router.
 
 ## Authentication
 
@@ -278,12 +330,13 @@ INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and
 | `GET /scenarios/{id}/stats` | Yes |
 | `GET /scenarios/{id}/metrics` | Yes |
 | `GET /metrics` | Yes |
+| `GET /server/metrics` | Yes |
 | `POST /events` | Yes |
 
 See [Authentication conventions on HTTP API reference](http-api.md#authentication) for request shapes, header format, and 401 response bodies.
 
 !!! warning "Prometheus scraping with auth"
-    If you enable authentication, your Prometheus scrape config must include the bearer token for both `/metrics` and `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file` field to your `scrape_configs` entry. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the scrape-config shape.
+    If you enable authentication, your Prometheus scrape config must include the bearer token for `/server/metrics`, `/metrics`, and `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file` field to your `scrape_configs` entry. See [Authentication on Server metrics](server-metrics.md#authentication) for the scrape-config shape.
 
 ??? tip "Kubernetes Secrets"
     In Kubernetes deployments, store the API key in a Secret and reference it as an environment variable in your Deployment spec:
@@ -318,6 +371,7 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
 ## Where to next
 
 - [HTTP API reference](http-api.md) — every endpoint, request body, and response shape.
+- [Server metrics](server-metrics.md) — the nine `/server/metrics` series and the alerts that matter.
 - [Docker](docker.md) — Compose stacks and host-side `docker run` examples.
 - [Kubernetes](kubernetes.md) — Helm chart, Service DNS, cross-namespace access.
 - [Sinks](../build/sinks.md) — every sink type and its `url:` field.

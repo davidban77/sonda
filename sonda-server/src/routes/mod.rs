@@ -1,40 +1,86 @@
 //! HTTP route definitions for sonda-server.
-//!
-//! Routes are split into two sub-routers:
-//! - **Public**: `/health` — always accessible, no authentication required.
-//! - **Protected**: `/scenarios/*` — guarded by the [`require_api_key`] middleware
-//!   when an API key is configured. When no key is configured, these routes are
-//!   also publicly accessible (backwards compatible).
-//!
-//! The `route_layer` approach ensures that only matched routes run through the
-//! auth middleware. Unmatched paths get a plain 404 from the router, not a 401.
 
 pub mod events;
 pub mod health;
 pub mod scenarios;
+pub mod server_metrics;
 pub mod sink_warnings;
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
+use tokio::sync::Semaphore;
+use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::ServiceBuilder;
+use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 
 use crate::auth::require_api_key;
+use crate::middleware::metrics::record_request_metrics;
 use crate::state::AppState;
 
-/// Build the application router with all routes wired up.
-///
-/// The returned [`Router`] is ready to be handed to the axum server. State is
-/// injected via [`axum::extract::State`] in each handler.
-///
-/// The router is composed of two sub-trees:
-/// - A **public** router for endpoints that must always be accessible (health
-///   checks, readiness probes).
-/// - A **protected** router for scenario management endpoints, guarded by
-///   bearer-token authentication when an API key is configured.
+#[derive(Clone)]
+pub struct RouterConfig {
+    pub request_timeout: Duration,
+    pub max_body_bytes: usize,
+    pub inflight_semaphore: Arc<Semaphore>,
+}
+
+impl RouterConfig {
+    #[allow(dead_code)]
+    pub fn test_defaults() -> Self {
+        Self {
+            request_timeout: Duration::from_secs(30),
+            max_body_bytes: 1_048_576,
+            inflight_semaphore: Arc::new(Semaphore::new(Semaphore::MAX_PERMITS)),
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub fn router(state: AppState) -> Router {
+    router_with_config(state, RouterConfig::test_defaults())
+}
+
+pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
     let public = Router::new().route("/health", get(health::health));
 
-    let protected = Router::new()
+    let protected_observability = Router::new()
+        .route("/scenarios/{id}/stats", get(scenarios::get_scenario_stats))
+        .route(
+            "/scenarios/{id}/metrics",
+            get(scenarios::get_scenario_metrics),
+        )
+        .route("/metrics", get(scenarios::get_aggregate_metrics))
+        .route("/server/metrics", get(server_metrics::get_server_metrics))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            record_request_metrics,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_api_key,
+        ));
+
+    // RequestBodyLimit must wrap a service whose response body is
+    // axum::body::Body; Timeout wraps the response into a type that
+    // RequestBodyLimitLayer's downstream bound rejects, so timeout goes
+    // inside the body limit at the layer-application level.
+    let control_stack = ServiceBuilder::new()
+        .layer(RequestBodyLimitLayer::new(cfg.max_body_bytes))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            cfg.request_timeout,
+        ))
+        .layer(GlobalConcurrencyLimitLayer::with_semaphore(
+            cfg.inflight_semaphore.clone(),
+        ));
+
+    let protected_control = Router::new()
         .route(
             "/scenarios",
             get(scenarios::list_scenarios).post(scenarios::post_scenario),
@@ -43,19 +89,21 @@ pub fn router(state: AppState) -> Router {
             "/scenarios/{id}",
             get(scenarios::get_scenario).delete(scenarios::delete_scenario),
         )
-        .route("/scenarios/{id}/stats", get(scenarios::get_scenario_stats))
-        .route(
-            "/scenarios/{id}/metrics",
-            get(scenarios::get_scenario_metrics),
-        )
-        .route("/metrics", get(scenarios::get_aggregate_metrics))
-        .route("/events", axum::routing::post(events::post_events))
+        .route("/events", post(events::post_events))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            record_request_metrics,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
-        ));
+        ))
+        .layer(control_stack);
 
-    public.merge(protected).with_state(state)
+    public
+        .merge(protected_observability)
+        .merge(protected_control)
+        .with_state(state)
 }
 
 #[cfg(test)]

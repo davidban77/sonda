@@ -1,0 +1,219 @@
+---
+title: Server metrics
+description: Three Prometheus endpoints on sonda-server, the nine /server/metrics series, and PromQL alerts for the load-bearing ones.
+---
+
+# Server metrics
+
+`sonda-server` exposes three Prometheus endpoints. Each one answers a different question. Point your scrape jobs and alerts at the right one — they are not interchangeable.
+
+| Endpoint | What it returns | When to scrape |
+|---|---|---|
+| `GET /scenarios/{id}/metrics` | One scenario's series | Per-scenario debugging |
+| `GET /metrics` | Aggregate scenario data | Per-process scenario view |
+| `GET /server/metrics` | Server-process RED + saturation | Operational dashboards and alerts |
+
+`/server/metrics` tells you whether the **server process** is healthy. `/metrics` and `/scenarios/{id}/metrics` tell you whether the **scenarios** are emitting the data you asked for. A saturated server can still serve metrics from a few healthy scenarios; a quiet `/metrics` while `/server/metrics` shows zero active scenarios is "no work in flight," not "server broken." Reading the right endpoint is the difference between paging on a real outage and chasing a healthy server.
+
+## `GET /server/metrics`
+
+Process-level RED (rate, errors, duration) plus saturation telemetry for the `sonda-server` process. The Helm chart's [ServiceMonitor scrapes this endpoint by default](kubernetes.md#servicemonitor).
+
+```bash
+curl http://localhost:8080/server/metrics
+```
+
+```text title="Response (text/plain; version=0.0.4; charset=utf-8)"
+# HELP sonda_server_active_scenarios Scenarios currently held in each operational state.
+# TYPE sonda_server_active_scenarios gauge
+sonda_server_active_scenarios{state="pending"} 0
+sonda_server_active_scenarios{state="running"} 3
+sonda_server_active_scenarios{state="paused"} 0
+sonda_server_active_scenarios{state="held"} 0
+sonda_server_active_scenarios{state="unresolved"} 0
+# HELP sonda_server_scenarios_finished_total Scenarios that have reached the Finished state and not yet been deleted.
+# TYPE sonda_server_scenarios_finished_total counter
+sonda_server_scenarios_finished_total 12
+# HELP sonda_server_worker_threads Configured tokio multi-thread worker count.
+# TYPE sonda_server_worker_threads gauge
+sonda_server_worker_threads 8
+# HELP sonda_server_max_scenarios Configured scenario row cap (0 means unlimited).
+# TYPE sonda_server_max_scenarios gauge
+sonda_server_max_scenarios 500
+# HELP sonda_server_requests_total HTTP requests served, per matched route, method, and status.
+# TYPE sonda_server_requests_total counter
+sonda_server_requests_total{route="/scenarios",method="POST",status="201"} 14
+sonda_server_requests_total{route="/scenarios/{id}/stats",method="GET",status="200"} 482
+# HELP sonda_server_request_duration_seconds HTTP request duration in seconds, per matched route and method.
+# TYPE sonda_server_request_duration_seconds histogram
+sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="0.005"} 0
+sonda_server_request_duration_seconds_bucket{route="/scenarios",method="POST",le="+Inf"} 14
+sonda_server_request_duration_seconds_sum{route="/scenarios",method="POST"} 0.342
+sonda_server_request_duration_seconds_count{route="/scenarios",method="POST"} 14
+# HELP sonda_server_sink_errors_total Lifetime sink-write failures, summed across scenarios per sink_type.
+# TYPE sonda_server_sink_errors_total counter
+sonda_server_sink_errors_total{sink_type="loki"} 4
+# HELP sonda_server_uptime_seconds Seconds since the server process started.
+# TYPE sonda_server_uptime_seconds gauge
+sonda_server_uptime_seconds 18432.4
+# HELP sonda_server_build_info Build-time version and git SHA. Constant gauge always set to 1.
+# TYPE sonda_server_build_info gauge
+sonda_server_build_info{version="1.14.0",git_sha="58f288f47a2c2e91d8c3e8b4f1e6d8a9c2b5f3e7"} 1
+```
+
+The endpoint is idempotent — two back-to-back scrapes return logically equivalent bodies (counters increment, gauges may shift, but the shape and label sets stay stable).
+
+### Series reference
+
+Nine series. Operator-tense one-liners and the alerts that matter follow.
+
+#### `sonda_server_active_scenarios`
+
+Gauge. Scenarios currently held in each operational state. Always emits all five rows even when the value is zero, so Prometheus alerting stays continuous as scenarios come and go.
+
+| Label | Values |
+|---|---|
+| `state` | `pending` / `running` / `paused` / `held` / `unresolved` |
+
+`Finished` scenarios are tracked separately by [`sonda_server_scenarios_finished_total`](#sonda_server_scenarios_finished_total). They still consume a row against [`--max-scenarios`](server.md#tuning-resource-limits) until `DELETE /scenarios/{id}` removes them.
+
+```promql title="Alert: a scenario stuck waiting on a cross-POST upstream"
+sonda_server_active_scenarios{state="unresolved"} > 10
+```
+
+When this fires, the cross-POST resolver has more than 10 downstream scenarios queued without their upstream arriving. Inspect them with `GET /scenarios` and look at the `pending_ref` block on `GET /scenarios/{id}`.
+
+#### `sonda_server_scenarios_finished_total`
+
+Counter. Scenarios that have reached the `Finished` state and are still resident in the server. They consume a row against [`--max-scenarios`](server.md#tuning-resource-limits) until you `DELETE` them.
+
+```promql title="Alert: finished rows not being reaped"
+sonda_server_scenarios_finished_total > 100
+```
+
+If this counter climbs without a corresponding burst of new scenarios, your automation is forgetting to `DELETE /scenarios/{id}` after a scenario completes.
+
+#### `sonda_server_worker_threads`
+
+Gauge. The tokio multi-thread worker count configured at startup — that is, the value of [`--workers`](server.md#tuning-resource-limits) or the cgroup-aware default `std::thread::available_parallelism()`.
+
+#### `sonda_server_max_scenarios`
+
+Gauge. The configured value of [`--max-scenarios`](server.md#tuning-resource-limits). Reports `0` when the cap is disabled (unlimited).
+
+#### `sonda_server_requests_total`
+
+Counter. HTTP requests served by the protected sub-routers, labelled by the matched route template, method, and status.
+
+| Label | Values |
+|---|---|
+| `route` | The axum route template, e.g. `/scenarios/{id}/stats` — **not** the concrete URL with the UUID. |
+| `method` | `GET` / `POST` / `DELETE` / etc. |
+| `status` | The numeric status code as a string. |
+
+The `route` label uses the route template (with literal `{id}` braces), not the concrete request path. This keeps cardinality bounded regardless of how many unique scenario IDs hit the server.
+
+```promql title="Alert: control-plane saturation hitting the inflight cap"
+rate(sonda_server_requests_total{status="429"}[5m]) > 0
+```
+
+Sustained 429s mean either the server cap (`--max-scenarios`) is hit or the inflight-request cap (`--max-inflight-requests`) is. Cross-reference [`sonda_server_active_scenarios`](#sonda_server_active_scenarios) to tell which.
+
+```promql title="Alert: payload-size limit being hit"
+rate(sonda_server_requests_total{status="413"}[5m]) > 0
+```
+
+Some client is sending bodies larger than [`--max-body-bytes`](server.md#tuning-resource-limits). Either the limit is too tight for legitimate payloads or you have a misbehaving caller.
+
+#### `sonda_server_request_duration_seconds`
+
+Histogram. Request duration in seconds, labelled by matched route and method. Buckets are the Prometheus defaults: `0.005`, `0.01`, `0.025`, `0.05`, `0.1`, `0.25`, `0.5`, `1.0`, `2.5`, `5.0`, `10.0`, and `+Inf`.
+
+| Label | Values |
+|---|---|
+| `route` | Same matched-path template as `sonda_server_requests_total`. |
+| `method` | Same as `sonda_server_requests_total`. |
+| `le` | Cumulative bucket upper bound. |
+
+```promql title="Alert: control-plane P99 above 1 second"
+histogram_quantile(0.99,
+  sum by (le, route) (rate(sonda_server_request_duration_seconds_bucket[5m]))
+) > 1
+```
+
+Use this to catch back-pressure from `--max-inflight-requests`. `tower::limit::ConcurrencyLimitLayer` does not return explicit 503s; it back-pressures via `Service::poll_ready` and the listener queues requests, so the symptom is "P99 climbs" rather than "errors spike."
+
+#### `sonda_server_sink_errors_total`
+
+Counter. Lifetime sink-write failures across every active scenario, summed per `sink_type`.
+
+| Label | Values |
+|---|---|
+| `sink_type` | The sink kind, e.g. `loki`, `http_push`, `kafka`, `otlp_grpc`, `tcp`, `stdout`. |
+
+Computed at scrape time from each scenario's `total_sink_failures` counter on `GET /scenarios/{id}/stats`. The counter resets when scenarios are deleted, which is the intended behaviour — a deleted scenario is no longer your problem.
+
+```promql title="Alert: sink errors on any sink type in the last 5 minutes"
+rate(sonda_server_sink_errors_total[5m]) > 0
+```
+
+This is the single most important alert on the page. Sustained sink errors mean some backend is unreachable or rejecting writes. Drill into individual scenarios with `GET /scenarios` and look at the `degraded` field, then inspect the offenders with `GET /scenarios/{id}/stats` for `last_sink_error`.
+
+#### `sonda_server_uptime_seconds`
+
+Gauge. Seconds since the server process started. Drops to a small value on restart — useful as a crash-loop indicator.
+
+```promql title="Alert: server restarted in the last 5 minutes"
+sonda_server_uptime_seconds < 300
+```
+
+#### `sonda_server_build_info`
+
+Constant gauge, always `1`. Carries the build version and git SHA as labels.
+
+| Label | Values |
+|---|---|
+| `version` | Crate version from `Cargo.toml`. |
+| `git_sha` | Git SHA at build time, or `unknown` when `.git/` is absent (Docker source-tarball builds). |
+
+Use it to identify which build is running. Join it onto other queries with `group_left` to see whether a regression coincides with a deploy.
+
+### Authentication
+
+All three metrics endpoints inherit the same `SONDA_API_KEY` gate as `/scenarios/*` and `/events`. When the env var or `--api-key` flag is set, requests must include `Authorization: Bearer <key>`. When the key is unset, the endpoints are public. See [Authentication on Deploy as a server](server.md#authentication) for the full setup.
+
+```bash title="Scraping /server/metrics with auth"
+curl -H "Authorization: Bearer my-secret-key" http://localhost:8080/server/metrics
+```
+
+For Prometheus:
+
+```yaml title="prometheus.yml (with auth)"
+scrape_configs:
+  - job_name: sonda-server
+    scrape_interval: 15s
+    metrics_path: /server/metrics
+    bearer_token: my-secret-key
+    static_configs:
+      - targets: ["localhost:8080"]
+```
+
+For the Prometheus Operator, use a [`bearerTokenSecret` on the ServiceMonitor](kubernetes.md#prometheus-scraping-with-auth).
+
+### Scrape isolation under load
+
+The metrics endpoints sit on a separate sub-router from the control plane. `--max-inflight-requests`, `--request-timeout`, and `--max-body-bytes` do **not** apply to `/server/metrics`, `/metrics`, `/scenarios/{id}/metrics`, or `/scenarios/{id}/stats`. A saturated server still returns 200 on its observability endpoints, so alerting keeps firing when you need it most. The auth gate still applies.
+
+## `GET /metrics`
+
+Aggregate scenario data — every running scenario's series fused into one Prometheus text response. This is the right endpoint for a regular Prometheus or vmagent scrape job covering every scenario the server is running. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the full reference, including the `?label=k:v` filter.
+
+## `GET /scenarios/{id}/metrics`
+
+One scenario's series in Prometheus text format. Use it when each scenario is its own logical target and you know the ID in advance — for example, a scenario loaded from a ConfigMap with a stable name. See [Per-scenario metrics](http-api.md#get-scenariosidmetrics) for the request shape and response semantics.
+
+## Where to next
+
+- [Deploy as a server](server.md) — flags and resource limits that shape `/server/metrics` values.
+- [HTTP API reference](http-api.md) — every endpoint and the 429 / 408 / 413 responses that `sonda_server_requests_total` counts.
+- [Kubernetes](kubernetes.md#servicemonitor) — ServiceMonitor configuration for the Prometheus Operator.

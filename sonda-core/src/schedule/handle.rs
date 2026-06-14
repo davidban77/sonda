@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -43,6 +44,10 @@ pub struct ScenarioHandle {
     pub labels: Arc<HashMap<String, String>>,
     pub prometheus_meta: Option<Arc<PromMeta>>,
     pub cleaned_up: Arc<AtomicBool>,
+    sink_type: &'static str,
+    // Drop order frees the permit last on natural completion; DELETE releases
+    // it explicitly via take_permit before joining so the cap is a row cap.
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl ScenarioHandle {
@@ -75,7 +80,30 @@ impl ScenarioHandle {
             labels,
             prometheus_meta,
             cleaned_up,
+            sink_type: "unknown",
+            _permit: None,
         }
+    }
+
+    /// Set the sink-type label this handle reports for `sonda_server_sink_errors_total`.
+    pub fn with_sink_type(mut self, sink_type: &'static str) -> Self {
+        self.sink_type = sink_type;
+        self
+    }
+
+    /// Stable label string identifying the sink kind for derive-at-scrape metrics.
+    pub fn sink_type(&self) -> &'static str {
+        self.sink_type
+    }
+
+    /// Attach an owned semaphore permit whose drop frees a server-side scenario slot.
+    pub fn attach_permit(&mut self, permit: OwnedSemaphorePermit) {
+        self._permit = Some(permit);
+    }
+
+    /// Take the attached semaphore permit, returning `None` if none was attached.
+    pub fn take_permit(&mut self) -> Option<OwnedSemaphorePermit> {
+        self._permit.take()
     }
 
     /// Signal this scenario to stop. Affects only this scenario.
@@ -564,6 +592,57 @@ mod tests {
         handle.join(None).expect("first join must succeed");
         let result = handle.join_timeout(Duration::from_millis(50));
         assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sink_type_defaults_to_unknown() {
+        let handle = make_handle("st-1", "default_sink", 1, Duration::from_millis(1));
+        assert_eq!(handle.sink_type(), "unknown");
+        drop(handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_sink_type_overrides_default() {
+        let handle =
+            make_handle("st-2", "tagged_sink", 1, Duration::from_millis(1)).with_sink_type("loki");
+        assert_eq!(handle.sink_type(), "loki");
+        drop(handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attach_permit_holds_permit_until_drop() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&sem).try_acquire_owned().expect("permit");
+        assert_eq!(sem.available_permits(), 0);
+
+        let mut handle = make_handle("st-3", "perm", 1, Duration::from_millis(1));
+        handle.attach_permit(permit);
+        assert_eq!(sem.available_permits(), 0);
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+        drop(handle);
+        assert_eq!(sem.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn take_permit_releases_slot_without_dropping_handle() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&sem).try_acquire_owned().expect("permit");
+        assert_eq!(sem.available_permits(), 0);
+
+        let mut handle = make_handle("st-4", "take_perm", 1, Duration::from_millis(1));
+        handle.attach_permit(permit);
+        assert_eq!(sem.available_permits(), 0);
+
+        drop(handle.take_permit());
+        assert_eq!(sem.available_permits(), 1);
+        assert!(handle.take_permit().is_none());
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+        drop(handle);
+        assert_eq!(sem.available_permits(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
