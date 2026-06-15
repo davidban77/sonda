@@ -155,22 +155,22 @@ A ServiceMonitor endpoint scrapes a single `path`. `sonda-server` exposes three 
 
 | Path | What it returns | When to scrape |
 |---|---|---|
-| `/server/metrics` | Server-process RED + saturation (`sonda_server_*` series). See [Server metrics](server-metrics.md). | Operational dashboards and alerts on the server itself. |
-| `/metrics` | Aggregate scenario data fused into one response. Supports `?label=k:v` filtering. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape). | A single scrape target covering every scenario, regardless of how it was launched. |
+| `/metrics` | Server-process RED + saturation (`sonda_server_*` series). See [Server metrics](server-metrics.md). | Operational dashboards and alerts on the server itself. |
+| `/scenarios/metrics` | Aggregate scenario data fused into one response. Supports `?label=k:v` filtering. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape). | A single scrape target covering every scenario, regardless of how it was launched. |
 | `/scenarios/<scenario-id>/metrics` | One scenario's series. | Per-scenario debugging or a stable URL per scenario loaded from the `scenarios` ConfigMap. |
 
-The chart defaults `serviceMonitor.path` to `/server/metrics` — the right choice for operational alerting on the server process. Switch it to `/metrics` when you also want one scrape job to cover every scenario the server is running.
+The chart defaults `serviceMonitor.path` to `/metrics` — the right choice for operational alerting on the server process. Switch it to `/scenarios/metrics` when you also want one scrape job to cover every scenario the server is running.
 
 | Value | Default | Description |
 |-------|---------|-------------|
 | `serviceMonitor.enabled` | `false` | Enable Prometheus Operator ServiceMonitor |
 | `serviceMonitor.interval` | `30s` | Scrape interval |
 | `serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout |
-| `serviceMonitor.path` | `/server/metrics` | Metrics endpoint path. Switch to `/metrics` for aggregate scenario scraping, or `/scenarios/<scenario-id>/metrics` for a single scenario. |
+| `serviceMonitor.path` | `/metrics` | Metrics endpoint path. Switch to `/scenarios/metrics` for aggregate scenario scraping, or `/scenarios/<scenario-id>/metrics` for a single scenario. |
 | `serviceMonitor.additionalLabels` | `{}` | Extra labels on the ServiceMonitor resource |
 
 !!! tip "One ServiceMonitor per path"
-    A ServiceMonitor endpoint scrapes a single path. To scrape both `/server/metrics` and `/metrics`, deploy two ServiceMonitor resources (or one with two `endpoints` entries — see the [manual ServiceMonitor example](#manual-servicemonitor) below).
+    A ServiceMonitor endpoint scrapes a single path. To scrape both `/metrics` and `/scenarios/metrics`, deploy two ServiceMonitor resources (or one with two `endpoints` entries — see the [manual ServiceMonitor example](#manual-servicemonitor) below).
 
 ### Scenarios (ConfigMap)
 
@@ -287,10 +287,10 @@ For example, a Prometheus instance in the same namespace can scrape
 | Endpoint | What it returns | When to scrape |
 |---|---|---|
 | `GET /scenarios/{id}/metrics` | One scenario's series | Per-scenario debugging |
-| `GET /metrics` | Aggregate scenario data | Per-process scenario view |
-| `GET /server/metrics` | Server-process RED + saturation | Operational dashboards and alerts |
+| `GET /scenarios/metrics` | Aggregate scenario data | Per-process scenario view |
+| `GET /metrics` | Server-process RED + saturation | Operational dashboards and alerts |
 
-`GET /metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /server/metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the nine series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
+`GET /scenarios/metrics` and `GET /scenarios/{id}/metrics` are idempotent snapshots — one sample per `(name, labels)` series with no timestamp, like a `node_exporter` scrape. `GET /metrics` returns the server's own RED and saturation telemetry — see [Server metrics](server-metrics.md) for the nine series and the alerts that go with them. Most Prometheus setups want a job per endpoint; the aggregate `/scenarios/metrics` covers every scenario and you do not need to know scenario IDs in advance. See [Aggregate Prometheus scrape](http-api.md#aggregate-prometheus-scrape) for the `?label=k:v` AND-filter syntax.
 
 ### Aggregate scrape config
 
@@ -298,7 +298,7 @@ For example, a Prometheus instance in the same namespace can scrape
 scrape_configs:
   - job_name: sonda
     scrape_interval: 15s
-    metrics_path: /metrics
+    metrics_path: /scenarios/metrics
     static_configs:
       - targets: ["sonda.default.svc:8080"]
 ```
@@ -351,10 +351,10 @@ spec:
   endpoints:
     - port: http
       interval: 15s
-      path: /server/metrics
+      path: /metrics
     - port: http
       interval: 15s
-      path: /metrics
+      path: /scenarios/metrics
 ```
 
 ```bash
@@ -365,7 +365,7 @@ The `port: http` field matches the named port on the Sonda Service. Each `endpoi
 
 ## API key authentication
 
-Sonda-server supports optional bearer token authentication on `/scenarios/*`, `/metrics`, and
+Sonda-server supports optional bearer token authentication on `/scenarios/*`, `/scenarios/metrics`, and
 `/events`. When enabled, clients must include an `Authorization: Bearer <key>` header. The
 `/health` endpoint stays public so liveness and readiness probes work without credentials.
 
@@ -420,12 +420,12 @@ The chart sets `SONDA_API_KEY` in the container environment from the Secret. On 
 will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and /metrics endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /metrics, and /scenarios/metrics endpoints
 ```
 
 ### Authenticated API calls
 
-Once auth is enabled, include the bearer token in all `/scenarios/*`, `/metrics`, and `/events` requests:
+Once auth is enabled, include the bearer token in all `/scenarios/*`, `/scenarios/metrics`, and `/events` requests:
 
 ```bash
 # Port-forward to reach the server
@@ -444,7 +444,7 @@ curl http://localhost:8080/health
 
 ### Prometheus scraping with auth
 
-When authentication is enabled, every scrape endpoint requires a bearer token: `/server/metrics`, `/metrics`, and `/scenarios/{id}/metrics`. Add the token to your Prometheus scrape config:
+When authentication is enabled, every scrape endpoint requires a bearer token: `/metrics`, `/scenarios/metrics`, and `/scenarios/{id}/metrics`. Add the token to your Prometheus scrape config:
 
 === "Static scrape config"
 
@@ -452,7 +452,7 @@ When authentication is enabled, every scrape endpoint requires a bearer token: `
     scrape_configs:
       - job_name: sonda-server
         scrape_interval: 15s
-        metrics_path: /server/metrics
+        metrics_path: /metrics
         bearer_token: "your-secret-key-here"
         static_configs:
           - targets: ["sonda.default.svc:8080"]
@@ -464,7 +464,7 @@ When authentication is enabled, every scrape endpoint requires a bearer token: `
     scrape_configs:
       - job_name: sonda-server
         scrape_interval: 15s
-        metrics_path: /server/metrics
+        metrics_path: /metrics
         bearer_token_file: /etc/prometheus/sonda-token
         static_configs:
           - targets: ["sonda.default.svc:8080"]
@@ -486,13 +486,13 @@ spec:
   endpoints:
     - port: http
       interval: 15s
-      path: /server/metrics
+      path: /metrics
       bearerTokenSecret:
         name: sonda-api-key
         key: api-key
 ```
 
-Add a second `endpoints` entry with the same `bearerTokenSecret` to also scrape `/metrics` or a per-scenario path. See [Authentication on Server metrics](server-metrics.md#authentication) for the full reference.
+Add a second `endpoints` entry with the same `bearerTokenSecret` to also scrape `/scenarios/metrics` or a per-scenario path. See [Authentication on Server metrics](server-metrics.md#authentication) for the full reference.
 
 !!! warning "Same Secret, same namespace"
     The `bearerTokenSecret` must reference a Secret in the **same namespace** as the
@@ -534,6 +534,6 @@ Add `-n <namespace>` if you installed into a non-default namespace.
 
 - [Synthetic Monitoring guide](../test/synthetic-monitoring.md) -- deploy Sonda on Kubernetes, submit long-running scenarios, scrape with Prometheus, and build Grafana dashboards
 - [Server API](server.md) -- full endpoint reference for `sonda-server`
-- [Server metrics](server-metrics.md) -- the nine `/server/metrics` series and the PromQL alerts that matter
+- [Server metrics](server-metrics.md) -- the nine `/metrics` series and the PromQL alerts that matter
 - [Docker](docker.md) -- Docker image and Compose stacks for local development
 - [Scenario Fields](../reference/scenario-fields.md) -- full YAML schema for scenario configuration

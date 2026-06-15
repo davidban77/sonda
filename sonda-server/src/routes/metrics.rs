@@ -1,4 +1,4 @@
-//! `GET /server/metrics` — process-level RED and saturation telemetry.
+//! `GET /metrics` — process-level RED and saturation telemetry.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -13,7 +13,7 @@ use crate::state::{AppState, HistogramShard};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-pub async fn get_server_metrics(State(state): State<AppState>) -> Result<Response, Response> {
+pub async fn get_metrics(State(state): State<AppState>) -> Result<Response, Response> {
     let mut buf = String::with_capacity(4096);
 
     write_active_scenarios(&state, &mut buf).map_err(internal)?;

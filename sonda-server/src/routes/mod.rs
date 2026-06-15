@@ -2,8 +2,8 @@
 
 pub mod events;
 pub mod health;
+pub mod metrics;
 pub mod scenarios;
-pub mod server_metrics;
 pub mod sink_warnings;
 
 use std::sync::Arc;
@@ -55,8 +55,8 @@ pub fn router_with_config(state: AppState, cfg: RouterConfig) -> Router {
             "/scenarios/{id}/metrics",
             get(scenarios::get_scenario_metrics),
         )
-        .route("/metrics", get(scenarios::get_aggregate_metrics))
-        .route("/server/metrics", get(server_metrics::get_server_metrics))
+        .route("/scenarios/metrics", get(scenarios::get_aggregate_metrics))
+        .route("/metrics", get(metrics::get_metrics))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             record_request_metrics,

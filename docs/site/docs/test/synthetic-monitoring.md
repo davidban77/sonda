@@ -220,7 +220,7 @@ For the full API reference, see [Server API](../deploy/server.md).
 
 `sonda-server` exposes two scrape endpoints.
 
-- `GET /metrics` is the aggregate view. Every running scenario appears in one Prometheus text response. Use `?label=k:v` to filter by labels set on each scenario.
+- `GET /scenarios/metrics` is the aggregate view. Every running scenario appears in one Prometheus text response. Use `?label=k:v` to filter by labels set on each scenario.
 - `GET /scenarios/{id}/metrics` is the per-scenario view. It returns the current value of every series for one scenario.
 
 Both endpoints are idempotent snapshots. They return one sample per `(name, labels)` series with no timestamp, exactly like a `node_exporter` scrape.
@@ -233,7 +233,7 @@ For Prometheus, vmagent, and VictoriaMetrics jobs, use the aggregate endpoint. O
 scrape_configs:
   - job_name: sonda
     scrape_interval: 15s
-    metrics_path: /metrics
+    metrics_path: /scenarios/metrics
     static_configs:
       - targets: ["sonda.default.svc:8080"]
 ```

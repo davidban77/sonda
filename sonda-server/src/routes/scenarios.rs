@@ -1132,7 +1132,7 @@ pub async fn get_aggregate_metrics(
                                 warn!(
                                     metric_name = %name,
                                     declared_types = ?declared,
-                                    "GET /metrics: mixed metric_type declarations for same name; \
+                                    "GET /scenarios/metrics: mixed metric_type declarations for same name; \
                                      emitting as untyped",
                                 );
                                 existing.metric_type = sonda_core::PromMetricType::Untyped;
@@ -1162,12 +1162,12 @@ pub async fn get_aggregate_metrics(
                 meta.help.as_deref(),
                 &mut buf,
             ) {
-                warn!(name = %group.name, error = %e, "GET /metrics: failed to encode metadata");
+                warn!(name = %group.name, error = %e, "GET /scenarios/metrics: failed to encode metadata");
             }
         }
         for event in &group.events {
             if let Err(e) = encoder.encode_metric(event, &mut buf) {
-                warn!(name = %group.name, error = %e, "GET /metrics: failed to encode metric event");
+                warn!(name = %group.name, error = %e, "GET /scenarios/metrics: failed to encode metric event");
             }
         }
     }
@@ -3776,7 +3776,7 @@ scenarios:
     }
 
     // ========================================================================
-    // GET /metrics aggregate scrape tests
+    // GET /scenarios/metrics aggregate scrape tests
     // ========================================================================
 
     fn make_handle_with_labels_and_metrics(
@@ -3827,9 +3827,9 @@ scenarios:
         query: &str,
     ) -> hyper::Response<axum::body::Body> {
         let uri = if query.is_empty() {
-            "/metrics".to_string()
+            "/scenarios/metrics".to_string()
         } else {
-            format!("/metrics?{query}")
+            format!("/scenarios/metrics?{query}")
         };
         let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         app.oneshot(req).await.unwrap()
@@ -4124,7 +4124,7 @@ scenarios:
         let app = router(state);
 
         let req = Request::builder()
-            .uri("/metrics")
+            .uri("/scenarios/metrics")
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -4135,7 +4135,7 @@ scenarios:
         );
 
         let req_ok = Request::builder()
-            .uri("/metrics")
+            .uri("/scenarios/metrics")
             .header("authorization", "Bearer the-key")
             .body(Body::empty())
             .unwrap();

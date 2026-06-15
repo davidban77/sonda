@@ -1,4 +1,4 @@
-//! End-to-end integration tests for the bounded scheduler and /server/metrics endpoint.
+//! End-to-end integration tests for the bounded scheduler and /metrics endpoint.
 
 mod common;
 
@@ -197,9 +197,9 @@ fn finished_scenarios_count_against_cap() {
     assert_eq!(finished, 5, "all 5 should be in Finished state");
 
     let metrics = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
-        .expect("GET /server/metrics must succeed");
+        .expect("GET /metrics must succeed");
     assert_eq!(metrics.status().as_u16(), 200);
     let text = metrics.text().expect("body");
     assert!(
@@ -269,7 +269,7 @@ fn server_metrics_emits_all_nine_series_with_zero_state_rows() {
     let base = format!("http://127.0.0.1:{port}");
 
     let resp = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
         .expect("GET must succeed");
     assert_eq!(resp.status().as_u16(), 200);
@@ -288,7 +288,7 @@ fn server_metrics_emits_all_nine_series_with_zero_state_rows() {
     ] {
         assert!(
             text.contains(series),
-            "/server/metrics must contain `{series}`. Got:\n{text}"
+            "/metrics must contain `{series}`. Got:\n{text}"
         );
     }
 
@@ -308,17 +308,17 @@ fn server_metrics_requires_bearer_token_when_api_key_set() {
     let base = format!("http://127.0.0.1:{port}");
 
     let resp = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
         .expect("GET must succeed");
     assert_eq!(
         resp.status().as_u16(),
         401,
-        "GET /server/metrics without auth must return 401"
+        "GET /metrics without auth must return 401"
     );
 
     let resp = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .header("authorization", "Bearer topsecret")
         .send()
         .expect("GET must succeed");
@@ -348,9 +348,9 @@ fn requests_total_uses_matched_path_for_route_label() {
         .expect("GET stats must succeed");
 
     let resp = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
-        .expect("GET /server/metrics must succeed");
+        .expect("GET /metrics must succeed");
     let text = resp.text().expect("body");
 
     let needle = "route=\"/scenarios/{id}/stats\"";
@@ -540,13 +540,13 @@ fn health_remains_responsive_when_control_plane_is_saturated() {
     );
 
     let server_metrics = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
-        .expect("GET /server/metrics must succeed");
+        .expect("GET /metrics must succeed");
     assert_eq!(
         server_metrics.status().as_u16(),
         200,
-        "/server/metrics must stay reachable while POST holds the concurrency permit"
+        "/metrics must stay reachable while POST holds the concurrency permit"
     );
 
     // A second POST on the same route must be queued behind the saturator's permit.
@@ -692,9 +692,9 @@ fn observability_endpoints_reachable_under_concurrent_post_saturation() {
     assert_eq!(health.status().as_u16(), 200);
 
     let server_metrics = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
-        .expect("GET /server/metrics");
+        .expect("GET /metrics");
     assert_eq!(server_metrics.status().as_u16(), 200);
 
     let scenario_metrics = client
@@ -717,7 +717,7 @@ fn build_info_exposes_version_and_git_sha() {
     let base = format!("http://127.0.0.1:{port}");
 
     let resp = client
-        .get(format!("{base}/server/metrics"))
+        .get(format!("{base}/metrics"))
         .send()
         .expect("GET must succeed");
     let text = resp.text().expect("body");

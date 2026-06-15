@@ -11,7 +11,7 @@ description: REST endpoints exposed by sonda-server — scenarios, events, metri
 
 ### Authentication
 
-When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, and `/metrics` must include `Authorization: Bearer <key>`. The `/health` endpoint is always public. When no key is configured, all endpoints are public. This preserves backwards compatibility with existing deployments.
+When the server starts with `--api-key <key>` (or `SONDA_API_KEY=<key>`), every request to `/scenarios/*`, `/events`, `/metrics`, and `/scenarios/metrics` must include `Authorization: Bearer <key>`. The `/health` endpoint is always public. When no key is configured, all endpoints are public.
 
 ```bash title="Authenticated request"
 curl -X POST http://localhost:8080/scenarios \
@@ -33,7 +33,7 @@ For server-side setup (passing the flag, env var, Kubernetes Secret pattern), se
 
 - `POST /scenarios` accepts `text/yaml`, `application/x-yaml`, or `application/json`. JSON bodies are converted to YAML on the server and follow the same validation path.
 - `POST /events` accepts `application/json` only.
-- All response bodies are JSON unless the endpoint returns Prometheus text exposition (`GET /metrics`, `GET /scenarios/{id}/metrics`).
+- All response bodies are JSON unless the endpoint returns Prometheus text exposition (`GET /scenarios/metrics`, `GET /scenarios/{id}/metrics`).
 
 ### Error response shape
 
@@ -54,7 +54,7 @@ Most error responses share the format `{"error": "<short_code>", "detail": "<mes
 
 ### Capacity and resource errors
 
-Three status codes signal that a request was rejected by the server's resource-limit guards rather than by validation. They apply only to the control-plane sub-router (`POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, list/inspect). The observability endpoints (`/server/metrics`, `/metrics`, `/scenarios/{id}/metrics`, `/scenarios/{id}/stats`, `/health`) are not subject to these limits and stay reachable under saturation. Every rejection is counted on [`sonda_server_requests_total{status="..."}`](server-metrics.md#sonda_server_requests_total).
+Three status codes signal that a request was rejected by the server's resource-limit guards rather than by validation. They apply only to the control-plane sub-router (`POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, list/inspect). The observability endpoints (`/metrics`, `/scenarios/metrics`, `/scenarios/{id}/metrics`, `/scenarios/{id}/stats`, `/health`) are not subject to these limits and stay reachable under saturation. Every rejection is counted on [`sonda_server_requests_total{status="..."}`](server-metrics.md#sonda_server_requests_total).
 
 #### `429 Too Many Requests` — capacity_exceeded
 
@@ -691,7 +691,7 @@ curl -X DELETE http://localhost:8080/scenarios/<id>
 
 ### `GET /scenarios/{id}/metrics`
 
-Returns the current value of every series one scenario is emitting, in Prometheus text exposition format. It is the per-scenario counterpart to [`GET /metrics`](#get-metrics). It has the same one-sample-per-series shape and the same idempotent snapshot semantics, but scoped to a single scenario. Use it when each scenario is its own logical target and you have a stable ID to point at.
+Returns the current value of every series one scenario is emitting, in Prometheus text exposition format. It is the per-scenario counterpart to [`GET /scenarios/metrics`](#get-scenariosmetrics). It has the same one-sample-per-series shape and the same idempotent snapshot semantics, but scoped to a single scenario. Use it when each scenario is its own logical target and you have a stable ID to point at.
 
 The response carries the same `# TYPE` and `# HELP` annotations as the aggregate endpoint, scoped to the single scenario:
 
@@ -896,9 +896,9 @@ If a request references a type that is not compiled in, the server returns **422
 
 ## Aggregate Prometheus scrape
 
-### `GET /metrics`
+### `GET /scenarios/metrics`
 
-To a scraper, `sonda-server` looks like a Prometheus exporter on a real device. One URL, idempotent within a scrape window, with label selectors to slice the view. `GET /metrics` returns the current value of every series across every running scenario. One sample per `(name, labels)` series, with no per-sample timestamp, fused into a single Prometheus text-format response. `?label=k:v` filters that view by the labels you attached when starting each scenario.
+To a scraper, `sonda-server` looks like a Prometheus exporter on a real device. One URL, idempotent within a scrape window, with label selectors to slice the view. `GET /scenarios/metrics` returns the current value of every series across every running scenario. One sample per `(name, labels)` series, with no per-sample timestamp, fused into a single Prometheus text-format response. `?label=k:v` filters that view by the labels you attached when starting each scenario.
 
 It is a **typed** exporter. Each metric is prefixed by `# TYPE` and (when configured) `# HELP` lines. Prometheus, VictoriaMetrics, vmagent, and Telegraf consumers see the same exposition shape they would see scraping any real device. Set [`metric_type:` and `help:`](../reference/scenario-fields.md#prometheus-exposition-fields) on a scenario to declare the type and description. Omit them and the server picks a default: `gauge` for most metric generators, `counter` for [`step`](../build/generators.md#step), and `histogram` or `summary` for those signal types.
 
@@ -939,7 +939,7 @@ scenarios:
 ```
 
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:8080/scenarios/metrics
 ```
 
 ```text title="Response (text/plain; version=0.0.4; charset=utf-8)"
@@ -952,7 +952,7 @@ memory_utilization{device="srl2"} 67.812
 One line per `(name, labels)` series, carrying the current value with no per-sample timestamp. This matches the shape `node_exporter` and Prometheus self-scrape produce. The scraper stamps every sample with its own scrape wall-clock at ingest time. The server emitting its own timestamps would conflict with that. The `# TYPE` line appears once per metric name. `# HELP` appears when any contributing scenario set one. With no scenarios running, the response is `200 OK` with an empty body. This is what Prometheus, vmagent, and Telegraf scrapers expect on a quiet target.
 
 !!! info "Idempotent within a scrape window"
-    `GET /metrics` is non-destructive and stable. Two scrapes back-to-back return byte-identical bodies. A Prometheus job, a vmagent job, and an ops dashboard can all scrape the same server without taking events from each other. The CLI streaming sinks (`stdout`, `file`, `tcp`, `udp`) still emit a timestamp per event. They encode a stream over time, so the timestamp is what gives each line its identity. The HTTP scrape and the CLI stream serve different consumer models, so the encoder is configured differently for each path.
+    `GET /scenarios/metrics` is non-destructive and stable. Two scrapes back-to-back return byte-identical bodies. A Prometheus job, a vmagent job, and an ops dashboard can all scrape the same server without taking events from each other. The CLI streaming sinks (`stdout`, `file`, `tcp`, `udp`) still emit a timestamp per event. They encode a stream over time, so the timestamp is what gives each line its identity. The HTTP scrape and the CLI stream serve different consumer models, so the encoder is configured differently for each path.
 
 Histogram and summary scenarios behave the same way. One `# TYPE` block per base name covers every `_bucket{le="..."}`, `_sum`, `_count`, and quantile line:
 
@@ -977,10 +977,10 @@ This is the exposition shape `histogram_quantile()` expects. PromQL percentile q
 
 ```bash
 # One device, all interfaces
-curl 'http://localhost:8080/metrics?label=device:srl1'
+curl 'http://localhost:8080/scenarios/metrics?label=device:srl1'
 
 # One device AND one interface — both must match
-curl 'http://localhost:8080/metrics?label=device:srl1&label=interface:eth0'
+curl 'http://localhost:8080/scenarios/metrics?label=device:srl1&label=interface:eth0'
 ```
 
 A scenario started with no `labels:` block never matches any filter. There is nothing to match against. Drop the filter to see those events.
@@ -994,16 +994,16 @@ A malformed filter (missing `:`, empty key, empty value) returns `400 Bad Reques
 }
 ```
 
-#### `GET /metrics` vs `GET /scenarios/{id}/metrics`
+#### `GET /scenarios/metrics` vs `GET /scenarios/{id}/metrics`
 
 Both endpoints emit Prometheus text and both are idempotent snapshots. Two back-to-back calls return byte-identical bodies. They differ only in scope:
 
 | Endpoint | Scope | Use it for |
 |---|---|---|
-| `GET /metrics` | Every running scenario fused into one response. Supports `?label=k:v` to slice the view. | Production scraping. One job covers every scenario, with no need to know IDs in advance. |
+| `GET /scenarios/metrics` | Every running scenario fused into one response. Supports `?label=k:v` to slice the view. | Production scraping. One job covers every scenario, with no need to know IDs in advance. |
 | `GET /scenarios/{id}/metrics` | One scenario. | Debugging or setting up a per-scenario route when each scenario is its own logical target. |
 
-Pick `GET /metrics` for any Prometheus, VictoriaMetrics, or vmagent job. It is the endpoint that behaves like a normal exporter. Use the per-scenario endpoint when you are inspecting one scenario in isolation, or when you want a stable URL per scenario.
+Pick `GET /scenarios/metrics` for any Prometheus, VictoriaMetrics, or vmagent job. It is the endpoint that behaves like a normal exporter. Use the per-scenario endpoint when you are inspecting one scenario in isolation, or when you want a stable URL per scenario.
 
 #### Scrape config
 
@@ -1013,7 +1013,7 @@ A Prometheus or vmagent scrape job targeting one device's metrics:
 scrape_configs:
   - job_name: sonda-srl1
     scrape_interval: 15s
-    metrics_path: /metrics
+    metrics_path: /scenarios/metrics
     params:
       label: ["device:srl1"]
     static_configs:
@@ -1028,7 +1028,7 @@ When [authentication](#authentication) is enabled, add the bearer token to the j
 scrape_configs:
   - job_name: sonda
     scrape_interval: 15s
-    metrics_path: /metrics
+    metrics_path: /scenarios/metrics
     bearer_token: my-secret-key
     static_configs:
       - targets: ["localhost:8080"]
@@ -1045,14 +1045,14 @@ scrape_configs:
 | DELETE | `/scenarios/{id}` | Stop and remove a running scenario |
 | GET | `/scenarios/{id}/stats` | Live stats: rate, events, gap/burst state, sink-failure counters |
 | GET | `/scenarios/{id}/metrics` | Current per-series values for one scenario in Prometheus text format |
-| GET | `/metrics` | Aggregate Prometheus scrape across all running scenarios. Supports `?label=k:v` filtering |
-| GET | `/server/metrics` | Server-process RED and saturation telemetry. See [Server metrics](server-metrics.md). |
+| GET | `/scenarios/metrics` | Aggregate Prometheus scrape across all running scenarios. Supports `?label=k:v` filtering |
+| GET | `/metrics` | Server-process RED and saturation telemetry. See [Server metrics](server-metrics.md). |
 | POST | `/events` | Emit one log or metric event synchronously |
 
 ## Where to next
 
 - [Deploy as a server](server.md) — install, configure, network, and operate the server itself.
-- [Server metrics](server-metrics.md) — the nine `/server/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the nine `/metrics` series and the alerts that matter.
 - [Scenario file format](../build/scenario-files.md) — what to put in the body of `POST /scenarios`.
 - [Encoders](../build/encoders.md) and [Sinks](../build/sinks.md) — every encoder/sink option you can declare in a posted body.
 - [Cross-POST `while:` refs (YAML schema)](../build/scenario-files.md#cross-post-while-refs) — the file-side counterpart to the HTTP cross-POST surface.

@@ -449,7 +449,7 @@ A scenario that carries a `while:` clause walks through four lifecycle states. T
 
 `pending` covers the wait for the upstream's first eligible tick. The downstream enters `running` when the gate first opens, alternates between `running` and `paused` for the rest of the run, and ends in `finished` when its `duration:` elapses or shutdown is signaled. A scenario with both `after:` and `while:` whose `after:` fires while the gate is closed enters `paused` directly — `pending` need not always come before `running`.
 
-A fifth state, `held`, replaces `paused` after a gate close when the scenario opts into the snap-to recovery shape through [`delay.close.snap_to`](#recovering-prometheus-alerts-on-gate-close) AND has emitted at least one sample. `held` differs from `paused` only on the pull-path: scrapers passing [`?include_state=...,held`](#aggregate-metrics-sees-paused-and-unresolved-scenarios) keep seeing the frozen value, while `paused` ghosts stay filtered out under that same allowlist. Push sinks behave the same way in both states (the runner stops emitting). `held` applies to metric scenarios. See [Pattern C — Counter freeze-and-hold during outage](#pattern-c-counter-freeze-and-hold-during-outage) for the orchestration.
+A fifth state, `held`, replaces `paused` after a gate close when the scenario opts into the snap-to recovery shape through [`delay.close.snap_to`](#recovering-prometheus-alerts-on-gate-close) AND has emitted at least one sample. `held` differs from `paused` only on the pull-path: scrapers passing [`?include_state=...,held`](#aggregate-scenariosmetrics-sees-paused-and-unresolved-scenarios) keep seeing the frozen value, while `paused` ghosts stay filtered out under that same allowlist. Push sinks behave the same way in both states (the runner stops emitting). `held` applies to metric scenarios. See [Pattern C — Counter freeze-and-hold during outage](#pattern-c-counter-freeze-and-hold-during-outage) for the orchestration.
 
 ### Debouncing transitions with `delay:`
 
@@ -669,7 +669,7 @@ Cross-POST `while:` is most often used to coordinate a long-running **baseline**
 | [**Pattern B — Cascade overrides baseline emission**](#pattern-b-cascade-overrides-baseline-emission) | Baseline and cascade emit the **same series**. You want the cascade's values to replace the baseline's in the scrape during the outage window. | DELETE the baseline, POST the cascade for the outage window, DELETE the cascade, POST the baseline again. Or — for scrapers that can pass `?include_state=running` — keep both alive with inverse `while:` clauses so only one is `running` at a time. |
 | [**Pattern C — Counter freeze-and-hold during outage**](#pattern-c-counter-freeze-and-hold-during-outage) | Single metric series (no separate baseline POST) whose value should freeze at the last sample during the outage window, then resume from the frozen value when the gate reopens. | A single scenario with `delay.close.snap_to: <value>` and a `while:` clause. Gate close transitions the scenario to `held`, the pull-path retains the frozen sample, and scrapers opt in with `?include_state=running,unresolved,held`. No DELETE-and-replace orchestration. |
 
-All three worked examples are below. Read them before picking. The same-series vs different-series distinction governs A vs B; the freeze-vs-replace distinction governs C. Picking the wrong one shows up as duplicate samples in `/metrics`, an empty scrape body at steady state, or a counter that drops to zero during the outage instead of holding its last value.
+All three worked examples are below. Read them before picking. The same-series vs different-series distinction governs A vs B; the freeze-vs-replace distinction governs C. Picking the wrong one shows up as duplicate samples in `/scenarios/metrics`, an empty scrape body at steady state, or a counter that drops to zero during the outage instead of holding its last value.
 
 #### Schema
 
@@ -831,26 +831,26 @@ Every POST whose top-level `scenario_name:` matches an entry already in `pending
 
 `conflicting_scenarios` lists every active entry that shares the posted `scenario_name`. DELETE each one (a multi-entry body produces several handles, all of which must go) before the next POST. Entries that have already transitioned to `finished` do not block; they are stale handles and the server ignores them.
 
-#### Aggregate `/metrics` sees paused and unresolved scenarios
+#### Aggregate `/scenarios/metrics` sees paused and unresolved scenarios
 
-The aggregate [`GET /metrics`](../deploy/http-api.md#get-metrics-vs-get-scenariosidmetrics) endpoint walks the full scenario map without filtering on state. Every scenario the server currently knows about — `running`, `paused`, `unresolved`, even `pending` — contributes the most recent value per `(metric_name, label_set)` to the scrape output. The handle holds those last-seen samples until you DELETE the scenario; gate-pause alone does not clear them.
+The aggregate [`GET /scenarios/metrics`](../deploy/http-api.md#get-scenariosmetrics-vs-get-scenariosidmetrics) endpoint walks the full scenario map without filtering on state. Every scenario the server currently knows about — `running`, `paused`, `unresolved`, even `pending` — contributes the most recent value per `(metric_name, label_set)` to the scrape output. The handle holds those last-seen samples until you DELETE the scenario; gate-pause alone does not clear them.
 
-The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/metrics`. The aggregate concatenates their points; it does not pick "the live one." To keep only one scenario contributing a given series at a time, DELETE the inactive one. The gate does not silence it. This matters for the cascade-replaces-baseline pattern below.
+The practical consequence for cross-POST wiring: two scenarios that target the same `(metric_name, labels)` with mutually-exclusive gates both contribute samples to `/scenarios/metrics`. The aggregate concatenates their points; it does not pick "the live one." To keep only one scenario contributing a given series at a time, DELETE the inactive one. The gate does not silence it. This matters for the cascade-replaces-baseline pattern below.
 
 Scrapers can opt into a state-aware view of the aggregate by passing `?include_state=<allowlist>` on the request. Series from scenarios whose state is outside the allowlist are skipped. With the parameter absent, the response is unchanged (every scenario still contributes its last-known sample). The allowlist is comma-separated and accepts the six scenario states — `pending`, `running`, `paused`, `held`, `unresolved`, `finished` — in any combination:
 
 ```bash
 # Only running scenarios — paused, held, and unresolved ghosts are filtered out
-curl 'http://localhost:8080/metrics?include_state=running'
+curl 'http://localhost:8080/scenarios/metrics?include_state=running'
 
 # Multiple states at once; whitespace after the comma is tolerated
-curl 'http://localhost:8080/metrics?include_state=running,paused'
+curl 'http://localhost:8080/scenarios/metrics?include_state=running,paused'
 
 # Include held scenarios in the scrape (counter freeze-and-hold pattern)
-curl 'http://localhost:8080/metrics?include_state=running,unresolved,held'
+curl 'http://localhost:8080/scenarios/metrics?include_state=running,unresolved,held'
 
 # Combine with the label filter; both are applied as intersection
-curl 'http://localhost:8080/metrics?include_state=running&label=device:srl1'
+curl 'http://localhost:8080/scenarios/metrics?include_state=running&label=device:srl1'
 ```
 
 An unknown state name or an empty value (`?include_state=`) returns `400 Bad Request` with a message listing the six valid options. This filter is pull-only — push sinks such as `remote_write`, `kafka`, and `otlp` already honor scenario state by construction, because the runner skips encoding and writing while the gate is closed.
@@ -865,14 +865,14 @@ A metric scenario configured with `delay.close.snap_to` reports `state: "held"` 
 
     ```bash
     # Keeps the if_unresolved: open baseline visible at rest, still filters paused ghosts during a cascade
-    curl 'http://localhost:8080/metrics?include_state=running,unresolved'
+    curl 'http://localhost:8080/scenarios/metrics?include_state=running,unresolved'
     ```
 
     The baseline stays visible while the cascade is absent. Once the cascade POSTs and the baseline resolves to `running`, both states still pass the filter, so the scrape never goes dark. During a gate-pause the baseline transitions to `paused` and drops out of the response, which is the desired behavior.
 
 #### Pattern B — Cascade overrides baseline emission
 
-Pattern A pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/metrics` scrape (see the ghost-sample note above). That is fine when the baseline and cascade emit different series. When they emit the **same** `(metric_name, label_set)` series, gate-pause is not enough. The baseline's last `1` would sit alongside the cascade's `0` in the scrape. Orchestrate with DELETE + POST instead.
+Pattern A pauses the baseline whenever the cascade gates it shut, but the baseline's last value keeps appearing in the aggregate `/scenarios/metrics` scrape (see the ghost-sample note above). That is fine when the baseline and cascade emit different series. When they emit the **same** `(metric_name, label_set)` series, gate-pause is not enough. The baseline's last `1` would sit alongside the cascade's `0` in the scrape. Orchestrate with DELETE + POST instead.
 
 ```yaml title="baseline.yaml — steady-state value"
 version: 2
@@ -929,9 +929,9 @@ The orchestration sequence:
 2. **Begin the outage.** DELETE the baseline (`DELETE /scenarios/{baseline-id}`), then POST `outage.yaml`. The same series now alternates between `1` and `0` from the outage cascade.
 3. **End the outage.** DELETE the outage cascade, then POST `baseline.yaml` again. The series returns to a steady `1`.
 
-The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
+The inverse shape — keeping the baseline alive and adding a `while:` clause to pause it whenever the outage cascade fires — does NOT achieve the same effect on the aggregate scrape. The baseline's last `1` would still appear in `/scenarios/metrics` alongside the outage's `0`, because gate-pause does not clear the handle's `current_values`. For replacement-of-emission, DELETE the baseline first.
 
-If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow. POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so exactly one is `running` at any moment. Scrapers request `GET /metrics?include_state=running` and see whichever scenario currently holds the gate open. The paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter. Push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
+If your scrapers can pass `?include_state=running`, the DELETE-and-replace dance collapses to a POST-and-leave-running flow. POST the baseline and the outage cascade with inverse `while:` clauses on the same upstream signal, so exactly one is `running` at any moment. Scrapers request `GET /scenarios/metrics?include_state=running` and see whichever scenario currently holds the gate open. The paused side is filtered out, so the target series never carries two simultaneous samples and no DELETE is needed. Keep the DELETE-and-replace flow above for scrapers that cannot set the query parameter. Push-only sinks already see the right thing because the runner does not emit while a `while:` gate is closed.
 
 #### Pattern C — Counter freeze-and-hold during outage
 
