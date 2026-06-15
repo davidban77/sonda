@@ -1301,18 +1301,20 @@ mod tests {
     /// Uses a two-phase approach: first stops all scenarios via a read lock
     /// (safe to call while other read guards exist), then acquires a write
     /// lock to join the threads.
-    fn cleanup_scenarios(state: &AppState) {
+    async fn cleanup_scenarios(state: &AppState) {
         // Phase 1: signal all scenarios to stop (read lock).
         if let Ok(scenarios) = state.scenarios.read() {
             for handle in scenarios.values() {
                 handle.stop();
             }
         }
-        // Phase 2: join all scenario threads (write lock).
-        if let Ok(mut scenarios) = state.scenarios.write() {
-            for handle in scenarios.values_mut() {
-                let _ = handle.join(Some(Duration::from_secs(2)));
-            }
+        // Phase 2: drain handles under the write lock, then await join_async outside it.
+        let handles: Vec<ScenarioHandle> = match state.scenarios.write() {
+            Ok(mut scenarios) => scenarios.drain().map(|(_, h)| h).collect(),
+            Err(_) => return,
+        };
+        for mut handle in handles {
+            let _ = handle.join_async(Some(Duration::from_secs(2))).await;
         }
     }
 
@@ -1993,7 +1995,7 @@ scenarios:
             );
         }
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: POST valid logs YAML -> 201, scenario ID returned
@@ -2025,7 +2027,7 @@ scenarios:
             "state must be 'pending' or 'running', got {s:?}"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: POST YAML with signal_type: metrics -> 201 (ScenarioEntry format)
@@ -2053,7 +2055,7 @@ scenarios:
             "state must be 'pending' or 'running', got {s:?}"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: POST invalid YAML -> 400 with error message
@@ -2148,18 +2150,18 @@ scenarios:
         let id = body["id"].as_str().unwrap().to_string();
 
         // Check that the handle reports is_running() == true.
-        let scenarios = state.scenarios.read().expect("lock must not be poisoned");
-        let handle = scenarios
-            .get(&id)
-            .expect("handle must exist in AppState after POST");
-        assert!(
-            handle.is_running(),
-            "scenario thread must be running after POST (is_running() must return true)"
-        );
+        {
+            let scenarios = state.scenarios.read().expect("lock must not be poisoned");
+            let handle = scenarios
+                .get(&id)
+                .expect("handle must exist in AppState after POST");
+            assert!(
+                handle.is_running(),
+                "scenario thread must be running after POST (is_running() must return true)"
+            );
+        }
 
-        // Clean up.
-        drop(scenarios);
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: Content-type handling: application/x-yaml, text/yaml, application/json
@@ -2176,7 +2178,7 @@ scenarios:
             "application/x-yaml content type must be accepted"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// POST with Content-Type: text/yaml is accepted as YAML.
@@ -2191,7 +2193,7 @@ scenarios:
             "text/yaml content type must be accepted"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// POST with Content-Type: application/json and a valid v2 JSON metrics body returns 201.
@@ -2233,7 +2235,7 @@ scenarios:
             "state must be 'pending' or 'running', got {s:?}"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// POST with Content-Type: application/json and invalid JSON returns 400.
@@ -2267,7 +2269,7 @@ scenarios:
             "POST with no Content-Type header must default to YAML and succeed for valid YAML"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: Response body structure -----------------------------------------
@@ -2295,7 +2297,7 @@ scenarios:
             "response must contain exactly 3 keys (id, name, state)"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// The returned scenario ID is a valid UUID v4.
@@ -2310,7 +2312,7 @@ scenarios:
         let parsed = uuid::Uuid::parse_str(id_str);
         assert!(parsed.is_ok(), "id must be a valid UUID, got: {id_str}");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Test: Negative rate -> 422 -------------------------------------------
@@ -2548,7 +2550,7 @@ scenarios:
             StatusCode::CREATED,
             "pack-referencing body must launch when catalog is configured"
         );
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -2577,7 +2579,7 @@ scenarios:
             StatusCode::CREATED,
             "ordinary body must still launch with a catalog configured"
         );
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// is_yaml_content_type returns true for application/x-yaml.
@@ -2960,7 +2962,7 @@ scenarios:
         );
 
         // Clean up the remaining running scenario.
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Contract: DeletedScenario serializes correctly ---------------------
@@ -3255,7 +3257,7 @@ scenarios:
         );
 
         // Clean up: stop the scenario.
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- in_gap is true during gap window ------------------------------------
@@ -3687,7 +3689,7 @@ scenarios:
         );
         assert!(!body_1.is_empty(), "first scrape must not be empty");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     // ---- Metrics scrape: correct Content-Type header ------------------------
@@ -3933,7 +3935,7 @@ scenarios:
         assert_eq!(body_1, body_2);
         assert!(!body_1.trim().is_empty());
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -3965,7 +3967,7 @@ scenarios:
             "per-scenario scrape must be idempotent"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -4714,7 +4716,7 @@ scenarios:
         assert_eq!(scenarios[0]["name"], "multi_metric_a");
         assert_eq!(scenarios[1]["name"], "multi_metric_b");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Multi-scenario POST stores all handles in AppState.
@@ -4727,17 +4729,18 @@ scenarios:
 
         let body = body_json(response).await;
         let scenarios = body["scenarios"].as_array().unwrap();
-        let map = state.scenarios.read().expect("lock must not be poisoned");
-        for entry in scenarios {
-            let id = entry["id"].as_str().unwrap();
-            assert!(
-                map.contains_key(id),
-                "AppState must contain handle for scenario id={id}"
-            );
+        {
+            let map = state.scenarios.read().expect("lock must not be poisoned");
+            for entry in scenarios {
+                let id = entry["id"].as_str().unwrap();
+                assert!(
+                    map.contains_key(id),
+                    "AppState must contain handle for scenario id={id}"
+                );
+            }
         }
-        drop(map);
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Multi-scenario POST with v2 JSON content type returns 201.
@@ -4785,7 +4788,7 @@ scenarios:
         assert_eq!(scenarios[0]["name"], "json_multi_a");
         assert_eq!(scenarios[1]["name"], "json_multi_b");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Empty v2 scenarios array returns 400 with a descriptive error.
@@ -4873,7 +4876,7 @@ scenarios:
         assert_eq!(scenarios[0]["name"], "offset_a");
         assert_eq!(scenarios[1]["name"], "offset_b");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Single-scenario POST still returns backward-compatible response.
@@ -4899,7 +4902,7 @@ scenarios:
             "state must be 'pending' or 'running', got {s:?}"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// All launched multi-scenario entries are visible in GET /scenarios.
@@ -4943,7 +4946,7 @@ scenarios:
             );
         }
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Multi-scenario entries are stoppable via DELETE.
@@ -5007,7 +5010,7 @@ scenarios:
             "all scenario IDs must be unique"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Multi-scenario with mixed signal types (metrics + logs) returns 201.
@@ -5059,7 +5062,7 @@ scenarios:
         assert_eq!(scenarios[0]["name"], "mixed_metric");
         assert_eq!(scenarios[1]["name"], "mixed_logs");
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// `parse_body` returns a multi-entry CompiledFile for a v2 body that
@@ -5171,7 +5174,7 @@ scenarios:
             "state must be 'pending' or 'running', got {s:?}"
         );
 
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     /// Single-scenario POST with rate=0 returns 422 (verifies validation
@@ -5770,7 +5773,7 @@ scenarios:
             .expect("unresolved_refs must be array");
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0]["scenario_name"], "totally_wrong");
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -5835,7 +5838,7 @@ scenarios:
         let unresolved = body["unresolved_refs"].as_array().unwrap();
         assert_eq!(unresolved.len(), 1, "only one entry must be flagged");
         assert_eq!(unresolved[0]["scenario_name"], "missing_post");
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -5852,7 +5855,7 @@ scenarios:
         )
         .await;
         assert_eq!(resp.status(), StatusCode::CREATED);
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5902,7 +5905,7 @@ scenarios:
             saw_running,
             "downstream must reach Running after upstream POST"
         );
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5959,7 +5962,7 @@ scenarios:
             attempts_after >= 1,
             "the resolving sweep counts as at least one attempt, got {attempts_after}",
         );
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 
     #[tokio::test]
@@ -5972,6 +5975,6 @@ scenarios:
         assert_eq!(second.status(), StatusCode::CONFLICT);
         let body = body_json(second).await;
         assert!(body["conflicting_scenarios"].is_array());
-        cleanup_scenarios(&state);
+        cleanup_scenarios(&state).await;
     }
 }
