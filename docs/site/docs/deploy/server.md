@@ -291,7 +291,7 @@ The flag does not apply to the observability sub-router.
 
 ## Authentication
 
-You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /scenarios/metrics` (and its deprecated `/metrics` alias), and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
+You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /metrics`, `GET /scenarios/metrics`, and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
 
 ### Enabling authentication
 
@@ -312,7 +312,7 @@ Pass an API key with the `--api-key` flag or the `SONDA_API_KEY` environment var
 When the server starts with a key configured, you will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /scenarios/metrics, and the deprecated /metrics alias
+INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /metrics, and /scenarios/metrics endpoints
 ```
 
 !!! info "No key = no auth"
