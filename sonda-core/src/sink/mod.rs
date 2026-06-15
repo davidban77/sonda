@@ -22,10 +22,12 @@ pub mod udp;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use crate::model::log::LogEvent;
+use crate::sink::memory::CapturedRing;
 use crate::SondaError;
 
 /// A sink consumes encoded bytes and delivers them to a destination.
@@ -157,6 +159,9 @@ pub enum SinkConfig {
     /// When `capture` is `true`, each write records its `Instant` alongside
     /// the bytes, bounded to the most recent `max_events` entries. When
     /// `capture` is `false`, the sink only accumulates bytes in its buffer.
+    /// Programmatic embedders can pass `capture_handle: Some(arc)` to mirror
+    /// writes into an externally-owned ring; YAML scenarios always leave it
+    /// `None` because the field is `serde(skip)`.
     #[cfg_attr(feature = "config", serde(rename = "memory"))]
     Memory {
         /// Whether to record `(Instant, bytes)` on every write.
@@ -167,6 +172,10 @@ pub enum SinkConfig {
         /// `capture` is `true` and the field is omitted.
         #[cfg_attr(feature = "config", serde(default))]
         max_events: Option<usize>,
+
+        /// Programmatic capture handle for embedders. `None` for YAML.
+        #[cfg_attr(feature = "config", serde(skip))]
+        capture_handle: Option<Arc<Mutex<CapturedRing>>>,
     },
 
     /// Batch encoded events and deliver them via HTTP POST.
@@ -413,8 +422,13 @@ pub async fn create_sink(
         SinkConfig::Memory {
             capture,
             max_events,
+            capture_handle,
         } => {
-            if *capture {
+            if let Some(handle) = capture_handle {
+                Ok(Box::new(memory::MemorySink::with_shared_capture(
+                    Arc::clone(handle),
+                )))
+            } else if *capture {
                 let max = max_events.unwrap_or(1_000_000);
                 Ok(Box::new(memory::MemorySink::with_capture(max)))
             } else {
@@ -1415,6 +1429,7 @@ retry:
         let cfg = SinkConfig::Memory {
             capture: false,
             max_events: None,
+            capture_handle: None,
         };
         let mut sink = create_sink(&cfg, None).await.unwrap();
         sink.write(b"hello").await.unwrap();
@@ -1426,11 +1441,42 @@ retry:
         let cfg = SinkConfig::Memory {
             capture: true,
             max_events: Some(8),
+            capture_handle: None,
         };
         let mut sink = create_sink(&cfg, None).await.unwrap();
         sink.write(b"one").await.unwrap();
         sink.write(b"two").await.unwrap();
         sink.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_with_shared_capture_handle_mirrors_writes() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(8)));
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"one").await.unwrap();
+        sink.write(b"two").await.unwrap();
+        let guard = ring.lock().unwrap();
+        assert_eq!(guard.len(), 2);
+        assert_eq!(guard.events()[0].1, b"one");
+        assert_eq!(guard.events()[1].1, b"two");
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_capture_handle_takes_precedence_over_capture_flag() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(4)));
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(1_000_000),
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"shared").await.unwrap();
+        assert_eq!(ring.lock().unwrap().len(), 1);
     }
 
     #[cfg(feature = "config")]
@@ -1442,7 +1488,8 @@ retry:
             config,
             SinkConfig::Memory {
                 capture: true,
-                max_events: Some(64)
+                max_events: Some(64),
+                capture_handle: None,
             }
         ));
     }
@@ -1456,7 +1503,23 @@ retry:
             config,
             SinkConfig::Memory {
                 capture: false,
-                max_events: None
+                max_events: None,
+                capture_handle: None,
+            }
+        ));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_capture_handle_is_skipped_in_yaml() {
+        let yaml = "type: memory\ncapture: true\nmax_events: 4\ncapture_handle: anything";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(4),
+                capture_handle: None,
             }
         ));
     }
@@ -1466,17 +1529,37 @@ retry:
         let cfg = SinkConfig::Memory {
             capture: true,
             max_events: Some(16),
+            capture_handle: None,
         };
         let cloned = cfg.clone();
         assert!(matches!(
             cloned,
             SinkConfig::Memory {
                 capture: true,
-                max_events: Some(16)
+                max_events: Some(16),
+                capture_handle: None,
             }
         ));
         let s = format!("{cfg:?}");
         assert!(s.contains("Memory"));
+    }
+
+    #[test]
+    fn sink_config_memory_with_handle_is_cloneable_and_shares_ring() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(2)));
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let cloned = cfg.clone();
+        match cloned {
+            SinkConfig::Memory {
+                capture_handle: Some(h),
+                ..
+            } => assert!(Arc::ptr_eq(&h, &ring)),
+            _ => panic!("cloned variant must preserve the handle"),
+        }
     }
 
     #[cfg(all(not(feature = "otlp"), feature = "config"))]

@@ -412,7 +412,7 @@ impl Drop for StateGuard {
                 st.transition_state(ScenarioState::Finished);
             }
         }
-        // Skip when Phase 1 (delete_scenario) already ran; ensure exactly once.
+        // delete_scenario sets cleaned_up first; skip duplicate unregister.
         if self.cleaned_up.swap(true, Ordering::SeqCst) {
             return;
         }
