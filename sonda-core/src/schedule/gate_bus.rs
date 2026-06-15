@@ -237,18 +237,9 @@ impl GateReceiver {
         if let Some(edge) = self.try_recv() {
             return Some(edge);
         }
-        let deadline = tokio::time::Instant::now() + timeout;
-        let poll_interval = std::time::Duration::from_millis(2);
-        loop {
-            if let Some(edge) = self.try_recv() {
-                return Some(edge);
-            }
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            let sleep = (deadline - now).min(poll_interval);
-            tokio::time::sleep(sleep).await;
+        tokio::select! {
+            _ = tokio::time::sleep(timeout) => None,
+            _ = self.wait_for_change() => self.try_recv(),
         }
     }
 
