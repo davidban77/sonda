@@ -2324,7 +2324,7 @@ fn while_local_downstream_finishes_when_upstream_finishes() {
     );
 }
 
-// ---- GET /metrics?include_state=... allowlist filter ------------------------
+// ---- GET /scenarios/metrics?include_state=... allowlist filter --------------
 
 const ISFILTER_BASELINE_YAML: &str = r#"
 version: 2
@@ -2497,12 +2497,19 @@ fn isfilter_post(client: &reqwest::blocking::Client, base: &str, yaml: &str) -> 
 
 fn isfilter_scrape(client: &reqwest::blocking::Client, base: &str, query: &str) -> String {
     let url = if query.is_empty() {
-        format!("{base}/metrics")
+        format!("{base}/scenarios/metrics")
     } else {
-        format!("{base}/metrics?{query}")
+        format!("{base}/scenarios/metrics?{query}")
     };
-    let resp = client.get(url).send().expect("GET /metrics must succeed");
-    assert_eq!(resp.status().as_u16(), 200, "GET /metrics must return 200");
+    let resp = client
+        .get(url)
+        .send()
+        .expect("GET /scenarios/metrics must succeed");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "GET /scenarios/metrics must return 200"
+    );
     resp.text().expect("body must be UTF-8")
 }
 
@@ -2714,9 +2721,9 @@ fn include_state_unknown_value_returns_400() {
     let client = common::http_client();
 
     let resp = client
-        .get(format!("{base}/metrics?include_state=foo"))
+        .get(format!("{base}/scenarios/metrics?include_state=foo"))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 400);
     let body: serde_json::Value = resp.json().expect("error body must be JSON");
     let detail = body["detail"].as_str().unwrap_or("");
@@ -2737,9 +2744,9 @@ fn include_state_empty_value_returns_400() {
     let client = common::http_client();
 
     let resp = client
-        .get(format!("{base}/metrics?include_state="))
+        .get(format!("{base}/scenarios/metrics?include_state="))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 400);
     let body: serde_json::Value = resp.json().expect("error body must be JSON");
     let detail = body["detail"].as_str().unwrap_or("");

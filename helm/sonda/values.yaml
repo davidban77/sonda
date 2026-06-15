@@ -127,16 +127,16 @@ ingress:
 
 # ServiceMonitor for Prometheus Operator.
 #
-# `path` should point at /server/metrics for server-process RED + saturation
+# `path` should point at /metrics for server-process RED + saturation
 # metrics (recommended for operational dashboards and alerts). Per-scenario
 # metrics remain available at /scenarios/<scenario-id>/metrics, and aggregate
-# scenario data at /metrics, for ad-hoc scraping or workload-specific
+# scenario data at /scenarios/metrics, for ad-hoc scraping or workload-specific
 # ServiceMonitors.
 serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
-  path: "/server/metrics"
+  path: "/metrics"
   additionalLabels: {}
   # When SONDA_API_KEY auth is enabled on the server, set both fields below to
   # point at a Kubernetes Secret holding the bearer token. Prometheus Operator

@@ -23,7 +23,7 @@ src/
 ├── routes/
 │   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health),
 │                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
-│                         /metrics, /server/metrics), and protected control (/scenarios POST/GET,
+│                         /scenarios/metrics, /metrics), and protected control (/scenarios POST/GET,
 │                         /scenarios/{id} GET/DELETE, /events). Auth + request-metrics middleware
 │                         applied per protected sub-router; the control sub-router additionally
 │                         carries the timeout + body-limit + global-concurrency tower stack.

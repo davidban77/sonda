@@ -97,12 +97,12 @@ The fields below appear on every `scenarios:` entry, regardless of signal type.
 | `jitter` | float | no | none | Noise amplitude. Adds uniform noise in `[-jitter, +jitter]` to every generated value. See [Generators - Jitter](../build/generators.md#jitter). |
 | `jitter_seed` | integer | no | `0` | Seed for deterministic jitter noise. Different seeds produce different noise sequences. |
 | `on_sink_error` | string | no | `warn` | Behavior when the sink returns an error mid-run. `warn` logs the error, drops the batch, and keeps running. `fail` propagates the error and exits the runner. Overrides `defaults.on_sink_error`. See [Sink-error policy](../build/scenario-files.md#sink-error-policy). |
-| `metric_type` | string | no | derived | Prometheus exposition type: `gauge`, `counter`, `histogram`, `summary`, or `untyped`. Appears on the `sonda-server` [`/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape) as the `# TYPE` line. See [Prometheus exposition fields](#prometheus-exposition-fields). |
-| `help` | string | no | none | Free-text description emitted as the `# HELP` line on the `sonda-server` [`/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape). Omitted when unset. See [Prometheus exposition fields](#prometheus-exposition-fields). |
+| `metric_type` | string | no | derived | Prometheus exposition type: `gauge`, `counter`, `histogram`, `summary`, or `untyped`. Appears on the `sonda-server` [`/scenarios/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape) as the `# TYPE` line. See [Prometheus exposition fields](#prometheus-exposition-fields). |
+| `help` | string | no | none | Free-text description emitted as the `# HELP` line on the `sonda-server` [`/scenarios/metrics` endpoints](../deploy/http-api.md#aggregate-prometheus-scrape). Omitted when unset. See [Prometheus exposition fields](#prometheus-exposition-fields). |
 
 ### Prometheus exposition fields
 
-`metric_type` and `help` annotate a scenario's metric so the `sonda-server` `/metrics` endpoints emit Prometheus `# TYPE` and `# HELP` lines. Both fields apply to `metrics`, `histogram`, and `summary` entries. Log entries ignore them.
+`metric_type` and `help` annotate a scenario's metric so the `sonda-server` `/scenarios/metrics` endpoints emit Prometheus `# TYPE` and `# HELP` lines. Both fields apply to `metrics`, `histogram`, and `summary` entries. Log entries ignore them.
 
 These annotations have no effect for the per-event sinks that the `sonda run` CLI uses (`stdout`, `file`, `tcp`, and so on). They exist for scrape-based delivery through [`sonda-server`](../deploy/server.md).
 
@@ -136,7 +136,7 @@ scenarios:
 
 Scrape the server and the response carries both annotations:
 
-```text title="GET /metrics"
+```text title="GET /scenarios/metrics"
 # HELP memory_utilization Memory usage percent on the device.
 # TYPE memory_utilization gauge
 memory_utilization{device="srl1"} 41.5
@@ -146,7 +146,7 @@ memory_utilization{device="srl1"} 41.5
     Prometheus-text consumers (Prometheus, VictoriaMetrics, Telegraf, vmagent) treat unannotated metrics as `untyped`. Some downstream tooling renames untyped samples. For example, an untyped metric named `bgp_oper_state` may become `bgp_oper_state_value` after a Telegraf-style relay. Declaring `metric_type:` keeps the metric name stable across every scraping consumer in the chain.
 
 !!! warning "Mixed-type collisions become `untyped`"
-    Prometheus allows only one `# TYPE` line per metric name. Suppose two scenarios share a `name:` but declare different `metric_type` values, one `gauge` and one `counter`. The aggregate [`GET /metrics`](../deploy/http-api.md#aggregate-prometheus-scrape) emits a single `# TYPE <name> untyped` block containing samples from both, and logs a server-side warning. Use a consistent `metric_type` per metric name to avoid this.
+    Prometheus allows only one `# TYPE` line per metric name. Suppose two scenarios share a `name:` but declare different `metric_type` values, one `gauge` and one `counter`. The aggregate [`GET /scenarios/metrics`](../deploy/http-api.md#aggregate-prometheus-scrape) emits a single `# TYPE <name> untyped` block containing samples from both, and logs a server-side warning. Use a consistent `metric_type` per metric name to avoid this.
 
 ### Gap window
 

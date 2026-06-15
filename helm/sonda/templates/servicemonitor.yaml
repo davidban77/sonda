@@ -15,7 +15,7 @@ spec:
       {{- if .Values.serviceMonitor.scrapeTimeout }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
       {{- end }}
-      path: {{ default "/server/metrics" .Values.serviceMonitor.path }}
+      path: {{ default "/metrics" .Values.serviceMonitor.path }}
       {{- with .Values.serviceMonitor.bearerTokenSecret }}
       {{- if and .name .key }}
       bearerTokenSecret:

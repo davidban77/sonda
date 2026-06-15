@@ -47,7 +47,7 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0")]
     bind: String,
 
-    /// API key for bearer-token authentication on `/scenarios/*`, `/events`, and `/metrics` endpoints.
+    /// API key for bearer-token authentication on `/scenarios/*`, `/events`, `/metrics`, and `/scenarios/metrics` endpoints.
     ///
     /// When set, requests to these endpoints must include an
     /// `Authorization: Bearer <key>` header. The `/health` endpoint remains
@@ -147,7 +147,9 @@ async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow
     });
 
     if api_key.is_some() {
-        info!("API key authentication enabled for /scenarios/*, /events, and /metrics endpoints");
+        info!(
+            "API key authentication enabled for /scenarios/*, /events, /metrics, and /scenarios/metrics endpoints"
+        );
     } else {
         info!("API key authentication disabled — all endpoints are public");
     }

@@ -1,4 +1,4 @@
-//! End-to-end integration tests for `GET /metrics` (aggregate scrape).
+//! End-to-end integration tests for `GET /scenarios/metrics` (aggregate scrape).
 
 mod common;
 
@@ -72,9 +72,9 @@ fn aggregate_metrics_end_to_end_with_label_filter() {
     thread::sleep(Duration::from_millis(500));
 
     let resp = client
-        .get(format!("{base}/metrics"))
+        .get(format!("{base}/scenarios/metrics"))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 200);
     let ct = resp
         .headers()
@@ -91,9 +91,9 @@ fn aggregate_metrics_end_to_end_with_label_filter() {
     );
 
     let resp = client
-        .get(format!("{base}/metrics?label=device:srl1"))
+        .get(format!("{base}/scenarios/metrics?label=device:srl1"))
         .send()
-        .expect("GET /metrics?label=device:srl1 must succeed");
+        .expect("GET /scenarios/metrics?label=device:srl1 must succeed");
     assert_eq!(resp.status().as_u16(), 200);
     let body_filtered = resp.text().expect("body must be UTF-8");
     assert!(
@@ -187,9 +187,9 @@ fn aggregate_metrics_e2e_includes_type_lines_per_signal_type() {
     thread::sleep(Duration::from_millis(800));
 
     let resp = client
-        .get(format!("{base}/metrics"))
+        .get(format!("{base}/scenarios/metrics"))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 200);
     let body = resp.text().expect("body must be UTF-8");
 
@@ -326,9 +326,9 @@ fn autocon5_repro_one_line_per_series_at_rate_10() {
 
 fn scrape_sample_lines(client: &reqwest::blocking::Client, base: &str) -> Vec<String> {
     let resp = client
-        .get(format!("{base}/metrics"))
+        .get(format!("{base}/scenarios/metrics"))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 200);
     resp.text()
         .expect("body must be UTF-8")
@@ -336,6 +336,84 @@ fn scrape_sample_lines(client: &reqwest::blocking::Client, base: &str) -> Vec<St
         .filter(|l| !l.starts_with('#') && !l.is_empty())
         .map(|l| l.to_string())
         .collect()
+}
+
+const FINISHED_PARITY_YAML: &str = r#"
+version: 2
+kind: runnable
+defaults:
+  rate: 50
+  duration: 200ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: stdout
+scenarios:
+  - id: parity_short
+    signal_type: metrics
+    name: parity_short
+    labels:
+      device: srl9
+    generator:
+      type: constant
+      value: 3.5
+"#;
+
+#[test]
+fn aggregate_scrape_byte_identical_after_scenario_finished() {
+    let (port, _guard) = common::start_server();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = common::http_client();
+
+    let resp = client
+        .post(format!("{base}/scenarios"))
+        .header("Content-Type", "text/yaml")
+        .body(FINISHED_PARITY_YAML)
+        .send()
+        .expect("POST scenario must succeed");
+    assert_eq!(resp.status().as_u16(), 201);
+    let body: serde_json::Value = resp.json().expect("JSON");
+    let id = body["id"].as_str().expect("id").to_string();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            panic!("scenario did not reach 'finished' state within 5s");
+        }
+        let stats = client
+            .get(format!("{base}/scenarios/{id}/stats"))
+            .send()
+            .expect("GET stats must succeed");
+        if stats.status().as_u16() == 200 {
+            let s: serde_json::Value = stats.json().expect("stats JSON");
+            if s["state"].as_str() == Some("finished") {
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let body_a = client
+        .get(format!("{base}/scenarios/metrics"))
+        .send()
+        .expect("GET /scenarios/metrics #1 must succeed")
+        .bytes()
+        .expect("body bytes #1");
+    let body_b = client
+        .get(format!("{base}/scenarios/metrics"))
+        .send()
+        .expect("GET /scenarios/metrics #2 must succeed")
+        .bytes()
+        .expect("body bytes #2");
+
+    assert_eq!(
+        body_a, body_b,
+        "two sequential GETs to /scenarios/metrics must return byte-identical bodies"
+    );
+    assert!(
+        !body_a.is_empty(),
+        "scrape body must contain the finished scenario's series"
+    );
 }
 
 #[test]
@@ -355,9 +433,9 @@ fn e2e_yaml_metric_type_field_reaches_scrape_output() {
     thread::sleep(Duration::from_millis(500));
 
     let resp = client
-        .get(format!("{base}/metrics"))
+        .get(format!("{base}/scenarios/metrics"))
         .send()
-        .expect("GET /metrics must succeed");
+        .expect("GET /scenarios/metrics must succeed");
     assert_eq!(resp.status().as_u16(), 200);
     let body = resp.text().expect("body must be UTF-8");
 

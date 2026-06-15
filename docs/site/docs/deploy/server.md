@@ -273,7 +273,7 @@ The cap is exported on [`sonda_server_max_scenarios`](server-metrics.md#sonda_se
 
 A global concurrency cap across the control-plane sub-router — `POST /scenarios`, `DELETE /scenarios/{id}`, `POST /events`, and the list/inspect routes. The default `4 * workers` keeps a healthy queue depth without overcommitting. Raise it when the server has CPU and memory headroom and you see request latency climbing under load. Lower it when control-plane work is starving scenario runners.
 
-The cap does **not** apply to the observability sub-router. `/server/metrics`, `/metrics`, `/scenarios/{id}/metrics`, and `/scenarios/{id}/stats` stay scrape-able under saturation — exactly when your alerts need them.
+The cap does **not** apply to the observability sub-router. `/metrics`, `/scenarios/metrics`, `/scenarios/{id}/metrics`, and `/scenarios/{id}/stats` stay scrape-able under saturation — exactly when your alerts need them.
 
 Back-pressure is implicit. `tower::limit::ConcurrencyLimitLayer` does not return a 503; it back-pressures via the tokio runtime, and requests queue at the listener until a slot frees. The visible symptom is rising P99 on [`sonda_server_request_duration_seconds`](server-metrics.md#sonda_server_request_duration_seconds), not an error spike. Alert on the histogram, not on a status code.
 
@@ -291,7 +291,7 @@ The flag does not apply to the observability sub-router.
 
 ## Authentication
 
-You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /metrics`, and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
+You can protect scenario endpoints with API key authentication. When enabled, all `/scenarios/*` requests, `GET /scenarios/metrics` (and its deprecated `/metrics` alias), and `POST /events` must include a bearer token. The `/health` endpoint is always public, so health probes and load balancer checks work without credentials.
 
 ### Enabling authentication
 
@@ -312,7 +312,7 @@ Pass an API key with the `--api-key` flag or the `SONDA_API_KEY` environment var
 When the server starts with a key configured, you will see:
 
 ```text
-INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and /metrics endpoints
+INFO sonda_server: API key authentication enabled for /scenarios/*, /events, /scenarios/metrics, and the deprecated /metrics alias
 ```
 
 !!! info "No key = no auth"
@@ -329,14 +329,14 @@ INFO sonda_server: API key authentication enabled for /scenarios/*, /events, and
 | `DELETE /scenarios/{id}` | Yes |
 | `GET /scenarios/{id}/stats` | Yes |
 | `GET /scenarios/{id}/metrics` | Yes |
+| `GET /scenarios/metrics` | Yes |
 | `GET /metrics` | Yes |
-| `GET /server/metrics` | Yes |
 | `POST /events` | Yes |
 
 See [Authentication conventions on HTTP API reference](http-api.md#authentication) for request shapes, header format, and 401 response bodies.
 
 !!! warning "Prometheus scraping with auth"
-    If you enable authentication, your Prometheus scrape config must include the bearer token for `/server/metrics`, `/metrics`, and `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file` field to your `scrape_configs` entry. See [Authentication on Server metrics](server-metrics.md#authentication) for the scrape-config shape.
+    If you enable authentication, your Prometheus scrape config must include the bearer token for `/metrics`, `/scenarios/metrics`, and `/scenarios/{id}/metrics`. Add a `bearer_token` or `bearer_token_file` field to your `scrape_configs` entry. See [Authentication on Server metrics](server-metrics.md#authentication) for the scrape-config shape.
 
 ??? tip "Kubernetes Secrets"
     In Kubernetes deployments, store the API key in a Secret and reference it as an environment variable in your Deployment spec:
@@ -371,7 +371,7 @@ See [Authentication conventions on HTTP API reference](http-api.md#authenticatio
 ## Where to next
 
 - [HTTP API reference](http-api.md) — every endpoint, request body, and response shape.
-- [Server metrics](server-metrics.md) — the nine `/server/metrics` series and the alerts that matter.
+- [Server metrics](server-metrics.md) — the nine `/metrics` series and the alerts that matter.
 - [Docker](docker.md) — Compose stacks and host-side `docker run` examples.
 - [Kubernetes](kubernetes.md) — Helm chart, Service DNS, cross-namespace access.
 - [Sinks](../build/sinks.md) — every sink type and its `url:` field.
