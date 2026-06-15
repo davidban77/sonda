@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.16.0](https://github.com/davidban77/sonda/compare/v1.15.0...v1.16.0) (2026-06-15)
+
+
+### Features
+
+* **server:** align metrics routes with Prometheus convention ([#468](https://github.com/davidban77/sonda/issues/468)) ([a73b574](https://github.com/davidban77/sonda/commit/a73b574d296ed18530af035bfd302ce0a3cf8e81))
+
+
+### Refactoring
+
+* **core:** gate_bus Notify + AtomicU8 primitive ([#471](https://github.com/davidban77/sonda/issues/471)) ([6baf20c](https://github.com/davidban77/sonda/commit/6baf20c6e0d9d9bc58a74b7aa792ca03086c3bf0))
+* **server:** cleanup_scenarios test helper uses join_async ([#472](https://github.com/davidban77/sonda/issues/472)) ([ed8023a](https://github.com/davidban77/sonda/commit/ed8023a26aa5cd61994ab4f5a75bb8f0e920cc29))
+
 ## [1.15.0](https://github.com/davidban77/sonda/compare/v1.14.0...v1.15.0) (2026-06-15)
 
 
