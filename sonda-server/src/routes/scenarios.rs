@@ -2150,17 +2150,17 @@ scenarios:
         let id = body["id"].as_str().unwrap().to_string();
 
         // Check that the handle reports is_running() == true.
-        let scenarios = state.scenarios.read().expect("lock must not be poisoned");
-        let handle = scenarios
-            .get(&id)
-            .expect("handle must exist in AppState after POST");
-        assert!(
-            handle.is_running(),
-            "scenario thread must be running after POST (is_running() must return true)"
-        );
+        {
+            let scenarios = state.scenarios.read().expect("lock must not be poisoned");
+            let handle = scenarios
+                .get(&id)
+                .expect("handle must exist in AppState after POST");
+            assert!(
+                handle.is_running(),
+                "scenario thread must be running after POST (is_running() must return true)"
+            );
+        }
 
-        // Clean up.
-        drop(scenarios);
         cleanup_scenarios(&state).await;
     }
 
@@ -4729,15 +4729,16 @@ scenarios:
 
         let body = body_json(response).await;
         let scenarios = body["scenarios"].as_array().unwrap();
-        let map = state.scenarios.read().expect("lock must not be poisoned");
-        for entry in scenarios {
-            let id = entry["id"].as_str().unwrap();
-            assert!(
-                map.contains_key(id),
-                "AppState must contain handle for scenario id={id}"
-            );
+        {
+            let map = state.scenarios.read().expect("lock must not be poisoned");
+            for entry in scenarios {
+                let id = entry["id"].as_str().unwrap();
+                assert!(
+                    map.contains_key(id),
+                    "AppState must contain handle for scenario id={id}"
+                );
+            }
         }
-        drop(map);
 
         cleanup_scenarios(&state).await;
     }
