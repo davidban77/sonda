@@ -21,15 +21,13 @@ use crate::config::expand_entry;
 use crate::schedule::core_loop::GateContext;
 #[cfg(feature = "config")]
 use crate::schedule::gate_bus::{
-    GateBus, GateBusResolver, GateReceiver, InitialState, PendingResolution, SubscriptionSpec,
-    WhileSpec,
+    gate_edge_channel, GateBus, GateBusResolver, GateReceiver, InitialState, PendingResolution,
+    SubscriptionSpec, WhileSpec,
 };
 #[cfg(feature = "config")]
 use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
-#[cfg(feature = "config")]
-use tokio::sync::watch;
 
 /// Run all scenarios in `entries` concurrently; cancel `parent_cancel` to stop them.
 pub async fn run_multi(
@@ -152,7 +150,7 @@ pub async fn launch_multi_compiled(
                     op: clause.op,
                     threshold: clause.value,
                 };
-                let (tx, rx) = watch::channel::<Option<crate::schedule::gate_bus::GateEdge>>(None);
+                let (tx, rx) = gate_edge_channel();
                 let if_unresolved = clause.if_unresolved.unwrap_or_default();
                 let bus = resolver.lookup(cross_scenario, clause.ref_id.as_str());
                 let (gate_rx, initial, start_unresolved) = match bus {

@@ -3,21 +3,143 @@
 //! Upstream metric runners publish per-tick values via [`GateBus::tick`].
 //! Downstream scenarios subscribe with a [`SubscriptionSpec`] and receive
 //! [`GateEdge`] events on every gate-state crossing. Each kind (`after`,
-//! `while`) gets its own `tokio::sync::watch` channel — the latest edge
+//! `while`) gets its own single-slot edge channel — the latest edge
 //! always wins, keeping memory flat regardless of upstream chatter.
 
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use tokio::sync::watch;
+use tokio::sync::Notify;
 
 use crate::compiler::{UnresolvedBehavior, WhileOp};
 use crate::schedule::stats::ScenarioStats;
 
-/// Sender end of a per-subscriber gate-edge channel.
-pub type GateEdgeSender = watch::Sender<Option<GateEdge>>;
+const EDGE_EMPTY: u8 = 0;
+const EDGE_AFTER_FIRED: u8 = 1;
+const EDGE_WHILE_OPEN: u8 = 2;
+const EDGE_WHILE_CLOSE: u8 = 3;
+const EDGE_UPSTREAM_GONE: u8 = 4;
 
-type GateEdgeReceiver = watch::Receiver<Option<GateEdge>>;
+fn encode_edge(edge: GateEdge) -> u8 {
+    match edge {
+        GateEdge::AfterFired => EDGE_AFTER_FIRED,
+        GateEdge::WhileOpen => EDGE_WHILE_OPEN,
+        GateEdge::WhileClose => EDGE_WHILE_CLOSE,
+        GateEdge::UpstreamGone => EDGE_UPSTREAM_GONE,
+    }
+}
+
+fn decode_edge(raw: u8) -> Option<GateEdge> {
+    match raw {
+        EDGE_AFTER_FIRED => Some(GateEdge::AfterFired),
+        EDGE_WHILE_OPEN => Some(GateEdge::WhileOpen),
+        EDGE_WHILE_CLOSE => Some(GateEdge::WhileClose),
+        EDGE_UPSTREAM_GONE => Some(GateEdge::UpstreamGone),
+        _ => None,
+    }
+}
+
+pub(crate) struct EdgeSlot {
+    edge: AtomicU8,
+    sender_dropped: AtomicBool,
+    notify: Notify,
+}
+
+impl EdgeSlot {
+    fn new() -> Self {
+        Self {
+            edge: AtomicU8::new(EDGE_EMPTY),
+            sender_dropped: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+}
+
+struct SenderShared {
+    slot: Arc<EdgeSlot>,
+}
+
+impl Drop for SenderShared {
+    fn drop(&mut self) {
+        self.slot.sender_dropped.store(true, Ordering::Release);
+        self.slot.notify.notify_waiters();
+    }
+}
+
+/// Sender end of a per-subscriber gate-edge channel.
+#[derive(Clone)]
+pub struct GateEdgeSender(Arc<SenderShared>);
+
+impl GateEdgeSender {
+    /// Publish a new edge, overwriting any unobserved pending edge.
+    pub fn send(&self, edge: GateEdge) {
+        self.0.slot.edge.store(encode_edge(edge), Ordering::Release);
+        self.0.slot.notify.notify_waiters();
+    }
+}
+
+impl std::fmt::Debug for GateEdgeSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateEdgeSender").finish_non_exhaustive()
+    }
+}
+
+/// Receiver end of a per-subscriber gate-edge channel.
+pub struct EdgeReceiver {
+    slot: Arc<EdgeSlot>,
+    drained_after_close: bool,
+}
+
+impl EdgeReceiver {
+    /// Take the pending edge if any; synthesises `UpstreamGone` once when the sender has dropped silently.
+    pub fn try_recv(&mut self) -> Option<GateEdge> {
+        let raw = self.slot.edge.swap(EDGE_EMPTY, Ordering::AcqRel);
+        let edge = decode_edge(raw);
+        let sender_gone = self.slot.sender_dropped.load(Ordering::Acquire);
+        if let Some(edge) = edge {
+            if sender_gone {
+                self.drained_after_close = true;
+            }
+            return Some(edge);
+        }
+        if self.drained_after_close {
+            return None;
+        }
+        if sender_gone {
+            self.drained_after_close = true;
+            return Some(GateEdge::UpstreamGone);
+        }
+        None
+    }
+
+    /// Park until a fresh edge arrives or the sender drops.
+    pub async fn wait_for_change(&mut self) {
+        let notified = self.slot.notify.notified(); // create future BEFORE atomic check — captures Notify's call-counter so a subsequent notify_waiters() resolves us even if we never poll it before the check below
+        tokio::pin!(notified);
+        if self.slot.edge.load(Ordering::Acquire) != EDGE_EMPTY
+            || self.slot.sender_dropped.load(Ordering::Acquire)
+        {
+            return;
+        }
+        notified.as_mut().await;
+    }
+}
+
+/// Construct an unattached `(GateEdgeSender, EdgeReceiver)` pair.
+pub fn gate_edge_channel() -> (GateEdgeSender, EdgeReceiver) {
+    let slot = Arc::new(EdgeSlot::new());
+    let shared = Arc::new(SenderShared {
+        slot: Arc::clone(&slot),
+    });
+    (
+        GateEdgeSender(shared),
+        EdgeReceiver {
+            slot,
+            drained_after_close: false,
+        },
+    )
+}
 
 /// Direction of a strict comparison used by an `after:` clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,61 +191,32 @@ pub struct InitialState {
 
 /// Receive end of a subscription.
 ///
-/// Carries up to two `tokio::sync::watch` receivers (one per edge kind).
-/// Both receivers are polled by `try_recv` / `recv_edge_timeout`; per kind,
-/// only the latest edge is buffered.
+/// Carries up to two per-edge-kind receivers (one for `after`, one for `while`).
+/// Both are polled by `try_recv` / `recv_edge_timeout`; per kind, only the
+/// latest edge is buffered.
 pub struct GateReceiver {
-    after_rx: Option<EdgeSlot>,
-    while_rx: Option<EdgeSlot>,
-}
-
-struct EdgeSlot {
-    rx: GateEdgeReceiver,
-    drained_after_close: bool,
-}
-
-impl EdgeSlot {
-    fn new(rx: GateEdgeReceiver) -> Self {
-        Self {
-            rx,
-            drained_after_close: false,
-        }
-    }
-
-    fn poll(&mut self) -> Option<GateEdge> {
-        match self.rx.has_changed() {
-            Ok(true) => *self.rx.borrow_and_update(),
-            Ok(false) => None,
-            Err(_) => {
-                if self.drained_after_close {
-                    return None;
-                }
-                self.drained_after_close = true;
-                let cached = *self.rx.borrow_and_update();
-                cached.or(Some(GateEdge::UpstreamGone))
-            }
-        }
-    }
+    after_rx: Option<EdgeReceiver>,
+    while_rx: Option<EdgeReceiver>,
 }
 
 impl GateReceiver {
     #[cfg(feature = "config")]
-    pub(crate) fn from_while_rx(rx: GateEdgeReceiver) -> Self {
+    pub(crate) fn from_while_rx(rx: EdgeReceiver) -> Self {
         Self {
             after_rx: None,
-            while_rx: Some(EdgeSlot::new(rx)),
+            while_rx: Some(rx),
         }
     }
 
     /// Poll both per-kind channels in priority order: after, then while.
     pub fn try_recv(&mut self) -> Option<GateEdge> {
         if let Some(slot) = self.after_rx.as_mut() {
-            if let Some(edge) = slot.poll() {
+            if let Some(edge) = slot.try_recv() {
                 return Some(edge);
             }
         }
         if let Some(slot) = self.while_rx.as_mut() {
-            if let Some(edge) = slot.poll() {
+            if let Some(edge) = slot.try_recv() {
                 return Some(edge);
             }
         }
@@ -144,38 +237,21 @@ impl GateReceiver {
         if let Some(edge) = self.try_recv() {
             return Some(edge);
         }
-        let deadline = tokio::time::Instant::now() + timeout;
-        let poll_interval = std::time::Duration::from_millis(2);
-        loop {
-            if let Some(edge) = self.try_recv() {
-                return Some(edge);
-            }
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                return None;
-            }
-            let sleep = (deadline - now).min(poll_interval);
-            tokio::time::sleep(sleep).await;
+        tokio::select! {
+            _ = tokio::time::sleep(timeout) => None,
+            _ = self.wait_for_change() => self.try_recv(),
         }
     }
 
     async fn wait_for_change(&mut self) {
-        // Cloned watch receivers share the channel; observing a change here is
-        // visible to the owned slot's subsequent try_recv.
-        let mut after = self.after_rx.as_ref().map(|s| s.rx.clone());
-        let mut while_ = self.while_rx.as_ref().map(|s| s.rx.clone());
-        match (after.as_mut(), while_.as_mut()) {
+        match (self.after_rx.as_mut(), self.while_rx.as_mut()) {
             (None, None) => std::future::pending::<()>().await,
-            (Some(a), None) => {
-                let _ = a.changed().await;
-            }
-            (None, Some(w)) => {
-                let _ = w.changed().await;
-            }
+            (Some(a), None) => a.wait_for_change().await,
+            (None, Some(w)) => w.wait_for_change().await,
             (Some(a), Some(w)) => {
                 tokio::select! {
-                    _ = a.changed() => {}
-                    _ = w.changed() => {}
+                    _ = a.wait_for_change() => {}
+                    _ = w.wait_for_change() => {}
                 }
             }
         }
@@ -253,14 +329,14 @@ impl GateBus {
         };
 
         let (after_tx, after_rx) = if spec.after.is_some() {
-            let (tx, rx) = watch::channel::<Option<GateEdge>>(None);
-            (Some(tx), Some(EdgeSlot::new(rx)))
+            let (tx, rx) = gate_edge_channel();
+            (Some(tx), Some(rx))
         } else {
             (None, None)
         };
         let (while_tx, while_rx) = if spec.while_.is_some() {
-            let (tx, rx) = watch::channel::<Option<GateEdge>>(None);
-            (Some(tx), Some(EdgeSlot::new(rx)))
+            let (tx, rx) = gate_edge_channel();
+            (Some(tx), Some(rx))
         } else {
             (None, None)
         };
@@ -284,7 +360,7 @@ impl GateBus {
 
         if after_already_fired {
             if let Some(ref tx) = sub.after_tx {
-                tx.send_replace(Some(GateEdge::AfterFired));
+                tx.send(GateEdge::AfterFired);
             }
         }
 
@@ -319,7 +395,7 @@ impl GateBus {
             } else {
                 GateEdge::WhileClose
             };
-            while_tx.send_replace(Some(edge));
+            while_tx.send(edge);
             (v, Some(open))
         } else {
             (f64::NAN, None)
@@ -368,7 +444,7 @@ impl GateBus {
                 if !sub.after_fired && after_eval(curr, after_spec.op, after_spec.threshold) {
                     sub.after_fired = true;
                     if let Some(ref tx) = sub.after_tx {
-                        replace_send(tx, GateEdge::AfterFired);
+                        tx.send(GateEdge::AfterFired);
                     }
                 }
             }
@@ -382,7 +458,7 @@ impl GateBus {
                         GateEdge::WhileClose
                     };
                     if let Some(ref tx) = sub.while_tx {
-                        replace_send(tx, edge);
+                        tx.send(edge);
                     }
                 }
             }
@@ -402,10 +478,10 @@ impl GateBus {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for sub in inner.subs.iter() {
             if let Some(ref tx) = sub.while_tx {
-                replace_send(tx, GateEdge::UpstreamGone);
+                tx.send(GateEdge::UpstreamGone);
             }
             if let Some(ref tx) = sub.after_tx {
-                replace_send(tx, GateEdge::UpstreamGone);
+                tx.send(GateEdge::UpstreamGone);
             }
         }
     }
@@ -419,10 +495,6 @@ impl Default for GateBus {
 
 fn bit_eq(a: f64, b: f64) -> bool {
     a.to_bits() == b.to_bits()
-}
-
-fn replace_send(tx: &GateEdgeSender, edge: GateEdge) {
-    tx.send_replace(Some(edge));
 }
 
 /// A downstream subscription waiting for the named upstream to register.
@@ -754,13 +826,13 @@ mod tests {
 
     #[test]
     fn drained_after_close_latch_drains_pending_then_returns_none() {
-        let (tx, watch_rx) = watch::channel::<Option<GateEdge>>(None);
-        tx.send_replace(Some(GateEdge::WhileOpen));
-        tx.send_replace(Some(GateEdge::WhileClose));
+        let (tx, rx) = gate_edge_channel();
+        tx.send(GateEdge::WhileOpen);
+        tx.send(GateEdge::WhileClose);
         drop(tx);
         let mut rx = GateReceiver {
             after_rx: None,
-            while_rx: Some(EdgeSlot::new(watch_rx)),
+            while_rx: Some(rx),
         };
         assert_eq!(rx.try_recv(), Some(GateEdge::WhileClose));
         assert!(rx.try_recv().is_none());
@@ -769,11 +841,11 @@ mod tests {
 
     #[test]
     fn drained_after_close_latch_synthesises_upstream_gone_when_sender_drops_silent() {
-        let (tx, watch_rx) = watch::channel::<Option<GateEdge>>(None);
+        let (tx, rx) = gate_edge_channel();
         drop(tx);
         let mut rx = GateReceiver {
             after_rx: None,
-            while_rx: Some(EdgeSlot::new(watch_rx)),
+            while_rx: Some(rx),
         };
         assert_eq!(rx.try_recv(), Some(GateEdge::UpstreamGone));
         assert!(rx.try_recv().is_none());
@@ -781,12 +853,12 @@ mod tests {
 
     #[test]
     fn drained_after_close_latch_returns_close_then_none_when_sender_drops_after_close() {
-        let (tx, watch_rx) = watch::channel::<Option<GateEdge>>(None);
-        tx.send_replace(Some(GateEdge::WhileClose));
+        let (tx, rx) = gate_edge_channel();
+        tx.send(GateEdge::WhileClose);
         drop(tx);
         let mut rx = GateReceiver {
             after_rx: None,
-            while_rx: Some(EdgeSlot::new(watch_rx)),
+            while_rx: Some(rx),
         };
         assert_eq!(rx.try_recv(), Some(GateEdge::WhileClose));
         assert!(rx.try_recv().is_none());
@@ -822,6 +894,18 @@ mod tests {
     }
 
     #[test]
+    fn gate_edge_sender_is_send_and_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<GateEdgeSender>();
+    }
+
+    #[test]
+    fn edge_receiver_is_send_and_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<EdgeReceiver>();
+    }
+
+    #[test]
     fn broadcast_upstream_gone_delivers_to_all_subscribers() {
         let bus = GateBus::new();
         bus.tick(0.0);
@@ -830,6 +914,28 @@ mod tests {
         bus.broadcast_upstream_gone();
         assert_eq!(rx_a.try_recv(), Some(GateEdge::UpstreamGone));
         assert_eq!(rx_b.try_recv(), Some(GateEdge::UpstreamGone));
+    }
+
+    #[test]
+    fn broadcast_then_consume_then_poll_returns_none_indefinitely() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let bus = GateBus::new();
+            bus.tick(0.0);
+            let (mut rx, _) = bus.subscribe(while_spec(WhileOp::GreaterThan, 0.0));
+            bus.broadcast_upstream_gone();
+            assert_eq!(rx.try_recv(), Some(GateEdge::UpstreamGone));
+            assert!(rx.try_recv().is_none());
+            assert!(rx.try_recv().is_none());
+            let r = rx.recv_edge_timeout(Duration::from_millis(20)).await;
+            assert!(
+                r.is_none(),
+                "wait_for_change must park while sender clones are still alive in the bus"
+            );
+        });
     }
 
     struct NoOpResolver;
