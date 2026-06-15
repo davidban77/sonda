@@ -64,7 +64,7 @@ struct Args {
     #[arg(long, env = "SONDA_CATALOG")]
     catalog: Option<PathBuf>,
 
-    /// Tokio worker thread count. Defaults to `std::thread::available_parallelism()`.
+    /// Tokio worker thread count. Defaults to min(available_parallelism(), 16).
     #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..))]
     workers: Option<u64>,
 
@@ -77,7 +77,8 @@ struct Args {
     max_inflight_requests: Option<usize>,
 
     /// Per-request timeout in seconds applied to control-plane routes. Returns 408 on expiry.
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = 30,
+          value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..))]
     request_timeout: u64,
 
     /// Maximum request body size in bytes accepted by control-plane routes. Returns 413 when exceeded.
@@ -109,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
+            .min(16)
     });
     let max_inflight_requests = args.max_inflight_requests.unwrap_or(workers * 4);
 

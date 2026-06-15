@@ -46,6 +46,7 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::Memory {
             capture,
             max_events,
+            ..
         } => {
             if *capture {
                 let cap = max_events.unwrap_or(1_000_000);
@@ -119,6 +120,7 @@ mod tests {
         let s = SinkConfig::Memory {
             capture: false,
             max_events: None,
+            capture_handle: None,
         };
         assert_eq!(sink_display(&s), "memory");
     }
@@ -128,6 +130,7 @@ mod tests {
         let s = SinkConfig::Memory {
             capture: true,
             max_events: Some(2048),
+            capture_handle: None,
         };
         assert_eq!(sink_display(&s), "memory (capture, max_events=2048)");
     }

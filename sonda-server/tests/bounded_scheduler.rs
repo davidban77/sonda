@@ -385,6 +385,37 @@ fn body_limit_returns_413_with_structured_error() {
 }
 
 #[test]
+fn request_timeout_zero_is_rejected_at_parse_time() {
+    use std::process::{Command, Stdio};
+
+    let binary = env!("CARGO_BIN_EXE_sonda-server");
+    let out = Command::new(binary)
+        .args([
+            "--port",
+            "0",
+            "--bind",
+            "127.0.0.1",
+            "--request-timeout",
+            "0",
+        ])
+        .env_remove("SONDA_API_KEY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("must spawn sonda-server");
+    assert!(
+        !out.status.success(),
+        "--request-timeout 0 must exit non-zero, got status {:?}",
+        out.status
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("request-timeout") || stderr.contains("request_timeout"),
+        "clap rejection must mention the flag, got stderr: {stderr}"
+    );
+}
+
+#[test]
 fn request_timeout_returns_408_with_structured_error() {
     let (port, _guard) = common::start_server_with(&["--request-timeout", "1"], &[]);
     let client = reqwest::blocking::Client::builder()

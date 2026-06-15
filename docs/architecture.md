@@ -124,9 +124,9 @@ A schedule controls when events are emitted: their rate, duration, and any inten
 - **GapWindow** — a recurring silent period defined as `(gap_every, gap_for)`. During a gap, no events are emitted and the scheduler sleeps rather than busy-waiting.
 - **BurstWindow** — a recurring high-rate period defined as `(burst_every, burst_for, burst_multiplier)`. During a burst, the effective rate is multiplied.
 
-The scheduler uses `std::time::Instant` for elapsed tracking and `std::io::BufWriter` for output batching. A shared schedule loop (`core_loop.rs`) handles all rate control, gap/burst/spike window logic, and stats tracking for both metrics and logs. Signal-specific event construction is delegated to a per-signal callback, eliminating duplication between the metric and log runners. The loop is synchronous — tight sleep intervals are sufficient for the target rate range and avoid tokio overhead in the CLI path.
+The scheduler is async-native. A shared schedule loop (`core_loop.rs`) handles all rate control, gap/burst/spike window logic, and stats tracking for both metrics and logs; signal-specific event construction is delegated to a per-signal callback. `tokio::time::Interval` drives per-tick cadence with `MissedTickBehavior::Delay`, so a slow sink does not amplify into runaway catch-up emissions. Sinks call `.await` directly; the HTTP-family sinks bridge to blocking `ureq` via `tokio::task::spawn_blocking`.
 
-> **Concurrency (post-MVP):** Multiple concurrent scenarios will be supported in a future expansion. The plan is `std::thread` per scenario with `mpsc` channels feeding a shared sink, before introducing tokio. This keeps the core synchronous and avoids making tokio a core dependency.
+> **Concurrency.** Multiple concurrent scenarios run as `tokio::task::spawn` tasks on a shared multi-thread runtime. The CLI and the HTTP server both own one runtime and dispatch scenario launches into it via `launch_scenario`. The default tokio worker count is `min(available_parallelism(), 16)` — cgroup-aware on Linux containers, capped at 16 on larger hosts.
 
 ### 5.4 Encoders
 

@@ -230,18 +230,12 @@ fn do_send(
     body: &[u8],
     retry_policy: Option<&RetryPolicy>,
 ) -> Result<(), SondaError> {
-    let result = match retry_policy {
+    match retry_policy {
         Some(policy) => policy.execute(
             || RemoteWriteSink::do_post_checked_at(client, url, body),
             RemoteWriteSink::is_retryable,
         ),
         None => RemoteWriteSink::do_post_checked_at(client, url, body),
-    };
-    match &result {
-        Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
-            Ok(())
-        }
-        _ => result,
     }
 }
 
@@ -484,6 +478,41 @@ mod tests {
         sink.write(&encode_one("c", 3.0))
             .await
             .expect("partial write after a size flush must not time-flush immediately");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_4xx_propagates_as_sink_error() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, 400));
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        let result = sink.write(&encode_one("cpu", 1.0)).await;
+        let _ = server.join();
+
+        match result {
+            Err(SondaError::Sink(io_err)) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidInput);
+                assert!(io_err.to_string().contains("HTTP 400"));
+            }
+            other => panic!("HTTP 4xx must surface as SondaError::Sink, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_5xx_propagates_as_sink_error() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, 503));
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        let result = sink.write(&encode_one("cpu", 1.0)).await;
+        let _ = server.join();
+
+        match result {
+            Err(SondaError::Sink(io_err)) => {
+                assert!(io_err.to_string().contains("HTTP 503"));
+            }
+            other => panic!("HTTP 5xx must surface as SondaError::Sink, got {other:?}"),
+        }
     }
 
     #[tokio::test]

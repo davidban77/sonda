@@ -1,30 +1,23 @@
-//! Phase 0 baseline: measure the current thread-per-scenario scheduler at
-//! varying concurrent-scenario counts. Captures RSS, vsize, thread count,
-//! CPU%, tick-drift and dropped-tick percentage per N, and writes a markdown
-//! report alongside a stdout table.
+//! Multi-rate + multi-concurrency sweep of the async-scheduler. Captures RSS,
+//! vsize, thread count, CPU%, tick-drift (ms proxy + microsecond direct), and
+//! dropped-tick percentage per row, and writes a markdown report alongside a
+//! stdout table.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sonda_core::config::{BaseScheduleConfig, ScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::EncoderConfig;
 use sonda_core::generator::GeneratorConfig;
 use sonda_core::schedule::handle::ScenarioHandle;
-use sonda_core::schedule::runner::run_with_sink;
-use sonda_core::schedule::stats::ScenarioStats;
-use sonda_core::sink::memory::{CapturedRing, MemorySink};
-use sonda_core::sink::{Sink, SinkConfig};
+use sonda_core::sink::memory::CapturedRing;
+use sonda_core::sink::SinkConfig;
 use sonda_core::{launch_scenario, prepare_entries, OnSinkError};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
-const DEFAULT_SCENARIO_COUNTS: &[usize] = &[1, 10, 50, 100, 250, 500];
-const RATE_HZ: f64 = 100.0;
 const DEFAULT_WARMUP_SECS: u64 = 30;
 const DEFAULT_MEASURE_SECS: u64 = 60;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -46,18 +39,70 @@ fn measure_secs() -> u64 {
         .unwrap_or(DEFAULT_MEASURE_SECS)
 }
 
-fn scenario_counts() -> Vec<usize> {
-    match std::env::var("SONDA_BENCH_COUNTS").ok() {
-        Some(s) => s
-            .split(',')
-            .filter_map(|p| p.trim().parse::<usize>().ok())
-            .collect(),
-        None => DEFAULT_SCENARIO_COUNTS.to_vec(),
-    }
+#[derive(Clone, Copy)]
+struct SweepRow {
+    n: usize,
+    rate_hz: f64,
+    label: &'static str,
 }
 
+const DEFAULT_SWEEP: &[SweepRow] = &[
+    SweepRow {
+        n: 10,
+        rate_hz: 100.0,
+        label: "rate@10:100Hz",
+    },
+    SweepRow {
+        n: 10,
+        rate_hz: 1_000.0,
+        label: "rate@10:1kHz",
+    },
+    SweepRow {
+        n: 10,
+        rate_hz: 10_000.0,
+        label: "rate@10:10kHz",
+    },
+    SweepRow {
+        n: 1,
+        rate_hz: 100.0,
+        label: "conc:1@100Hz",
+    },
+    SweepRow {
+        n: 10,
+        rate_hz: 100.0,
+        label: "conc:10@100Hz",
+    },
+    SweepRow {
+        n: 100,
+        rate_hz: 100.0,
+        label: "conc:100@100Hz",
+    },
+    SweepRow {
+        n: 500,
+        rate_hz: 100.0,
+        label: "conc:500@100Hz",
+    },
+    SweepRow {
+        n: 1000,
+        rate_hz: 100.0,
+        label: "conc:1000@100Hz",
+    },
+    SweepRow {
+        n: 1000,
+        rate_hz: 100.0,
+        label: "production:1000x100Hz",
+    },
+    SweepRow {
+        n: 100,
+        rate_hz: 1_000.0,
+        label: "stress:100x1kHz",
+    },
+];
+
 struct RowResult {
+    label: &'static str,
     n: usize,
+    rate_hz: f64,
     rss_mb: f64,
     vsize_mb: f64,
     threads: usize,
@@ -79,11 +124,11 @@ struct Sample {
     per_scenario_events: Vec<u64>,
 }
 
-fn metrics_entry(name: String, rate: f64, sink: SinkConfig) -> ScenarioEntry {
+fn metrics_entry(name: String, rate_hz: f64, sink: SinkConfig) -> ScenarioEntry {
     ScenarioEntry::Metrics(ScenarioConfig {
         base: BaseScheduleConfig {
             name,
-            rate,
+            rate: rate_hz,
             duration: None,
             gaps: None,
             bursts: None,
@@ -104,36 +149,6 @@ fn metrics_entry(name: String, rate: f64, sink: SinkConfig) -> ScenarioEntry {
         metric_type: None,
         help: None,
     })
-}
-
-fn metrics_config_for_capture(name: String, rate: f64) -> ScenarioConfig {
-    ScenarioConfig {
-        base: BaseScheduleConfig {
-            name,
-            rate,
-            duration: None,
-            gaps: None,
-            bursts: None,
-            cardinality_spikes: None,
-            dynamic_labels: None,
-            labels: None,
-            sink: SinkConfig::Memory {
-                capture: true,
-                max_events: Some(CAPTURE_RING_SIZE),
-            },
-            phase_offset: None,
-            clock_group: None,
-            clock_group_is_auto: None,
-            start_time: None,
-            jitter: None,
-            jitter_seed: None,
-            on_sink_error: OnSinkError::Warn,
-        },
-        generator: GeneratorConfig::Constant { value: 1.0 },
-        encoder: EncoderConfig::PrometheusText { precision: None },
-        metric_type: None,
-        help: None,
-    }
 }
 
 struct DriftStats {
@@ -176,108 +191,47 @@ fn compute_drift_stats(timestamps: &[Instant], rate_hz: f64) -> DriftStats {
     }
 }
 
-fn launch_n(n: usize) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
+async fn launch_n(n: usize, rate_hz: f64) -> (Vec<ScenarioHandle>, Arc<Mutex<CapturedRing>>) {
     assert!(n >= 1, "launch_n requires at least one scenario");
     let capture_handle = Arc::new(Mutex::new(CapturedRing::new(CAPTURE_RING_SIZE)));
 
-    let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime must build"),
-    ));
-    let mut handles = Vec::with_capacity(n);
-    handles.push(launch_capturing_scenario(
-        rt,
-        "bench_0".to_string(),
-        Arc::clone(&capture_handle),
-    ));
+    let entries: Vec<ScenarioEntry> = (0..n)
+        .map(|i| {
+            let sink = if i == 0 {
+                SinkConfig::Memory {
+                    capture: false,
+                    max_events: None,
+                    capture_handle: Some(Arc::clone(&capture_handle)),
+                }
+            } else {
+                SinkConfig::Memory {
+                    capture: false,
+                    max_events: None,
+                    capture_handle: None,
+                }
+            };
+            metrics_entry(format!("bench_{i}"), rate_hz, sink)
+        })
+        .collect();
 
-    if n > 1 {
-        let entries: Vec<ScenarioEntry> = (1..n)
-            .map(|i| {
-                metrics_entry(
-                    format!("bench_{i}"),
-                    RATE_HZ,
-                    SinkConfig::Memory {
-                        capture: false,
-                        max_events: None,
-                    },
-                )
-            })
-            .collect();
-        let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
-        for (offset, p) in prepared.into_iter().enumerate() {
-            let i = offset + 1;
-            let cancel = sonda_core::CancellationToken::new();
-            let handle = rt
-                .block_on(launch_scenario(
-                    format!("bench_{i}"),
-                    p.entry,
-                    cancel,
-                    p.start_delay,
-                ))
-                .expect("launch_scenario must succeed");
-            handles.push(handle);
-        }
+    let prepared = prepare_entries(entries).expect("prepare_entries must succeed");
+    let mut handles = Vec::with_capacity(n);
+    for (offset, p) in prepared.into_iter().enumerate() {
+        let cancel = sonda_core::CancellationToken::new();
+        let handle = launch_scenario(format!("bench_{offset}"), p.entry, cancel, p.start_delay)
+            .await
+            .expect("launch_scenario must succeed");
+        handles.push(handle);
     }
     (handles, capture_handle)
 }
 
-// Mirrors launch_scenario for the shared-capture path; bench-local replica.
-fn launch_capturing_scenario(
-    rt: &tokio::runtime::Runtime,
-    id: String,
-    capture_handle: Arc<Mutex<CapturedRing>>,
-) -> ScenarioHandle {
-    let config = metrics_config_for_capture(id.clone(), RATE_HZ);
-    let name = config.base.name.clone();
-    let cancel = sonda_core::CancellationToken::new();
-    let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-    let alive = Arc::new(AtomicBool::new(true));
-    let cleaned_up = Arc::new(AtomicBool::new(true));
-    let labels: Arc<HashMap<String, String>> = Arc::new(HashMap::new());
-
-    let cancel_for_task = cancel.clone();
-    let stats_for_task = Arc::clone(&stats);
-    let alive_for_task = Arc::clone(&alive);
-
-    let task = rt.spawn(async move {
-        struct AliveGuard(Arc<AtomicBool>);
-        impl Drop for AliveGuard {
-            fn drop(&mut self) {
-                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        let _guard = AliveGuard(alive_for_task);
-
-        let sink_inner = MemorySink::with_shared_capture(capture_handle);
-        let mut sink: Box<dyn Sink> = Box::new(sink_inner);
-        run_with_sink(&config, &mut sink, &cancel_for_task, Some(stats_for_task)).await
-    });
-
-    ScenarioHandle::new(
-        id,
-        name,
-        None,
-        cancel,
-        Some(task),
-        Instant::now(),
-        stats,
-        RATE_HZ,
-        alive,
-        labels,
-        None,
-        cleaned_up,
-    )
-}
-
-fn stop_all(handles: &mut [ScenarioHandle]) {
+async fn stop_all(handles: &mut [ScenarioHandle]) {
     for h in handles.iter() {
         h.stop();
     }
     for h in handles.iter_mut() {
-        let _ = h.join(Some(Duration::from_secs(5)));
+        let _ = h.join_async(Some(Duration::from_secs(5))).await;
     }
 }
 
@@ -339,15 +293,21 @@ fn current_thread_count() -> Option<usize> {
     None
 }
 
-fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
+async fn run_row(
+    runtime: &tokio::runtime::Handle,
+    row: SweepRow,
+    warmup: u64,
+    measure: u64,
+) -> RowResult {
+    let SweepRow { n, rate_hz, label } = row;
     eprintln!(
-        "[bench] N={n}: launching scenarios at {RATE_HZ:.0} Hz \
+        "[bench] {label}: N={n} rate={rate_hz:.0}Hz \
          (warmup {warmup}s, measure {measure}s)"
     );
 
-    let (mut handles, capture_handle) = launch_n(n);
+    let (mut handles, capture_handle) = launch_n(n, rate_hz).await;
 
-    thread::sleep(Duration::from_secs(warmup));
+    tokio::time::sleep(Duration::from_secs(warmup)).await;
 
     let pid = Pid::from_u32(std::process::id());
     let mut system = System::new_with_specifics(
@@ -365,7 +325,7 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
     let measure_end = Instant::now() + Duration::from_secs(measure);
 
     while Instant::now() < measure_end {
-        thread::sleep(SAMPLE_INTERVAL);
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
         if let Some(s) = sample_process(&mut system, pid, &handles) {
             samples.push(s);
         }
@@ -376,29 +336,35 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
     let threads = samples.iter().map(|s| s.threads).max().unwrap_or(0);
     let cpu_pct = mean(samples.iter().map(|s| s.cpu_pct));
 
-    let drift_samples_ms = compute_drift_ms(&samples, &initial_events);
+    let drift_samples_ms = compute_drift_ms(&samples, &initial_events, rate_hz);
     let drift_mean_ms = mean(drift_samples_ms.iter().copied());
     let drift_p99_ms = percentile(&drift_samples_ms, 99.0);
-    let dropped_pct = compute_dropped_pct(&samples, &initial_events);
+    let dropped_pct = compute_dropped_pct(&samples, &initial_events, rate_hz);
 
     let captured_timestamps: Vec<Instant> = {
         let guard = capture_handle.lock().expect("capture handle poisoned");
         guard.events().iter().map(|(ts, _)| *ts).collect()
     };
-    let drift = compute_drift_stats(&captured_timestamps, RATE_HZ);
+    let drift = compute_drift_stats(&captured_timestamps, rate_hz);
 
     eprintln!(
-        "[bench] N={n}: rss={rss_mb:.1}MB vsize={vsize_mb:.0}MB threads={threads} \
+        "[bench] {label}: rss={rss_mb:.1}MB vsize={vsize_mb:.0}MB threads={threads} \
          cpu={cpu_pct:.1}% drift_mean={drift_mean_ms:.2}ms drift_p99={drift_p99_ms:.2}ms \
          drift_us p50={:.1} p90={:.1} p99={:.1} max={:.1} \
          dropped={dropped_pct:.2}%",
         drift.p50_us, drift.p90_us, drift.p99_us, drift.max_us
     );
 
-    stop_all(&mut handles);
+    stop_all(&mut handles).await;
+    drop(handles);
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = runtime;
 
     RowResult {
+        label,
         n,
+        rate_hz,
         rss_mb,
         vsize_mb,
         threads,
@@ -413,11 +379,11 @@ fn run_row(n: usize, warmup: u64, measure: u64) -> RowResult {
     }
 }
 
-fn compute_drift_ms(samples: &[Sample], initial_events: &[u64]) -> Vec<f64> {
+fn compute_drift_ms(samples: &[Sample], initial_events: &[u64], rate_hz: f64) -> Vec<f64> {
     let mut out = Vec::new();
     let mut prev = initial_events.to_vec();
-    let expected_per_sample = RATE_HZ * SAMPLE_INTERVAL.as_secs_f64();
-    let ms_per_tick = 1000.0 / RATE_HZ;
+    let expected_per_sample = rate_hz * SAMPLE_INTERVAL.as_secs_f64();
+    let ms_per_tick = 1000.0 / rate_hz;
     for s in samples {
         for (i, &observed) in s.per_scenario_events.iter().enumerate() {
             let prev_v = *prev.get(i).unwrap_or(&0);
@@ -430,8 +396,8 @@ fn compute_drift_ms(samples: &[Sample], initial_events: &[u64]) -> Vec<f64> {
     out
 }
 
-fn compute_dropped_pct(samples: &[Sample], initial_events: &[u64]) -> f64 {
-    let expected_per_sample = RATE_HZ * SAMPLE_INTERVAL.as_secs_f64();
+fn compute_dropped_pct(samples: &[Sample], initial_events: &[u64], rate_hz: f64) -> f64 {
+    let expected_per_sample = rate_hz * SAMPLE_INTERVAL.as_secs_f64();
     let mut prev = initial_events.to_vec();
     let mut dropped_buckets = 0u64;
     let mut total_buckets = 0u64;
@@ -489,8 +455,10 @@ fn percentile(values: &[f64], p: f64) -> f64 {
 fn print_table(rows: &[RowResult]) {
     println!();
     println!(
-        "| {:>5} | {:>9} | {:>11} | {:>7} | {:>5} | {:>20} | {:>19} | {:>12} | {:>12} | {:>12} | {:>11} | {:>14} |",
+        "| {:<24} | {:>5} | {:>8} | {:>9} | {:>11} | {:>7} | {:>5} | {:>20} | {:>19} | {:>12} | {:>12} | {:>12} | {:>11} | {:>14} |",
+        "Row",
         "N",
+        "Rate Hz",
         "RSS (MB)",
         "VSize (MB)",
         "Threads",
@@ -504,13 +472,15 @@ fn print_table(rows: &[RowResult]) {
         "Dropped-tick %"
     );
     println!(
-        "|{:-<7}|{:-<11}|{:-<13}|{:-<9}|{:-<7}|{:-<22}|{:-<21}|{:-<14}|{:-<14}|{:-<14}|{:-<13}|{:-<16}|",
-        "", "", "", "", "", "", "", "", "", "", "", ""
+        "|{:-<26}|{:-<7}|{:-<10}|{:-<11}|{:-<13}|{:-<9}|{:-<7}|{:-<22}|{:-<21}|{:-<14}|{:-<14}|{:-<14}|{:-<13}|{:-<16}|",
+        "", "", "", "", "", "", "", "", "", "", "", "", "", ""
     );
     for r in rows {
         println!(
-            "| {:>5} | {:>9.1} | {:>11.1} | {:>7} | {:>5.1} | {:>20.2} | {:>19.2} | {:>12.1} | {:>12.1} | {:>12.1} | {:>11.1} | {:>14.2} |",
+            "| {:<24} | {:>5} | {:>8.0} | {:>9.1} | {:>11.1} | {:>7} | {:>5.1} | {:>20.2} | {:>19.2} | {:>12.1} | {:>12.1} | {:>12.1} | {:>11.1} | {:>14.2} |",
+            r.label,
             r.n,
+            r.rate_hz,
             r.rss_mb,
             r.vsize_mb,
             r.threads,
@@ -533,38 +503,44 @@ fn render_markdown(rows: &[RowResult], warmup: u64, measure: u64) -> String {
     let commit = git_head_sha().unwrap_or_else(|| "unknown".to_string());
 
     let mut out = String::new();
-    out.push_str("# Async-Scheduler Baseline Numbers (BEFORE — thread-per-scenario)\n\n");
+    out.push_str("# Async-Scheduler Sweep — sweep matrix\n\n");
     out.push_str(&format!("**Captured**: {ts}\n"));
     out.push_str(&format!("**Host**: {host}\n"));
     out.push_str(&format!("**Sonda commit**: {commit}\n"));
     out.push_str("**Harness**: sonda-core/benches/scheduler_baseline.rs\n\n");
     out.push_str("## Methodology\n\n");
     out.push_str(&format!(
-        "Each row is N concurrent scenarios, each emitting at 100 events/sec via the \
-         Prometheus text encoder into a `memory` sink (no I/O — measures the scheduler, \
-         not the sink). {warmup}s warm-up + {measure}s measurement window. RSS / VSize / \
-         thread count / CPU% sampled every ~1s via the `sysinfo` crate. \
-         Tick drift is reported two ways: \n\
+        "Each row is N concurrent scenarios at the given rate via the Prometheus text encoder \
+         into a `memory` sink (no I/O — measures the scheduler, not the sink). \
+         {warmup}s warm-up + {measure}s measurement window. RSS / VSize / thread count / CPU% \
+         sampled every ~1s via the `sysinfo` crate. Tick drift is reported two ways: \n\
          \n\
          - **ms-level proxy** — `total_events` deltas between consecutive 1s samples. A bucket \
          is counted as `dropped` when the observed events in the 1s window deviate from the \
          expected count (`rate * dt`) by more than ±10%. \n\
-         - **microsecond-level direct** — the first of the N main scenarios writes through a \
-         `memory` sink with `capture: true`, retaining `(Instant, bytes)` per event across the \
-         full warm-up and measurement window. All N scenarios share the same scheduler, so the \
-         captured cadence reflects the load every scenario experiences at this N. Per-event \
-         drift is computed as `(t[i+1] - t[i]) - (1_000_000us / rate_hz)`; the first 10% of \
-         samples are dropped as warm-up jitter; p50/p90/p99/max are reported in microseconds. \n\n"
+         - **microsecond-level direct** — the first of the N scenarios writes through a \
+         `memory` sink with `capture_handle: Some(arc)`, retaining `(Instant, bytes)` per event \
+         across the full warm-up and measurement window via the shared `CapturedRing`. All N \
+         scenarios share the same tokio runtime, so the captured cadence reflects the load \
+         every scenario experiences at this N. Per-event drift is computed as \
+         `(t[i+1] - t[i]) - (1_000_000us / rate_hz)`; the first 10% of samples are dropped as \
+         warm-up jitter; p50/p90/p99/max are reported in microseconds. \n\
+         \n\
+         **Sink boundary footnote**: this bench exercises the MemorySink path only. The \
+         `spawn_blocking` boundary used by HTTP-family sinks is exercised in the end-to-end \
+         integration run against the autocon5 stack, not here.\n\n"
     ));
     out.push_str("## Results\n\n");
     out.push_str(
-        "| N scenarios | RSS (MB) | VSize (MB) | Threads | CPU % | Tick drift mean (ms) | Tick drift p99 (ms) | Drift p50 (us) | Drift p90 (us) | Drift p99 (us) | Drift max (us) | Dropped-tick % |\n",
+        "| Row | N | Rate Hz | RSS (MB) | VSize (MB) | Threads | CPU % | Tick drift mean (ms) | Tick drift p99 (ms) | Drift p50 (us) | Drift p90 (us) | Drift p99 (us) | Drift max (us) | Dropped-tick % |\n",
     );
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for r in rows {
         out.push_str(&format!(
-            "| {} | {:.1} | {:.1} | {} | {:.1} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} |\n",
+            "| {} | {} | {:.0} | {:.1} | {:.1} | {} | {:.1} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} |\n",
+            r.label,
             r.n,
+            r.rate_hz,
             r.rss_mb,
             r.vsize_mb,
             r.threads,
@@ -578,49 +554,25 @@ fn render_markdown(rows: &[RowResult], warmup: u64, measure: u64) -> String {
             r.dropped_pct
         ));
     }
-    out.push_str("\n## Inflection point analysis\n\n");
-    out.push_str(&inflection_paragraph(rows));
-    out.push_str("\n\n## Notes\n\n");
+    out.push_str("\n## Notes\n\n");
     out.push_str(&notes_paragraph(rows));
     out.push('\n');
     out
 }
 
-fn inflection_paragraph(rows: &[RowResult]) -> String {
-    let max_threads = rows.iter().map(|r| r.threads).max().unwrap_or(0);
-    let max_rss = rows.iter().map(|r| r.rss_mb).fold(0.0f64, f64::max);
-    let max_drift_p99 = rows.iter().map(|r| r.drift_p99_ms).fold(0.0f64, f64::max);
-    let max_drift_p99_us = rows.iter().map(|r| r.drift_p99_us).fold(0.0f64, f64::max);
-    let max_dropped = rows.iter().map(|r| r.dropped_pct).fold(0.0f64, f64::max);
-    format!(
-        "Thread count grows linearly with N (peak observed: {max_threads}); RSS scales with \
-         the per-thread stack reservation (peak observed: {max_rss:.1} MB). The earliest \
-         metric to break under this scheduler is whichever among tick-drift p99 (peak \
-         observed: {max_drift_p99:.2} ms proxy / {max_drift_p99_us:.1} us direct), \
-         dropped-tick percentage (peak observed: {max_dropped:.2}%), and CPU% saturates \
-         first as N climbs. Read the row-to-row deltas above to identify where the curve \
-         bends — the linear-thread, linear-stack growth itself is the canary for this \
-         baseline."
-    )
-}
-
 fn notes_paragraph(rows: &[RowResult]) -> String {
     let mut notes = String::new();
-    let failed_rows: Vec<usize> = rows
+    let failed_rows: Vec<&str> = rows
         .iter()
         .filter(|r| r.dropped_pct > 50.0)
-        .map(|r| r.n)
+        .map(|r| r.label)
         .collect();
     if !failed_rows.is_empty() {
         notes.push_str(&format!(
-            "- High dropped-tick percentage (> 50%) observed at N = {failed_rows:?}; the \
-             scheduler could not sustain the 100 Hz target for these scenarios.\n"
+            "- High dropped-tick percentage (> 50%) observed at rows = {failed_rows:?}; the \
+             scheduler could not sustain the target rate for these configurations.\n"
         ));
     }
-    #[cfg(target_os = "macos")]
-    notes.push_str(
-        "- Context-switches/sec is Linux-only via `/proc/<pid>/status`; not collected on macOS.\n",
-    );
     if notes.is_empty() {
         notes.push_str("None.");
     }
@@ -683,18 +635,30 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 }
 
 fn main() {
-    let counts = scenario_counts();
     let warmup = warmup_secs();
     let measure = measure_secs();
-    eprintln!("[bench] sonda scheduler baseline harness");
+    let sweep: Vec<SweepRow> = DEFAULT_SWEEP.to_vec();
+
+    eprintln!("[bench] sonda scheduler sweep harness");
     eprintln!(
-        "[bench] N values: {counts:?}; rate {RATE_HZ:.0} Hz; \
-         warmup {warmup}s; measure {measure}s"
+        "[bench] {} rows; warmup {warmup}s; measure {measure}s",
+        sweep.len()
     );
-    let mut rows = Vec::with_capacity(counts.len());
-    for &n in &counts {
-        rows.push(run_row(n, warmup, measure));
-    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime must build");
+    let handle = runtime.handle().clone();
+
+    let rows = runtime.block_on(async move {
+        let mut rows = Vec::with_capacity(sweep.len());
+        for row in sweep {
+            rows.push(run_row(&handle, row, warmup, measure).await);
+        }
+        rows
+    });
+
     print_table(&rows);
     let md = render_markdown(&rows, warmup, measure);
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
