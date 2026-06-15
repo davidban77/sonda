@@ -115,7 +115,7 @@ impl EdgeReceiver {
 
     /// Park until a fresh edge arrives or the sender drops.
     pub async fn wait_for_change(&mut self) {
-        let notified = self.slot.notify.notified(); // create-future BEFORE atomic check: registers waiter against concurrent notify_waiters()
+        let notified = self.slot.notify.notified(); // create future BEFORE atomic check — captures Notify's call-counter so a subsequent notify_waiters() resolves us even if we never poll it before the check below
         tokio::pin!(notified);
         if self.slot.edge.load(Ordering::Acquire) != EDGE_EMPTY
             || self.slot.sender_dropped.load(Ordering::Acquire)
@@ -918,13 +918,24 @@ mod tests {
 
     #[test]
     fn broadcast_then_consume_then_poll_returns_none_indefinitely() {
-        let bus = GateBus::new();
-        bus.tick(0.0);
-        let (mut rx, _) = bus.subscribe(while_spec(WhileOp::GreaterThan, 0.0));
-        bus.broadcast_upstream_gone();
-        assert_eq!(rx.try_recv(), Some(GateEdge::UpstreamGone));
-        assert!(rx.try_recv().is_none());
-        assert!(rx.try_recv().is_none());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let bus = GateBus::new();
+            bus.tick(0.0);
+            let (mut rx, _) = bus.subscribe(while_spec(WhileOp::GreaterThan, 0.0));
+            bus.broadcast_upstream_gone();
+            assert_eq!(rx.try_recv(), Some(GateEdge::UpstreamGone));
+            assert!(rx.try_recv().is_none());
+            assert!(rx.try_recv().is_none());
+            let r = rx.recv_edge_timeout(Duration::from_millis(20)).await;
+            assert!(
+                r.is_none(),
+                "wait_for_change must park while sender clones are still alive in the bus"
+            );
+        });
     }
 
     struct NoOpResolver;
