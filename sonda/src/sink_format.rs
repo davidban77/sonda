@@ -43,6 +43,18 @@ pub fn sink_display(sink: &SinkConfig) -> String {
         SinkConfig::File { path } => format!("file ({path})"),
         SinkConfig::Tcp { address, .. } => format!("tcp ({address})"),
         SinkConfig::Udp { address } => format!("udp ({address})"),
+        SinkConfig::Memory {
+            capture,
+            max_events,
+            ..
+        } => {
+            if *capture {
+                let cap = max_events.unwrap_or(1_000_000);
+                format!("memory (capture, max_events={cap})")
+            } else {
+                "memory".to_string()
+            }
+        }
         #[cfg(feature = "http")]
         SinkConfig::HttpPush { url, .. } => format!("http_push ({url})"),
         #[cfg(not(feature = "http"))]
@@ -101,6 +113,26 @@ mod tests {
             address: "127.0.0.1:8888".to_string(),
         };
         assert_eq!(sink_display(&s), "udp (127.0.0.1:8888)");
+    }
+
+    #[test]
+    fn memory_without_capture_renders_bare() {
+        let s = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: None,
+        };
+        assert_eq!(sink_display(&s), "memory");
+    }
+
+    #[test]
+    fn memory_with_capture_renders_max_events() {
+        let s = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(2048),
+            capture_handle: None,
+        };
+        assert_eq!(sink_display(&s), "memory (capture, max_events=2048)");
     }
 
     #[cfg(feature = "http")]

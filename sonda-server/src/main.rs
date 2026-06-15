@@ -5,22 +5,27 @@
 
 mod auth;
 mod gate_registry;
+mod middleware;
 mod routes;
 mod state;
 
+use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{exit, Command};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Parser;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
+use crate::routes::RouterConfig;
 use crate::state::AppState;
 
 /// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
@@ -58,6 +63,27 @@ struct Args {
     /// Can also be set via the `SONDA_CATALOG` environment variable.
     #[arg(long, env = "SONDA_CATALOG")]
     catalog: Option<PathBuf>,
+
+    /// Tokio worker thread count. Defaults to min(available_parallelism(), 16).
+    #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..))]
+    workers: Option<u64>,
+
+    /// Maximum concurrent scenario rows in `AppState`. `0` means unlimited.
+    #[arg(long, default_value_t = 0)]
+    max_scenarios: usize,
+
+    /// Maximum concurrent in-flight control-plane HTTP requests. Defaults to `4 * workers`.
+    #[arg(long)]
+    max_inflight_requests: Option<usize>,
+
+    /// Per-request timeout in seconds applied to control-plane routes. Returns 408 on expiry.
+    #[arg(long, default_value_t = 30,
+          value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..))]
+    request_timeout: u64,
+
+    /// Maximum request body size in bytes accepted by control-plane routes. Returns 413 when exceeded.
+    #[arg(long, default_value_t = 1_048_576)]
+    max_body_bytes: usize,
 }
 
 impl std::fmt::Debug for Args {
@@ -67,15 +93,37 @@ impl std::fmt::Debug for Args {
             .field("bind", &self.bind)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("catalog", &self.catalog)
+            .field("workers", &self.workers)
+            .field("max_scenarios", &self.max_scenarios)
+            .field("max_inflight_requests", &self.max_inflight_requests)
+            .field("request_timeout", &self.request_timeout)
+            .field("max_body_bytes", &self.max_body_bytes)
             .finish()
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     maybe_dispatch_to_sonda_cli();
 
-    // Tracing on stderr — stdout is reserved for the bound-port announce.
+    let args = Args::parse();
+    let workers = args.workers.map(|n| n as usize).unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(16)
+    });
+    let max_inflight_requests = args.max_inflight_requests.unwrap_or(workers * 4);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime")?;
+
+    runtime.block_on(async move { run(args, workers, max_inflight_requests).await })
+}
+
+async fn run(args: Args, workers: usize, max_inflight_requests: usize) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -83,8 +131,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-
-    let args = Args::parse();
 
     let bind_addr: SocketAddr = format!("{}:{}", args.bind, args.port)
         .parse()
@@ -116,9 +162,35 @@ async fn main() -> anyhow::Result<()> {
         info!(catalog = %dir.display(), "pack catalog enabled for POST /scenarios");
     }
 
-    let mut state = AppState::with_api_key(api_key);
-    state.catalog_dir = args.catalog.map(Arc::new);
-    let app = routes::router(state.clone());
+    let permits = if args.max_scenarios == 0 {
+        warn!("--max-scenarios 0 — scenario row cap disabled (unlimited)");
+        Semaphore::new(Semaphore::MAX_PERMITS)
+    } else {
+        Semaphore::new(args.max_scenarios)
+    };
+
+    let state = AppState {
+        scenarios: Arc::new(RwLock::new(HashMap::new())),
+        api_key: api_key.map(Arc::new),
+        catalog_dir: args.catalog.clone().map(Arc::new),
+        gate_bus_registry: Arc::new(crate::gate_registry::GateBusRegistry::new()),
+        scenario_permits: Arc::new(permits),
+        started_at: Instant::now(),
+        worker_threads: workers,
+        max_scenarios: args.max_scenarios,
+        request_counters: Arc::new(RwLock::new(
+            HashMap::<crate::state::RouteKey, AtomicU64>::new(),
+        )),
+        request_histograms: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let inflight_semaphore = Arc::new(Semaphore::new(max_inflight_requests));
+    let router_cfg = RouterConfig {
+        request_timeout: Duration::from_secs(args.request_timeout),
+        max_body_bytes: args.max_body_bytes,
+        inflight_semaphore,
+    };
+    let app = routes::router_with_config(state.clone(), router_cfg);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
@@ -134,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
 
     announce_bound_port(bound_addr.port())?;
 
-    info!(addr = %bound_addr, "sonda-server listening");
+    info!(addr = %bound_addr, workers, "sonda-server listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
@@ -231,13 +303,17 @@ async fn shutdown_signal(state: AppState, #[cfg(unix)] mut sigterm: tokio::signa
         }
     }
 
-    // Write lock: join() consumes the inner JoinHandle.
+    // Write lock: join consumes the inner JoinHandle.
+    let mut ids_handles: Vec<(String, sonda_core::ScenarioHandle)> = Vec::new();
     if let Ok(mut scenarios) = state.scenarios.write() {
-        for (id, handle) in scenarios.iter_mut() {
-            match handle.join(Some(Duration::from_secs(5))) {
-                Ok(_) => info!(scenario = %id, "scenario thread joined"),
-                Err(e) => warn!(scenario = %id, error = %e, "scenario thread join failed"),
-            }
+        for (id, handle) in scenarios.drain() {
+            ids_handles.push((id, handle));
+        }
+    }
+    for (id, mut handle) in ids_handles {
+        match handle.join_async(Some(Duration::from_secs(5))).await {
+            Ok(_) => info!(scenario = %id, "scenario task joined"),
+            Err(e) => warn!(scenario = %id, error = %e, "scenario task join failed"),
         }
     }
 }
@@ -286,6 +362,15 @@ mod tests {
             len_before,
             sorted.len(),
             "SONDA_SUBCOMMANDS contains duplicates"
+        );
+    }
+
+    #[test]
+    fn sonda_git_sha_env_is_injected_by_build_rs() {
+        let sha = env!("SONDA_GIT_SHA");
+        assert!(
+            !sha.is_empty(),
+            "SONDA_GIT_SHA must be injected (either a git rev or the 'unknown' fallback)"
         );
     }
 }

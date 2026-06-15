@@ -8,6 +8,8 @@
 
 use std::sync::mpsc::SyncSender;
 
+use async_trait::async_trait;
+
 use crate::sink::Sink;
 use crate::SondaError;
 
@@ -26,50 +28,37 @@ use crate::SondaError;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use std::sync::mpsc;
 /// use sonda_core::sink::{Sink, channel::ChannelSink};
 ///
+/// # async fn doc() {
 /// let (tx, rx) = mpsc::sync_channel(10);
 /// let mut sink = ChannelSink::new(tx);
-/// sink.write(b"hello\n").unwrap();
+/// sink.write(b"hello\n").await.unwrap();
 /// let data = rx.recv().unwrap();
 /// assert_eq!(data, b"hello\n");
+/// # }
 /// ```
 pub struct ChannelSink {
     tx: SyncSender<Vec<u8>>,
 }
 
 impl ChannelSink {
-    /// Create a new `ChannelSink` that sends encoded data over `tx`.
-    ///
-    /// The backing channel must be created with [`mpsc::sync_channel`](std::sync::mpsc::sync_channel)
-    /// to enforce bounded capacity.
     pub fn new(tx: SyncSender<Vec<u8>>) -> Self {
         Self { tx }
     }
 }
 
+#[async_trait]
 impl Sink for ChannelSink {
-    /// Send a copy of `data` over the channel.
-    ///
-    /// Blocks when the channel is at capacity until the receiver drains a slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SondaError::Sink`] if the receiver has been dropped and the
-    /// channel is disconnected.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.tx
             .send(data.to_vec())
             .map_err(|e| SondaError::Sink(std::io::Error::other(e.to_string())))
     }
 
-    /// No-op flush: channel delivery is synchronous per `send` call.
-    ///
-    /// Returns `Ok(())` unconditionally because the channel has no internal
-    /// buffer beyond what the receiver has not yet consumed.
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }
@@ -83,90 +72,73 @@ mod tests {
     use super::*;
     use crate::sink::Sink;
 
-    // -----------------------------------------------------------------------
-    // Happy path: write and receive
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn write_sends_exact_bytes_to_receiver() {
+    #[tokio::test]
+    async fn write_sends_exact_bytes_to_receiver() {
         let (tx, rx) = mpsc::sync_channel(10);
         let mut sink = ChannelSink::new(tx);
-        sink.write(b"hello\n").unwrap();
+        sink.write(b"hello\n").await.unwrap();
         let received = rx.recv().expect("receiver should get data");
         assert_eq!(received, b"hello\n");
     }
 
-    #[test]
-    fn write_empty_slice_sends_empty_vec() {
+    #[tokio::test]
+    async fn write_empty_slice_sends_empty_vec() {
         let (tx, rx) = mpsc::sync_channel(10);
         let mut sink = ChannelSink::new(tx);
-        sink.write(b"").unwrap();
+        sink.write(b"").await.unwrap();
         let received = rx.recv().expect("receiver should get empty vec");
         assert!(received.is_empty());
     }
 
-    #[test]
-    fn multiple_writes_send_in_order() {
+    #[tokio::test]
+    async fn multiple_writes_send_in_order() {
         let (tx, rx) = mpsc::sync_channel(10);
         let mut sink = ChannelSink::new(tx);
-        sink.write(b"first\n").unwrap();
-        sink.write(b"second\n").unwrap();
-        sink.write(b"third\n").unwrap();
+        sink.write(b"first\n").await.unwrap();
+        sink.write(b"second\n").await.unwrap();
+        sink.write(b"third\n").await.unwrap();
 
         assert_eq!(rx.recv().unwrap(), b"first\n");
         assert_eq!(rx.recv().unwrap(), b"second\n");
         assert_eq!(rx.recv().unwrap(), b"third\n");
     }
 
-    #[test]
-    fn flush_always_returns_ok() {
+    #[tokio::test]
+    async fn flush_always_returns_ok() {
         let (tx, _rx) = mpsc::sync_channel(10);
         let mut sink = ChannelSink::new(tx);
-        assert!(sink.flush().is_ok());
+        assert!(sink.flush().await.is_ok());
     }
 
-    #[test]
-    fn flush_does_not_affect_channel_contents() {
+    #[tokio::test]
+    async fn flush_does_not_affect_channel_contents() {
         let (tx, rx) = mpsc::sync_channel(10);
         let mut sink = ChannelSink::new(tx);
-        sink.write(b"data").unwrap();
-        sink.flush().unwrap();
+        sink.write(b"data").await.unwrap();
+        sink.flush().await.unwrap();
         let received = rx.recv().unwrap();
         assert_eq!(received, b"data");
     }
 
-    // -----------------------------------------------------------------------
-    // Error case: disconnected receiver returns Err
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn write_after_receiver_dropped_returns_err() {
+    #[tokio::test]
+    async fn write_after_receiver_dropped_returns_err() {
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(10);
         let mut sink = ChannelSink::new(tx);
-        // Drop the receiver — channel is now disconnected.
         drop(rx);
-        let result = sink.write(b"orphaned");
+        let result = sink.write(b"orphaned").await;
         assert!(
             result.is_err(),
             "write to disconnected channel should return Err"
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Backpressure: bounded(10), fast writes block once channel is full
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn bounded_channel_provides_backpressure_without_oom() {
-        // Channel capacity = 10. We write 20 items. The receiver drains slowly.
-        // This verifies that the producer blocks (backpressure) rather than
-        // allocating unbounded memory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bounded_channel_provides_backpressure_without_oom() {
         let capacity = 10usize;
         let total_writes = 20usize;
         let (tx, rx) = mpsc::sync_channel(capacity);
         let mut sink = ChannelSink::new(tx);
 
-        // Spawn a slow receiver that drains one item every 5ms.
         let receiver_handle = thread::spawn(move || {
             let mut count = 0usize;
             while count < total_writes {
@@ -178,11 +150,11 @@ mod tests {
             count
         });
 
-        // Write all 20 items. The 11th write will block until the receiver
-        // drains a slot. This must not panic or OOM — it should just block.
         for i in 0..total_writes {
             let data = format!("item-{i}\n");
-            sink.write(data.as_bytes()).expect("write should succeed");
+            sink.write(data.as_bytes())
+                .await
+                .expect("write should succeed");
         }
 
         let received_count = receiver_handle
@@ -194,25 +166,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn channel_sink_write_count_matches_receive_count() {
+    #[tokio::test]
+    async fn channel_sink_write_count_matches_receive_count() {
         let (tx, rx) = mpsc::sync_channel(100);
         let mut sink = ChannelSink::new(tx);
 
         let n = 50usize;
         for i in 0..n {
-            sink.write(format!("line {i}").as_bytes()).unwrap();
+            sink.write(format!("line {i}").as_bytes()).await.unwrap();
         }
-        // Drop the sink to close the channel so the iterator terminates.
         drop(sink);
 
         let count = rx.into_iter().count();
         assert_eq!(count, n, "should receive exactly {n} items");
     }
-
-    // -----------------------------------------------------------------------
-    // Contract: Send + Sync
-    // -----------------------------------------------------------------------
 
     #[test]
     fn channel_sink_is_send() {
@@ -226,12 +193,12 @@ mod tests {
         assert_sync::<ChannelSink>();
     }
 
-    #[test]
-    fn channel_sink_usable_as_boxed_sink_trait_object() {
+    #[tokio::test]
+    async fn channel_sink_usable_as_boxed_sink_trait_object() {
         let (tx, rx) = mpsc::sync_channel(10);
         let mut sink: Box<dyn Sink> = Box::new(ChannelSink::new(tx));
-        sink.write(b"trait object test").unwrap();
-        sink.flush().unwrap();
+        sink.write(b"trait object test").await.unwrap();
+        sink.flush().await.unwrap();
         let data = rx.recv().unwrap();
         assert_eq!(data, b"trait object test");
     }

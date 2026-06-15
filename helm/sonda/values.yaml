@@ -127,17 +127,23 @@ ingress:
 
 # ServiceMonitor for Prometheus Operator.
 #
-# `path` must point at a Prometheus-text endpoint. sonda-server exposes
-# per-scenario metrics at /scenarios/<scenario-id>/metrics; choose the
-# scenario you want scraped and set `path` to that route. When enabled
-# without a path the chart install fails with a clear error rather than
-# silently scraping a non-metrics endpoint.
+# `path` should point at /server/metrics for server-process RED + saturation
+# metrics (recommended for operational dashboards and alerts). Per-scenario
+# metrics remain available at /scenarios/<scenario-id>/metrics, and aggregate
+# scenario data at /metrics, for ad-hoc scraping or workload-specific
+# ServiceMonitors.
 serviceMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
-  path: ""
+  path: "/server/metrics"
   additionalLabels: {}
+  # When SONDA_API_KEY auth is enabled on the server, set both fields below to
+  # point at a Kubernetes Secret holding the bearer token. Prometheus Operator
+  # reads the secret from the same namespace as the ServiceMonitor.
+  bearerTokenSecret:
+    name: ""
+    key: ""
 
 # Node selector for pod scheduling.
 nodeSelector: {}

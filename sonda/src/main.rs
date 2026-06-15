@@ -10,13 +10,13 @@ mod sink_format;
 mod status;
 
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stderr;
+use sonda_core::CancellationToken;
 
 use cli::{Cli, Commands, Verbosity};
 use sonda_core::PreparedEntry;
@@ -43,11 +43,11 @@ fn run() -> anyhow::Result<()> {
         )
         .init();
 
-    let running = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
     {
-        let r = Arc::clone(&running);
+        let c = cancel.clone();
         ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
+            c.cancel();
         })
         .expect("failed to register Ctrl+C handler");
     }
@@ -56,8 +56,12 @@ fn run() -> anyhow::Result<()> {
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let catalog = cli.catalog.as_deref();
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
     match cli.command {
-        Commands::Run(ref args) => run_scenario(args, &cli, catalog, verbosity, &running)?,
+        Commands::Run(ref args) => run_scenario(&rt, args, &cli, catalog, verbosity, &cancel)?,
         Commands::List(ref args) => list_catalog(args, catalog)?,
         Commands::Show(ref args) => show_entry(args, catalog)?,
         Commands::New(ref args) => new::run(args)?,
@@ -67,11 +71,12 @@ fn run() -> anyhow::Result<()> {
 }
 
 fn run_scenario(
+    rt: &tokio::runtime::Runtime,
     args: &cli::RunArgs,
     cli_opts: &Cli,
     catalog: Option<&std::path::Path>,
     verbosity: Verbosity,
-    running: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     let mut compiled = scenario_loader::load_scenario_compiled(&args.scenario, catalog)?;
     config::apply_run_overrides_compiled(&mut compiled, args)?;
@@ -87,7 +92,7 @@ fn run_scenario(
         if verbosity == Verbosity::Verbose {
             status::print_version();
         }
-        run_compiled_with_progress(compiled, running, verbosity)?;
+        run_compiled_with_progress(rt, compiled, cancel, verbosity)?;
         return Ok(());
     }
 
@@ -101,9 +106,9 @@ fn run_scenario(
 
     if prepared.len() == 1 {
         let p = prepared.into_iter().next().expect("len checked above");
-        run_single_scenario("cli-run".to_string(), p, running, verbosity)?;
+        run_single_scenario(rt, "cli-run".to_string(), p, cancel, verbosity)?;
     } else {
-        launch_and_join_prepared("cli-run", prepared, running, verbosity)?;
+        launch_and_join_prepared(rt, "cli-run", prepared, cancel, verbosity)?;
     }
     Ok(())
 }
@@ -196,19 +201,21 @@ fn handle_pre_launch(prepared: &[PreparedEntry], verbosity: Verbosity, dry_run: 
 }
 
 fn run_single_scenario(
+    rt: &tokio::runtime::Runtime,
     name: String,
     prepared: PreparedEntry,
-    running: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
     status::print_start(&prepared.entry, verbosity, None);
-    let mut handle = sonda_core::launch_scenario(
-        name,
-        prepared.entry,
-        Arc::clone(running),
-        prepared.start_delay,
-    )
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut handle = rt
+        .block_on(sonda_core::launch_scenario(
+            name,
+            prepared.entry,
+            cancel.child_token(),
+            prepared.start_delay,
+        ))
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let progress = maybe_start_progress(&handle, verbosity);
     let join_result = handle.join(None);
     if let Some(p) = progress {
@@ -268,9 +275,10 @@ struct StopInfo {
 }
 
 fn launch_and_join_prepared(
+    rt: &tokio::runtime::Runtime,
     id_prefix: &str,
     prepared: Vec<PreparedEntry>,
-    running: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
     let run_start = Instant::now();
@@ -286,7 +294,13 @@ fn launch_and_join_prepared(
             p.entry.clock_group_is_auto(),
         ));
         let id = format!("{id_prefix}-{i}");
-        let handle = sonda_core::launch_scenario(id, p.entry, Arc::clone(running), p.start_delay)
+        let handle = rt
+            .block_on(sonda_core::launch_scenario(
+                id,
+                p.entry,
+                cancel.child_token(),
+                p.start_delay,
+            ))
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         handles.push(handle);
     }
@@ -346,18 +360,25 @@ fn launch_and_join_prepared(
 }
 
 fn run_compiled_with_progress(
+    rt: &tokio::runtime::Runtime,
     compiled: sonda_core::compiler::compile_after::CompiledFile,
-    running: &Arc<AtomicBool>,
+    cancel: &CancellationToken,
     verbosity: Verbosity,
 ) -> anyhow::Result<()> {
-    let handles = sonda_core::schedule::multi_runner::launch_multi_compiled(compiled, None)
+    let handles = rt
+        .block_on(sonda_core::schedule::multi_runner::launch_multi_compiled(
+            compiled, None,
+        ))
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
-        handles.iter().map(|h| Arc::clone(&h.shutdown)).collect();
-    let done = Arc::new(AtomicBool::new(false));
-    let watchdog =
-        spawn_ctrlc_watchdog(Arc::clone(running), per_handle_shutdowns, Arc::clone(&done));
+    let handle_cancels: Vec<CancellationToken> = handles.iter().map(|h| h.cancel.clone()).collect();
+    let cancel_watcher = cancel.clone();
+    let watcher = rt.spawn(async move {
+        cancel_watcher.cancelled().await;
+        for c in &handle_cancels {
+            c.cancel();
+        }
+    });
 
     let progress = maybe_start_progress_multi(&handles, verbosity);
 
@@ -368,8 +389,10 @@ fn run_compiled_with_progress(
         }
     }
 
-    done.store(true, Ordering::SeqCst);
-    let _ = watchdog.join();
+    watcher.abort();
+    rt.block_on(async {
+        let _ = watcher.await;
+    });
 
     if let Some(p) = progress {
         p.stop();
@@ -379,31 +402,6 @@ fn run_compiled_with_progress(
         return Err(anyhow::anyhow!("{}", errors.join("; ")));
     }
     Ok(())
-}
-
-fn spawn_ctrlc_watchdog(
-    master: Arc<AtomicBool>,
-    per_handle: Vec<Arc<AtomicBool>>,
-    done: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("sonda-cli-shutdown-watchdog".to_string())
-        .spawn(move || {
-            let poll = std::time::Duration::from_millis(100);
-            loop {
-                if done.load(Ordering::SeqCst) {
-                    return;
-                }
-                if !master.load(Ordering::SeqCst) {
-                    for flag in &per_handle {
-                        flag.store(false, Ordering::SeqCst);
-                    }
-                    return;
-                }
-                std::thread::sleep(poll);
-            }
-        })
-        .expect("watchdog thread must spawn")
 }
 
 fn stop_infos_for_groups(

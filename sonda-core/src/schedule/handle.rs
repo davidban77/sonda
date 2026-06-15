@@ -3,67 +3,51 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::PromMeta;
 use crate::schedule::stats::ScenarioStats;
-use crate::{RuntimeError, SondaError};
+use crate::SondaError;
 
-/// Returned by [`ScenarioHandle::join_timeout`] when the thread did not finish
+/// Returned by [`ScenarioHandle::join_timeout`] when the task did not finish
 /// within the requested deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JoinTimeout;
 
 impl std::fmt::Display for JoinTimeout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("scenario thread did not exit within join_timeout")
+        f.write_str("scenario task did not exit within join_timeout")
     }
 }
 
 impl std::error::Error for JoinTimeout {}
 
 /// A running scenario's lifecycle handle.
-///
-/// Returned by [`crate::schedule::launch::launch_scenario`]. Provides shutdown,
-/// join, and stats access. Used identically by the CLI, multi_runner, and
-/// sonda-server.
-///
-/// The handle is `Send`: the `JoinHandle` is behind an `Option` and the other
-/// fields are all `Send`, so the handle can be stored in server state and
-/// moved across await points.
 #[non_exhaustive]
 pub struct ScenarioHandle {
-    /// Unique identifier for this scenario instance.
     pub id: String,
-    /// Human-readable scenario name (from config).
     pub name: String,
-    /// File-level `scenario_name` from the source YAML, when set. Read-only
-    /// after launch; every handle from the same POST shares this value.
     pub scenario_name: Option<String>,
-    /// Per-handle shutdown flag. `stop()` on one handle never affects another.
-    pub shutdown: Arc<AtomicBool>,
-    /// The OS thread running the scenario. `None` after [`ScenarioHandle::join`] consumes it.
-    pub thread: Option<JoinHandle<Result<(), SondaError>>>,
-    /// Wall-clock time when the scenario was launched.
+    /// Per-handle cancellation token. `stop()` on one handle never affects another.
+    pub cancel: CancellationToken,
+    /// The tokio task running the scenario. `None` after [`ScenarioHandle::join`] consumes it.
+    pub task: Option<JoinHandle<Result<(), SondaError>>>,
     pub started_at: Instant,
-    /// Live statistics updated by the runner thread on each tick.
     pub stats: Arc<RwLock<ScenarioStats>>,
-    /// The configured target rate (events per second) from the scenario config.
     pub target_rate: f64,
-    /// Lock-free liveness flag flipped to `false` when the runner thread exits.
-    ///
-    /// Set inside the spawned thread via a Drop guard so it is also cleared on
-    /// panic. External observers (e.g. the CLI progress display) read this
-    /// without acquiring `JoinHandle::is_finished()`.
+    /// Lock-free liveness flag flipped to `false` when the runner exits.
     pub alive: Arc<AtomicBool>,
-    /// Scenario-level labels.
     pub labels: Arc<HashMap<String, String>>,
-    /// Prometheus `# TYPE` / `# HELP` metadata derived at launch.
-    ///
-    /// `Some` for metrics, histogram, and summary scenarios; `None` for logs.
     pub prometheus_meta: Option<Arc<PromMeta>>,
     pub cleaned_up: Arc<AtomicBool>,
+    sink_type: &'static str,
+    // Drop order frees the permit last on natural completion; DELETE releases
+    // it explicitly via take_permit before joining so the cap is a row cap.
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl ScenarioHandle {
@@ -73,8 +57,8 @@ impl ScenarioHandle {
         id: String,
         name: String,
         scenario_name: Option<String>,
-        shutdown: Arc<AtomicBool>,
-        thread: Option<JoinHandle<Result<(), SondaError>>>,
+        cancel: CancellationToken,
+        task: Option<JoinHandle<Result<(), SondaError>>>,
         started_at: Instant,
         stats: Arc<RwLock<ScenarioStats>>,
         target_rate: f64,
@@ -87,8 +71,8 @@ impl ScenarioHandle {
             id,
             name,
             scenario_name,
-            shutdown,
-            thread,
+            cancel,
+            task,
             started_at,
             stats,
             target_rate,
@@ -96,112 +80,162 @@ impl ScenarioHandle {
             labels,
             prometheus_meta,
             cleaned_up,
+            sink_type: "unknown",
+            _permit: None,
         }
+    }
+
+    /// Set the sink-type label this handle reports for `sonda_server_sink_errors_total`.
+    pub fn with_sink_type(mut self, sink_type: &'static str) -> Self {
+        self.sink_type = sink_type;
+        self
+    }
+
+    /// Stable label string identifying the sink kind for derive-at-scrape metrics.
+    pub fn sink_type(&self) -> &'static str {
+        self.sink_type
+    }
+
+    /// Attach an owned semaphore permit whose drop frees a server-side scenario slot.
+    pub fn attach_permit(&mut self, permit: OwnedSemaphorePermit) {
+        self._permit = Some(permit);
+    }
+
+    /// Take the attached semaphore permit, returning `None` if none was attached.
+    pub fn take_permit(&mut self) -> Option<OwnedSemaphorePermit> {
+        self._permit.take()
     }
 
     /// Signal this scenario to stop. Affects only this scenario.
     pub fn stop(&self) {
-        self.shutdown.store(false, Ordering::SeqCst);
+        self.cancel.cancel();
     }
 
-    /// Check whether the scenario thread is still running.
-    ///
-    /// Returns `true` if the thread is still alive, `false` if it has exited
-    /// or if the handle has already been joined.
+    /// Check whether the scenario task is still running.
     pub fn is_running(&self) -> bool {
-        self.thread
+        self.task
             .as_ref()
             .map(|t| !t.is_finished())
             .unwrap_or(false)
     }
 
-    /// Lock-free check that the runner thread has not yet exited.
-    ///
-    /// Cheaper than [`Self::is_running`] in tight polling loops because it
-    /// reads an `AtomicBool` instead of probing the thread handle.
+    /// Lock-free check that the runner has not yet exited.
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
     }
 
-    /// Join the scenario thread, consuming it.
-    ///
-    /// Blocks until the thread exits or the optional timeout expires. If a
-    /// timeout is provided and the thread does not exit within that time, this
-    /// method returns `Ok(())` without consuming the thread (the thread
-    /// continues running and the handle still owns it).
-    ///
-    /// **Orphaned thread trade-off:** When the join times out, the OS thread
-    /// continues running in the background with no way for the caller to
-    /// observe or control it further (the shutdown flag has already been set).
-    /// If the handle is subsequently dropped (e.g., removed from the server's
-    /// scenario map), the `JoinHandle` is dropped without joining, and the
-    /// thread becomes fully detached. This is an acceptable trade-off: the
-    /// thread will eventually exit on its own (it checks the shutdown flag
-    /// each tick), and blocking the HTTP handler indefinitely would be worse.
-    ///
-    /// Returns the thread's result on success, or a [`SondaError`] if the
-    /// thread panicked or returned an error.
-    pub fn join(&mut self, timeout: Option<Duration>) -> Result<(), SondaError> {
-        if self.thread.is_none() {
-            // Already joined.
+    /// Await the scenario task to completion within the optional timeout.
+    /// On timeout the handle still owns the task and the caller can retry.
+    pub async fn join_async(&mut self, timeout: Option<Duration>) -> Result<(), SondaError> {
+        if self.task.is_none() {
             return Ok(());
         }
 
-        // When a timeout is requested we poll with a short sleep, since
-        // `JoinHandle` does not expose a timed-join API on stable Rust.
-        if let Some(limit) = timeout {
-            let deadline = Instant::now() + limit;
-            while Instant::now() < deadline {
-                if self
-                    .thread
-                    .as_ref()
-                    .map(|t| t.is_finished())
-                    .unwrap_or(true)
-                {
+        if let Some(t) = timeout {
+            let deadline = Instant::now() + t;
+            loop {
+                if self.task.as_ref().map(|t| t.is_finished()).unwrap_or(true) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-
-            // If still not finished, return without consuming the handle.
-            if !self
-                .thread
-                .as_ref()
-                .map(|t| t.is_finished())
-                .unwrap_or(true)
-            {
-                return Ok(());
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(());
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                tokio::time::sleep(remaining.min(Duration::from_millis(10))).await;
             }
         }
 
-        // Consume the JoinHandle.
-        let handle = self.thread.take().expect("checked above: thread is Some");
-        match handle.join() {
+        let task = self.task.take().expect("task present at this point");
+        match task.await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(SondaError::Runtime(RuntimeError::ThreadPanicked)),
+            Err(join_err) => {
+                if join_err.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(SondaError::Runtime(crate::RuntimeError::ThreadPanicked))
+                }
+            }
         }
     }
 
-    /// Best-effort timed join: poll the underlying thread until it finishes
-    /// or `timeout` elapses. On timeout the thread is left detached and
-    /// `Err(JoinTimeout)` is returned. On success the inner `JoinHandle`
-    /// is consumed.
+    /// Synchronously join the scenario task and return its result.
+    ///
+    /// Returns `Err(RuntimeError::TaskAborted)` if called from an ambient
+    /// current_thread runtime — blocking there would deadlock; use [`join_async`](Self::join_async).
+    pub fn join(&mut self, timeout: Option<Duration>) -> Result<(), SondaError> {
+        if self.task.is_none() {
+            return Ok(());
+        }
+
+        let deadline = timeout.map(|t| Instant::now() + t);
+        loop {
+            if self.task.as_ref().map(|t| t.is_finished()).unwrap_or(true) {
+                break;
+            }
+            match deadline {
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return Ok(());
+                    }
+                    let remaining = d.saturating_duration_since(now);
+                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
+                }
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+
+        let task = self.task.take().expect("checked above: task is Some");
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                if matches!(
+                    handle.runtime_flavor(),
+                    tokio::runtime::RuntimeFlavor::MultiThread
+                ) {
+                    tokio::task::block_in_place(|| handle.block_on(task))
+                } else {
+                    task.abort();
+                    return Err(SondaError::Runtime(crate::RuntimeError::TaskAborted {
+                        reason: "join() called from a current_thread tokio runtime; \
+                                 use join_async() instead",
+                    }));
+                }
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| SondaError::Runtime(crate::RuntimeError::SpawnFailed(e)))?;
+                rt.block_on(task)
+            }
+        };
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(join_err) => {
+                if join_err.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(SondaError::Runtime(crate::RuntimeError::ThreadPanicked))
+                }
+            }
+        }
+    }
+
+    /// Best-effort timed join: poll the underlying task until it finishes
+    /// or `timeout` elapses.
     pub fn join_timeout(&mut self, timeout: Duration) -> Result<(), JoinTimeout> {
-        if self.thread.is_none() {
+        if self.task.is_none() {
             return Ok(());
         }
         let deadline = Instant::now() + timeout;
         let poll_interval = Duration::from_millis(10);
         loop {
-            if self
-                .thread
-                .as_ref()
-                .map(|t| t.is_finished())
-                .unwrap_or(true)
-            {
-                if let Some(handle) = self.thread.take() {
-                    let _ = handle.join();
+            if self.task.as_ref().map(|t| t.is_finished()).unwrap_or(true) {
+                if let Some(task) = self.task.take() {
+                    task.abort();
                 }
                 return Ok(());
             }
@@ -214,22 +248,11 @@ impl ScenarioHandle {
     }
 
     /// Elapsed time since the scenario started.
-    ///
-    /// This is a real-time measurement based on the wall clock recorded at
-    /// launch. It continues to grow even after the scenario stops.
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
 
     /// Read the latest stats snapshot.
-    ///
-    /// Acquires the read lock briefly, clones the stats, and returns. Does not
-    /// block writers for longer than the clone operation.
-    ///
-    /// If the stats lock is poisoned (because a writer panicked), this method
-    /// recovers the data from the poisoned guard rather than propagating the
-    /// panic. The returned stats may be partially updated but will not cause
-    /// the caller to panic.
     pub fn stats_snapshot(&self) -> ScenarioStats {
         match self.stats.read() {
             Ok(guard) => guard.clone(),
@@ -266,53 +289,45 @@ impl Drop for ScenarioHandle {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, RwLock};
-    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::*;
     use crate::schedule::stats::ScenarioStats;
     use crate::SondaError;
 
-    // ---- Helper: build a ScenarioHandle backed by a trivial thread ----------
-
-    /// Build a `ScenarioHandle` whose thread counts to a limit, then exits.
-    ///
-    /// The thread increments `total_events` on the shared stats arc each
-    /// iteration so tests can observe live stat updates without involving
-    /// the full runner pipeline.
     fn make_handle(id: &str, name: &str, events: u64, interval: Duration) -> ScenarioHandle {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
-        let shutdown_thread = Arc::clone(&shutdown);
-        let stats_thread = Arc::clone(&stats);
+        let cancel_for_task = cancel.clone();
+        let stats_task = Arc::clone(&stats);
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_for_task = Arc::clone(&alive);
 
-        let thread = thread::Builder::new()
-            .name(format!("test-{name}"))
-            .spawn(move || -> Result<(), SondaError> {
-                for _ in 0..events {
-                    if !shutdown_thread.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    thread::sleep(interval);
-                    if let Ok(mut st) = stats_thread.write() {
-                        st.total_events += 1;
-                        st.bytes_emitted += 64;
-                    }
+        let task = tokio::task::spawn(async move {
+            for _ in 0..events {
+                if cancel_for_task.is_cancelled() {
+                    break;
                 }
-                Ok(())
-            })
-            .expect("thread must spawn");
+                tokio::time::sleep(interval).await;
+                if let Ok(mut st) = stats_task.write() {
+                    st.total_events += 1;
+                    st.bytes_emitted += 64;
+                }
+            }
+            alive_for_task.store(false, Ordering::SeqCst);
+            Ok::<_, SondaError>(())
+        });
 
         ScenarioHandle::new(
             id.to_string(),
             name.to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             100.0,
-            Arc::new(AtomicBool::new(true)),
+            alive,
             Arc::new(HashMap::new()),
             Some(Arc::new(PromMeta::new(
                 crate::config::PromMetricType::Gauge,
@@ -322,146 +337,86 @@ mod tests {
         )
     }
 
-    // ---- is_running: true before stop, false after join ---------------------
-
-    /// A freshly spawned handle must report is_running() == true.
-    #[test]
-    fn is_running_returns_true_for_live_thread() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn is_running_returns_true_for_live_task() {
         let mut handle = make_handle("test-1", "live", 50, Duration::from_millis(10));
-        assert!(
-            handle.is_running(),
-            "is_running must return true for a live thread"
-        );
-        // Clean up.
+        assert!(handle.is_running());
         handle.stop();
         handle.join(Some(Duration::from_secs(2))).unwrap();
     }
 
-    /// After stop() + join(), is_running() must return false.
-    #[test]
-    fn is_running_returns_false_after_stop_and_join() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn is_running_returns_false_after_stop_and_join() {
         let mut handle = make_handle("test-2", "stopped", 1000, Duration::from_millis(5));
         handle.stop();
         handle
             .join(Some(Duration::from_secs(2)))
             .expect("join must succeed");
-        assert!(
-            !handle.is_running(),
-            "is_running must return false after the thread has been joined"
-        );
+        assert!(!handle.is_running());
     }
 
-    /// A handle whose JoinHandle has been consumed (None) returns false.
-    #[test]
-    fn is_running_returns_false_when_thread_is_none() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn is_running_returns_false_when_task_is_none() {
         let mut handle = make_handle("test-3", "none", 1, Duration::from_millis(1));
-        // Allow thread to finish naturally.
-        thread::sleep(Duration::from_millis(50));
-        // Consume the JoinHandle directly to mimic a post-join state.
-        handle.thread = None;
-        assert!(
-            !handle.is_running(),
-            "is_running must return false when thread is None"
-        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.task = None;
+        assert!(!handle.is_running());
     }
 
-    // ---- stop(): sets the shutdown flag to false ----------------------------
-
-    /// stop() must store false in the shared AtomicBool.
-    #[test]
-    fn stop_sets_shutdown_flag_to_false() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stop_cancels_token() {
         let handle = make_handle("test-4", "stop_flag", 1000, Duration::from_millis(10));
-        assert!(
-            handle.shutdown.load(Ordering::SeqCst),
-            "shutdown flag must be true before stop"
-        );
+        assert!(!handle.cancel.is_cancelled());
         handle.stop();
-        assert!(
-            !handle.shutdown.load(Ordering::SeqCst),
-            "shutdown flag must be false after stop"
-        );
-        // Clean up the thread without consuming the handle.
+        assert!(handle.cancel.is_cancelled());
         drop(handle);
     }
 
-    // ---- join(): blocks until thread exits and returns Ok -------------------
-
-    /// join() with None timeout blocks until the thread finishes and returns Ok.
-    #[test]
-    fn join_none_timeout_waits_for_thread_and_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_none_timeout_waits_for_task_and_returns_ok() {
         let mut handle = make_handle("test-5", "join_none", 3, Duration::from_millis(10));
         let result = handle.join(None);
-        assert!(
-            result.is_ok(),
-            "join must return Ok when the thread succeeds: {result:?}"
-        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
-    /// join() is idempotent: calling it a second time returns Ok immediately.
-    #[test]
-    fn join_is_idempotent_after_first_call() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_is_idempotent_after_first_call() {
         let mut handle = make_handle("test-6", "idempotent", 1, Duration::from_millis(1));
         handle.join(None).expect("first join must succeed");
         let result = handle.join(None);
-        assert!(
-            result.is_ok(),
-            "second join on an already-joined handle must return Ok: {result:?}"
-        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
-    /// join() with a timeout that expires while thread is still running returns
-    /// Ok without consuming the thread (handle still owns it).
-    #[test]
-    fn join_with_short_timeout_returns_ok_without_consuming_thread() {
-        // Thread runs for 10 events × 50ms each = 500ms total.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_with_short_timeout_returns_ok_without_consuming_task() {
         let mut handle = make_handle("test-7", "timeout", 10, Duration::from_millis(50));
-        // Join with a very short timeout — thread will still be running.
         let result = handle.join(Some(Duration::from_millis(10)));
-        assert!(
-            result.is_ok(),
-            "join with expired timeout must still return Ok"
-        );
-        // The JoinHandle must NOT have been consumed — is_running may still be true.
-        assert!(
-            handle.thread.is_some(),
-            "thread must not be consumed when timeout expired before thread finished"
-        );
-        // Clean up.
+        assert!(result.is_ok());
+        assert!(handle.task.is_some());
         handle.stop();
         handle.join(None).ok();
     }
 
-    // ---- elapsed(): grows over time -----------------------------------------
-
-    /// elapsed() must return a positive Duration immediately after creation.
-    #[test]
-    fn elapsed_returns_positive_duration() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn elapsed_returns_positive_duration() {
         let handle = make_handle("test-8", "elapsed", 1, Duration::from_millis(1));
         let d = handle.elapsed();
-        // Even with scheduler jitter this should be at least 0 ns.
-        assert!(d >= Duration::ZERO, "elapsed must be non-negative: {d:?}");
+        assert!(d >= Duration::ZERO);
     }
 
-    /// elapsed() measured after a sleep must be greater than that sleep duration.
-    #[test]
-    fn elapsed_grows_monotonically_after_sleep() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn elapsed_grows_monotonically_after_sleep() {
         let mut handle = make_handle("test-9", "monotonic", 100, Duration::from_millis(5));
         let before = handle.elapsed();
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         let after = handle.elapsed();
-        assert!(
-            after > before,
-            "elapsed must grow over time: before={before:?}, after={after:?}"
-        );
+        assert!(after > before);
         handle.stop();
         handle.join(None).ok();
     }
 
-    // ---- stats_snapshot(): returns the current stats atomically -------------
-
-    /// stats_snapshot() on a fresh handle returns all-zero stats.
-    #[test]
-    fn stats_snapshot_on_fresh_handle_returns_zeros() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stats_snapshot_on_fresh_handle_returns_zeros() {
         let handle = make_handle("test-10", "fresh_stats", 0, Duration::ZERO);
         let snap = handle.stats_snapshot();
         assert_eq!(snap.total_events, 0);
@@ -469,24 +424,13 @@ mod tests {
         assert_eq!(snap.errors, 0);
     }
 
-    /// After the worker thread emits events, stats_snapshot() reflects the updates.
-    #[test]
-    fn stats_snapshot_returns_nonzero_total_events_after_running() {
-        // 5 events × 10ms each = ~50ms of work.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stats_snapshot_returns_nonzero_total_events_after_running() {
         let mut handle = make_handle("test-11", "nonzero_stats", 5, Duration::from_millis(10));
-        // Wait long enough for all 5 events to fire.
-        thread::sleep(Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let snap = handle.stats_snapshot();
-        assert!(
-            snap.total_events > 0,
-            "stats_snapshot must reflect emitted events, got total_events={}",
-            snap.total_events
-        );
-        assert!(
-            snap.bytes_emitted > 0,
-            "stats_snapshot must reflect bytes_emitted > 0, got {}",
-            snap.bytes_emitted
-        );
+        assert!(snap.total_events > 0);
+        assert!(snap.bytes_emitted > 0);
         handle.join(None).ok();
     }
 
@@ -499,14 +443,14 @@ mod tests {
         .expect("test metric name must be valid")
     }
 
-    #[test]
-    fn recent_metrics_snapshot_on_fresh_handle_returns_empty() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_metrics_snapshot_on_fresh_handle_returns_empty() {
         let handle = make_handle("test-rm-1", "fresh", 0, Duration::ZERO);
         assert!(handle.recent_metrics_snapshot().is_empty());
     }
 
-    #[test]
-    fn recent_metrics_snapshot_returns_current_values_not_history() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_metrics_snapshot_returns_current_values_not_history() {
         let handle = make_handle("test-rm-2", "current", 0, Duration::ZERO);
         {
             let mut stats = handle.stats.write().expect("lock must not be poisoned");
@@ -515,12 +459,12 @@ mod tests {
             stats.push_metric(make_metric_event("up", 3.0));
         }
         let events = handle.recent_metrics_snapshot();
-        assert_eq!(events.len(), 1, "same series must collapse to one entry");
-        assert_eq!(events[0].value, 3.0, "latest value must win");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].value, 3.0);
     }
 
-    #[test]
-    fn recent_metrics_snapshot_is_idempotent() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_metrics_snapshot_is_idempotent() {
         let handle = make_handle("test-rm-3", "idempotent", 0, Duration::ZERO);
         {
             let mut stats = handle.stats.write().expect("lock must not be poisoned");
@@ -533,43 +477,32 @@ mod tests {
         assert_eq!(first[0].value, second[0].value);
     }
 
-    // ---- stats_snapshot: recovers from poisoned lock -------------------------
-
-    /// If the stats lock is poisoned, stats_snapshot recovers the data instead
-    /// of panicking.
-    #[test]
-    fn stats_snapshot_recovers_from_poisoned_lock() {
-        let shutdown = Arc::new(AtomicBool::new(false));
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stats_snapshot_recovers_from_poisoned_lock() {
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
-        // Set a known value before poisoning.
         {
             let mut guard = stats.write().expect("lock must not be poisoned");
             guard.total_events = 42;
         }
 
-        // Poison the lock by panicking inside a write guard.
         let stats_clone = Arc::clone(&stats);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = stats_clone.write().expect("lock must not be poisoned");
             panic!("intentional panic to poison lock");
         }));
-        assert!(result.is_err(), "panic must have occurred");
+        assert!(result.is_err());
+        assert!(stats.read().is_err());
 
-        // Verify the lock is actually poisoned.
-        assert!(stats.read().is_err(), "lock must be poisoned after panic");
-
-        let thread = thread::Builder::new()
-            .name("test-poisoned-stats".to_string())
-            .spawn(|| -> Result<(), SondaError> { Ok(()) })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async { Ok::<_, SondaError>(()) });
 
         let handle = ScenarioHandle::new(
             "test-poisoned".to_string(),
             "poisoned".to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -582,17 +515,13 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
         );
 
-        // stats_snapshot must not panic — it recovers from the poisoned lock.
         let snap = handle.stats_snapshot();
-        assert_eq!(
-            snap.total_events, 42,
-            "stats_snapshot must recover data from poisoned lock"
-        );
+        assert_eq!(snap.total_events, 42);
     }
 
-    #[test]
-    fn recent_metrics_snapshot_recovers_from_poisoned_lock() {
-        let shutdown = Arc::new(AtomicBool::new(false));
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recent_metrics_snapshot_recovers_from_poisoned_lock() {
+        let cancel = CancellationToken::new();
         let stats = Arc::new(RwLock::new(ScenarioStats::default()));
 
         {
@@ -605,19 +534,16 @@ mod tests {
             let _guard = stats_clone.write().expect("lock must not be poisoned");
             panic!("intentional panic to poison lock");
         }));
-        assert!(result.is_err(), "panic must have occurred");
+        assert!(result.is_err());
 
-        let thread = thread::Builder::new()
-            .name("test-poisoned-metrics".to_string())
-            .spawn(|| -> Result<(), SondaError> { Ok(()) })
-            .expect("thread must spawn");
+        let task = tokio::task::spawn(async { Ok::<_, SondaError>(()) });
 
         let handle = ScenarioHandle::new(
             "test-poisoned-m".to_string(),
             "poisoned_metrics".to_string(),
             None,
-            shutdown,
-            Some(thread),
+            cancel,
+            Some(task),
             Instant::now(),
             stats,
             10.0,
@@ -635,53 +561,103 @@ mod tests {
         assert_eq!(events[0].value, 99.0);
     }
 
-    // ---- Contract: ScenarioHandle is Send -----------------------------------
-
-    /// ScenarioHandle must be Send so it can be stored in server state and
-    /// moved across tokio await points.
     #[test]
     fn scenario_handle_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<ScenarioHandle>();
     }
 
-    #[test]
-    fn join_timeout_returns_ok_when_handle_exits_within_window() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_timeout_returns_ok_when_handle_exits_within_window() {
         let mut handle = make_handle("jt-1", "fast", 1, Duration::from_millis(5));
-        thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let result = handle.join_timeout(Duration::from_millis(500));
-        assert!(
-            result.is_ok(),
-            "join_timeout must return Ok when thread already exited: {result:?}"
-        );
-        assert!(handle.thread.is_none(), "JoinHandle must be consumed on Ok");
+        assert!(result.is_ok(), "{result:?}");
+        assert!(handle.task.is_none());
     }
 
-    #[test]
-    fn join_timeout_returns_err_when_thread_still_running() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_timeout_returns_err_when_task_still_running() {
         let mut handle = make_handle("jt-2", "slow", 100, Duration::from_millis(50));
         let result = handle.join_timeout(Duration::from_millis(20));
-        assert!(
-            result.is_err(),
-            "join_timeout must return Err when timeout expires before exit"
-        );
-        assert!(
-            handle.thread.is_some(),
-            "JoinHandle must be retained on timeout"
-        );
-        // Clean up.
+        assert!(result.is_err());
+        assert!(handle.task.is_some());
         handle.stop();
         handle.join(Some(Duration::from_secs(2))).ok();
     }
 
-    #[test]
-    fn join_timeout_is_idempotent_when_thread_already_consumed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn join_timeout_is_idempotent_when_task_already_consumed() {
         let mut handle = make_handle("jt-3", "consumed", 1, Duration::from_millis(1));
         handle.join(None).expect("first join must succeed");
         let result = handle.join_timeout(Duration::from_millis(50));
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sink_type_defaults_to_unknown() {
+        let handle = make_handle("st-1", "default_sink", 1, Duration::from_millis(1));
+        assert_eq!(handle.sink_type(), "unknown");
+        drop(handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_sink_type_overrides_default() {
+        let handle =
+            make_handle("st-2", "tagged_sink", 1, Duration::from_millis(1)).with_sink_type("loki");
+        assert_eq!(handle.sink_type(), "loki");
+        drop(handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attach_permit_holds_permit_until_drop() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&sem).try_acquire_owned().expect("permit");
+        assert_eq!(sem.available_permits(), 0);
+
+        let mut handle = make_handle("st-3", "perm", 1, Duration::from_millis(1));
+        handle.attach_permit(permit);
+        assert_eq!(sem.available_permits(), 0);
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+        drop(handle);
+        assert_eq!(sem.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn take_permit_releases_slot_without_dropping_handle() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::clone(&sem).try_acquire_owned().expect("permit");
+        assert_eq!(sem.available_permits(), 0);
+
+        let mut handle = make_handle("st-4", "take_perm", 1, Duration::from_millis(1));
+        handle.attach_permit(permit);
+        assert_eq!(sem.available_permits(), 0);
+
+        drop(handle.take_permit());
+        assert_eq!(sem.available_permits(), 1);
+        assert!(handle.take_permit().is_none());
+
+        handle.stop();
+        handle.join(Some(Duration::from_secs(2))).ok();
+        drop(handle);
+        assert_eq!(sem.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn join_from_current_thread_runtime_returns_task_aborted_err() {
+        let mut handle = make_handle("jt-ct", "current_thread", 1, Duration::from_millis(1));
+        // Let the task finish before the sync join polls it — `std::thread::sleep`
+        // inside join would otherwise starve the only current_thread worker.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let result = handle.join(None);
         assert!(
-            result.is_ok(),
-            "join_timeout on consumed handle must return Ok"
+            matches!(
+                result,
+                Err(SondaError::Runtime(crate::RuntimeError::TaskAborted { .. }))
+            ),
+            "join from current_thread runtime must return TaskAborted, got: {result:?}"
         );
     }
 }

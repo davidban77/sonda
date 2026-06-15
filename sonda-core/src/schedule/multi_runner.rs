@@ -1,11 +1,9 @@
-//! Multi-scenario runner: runs multiple scenarios concurrently on separate threads.
-//!
-//! Each scenario owns its own shutdown flag. [`run_multi`] and
-//! [`run_multi_compiled`] accept a master `shutdown` flag and use a watchdog
-//! thread to fan a transition out into each handle's per-scenario flag.
+//! Multi-scenario runner: runs multiple scenarios concurrently as tokio tasks.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "config")]
 use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
 
 use crate::config::ScenarioEntry;
 use crate::schedule::launch::{launch_scenario, prepare_entries};
@@ -31,42 +29,31 @@ use crate::schedule::launch::{launch_scenario_with_gates, validate_entry};
 #[cfg(feature = "config")]
 use std::collections::HashMap;
 #[cfg(feature = "config")]
-use std::sync::mpsc;
+use tokio::sync::watch;
 
-/// Run all scenarios in `entries` concurrently, one OS thread per scenario.
-/// Set `shutdown` to `false` to stop all running scenarios.
-pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
-    // Expand, validate, and resolve phase offsets for all entries atomically.
+/// Run all scenarios in `entries` concurrently; cancel `parent_cancel` to stop them.
+pub async fn run_multi(
+    entries: Vec<ScenarioEntry>,
+    parent_cancel: CancellationToken,
+) -> Result<(), SondaError> {
     let prepared = prepare_entries(entries)?;
 
     let mut handles = Vec::with_capacity(prepared.len());
-    let mut per_handle_shutdowns: Vec<Arc<AtomicBool>> = Vec::with_capacity(prepared.len());
+    let mut errors: Vec<String> = Vec::new();
     for (i, prepared_entry) in prepared.into_iter().enumerate() {
         let id = format!("multi-{i}");
-        let scenario_shutdown = Arc::new(AtomicBool::new(true));
-        let handle = launch_scenario(
-            id,
-            prepared_entry.entry,
-            Arc::clone(&scenario_shutdown),
-            prepared_entry.start_delay,
-        )?;
-        per_handle_shutdowns.push(scenario_shutdown);
-        handles.push(handle);
-    }
-
-    let done = Arc::new(AtomicBool::new(false));
-    let watchdog = spawn_shutdown_watchdog(shutdown, per_handle_shutdowns, Arc::clone(&done));
-
-    let mut errors: Vec<String> = Vec::new();
-    for mut handle in handles {
-        match handle.join(None) {
-            Ok(()) => {}
+        let child = parent_cancel.child_token();
+        match launch_scenario(id, prepared_entry.entry, child, prepared_entry.start_delay).await {
+            Ok(handle) => handles.push(handle),
             Err(e) => errors.push(e.to_string()),
         }
     }
 
-    done.store(true, Ordering::SeqCst);
-    let _ = watchdog.join();
+    for mut handle in handles {
+        if let Err(e) = handle.join_async(None).await {
+            errors.push(e.to_string());
+        }
+    }
 
     if errors.is_empty() {
         Ok(())
@@ -77,47 +64,11 @@ pub fn run_multi(entries: Vec<ScenarioEntry>, shutdown: Arc<AtomicBool>) -> Resu
     }
 }
 
-/// Mirror `master`'s false transition into each per-handle shutdown; exit when `master` flips or `done` flips.
-fn spawn_shutdown_watchdog(
-    master: Arc<AtomicBool>,
-    per_handle: Vec<Arc<AtomicBool>>,
-    done: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("sonda-shutdown-watchdog".to_string())
-        .spawn(move || {
-            let poll = std::time::Duration::from_millis(100);
-            loop {
-                if done.load(Ordering::SeqCst) {
-                    return;
-                }
-                if !master.load(Ordering::SeqCst) {
-                    for flag in &per_handle {
-                        flag.store(false, Ordering::SeqCst);
-                    }
-                    return;
-                }
-                std::thread::sleep(poll);
-            }
-        })
-        .expect("watchdog thread must spawn")
-}
-
-/// Set the shutdown flag, signalling all running scenarios to stop.
-///
-/// This is a convenience wrapper that stores `false` with `SeqCst` ordering,
-/// matching the ordering used by the signal handler in the CLI.
-pub fn signal_shutdown(shutdown: &AtomicBool) {
-    shutdown.store(false, Ordering::SeqCst);
-}
-
-/// Launch a compiled scenario file with `while:` / `after:` gating wired in,
-/// returning the live handles without joining them. When `resolver` is `Some`,
-/// cross-POST `while:` references resolve through the registry; otherwise every
-/// reference must resolve inside `file`. Each handle owns an independent
-/// shutdown flag — see [`run_multi_compiled`] for the master-stop-all path.
+/// Launch a compiled scenario file with `while:` / `after:` gating wired in.
+/// Each handle owns an independent cancellation token; see [`run_multi_compiled`]
+/// for the master-stop-all path.
 #[cfg(feature = "config")]
-pub fn launch_multi_compiled(
+pub async fn launch_multi_compiled(
     file: CompiledFile,
     resolver: Option<Arc<dyn GateBusResolver>>,
 ) -> Result<Vec<crate::schedule::handle::ScenarioHandle>, SondaError> {
@@ -201,7 +152,7 @@ pub fn launch_multi_compiled(
                     op: clause.op,
                     threshold: clause.value,
                 };
-                let (tx, rx) = mpsc::sync_channel::<crate::schedule::gate_bus::GateEdge>(1);
+                let (tx, rx) = watch::channel::<Option<crate::schedule::gate_bus::GateEdge>>(None);
                 let if_unresolved = clause.if_unresolved.unwrap_or_default();
                 let bus = resolver.lookup(cross_scenario, clause.ref_id.as_str());
                 let (gate_rx, initial, start_unresolved) = match bus {
@@ -290,17 +241,19 @@ pub fn launch_multi_compiled(
         let id = plan.id.unwrap_or_else(|| format!("multi-{idx}"));
         let deferred = plan.deferred;
         let active = plan.active;
-        let scenario_shutdown = Arc::new(AtomicBool::new(true));
+        let scenario_cancel = CancellationToken::new();
         match launch_scenario_with_gates(
             id.clone(),
             file_scenario_name.clone(),
             plan.entry,
-            scenario_shutdown,
+            scenario_cancel,
             plan.start_delay,
             plan.upstream_bus,
             plan.gate_ctx,
             resolver.clone(),
-        ) {
+        )
+        .await
+        {
             Ok(handle) => {
                 if let (Some(d), Some(r)) = (deferred, resolver.as_ref()) {
                     r.insert_pending(PendingResolution {
@@ -381,18 +334,21 @@ struct ActiveSubscription {
 }
 
 /// Run a compiled scenario file with `while:` / `after:` gating wired in.
-///
-/// Spawns every scenario via [`launch_multi_compiled`] and joins the threads.
-/// Non-gated entries launch on the existing non-gated path with no per-tick
-/// overhead.
 #[cfg(feature = "config")]
-pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Result<(), SondaError> {
-    let handles = launch_multi_compiled(file, None)?;
-    let per_handle_shutdowns: Vec<Arc<AtomicBool>> =
-        handles.iter().map(|h| Arc::clone(&h.shutdown)).collect();
-
-    let done = Arc::new(AtomicBool::new(false));
-    let watchdog = spawn_shutdown_watchdog(shutdown, per_handle_shutdowns, Arc::clone(&done));
+pub async fn run_multi_compiled(
+    file: CompiledFile,
+    parent_cancel: CancellationToken,
+) -> Result<(), SondaError> {
+    let handles = launch_multi_compiled(file, None).await?;
+    let cancel_watcher = parent_cancel.clone();
+    let watcher_cancels: Vec<CancellationToken> =
+        handles.iter().map(|h| h.cancel.clone()).collect();
+    let watcher = tokio::task::spawn(async move {
+        cancel_watcher.cancelled().await;
+        for c in &watcher_cancels {
+            c.cancel();
+        }
+    });
 
     let mut errors: Vec<String> = Vec::new();
     for mut handle in handles {
@@ -402,8 +358,8 @@ pub fn run_multi_compiled(file: CompiledFile, shutdown: Arc<AtomicBool>) -> Resu
         }
     }
 
-    done.store(true, Ordering::SeqCst);
-    let _ = watchdog.join();
+    watcher.abort();
+    let _ = watcher.await;
 
     if errors.is_empty() {
         Ok(())
@@ -449,10 +405,10 @@ struct LaunchPlan {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    use tokio_util::sync::CancellationToken;
 
     use crate::config::{BaseScheduleConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry};
     use crate::encoder::EncoderConfig;
@@ -461,7 +417,7 @@ mod tests {
 
     #[cfg(feature = "config")]
     use super::launch_multi_compiled;
-    use super::{run_multi, signal_shutdown};
+    use super::run_multi;
 
     /// Build a minimal metrics `ScenarioEntry` that writes to stdout.
     /// Duration of "100ms" ensures the thread exits quickly.
@@ -530,60 +486,60 @@ mod tests {
     // Happy path: multiple scenarios complete successfully
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn run_multi_with_empty_scenarios_returns_ok() {
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(vec![], shutdown);
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_empty_scenarios_returns_ok() {
+        let cancel = CancellationToken::new();
+        let result = run_multi(vec![], cancel).await;
         assert!(result.is_ok(), "empty scenario list should return Ok");
     }
 
-    #[test]
-    fn run_multi_with_single_metrics_scenario_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_single_metrics_scenario_returns_ok() {
         let entries = vec![metrics_entry_stdout("single_metric")];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "single metrics scenario should complete without error"
         );
     }
 
-    #[test]
-    fn run_multi_with_single_logs_scenario_returns_ok() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_single_logs_scenario_returns_ok() {
         let entries = vec![logs_entry_stdout("single_logs")];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "single logs scenario should complete without error"
         );
     }
 
-    #[test]
-    fn run_multi_with_metrics_and_logs_both_complete() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_metrics_and_logs_both_complete() {
         // Two scenarios concurrently — both should run to completion within
         // their 100ms durations and return Ok.
         let entries = vec![
             metrics_entry_stdout("concurrent_metrics"),
             logs_entry_stdout("concurrent_logs"),
         ];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "both concurrent scenarios should complete without error"
         );
     }
 
-    #[test]
-    fn run_multi_three_concurrent_scenarios_all_complete() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_three_concurrent_scenarios_all_complete() {
         let entries = vec![
             metrics_entry_stdout("m1"),
             metrics_entry_stdout("m2"),
             logs_entry_stdout("l1"),
         ];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "three concurrent scenarios should all complete without error"
@@ -591,11 +547,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Shutdown flag: setting it stops all threads
+    // Cancel propagation
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn run_multi_shutdown_flag_stops_all_threads_within_two_seconds() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_parent_cancel_stops_all_tasks_within_two_seconds() {
         // Both scenarios have no duration (would run indefinitely). We
         // signal shutdown after a short delay and verify all threads stop
         // well within 2 seconds.
@@ -655,34 +611,23 @@ mod tests {
             }),
         ];
 
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let shutdown_for_thread = Arc::clone(&shutdown);
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
 
-        // Signal shutdown after 50ms from a separate thread.
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(50));
-            signal_shutdown(&shutdown_for_thread);
+            cancel_for_thread.cancel();
         });
 
         let start = Instant::now();
-        let result = run_multi(entries, shutdown);
+        let result = run_multi(entries, cancel).await;
         let elapsed = start.elapsed();
 
-        assert!(result.is_ok(), "shutdown should not produce an error");
+        assert!(result.is_ok());
         assert!(
             elapsed < Duration::from_secs(2),
-            "run_multi should return within 2 seconds of shutdown signal, took {:?}",
+            "run_multi should return within 2 seconds, took {:?}",
             elapsed
-        );
-    }
-
-    #[test]
-    fn signal_shutdown_stores_false_with_seqcst_ordering() {
-        let flag = AtomicBool::new(true);
-        signal_shutdown(&flag);
-        assert!(
-            !flag.load(Ordering::SeqCst),
-            "signal_shutdown should set the flag to false"
         );
     }
 
@@ -690,8 +635,8 @@ mod tests {
     // Error handling: errors from individual threads are collected
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn run_multi_with_invalid_sink_config_returns_err() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_invalid_sink_config_returns_err() {
         // A file sink pointing to a path that cannot be created will fail
         // during sink construction inside the thread.
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
@@ -720,8 +665,8 @@ mod tests {
             metric_type: None,
             help: None,
         })];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_err(),
             "scenario with an invalid sink path should return Err"
@@ -733,8 +678,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_multi_collects_all_thread_errors() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_collects_all_thread_errors() {
         // Two scenarios both use an invalid sink — both errors should be reported.
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
@@ -790,8 +735,8 @@ mod tests {
                 help: None,
             }),
         ];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(result.is_err(), "two failing scenarios should return Err");
         // The combined error message should contain both errors separated by "; "
         let err_msg = result.unwrap_err().to_string();
@@ -801,8 +746,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_multi_thread_errors_produce_runtime_not_config_variant() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_thread_errors_produce_runtime_not_config_variant() {
         // A file sink pointing to an invalid path will fail inside the thread.
         // The collected error must be Runtime::ScenariosFailed, not Config.
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
@@ -831,8 +776,8 @@ mod tests {
             metric_type: None,
             help: None,
         })];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(result.is_err(), "invalid sink must produce an error");
         let err = result.unwrap_err();
         assert!(
@@ -849,8 +794,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// A scenario with a minimal phase_offset ("1ms") emits events almost immediately.
-    #[test]
-    fn run_multi_with_minimal_phase_offset_emits_almost_immediately() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_minimal_phase_offset_emits_almost_immediately() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "minimal_offset".to_string(),
@@ -875,9 +820,9 @@ mod tests {
             metric_type: None,
             help: None,
         })];
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let start = Instant::now();
-        let result = run_multi(entries, shutdown);
+        let result = run_multi(entries, cancel).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_ok(), "minimal phase_offset should complete ok");
@@ -890,8 +835,8 @@ mod tests {
     }
 
     /// `phase_offset: "0s"` is accepted and treated as no delay.
-    #[test]
-    fn run_multi_accepts_zero_phase_offset() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_accepts_zero_phase_offset() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "zero_offset".to_string(),
@@ -916,8 +861,8 @@ mod tests {
             metric_type: None,
             help: None,
         })];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         // "0s" is treated as no delay — parse_phase_offset returns None.
         assert!(
             result.is_ok(),
@@ -927,11 +872,11 @@ mod tests {
     }
 
     /// A scenario with no phase_offset (None) preserves existing behavior.
-    #[test]
-    fn run_multi_with_no_phase_offset_preserves_behavior() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_no_phase_offset_preserves_behavior() {
         let entries = vec![metrics_entry_stdout("no_offset")];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "scenario without phase_offset should work as before"
@@ -940,8 +885,8 @@ mod tests {
 
     /// Two scenarios where the second has a 500ms phase_offset: the second
     /// starts later, so total run time is at least 500ms.
-    #[test]
-    fn run_multi_respects_phase_offset_between_scenarios() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_respects_phase_offset_between_scenarios() {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
@@ -992,9 +937,9 @@ mod tests {
                 help: None,
             }),
         ];
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let start = Instant::now();
-        let result = run_multi(entries, shutdown);
+        let result = run_multi(entries, cancel).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_ok(), "phase_offset multi-scenario should succeed");
@@ -1008,8 +953,8 @@ mod tests {
     }
 
     /// Shutdown during phase_offset delay exits all scenarios cleanly.
-    #[test]
-    fn run_multi_shutdown_during_phase_offset_exits_cleanly() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_shutdown_during_phase_offset_exits_cleanly() {
         let entries = vec![
             // First scenario runs indefinitely.
             ScenarioEntry::Metrics(ScenarioConfig {
@@ -1063,34 +1008,30 @@ mod tests {
             }),
         ];
 
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let shutdown_for_thread = Arc::clone(&shutdown);
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
 
-        // Signal shutdown after 100ms.
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(100));
-            signal_shutdown(&shutdown_for_thread);
+            cancel_for_thread.cancel();
         });
 
         let start = Instant::now();
-        let result = run_multi(entries, shutdown);
+        let result = run_multi(entries, cancel).await;
         let elapsed = start.elapsed();
 
-        assert!(
-            result.is_ok(),
-            "shutdown during phase_offset should not produce an error"
-        );
+        assert!(result.is_ok());
         assert!(
             elapsed < Duration::from_secs(2),
-            "run_multi must exit promptly when shutdown during phase_offset, took {:?}",
+            "run_multi must exit promptly, took {:?}",
             elapsed
         );
     }
 
     /// An invalid phase_offset string causes run_multi to return an error
     /// synchronously before spawning threads.
-    #[test]
-    fn run_multi_rejects_invalid_phase_offset() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_rejects_invalid_phase_offset() {
         let entries = vec![ScenarioEntry::Metrics(ScenarioConfig {
             base: BaseScheduleConfig {
                 name: "bad_offset".to_string(),
@@ -1115,8 +1056,8 @@ mod tests {
             metric_type: None,
             help: None,
         })];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_err(),
             "invalid phase_offset must cause run_multi to return Err"
@@ -1129,8 +1070,8 @@ mod tests {
     }
 
     /// Scenarios with the same clock_group and different phase_offsets both complete.
-    #[test]
-    fn run_multi_with_clock_group_and_offsets() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_multi_with_clock_group_and_offsets() {
         let entries = vec![
             ScenarioEntry::Metrics(ScenarioConfig {
                 base: BaseScheduleConfig {
@@ -1181,8 +1122,8 @@ mod tests {
                 help: None,
             }),
         ];
-        let shutdown = Arc::new(AtomicBool::new(true));
-        let result = run_multi(entries, shutdown);
+        let cancel = CancellationToken::new();
+        let result = run_multi(entries, cancel).await;
         assert!(
             result.is_ok(),
             "scenarios with clock_group and offsets should complete"
@@ -1250,8 +1191,8 @@ scenarios:
     }
 
     #[cfg(feature = "config")]
-    #[test]
-    fn launch_multi_compiled_partial_cleanup_stops_already_launched_handles() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_multi_compiled_partial_cleanup_stops_already_launched_handles() {
         use crate::compile_scenario_file_compiled;
         use crate::compiler::expand::InMemoryPackResolver;
 
@@ -1283,7 +1224,9 @@ scenarios:
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
 
-        let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+        let mut handles = launch_multi_compiled(compiled, None)
+            .await
+            .expect("launch must succeed");
         assert_eq!(handles.len(), 2, "must launch both entries");
         assert!(
             handles.iter().all(|h| h.is_alive()),
@@ -1523,8 +1466,8 @@ scenarios:
             }
         }
 
-        #[test]
-        fn t8_downstream_enters_unresolved_then_promoted_on_register_and_sweep() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t8_downstream_enters_unresolved_then_promoted_on_register_and_sweep() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1535,6 +1478,7 @@ scenarios:
             .expect("compile downstream");
 
             let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .await
                 .expect("launch downstream");
             assert_eq!(handles.len(), 1);
             wait_for_state(
@@ -1556,8 +1500,8 @@ scenarios:
             stop_and_join(handles);
         }
 
-        #[test]
-        fn t9_downstream_first_then_upstream_post_promotes_via_sweep() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t9_downstream_first_then_upstream_post_promotes_via_sweep() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1568,6 +1512,7 @@ scenarios:
             .expect("compile downstream");
 
             let downstream_handles = launch_multi_compiled(downstream, Some(Arc::clone(&resolver)))
+                .await
                 .expect("launch downstream");
             wait_for_state(
                 &downstream_handles[0],
@@ -1579,6 +1524,7 @@ scenarios:
                 compile_scenario_file_compiled(&upstream_yaml(), &InMemoryPackResolver::new())
                     .expect("compile upstream");
             let upstream_handles = launch_multi_compiled(upstream, Some(Arc::clone(&resolver)))
+                .await
                 .expect("launch upstream");
             wait_for_state(
                 &downstream_handles[0],
@@ -1594,8 +1540,8 @@ scenarios:
         // upstream with the same scenario_name) requires the registry to push affected
         // downstreams back into `pending` on unregister — that mechanism lives with the
         // production `GateBusRegistry` implementation, not the test resolver.
-        #[test]
-        fn t10_unregister_drives_downstream_back_to_unresolved() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t10_unregister_drives_downstream_back_to_unresolved() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1603,6 +1549,7 @@ scenarios:
                 compile_scenario_file_compiled(&upstream_yaml(), &InMemoryPackResolver::new())
                     .expect("compile upstream");
             let upstream_handles = launch_multi_compiled(upstream, Some(Arc::clone(&resolver)))
+                .await
                 .expect("launch upstream");
 
             let downstream = compile_scenario_file_compiled(
@@ -1611,6 +1558,7 @@ scenarios:
             )
             .expect("compile downstream");
             let downstream_handles = launch_multi_compiled(downstream, Some(Arc::clone(&resolver)))
+                .await
                 .expect("launch downstream");
             wait_for_state(
                 &downstream_handles[0],
@@ -1644,8 +1592,8 @@ scenarios:
             stop_and_join(downstream_handles);
         }
 
-        #[test]
-        fn t11_if_unresolved_open_ticks_at_full_rate() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t11_if_unresolved_open_ticks_at_full_rate() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1654,8 +1602,9 @@ scenarios:
                 &InMemoryPackResolver::new(),
             )
             .expect("compile downstream");
-            let handles =
-                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .await
+                .expect("launch");
             wait_for_state(
                 &handles[0],
                 ScenarioState::Unresolved,
@@ -1674,8 +1623,8 @@ scenarios:
             stop_and_join(handles);
         }
 
-        #[test]
-        fn t11b_if_unresolved_open_transitions_to_running_on_upstream_register() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t11b_if_unresolved_open_transitions_to_running_on_upstream_register() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1684,8 +1633,9 @@ scenarios:
                 &InMemoryPackResolver::new(),
             )
             .expect("compile downstream");
-            let handles =
-                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .await
+                .expect("launch");
             wait_for_state(
                 &handles[0],
                 ScenarioState::Unresolved,
@@ -1721,8 +1671,8 @@ scenarios:
             stop_and_join(handles);
         }
 
-        #[test]
-        fn t12_if_unresolved_closed_does_not_emit() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t12_if_unresolved_closed_does_not_emit() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1731,8 +1681,9 @@ scenarios:
                 &InMemoryPackResolver::new(),
             )
             .expect("compile downstream");
-            let handles =
-                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .await
+                .expect("launch");
             wait_for_state(
                 &handles[0],
                 ScenarioState::Unresolved,
@@ -1750,8 +1701,8 @@ scenarios:
             stop_and_join(handles);
         }
 
-        #[test]
-        fn t13_if_unresolved_pending_does_not_emit_and_holds_state() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t13_if_unresolved_pending_does_not_emit_and_holds_state() {
             let registry = TestRegistry::new();
             let resolver: Arc<dyn GateBusResolver> = registry.clone();
 
@@ -1760,8 +1711,9 @@ scenarios:
                 &InMemoryPackResolver::new(),
             )
             .expect("compile downstream");
-            let handles =
-                launch_multi_compiled(compiled, Some(Arc::clone(&resolver))).expect("launch");
+            let handles = launch_multi_compiled(compiled, Some(Arc::clone(&resolver)))
+                .await
+                .expect("launch");
             wait_for_state(
                 &handles[0],
                 ScenarioState::Unresolved,
@@ -1777,8 +1729,8 @@ scenarios:
             stop_and_join(handles);
         }
 
-        #[test]
-        fn t_regress_2_local_only_while_path_unchanged() {
+        #[tokio::test(flavor = "multi_thread")]
+        async fn t_regress_2_local_only_while_path_unchanged() {
             let yaml = r#"
 version: 2
 kind: runnable
@@ -1809,7 +1761,7 @@ scenarios:
 "#;
             let compiled = compile_scenario_file_compiled(yaml, &InMemoryPackResolver::new())
                 .expect("compile local-only");
-            let mut handles = launch_multi_compiled(compiled, None).expect("launch");
+            let mut handles = launch_multi_compiled(compiled, None).await.expect("launch");
             assert_eq!(handles.len(), 2);
             for h in &mut handles {
                 let _ = h.join(Some(Duration::from_secs(2)));
@@ -1818,8 +1770,8 @@ scenarios:
     }
 
     #[cfg(feature = "config")]
-    #[test]
-    fn launch_multi_compiled_gives_each_handle_an_independent_shutdown_flag() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_multi_compiled_gives_each_handle_an_independent_cancel_token() {
         use crate::compile_scenario_file_compiled;
         use crate::compiler::expand::InMemoryPackResolver;
 
@@ -1857,17 +1809,10 @@ scenarios:
         let compiled =
             compile_scenario_file_compiled(yaml, &resolver).expect("compile must succeed");
 
-        let mut handles = launch_multi_compiled(compiled, None).expect("launch must succeed");
+        let mut handles = launch_multi_compiled(compiled, None)
+            .await
+            .expect("launch must succeed");
         assert_eq!(handles.len(), 3, "must launch all three entries");
-
-        for i in 0..handles.len() {
-            for j in (i + 1)..handles.len() {
-                assert!(
-                    !Arc::ptr_eq(&handles[i].shutdown, &handles[j].shutdown),
-                    "handles {i} and {j} must own independent shutdown Arcs"
-                );
-            }
-        }
 
         handles[0].stop();
         let deadline = Instant::now() + Duration::from_secs(2);

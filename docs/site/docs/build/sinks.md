@@ -66,6 +66,32 @@ sink:
   address: "127.0.0.1:9999"
 ```
 
+## memory
+
+In-process buffer sink for tests and benchmarks. Encoded bytes accumulate in a `Vec<u8>` inside the running process; no I/O happens, no destination is contacted. Use this when you want to drive a scenario through Sonda's pipeline (generator → encoder → sink) and either ignore the output or inspect it from a test harness that holds a `MemorySink` directly.
+
+When `capture: true`, each write records the `Instant` it landed alongside the bytes, keeping a ring of the most recent `max_events` entries (default `1_000_000`). The ring drops the oldest entry on overflow, so a benchmark that runs longer than the cap allows still ends up with the latest events for drift or rate analysis.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `capture` | boolean | no | `false` | Record `(Instant, bytes)` per write. |
+| `max_events` | integer | no | `1_000_000` | Cap on retained captured events when `capture: true`. |
+
+```yaml title="Memory sink (capture disabled)"
+sink:
+  type: memory
+```
+
+```yaml title="Memory sink with capture for drift measurement"
+sink:
+  type: memory
+  capture: true
+  max_events: 100000
+```
+
+!!! warning
+    This sink is for in-process inspection only — there is no destination to deliver to, so it should never be used in production scenarios. Pair it with a Rust test or benchmark harness that holds the `MemorySink` instance and reads `MemorySink::captured()` after the run.
+
 ## http_push
 
 !!! note

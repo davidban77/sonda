@@ -21,12 +21,16 @@ src/
 ├── auth.rs             ← require_api_key middleware (Bearer token), unauthorized() helper,
 │                         extract_bearer_token(), constant-time key comparison via subtle
 ├── routes/
-│   ├── mod.rs          ← router() function: splits public (/health) and protected (/scenarios/*,
-│                         /events) sub-routers; applies auth middleware via route_layer on protected routes
+│   ├── mod.rs          ← router_with_config() function: splits three sub-routers — public (/health),
+│                         protected observability (/scenarios/{id}/stats, /scenarios/{id}/metrics,
+│                         /metrics, /server/metrics), and protected control (/scenarios POST/GET,
+│                         /scenarios/{id} GET/DELETE, /events). Auth + request-metrics middleware
+│                         applied per protected sub-router; the control sub-router additionally
+│                         carries the timeout + body-limit + global-concurrency tower stack.
 │   ├── health.rs       ← GET /health → {"status": "ok"}
 │   ├── events.rs       ← POST /events: synchronous single-event emission. Tagged-enum
 │                         request body, dispatches on signal_type, builds LogEvent/MetricEvent,
-│                         delegates to sonda_core::emit::{emit_log, emit_metric} via spawn_blocking.
+│                         awaits sonda_core::emit::{emit_log, emit_metric} directly.
 │                         Maps SondaError variants to HTTP status (Config→422, Sink→502, others→500).
 │   ├── sink_warnings.rs ← shared loopback pre-flight helpers (extract_host,
 │                          is_loopback_host, sink_loopback_warnings, collect_warnings_for_sink,
@@ -88,9 +92,15 @@ Server Error` with a JSON error body instead of panicking. The per-scenario stat
 
 ## Concurrency Model
 
-Each scenario runs on a dedicated thread (spawned by `sonda_core::schedule::launch::launch_scenario`).
-The axum handler stores and queries `ScenarioHandle` instances from sonda-core. This keeps sonda-core
-synchronous while the server handles HTTP I/O asynchronously via tokio.
+Scenarios run as tokio tasks on the shared multi-thread runtime that hosts the axum HTTP layer
+(spawned by `sonda_core::schedule::launch::launch_scenario`). sonda-core is async-native: the
+runner loop, the encoder layer, and every sink share the same runtime as the HTTP handlers. The
+axum handler stores `ScenarioHandle` instances in `AppState` and queries them via the lock-free
+`stats_snapshot()` path. Per-request bounding is provided by `--max-inflight-requests` (a
+`tower::limit::GlobalConcurrencyLimitLayer` over an `Arc<Semaphore>`); per-scenario bounding is
+provided by `--max-scenarios`. Worker count defaults to `min(available_parallelism(), 16)` —
+host-CPU- and cgroup-aware, with a hard ceiling so a 64-core production host doesn't spawn 64
+worker threads.
 
 ## Authentication
 
@@ -135,7 +145,7 @@ Keep `SONDA_SUBCOMMANDS` in sync with `sonda`'s clap definitions.
 | `serde` + `serde_json` + `serde_yaml_ng` | Request/response serialization       |
 | `anyhow`           | Error handling in binary code                             |
 | `clap`             | CLI argument parsing                                      |
-| `tower-http`       | CORS and trace middleware                                 |
+| `tower-http`       | Timeout + request-body limit middleware for control routes |
 | `tracing` + `tracing-subscriber` | Structured logging                      |
 | `subtle`           | Constant-time byte comparison for API key auth            |
 | `uuid`             | Generating scenario IDs                                   |

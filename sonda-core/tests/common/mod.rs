@@ -19,9 +19,9 @@
 #![cfg(feature = "config")]
 #![allow(dead_code)]
 
+use sonda_core::CancellationToken;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -162,8 +162,9 @@ struct CapturingSink {
     buffer: Arc<Mutex<Vec<u8>>>,
 }
 
+#[async_trait::async_trait]
 impl Sink for CapturingSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         let mut guard = self
             .buffer
             .lock()
@@ -172,59 +173,14 @@ impl Sink for CapturingSink {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }
 
-/// Run every entry in `entries` to completion against an in-memory sink,
-/// returning the raw concatenated stdout-equivalent bytes.
-///
-/// The harness mirrors a trimmed-down version of `launch_scenario`:
-///
-/// 1. `prepare_entries` expands csv_replay, desugars aliases, validates
-///    every entry, and resolves each entry's `phase_offset` into a
-///    `start_delay: Option<Duration>` — exactly the same preparation the
-///    production launcher does.
-/// 2. Each prepared entry runs on its own OS thread with a
-///    [`CapturingSink`] substituted for the user-configured sink. The
-///    shared `Arc<Mutex<Vec<u8>>>` is cloned into the thread so the parent
-///    can drain bytes after the thread joins.
-/// 3. Each thread honors its `start_delay` via `thread::sleep` (no shared
-///    shutdown signal — the scenario's own `duration:` field bounds the
-///    run, which must be set on every entry this harness sees).
-///
-/// The returned `Vec<u8>` is the raw byte stream a real stdout sink would
-/// have produced. Callers choose `assert_eq!` or a line-multiset comparison
-/// depending on whether order is deterministic for their scenario.
-///
-/// # Panics
-///
-/// Panics if `prepare_entries` fails, if a runner thread panics, or if a
-/// runner returns an error. For parity tests these are all bugs, not
-/// legitimate test outcomes.
-///
-/// # Determinism
-///
-/// All seeds, jitter seeds, and `seed:` fields must be pinned by the
-/// caller's configuration. The harness does not inject any randomness.
-/// Multi-entry output order is **not** deterministic — concurrent threads
-/// interleave writes at byte granularity. For multi-signal parity tests,
-/// compare via [`assert_line_multisets_equal`].
-///
-/// # Shutdown caveat
-///
-/// Unlike production
-/// [`launch_scenario`][sonda_core::schedule::launch::launch_scenario]
-/// — which polls a shared `Arc<AtomicBool>` every 50 ms during the
-/// `start_delay` window so an external stop signal can short-circuit the
-/// pre-roll — this harness only sleeps until the deadline elapses. It
-/// does **not** honor a shutdown signal during `start_delay`, and the
-/// runner threads are driven with `shutdown: None` thereafter. Every
-/// current call site is bounded by the scenario's own `duration:` field
-/// and never needs cancellation, so this is safe today; future callers
-/// that need cooperative cancellation must extend the harness rather
-/// than rely on it.
+/// Run every entry in `entries` to completion against an in-memory sink and
+/// return the concatenated stdout-equivalent bytes. Each entry must declare a
+/// `duration:` — the harness does not honor an external cancel signal.
 pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
     let prepared =
         prepare_entries(entries).expect("run_and_capture_stdout: prepare_entries must succeed");
@@ -251,9 +207,9 @@ pub fn run_and_capture_stdout(entries: Vec<ScenarioEntry>) -> Vec<u8> {
                     }
                 }
 
-                let mut sink = CapturingSink {
+                let mut sink: Box<dyn Sink> = Box::new(CapturingSink {
                     buffer: buffer_for_thread,
-                };
+                });
                 run_entry_with_sink(&entry, &mut sink)
             })
             .expect("failed to spawn parity harness thread");
@@ -341,25 +297,25 @@ pub fn normalize_timestamps(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Dispatch a single `ScenarioEntry` to the runner matching its variant.
-///
-/// The runner is driven with `shutdown: None` (the scenario's own
-/// `duration:` field bounds the run) and `stats: None` (parity tests do
-/// not inspect stats).
-fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut dyn Sink) -> Result<(), SondaError> {
-    // All four runners take the same shape: &Config, &mut dyn Sink,
-    // Option<&AtomicBool>, Option<Arc<RwLock<ScenarioStats>>>.
-    const NONE_ATOMIC: Option<&AtomicBool> = None;
+/// Dispatch a single `ScenarioEntry` to the matching runner.
+fn run_entry_with_sink(entry: &ScenarioEntry, sink: &mut Box<dyn Sink>) -> Result<(), SondaError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime for test runner must build");
+    let cancel = CancellationToken::new();
     match entry {
-        ScenarioEntry::Metrics(config) => runner::run_with_sink(config, sink, NONE_ATOMIC, None),
+        ScenarioEntry::Metrics(config) => {
+            rt.block_on(runner::run_with_sink(config, sink, &cancel, None))
+        }
         ScenarioEntry::Logs(config) => {
-            log_runner::run_logs_with_sink(config, sink, NONE_ATOMIC, None)
+            rt.block_on(log_runner::run_logs_with_sink(config, sink, &cancel, None))
         }
         ScenarioEntry::Histogram(config) => {
-            histogram_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
+            rt.block_on(histogram_runner::run_with_sink(config, sink, &cancel, None))
         }
         ScenarioEntry::Summary(config) => {
-            summary_runner::run_with_sink(config, sink, NONE_ATOMIC, None)
+            rt.block_on(summary_runner::run_with_sink(config, sink, &cancel, None))
         }
         // `ScenarioEntry` is `#[non_exhaustive]` across the crate boundary
         // (integration tests are a separate crate), so a wildcard arm is

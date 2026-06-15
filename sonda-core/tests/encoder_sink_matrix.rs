@@ -72,25 +72,27 @@ enum Op {
     StdoutSink,
 }
 
-fn check_memory_nonempty(bytes: &[u8], enc: &str) {
+async fn check_memory_nonempty(bytes: &[u8], enc: &str) {
     let mut sink = MemorySink::new();
-    sink.write(bytes).unwrap();
-    sink.flush().unwrap();
+    sink.write(bytes).await.unwrap();
+    sink.flush().await.unwrap();
     assert!(!sink.buffer.is_empty(), "{enc} encoder produced no output");
 }
 
-fn check_file_roundtrip(bytes: &[u8], tag: &str) {
+async fn check_file_roundtrip(bytes: &[u8], tag: &str) {
     let path = tmp_matrix_path(tag);
     let _ = std::fs::remove_file(&path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut sink = sonda_core::sink::file::FileSink::new(Path::new(&path)).unwrap();
-    sink.write(bytes).unwrap();
-    sink.flush().unwrap();
+    let mut sink = sonda_core::sink::file::FileSink::new(Path::new(&path))
+        .await
+        .unwrap();
+    sink.write(bytes).await.unwrap();
+    sink.flush().await.unwrap();
     drop(sink);
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
-fn check_tcp_delivery(bytes: &[u8]) {
+async fn check_tcp_delivery(bytes: &[u8]) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let expected = bytes.to_vec();
@@ -100,37 +102,49 @@ fn check_tcp_delivery(bytes: &[u8]) {
         s.read_to_end(&mut buf).unwrap();
         buf
     });
-    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr, None).unwrap();
-    sink.write(bytes).unwrap();
-    sink.flush().unwrap();
+    let mut sink = sonda_core::sink::tcp::TcpSink::new(&addr, None)
+        .await
+        .unwrap();
+    sink.write(bytes).await.unwrap();
+    sink.flush().await.unwrap();
     drop(sink);
     assert_eq!(rx.join().unwrap(), expected);
 }
 
-fn check_udp_delivery(bytes: &[u8]) {
+async fn check_udp_delivery(bytes: &[u8]) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let addr = socket.local_addr().unwrap().to_string();
-    let mut sink = sonda_core::sink::udp::UdpSink::new(&addr).unwrap();
-    sink.write(bytes).unwrap();
+    let mut sink = sonda_core::sink::udp::UdpSink::new(&addr).await.unwrap();
+    sink.write(bytes).await.unwrap();
     let mut buf = vec![0u8; 4096];
     let (len, _) = socket.recv_from(&mut buf).unwrap();
     assert_eq!(&buf[..len], bytes);
 }
 
-fn check_stdout(bytes: &[u8]) {
+async fn check_stdout(bytes: &[u8]) {
     let mut sink = sonda_core::sink::stdout::StdoutSink::new();
-    assert!(sink.write(bytes).is_ok());
-    assert!(sink.flush().is_ok());
+    assert!(sink.write(bytes).await.is_ok());
+    assert!(sink.flush().await.is_ok());
 }
 
 // ---------------------------------------------------------------------------
 // Encoder families
 // ---------------------------------------------------------------------------
 
-/// Prometheus text encoder: memory-shape checks + all delivery sinks.
+async fn run_op(bytes: &[u8], op: Op, tag: &str) {
+    match op {
+        Op::MemoryNonempty => check_memory_nonempty(bytes, tag).await,
+        Op::MemoryContainsIdentifier | Op::MemoryEndsNewline => unreachable!("handled inline"),
+        Op::FileSink => check_file_roundtrip(bytes, tag).await,
+        Op::TcpSink => check_tcp_delivery(bytes).await,
+        Op::UdpSink => check_udp_delivery(bytes).await,
+        Op::StdoutSink => check_stdout(bytes).await,
+    }
+}
+
 #[rstest]
 #[rustfmt::skip]
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
@@ -140,21 +154,17 @@ fn check_stdout(bytes: &[u8]) {
 #[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
 #[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
 #[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
-fn prometheus_encoder_cases(#[case] op: Op) {
+#[tokio::test(flavor = "multi_thread")]
+async fn prometheus_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::PrometheusText { precision: None };
     let bytes = encode_event(&config, &test_event());
     match op {
-        Op::MemoryNonempty           => check_memory_nonempty(&bytes, "prometheus"),
         Op::MemoryContainsIdentifier => assert!(std::str::from_utf8(&bytes).unwrap().contains("matrix_test_metric")),
         Op::MemoryEndsNewline        => assert_eq!(*bytes.last().unwrap(), b'\n'),
-        Op::FileSink                 => check_file_roundtrip(&bytes, "prometheus"),
-        Op::TcpSink                  => check_tcp_delivery(&bytes),
-        Op::UdpSink                  => check_udp_delivery(&bytes),
-        Op::StdoutSink               => check_stdout(&bytes),
+        other                        => run_op(&bytes, other, "prometheus").await,
     }
 }
 
-/// InfluxDB Line Protocol encoder: memory-shape checks + all delivery sinks.
 #[rstest]
 #[rustfmt::skip]
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
@@ -164,25 +174,21 @@ fn prometheus_encoder_cases(#[case] op: Op) {
 #[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
 #[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
 #[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
-fn influx_encoder_cases(#[case] op: Op) {
+#[tokio::test(flavor = "multi_thread")]
+async fn influx_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::InfluxLineProtocol { field_key: None, precision: None };
     let bytes = encode_event(&config, &test_event());
     match op {
-        Op::MemoryNonempty           => check_memory_nonempty(&bytes, "influx"),
         Op::MemoryContainsIdentifier => assert!(std::str::from_utf8(&bytes).unwrap().contains("matrix_test_metric")),
         Op::MemoryEndsNewline => {
             let text = std::str::from_utf8(&bytes).unwrap().trim_end_matches('\n').to_owned();
             let ts = text.split_whitespace().last().unwrap();
             assert!(ts.len() >= 19, "influx timestamp must be >=19 digits (nanosecond precision): {ts}");
         }
-        Op::FileSink   => check_file_roundtrip(&bytes, "influx"),
-        Op::TcpSink    => check_tcp_delivery(&bytes),
-        Op::UdpSink    => check_udp_delivery(&bytes),
-        Op::StdoutSink => check_stdout(&bytes),
+        other => run_op(&bytes, other, "influx").await,
     }
 }
 
-/// JSON Lines encoder: memory-shape checks + all delivery sinks.
 #[rstest]
 #[rustfmt::skip]
 #[case::memory_produces_nonempty_output(       Op::MemoryNonempty)]
@@ -192,20 +198,17 @@ fn influx_encoder_cases(#[case] op: Op) {
 #[case::tcp_data_arrives_at_listener(          Op::TcpSink)]
 #[case::udp_datagram_arrives_at_receiver(      Op::UdpSink)]
 #[case::stdout_write_and_flush_succeed(        Op::StdoutSink)]
-fn json_encoder_cases(#[case] op: Op) {
+#[tokio::test(flavor = "multi_thread")]
+async fn json_encoder_cases(#[case] op: Op) {
     let config = EncoderConfig::JsonLines { precision: None };
     let bytes = encode_event(&config, &test_event());
     match op {
-        Op::MemoryNonempty => check_memory_nonempty(&bytes, "json"),
         Op::MemoryContainsIdentifier => {
             let line = std::str::from_utf8(&bytes).unwrap().trim_end_matches('\n');
             assert!(serde_json::from_str::<serde_json::Value>(line).unwrap().is_object());
         }
         Op::MemoryEndsNewline => assert_eq!(*bytes.last().unwrap(), b'\n'),
-        Op::FileSink   => check_file_roundtrip(&bytes, "json"),
-        Op::TcpSink    => check_tcp_delivery(&bytes),
-        Op::UdpSink    => check_udp_delivery(&bytes),
-        Op::StdoutSink => check_stdout(&bytes),
+        other => run_op(&bytes, other, "json").await,
     }
 }
 
@@ -284,7 +287,8 @@ fn accept_http_ok(listener: &TcpListener) -> Vec<u8> {
 #[case::prometheus_http_push_body_matches(EncoderConfig::PrometheusText { precision: None },                            "text/plain; version=0.0.4")]
 #[case::influx_http_push_body_matches(    EncoderConfig::InfluxLineProtocol { field_key: None, precision: None },       "text/plain")]
 #[case::json_http_push_body_matches(      EncoderConfig::JsonLines { precision: None },                                 "application/x-ndjson")]
-fn encoder_http_push_body_matches(#[case] config: EncoderConfig, #[case] ct: &str) {
+#[tokio::test(flavor = "multi_thread")]
+async fn encoder_http_push_body_matches(#[case] config: EncoderConfig, #[case] ct: &str) {
     let (listener, url) = http_listener_url();
     let bytes = encode_event(&config, &test_event());
     let expected = bytes.clone();
@@ -292,8 +296,8 @@ fn encoder_http_push_body_matches(#[case] config: EncoderConfig, #[case] ct: &st
     let mut sink =
         sonda_core::sink::http::HttpPushSink::new(&url, ct, 10_000, HashMap::new(), None, Duration::ZERO)
             .unwrap();
-    sink.write(&bytes).unwrap();
-    sink.flush().unwrap();
+    sink.write(&bytes).await.unwrap();
+    sink.flush().await.unwrap();
     assert_eq!(server.join().unwrap(), expected);
 }
 
@@ -325,7 +329,11 @@ mod kafka_matrix {
             tls: None,
             sasl: None,
         };
-        let result = sonda_core::sink::create_sink(&cfg, None);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(sonda_core::sink::create_sink(&cfg, None));
         let Err(e) = result else {
             panic!("expected Err from create_sink with empty broker, got Ok");
         };
@@ -362,15 +370,15 @@ mod otlp_matrix {
         )
     }
 
-    #[test]
-    fn otlp_x_memory_metric_produces_nonempty_output() {
+    #[tokio::test]
+    async fn otlp_x_memory_metric_produces_nonempty_output() {
         let mut buf = Vec::new();
         OtlpEncoder::new()
             .encode_metric(&test_event(), &mut buf)
             .unwrap();
         let mut sink = MemorySink::new();
-        sink.write(&buf).unwrap();
-        sink.flush().unwrap();
+        sink.write(&buf).await.unwrap();
+        sink.flush().await.unwrap();
         assert!(!sink.buffer.is_empty());
     }
 
@@ -383,15 +391,15 @@ mod otlp_matrix {
         assert_lp(&buf);
     }
 
-    #[test]
-    fn otlp_x_memory_log_produces_nonempty_output() {
+    #[tokio::test]
+    async fn otlp_x_memory_log_produces_nonempty_output() {
         let mut buf = Vec::new();
         OtlpEncoder::new()
             .encode_log(&log_event(Severity::Info, "msg"), &mut buf)
             .unwrap();
         let mut sink = MemorySink::new();
-        sink.write(&buf).unwrap();
-        sink.flush().unwrap();
+        sink.write(&buf).await.unwrap();
+        sink.flush().await.unwrap();
         assert!(!sink.buffer.is_empty());
     }
 
@@ -404,8 +412,8 @@ mod otlp_matrix {
         assert_lp(&buf);
     }
 
-    #[test]
-    fn otlp_x_memory_multi_metric_accumulates_in_sink() {
+    #[tokio::test]
+    async fn otlp_x_memory_multi_metric_accumulates_in_sink() {
         let enc = OtlpEncoder::new();
         let mut sink = MemorySink::new();
         for i in 0..3u64 {
@@ -415,9 +423,9 @@ mod otlp_matrix {
                 MetricEvent::with_timestamp("otlp_multi".to_owned(), i as f64, labels, ts).unwrap();
             let mut buf = Vec::new();
             enc.encode_metric(&event, &mut buf).unwrap();
-            sink.write(&buf).unwrap();
+            sink.write(&buf).await.unwrap();
         }
-        sink.flush().unwrap();
+        sink.flush().await.unwrap();
         assert!(sink.buffer.len() > 12);
     }
 }
@@ -432,7 +440,8 @@ mod otlp_matrix {
 #[case::prometheus_multi_event_accumulates_lines(EncoderConfig::PrometheusText { precision: None },                      "multi_event",  false)]
 #[case::influx_multi_event_accumulates_lines(    EncoderConfig::InfluxLineProtocol { field_key: None, precision: None }, "multi_influx", false)]
 #[case::json_multi_event_accumulates_lines(      EncoderConfig::JsonLines { precision: None },                           "multi_json",   true)]
-fn multi_event_pipeline_accumulates_correct_lines(
+#[tokio::test]
+async fn multi_event_pipeline_accumulates_correct_lines(
     #[case] config: EncoderConfig,
     #[case] metric_name: &str,
     #[case] validate_json: bool,
@@ -445,9 +454,9 @@ fn multi_event_pipeline_accumulates_correct_lines(
         let event = MetricEvent::with_timestamp(metric_name.to_owned(), i as f64, labels, ts).unwrap();
         let mut buf = Vec::new();
         encoder.encode_metric(&event, &mut buf).unwrap();
-        sink.write(&buf).unwrap();
+        sink.write(&buf).await.unwrap();
     }
-    sink.flush().unwrap();
+    sink.flush().await.unwrap();
     let text = std::str::from_utf8(&sink.buffer).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 5);

@@ -63,6 +63,7 @@ pub use schedule::gate_bus::{
 pub use schedule::handle::ScenarioHandle;
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
 pub use schedule::stats::{ScenarioState, ScenarioStats};
+pub use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "config")]
 pub use compiler::prepare::PrepareError;
@@ -241,6 +242,17 @@ pub enum RuntimeError {
     /// [`ConfigError`] when collected at the multi-runner level.
     #[error("{0}")]
     ScenariosFailed(String),
+
+    /// A `tokio::task::spawn_blocking` task panicked or was cancelled.
+    #[error("blocking task failed: {0}")]
+    TaskPanicked(String),
+
+    /// A scenario task could not be joined safely in the current runtime context.
+    #[error("scenario task aborted: {reason}")]
+    TaskAborted {
+        /// Why the task could not be joined (e.g., called from a current_thread runtime).
+        reason: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -304,12 +316,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sink_file_error_produces_sink_variant() {
-        // Opening a file at an invalid path must produce SondaError::Sink.
+    #[tokio::test]
+    async fn sink_file_error_produces_sink_variant() {
         let result = sink::file::FileSink::new(std::path::Path::new(
             "/nonexistent/deeply/nested/path/output.txt",
-        ));
+        ))
+        .await;
         match result {
             Err(ref err) => {
                 assert!(
@@ -618,9 +630,8 @@ generator:
     }
 
     /// EncoderConfig, SinkConfig, and GeneratorConfig are all constructible
-    /// without deserialization and can be passed to their respective factory functions.
-    #[test]
-    fn factory_functions_work_without_deserialization() {
+    #[tokio::test]
+    async fn factory_functions_work_without_deserialization() {
         use crate::encoder::{create_encoder, EncoderConfig};
         use crate::generator::{create_generator, GeneratorConfig};
         use crate::sink::{create_sink, SinkConfig};
@@ -633,7 +644,9 @@ generator:
         let _enc = create_encoder(&enc_config).expect("encoder factory must succeed");
 
         let sink_config = SinkConfig::Stdout;
-        let _sink = create_sink(&sink_config, None).expect("sink factory must succeed");
+        let _sink = create_sink(&sink_config, None)
+            .await
+            .expect("sink factory must succeed");
     }
 
     #[test]

@@ -22,17 +22,20 @@ pub mod udp;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 
 use crate::model::log::LogEvent;
+use crate::sink::memory::CapturedRing;
 use crate::SondaError;
 
 /// A sink consumes encoded bytes and delivers them to a destination.
+#[async_trait]
 pub trait Sink: Send + Sync {
-    /// Write encoded event data to the sink.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError>;
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError>;
 
-    /// Flush any buffered data to the destination.
-    fn flush(&mut self) -> Result<(), SondaError>;
+    async fn flush(&mut self) -> Result<(), SondaError>;
 
     /// Whether the most recent `write()` delivered data to the destination,
     /// or only buffered it. Non-batching sinks deliver on every write, so the
@@ -42,15 +45,14 @@ pub trait Sink: Send + Sync {
         true
     }
 
-    /// Write an encoded log event to the sink, with the originating
-    /// [`LogEvent`] alongside for sinks that build their own delivery
-    /// envelope from per-event context (e.g. labels).
-    ///
-    /// The default impl ignores the event reference and forwards to
-    /// [`Sink::write`], preserving the bytes-only contract every existing
-    /// sink relies on. Sinks that need per-event labels override this.
-    fn write_log_event(&mut self, _event: &LogEvent, encoded: &[u8]) -> Result<(), SondaError> {
-        self.write(encoded)
+    /// Write an encoded log event with originating context. Default impl
+    /// drops the event and forwards bytes to [`Sink::write`].
+    async fn write_log_event(
+        &mut self,
+        _event: &LogEvent,
+        encoded: &[u8],
+    ) -> Result<(), SondaError> {
+        self.write(encoded).await
     }
 }
 
@@ -150,6 +152,30 @@ pub enum SinkConfig {
     Udp {
         /// Remote address to send datagrams to, e.g. `"127.0.0.1:9999"`.
         address: String,
+    },
+
+    /// In-process memory sink for tests and benchmarks.
+    ///
+    /// When `capture` is `true`, each write records its `Instant` alongside
+    /// the bytes, bounded to the most recent `max_events` entries. When
+    /// `capture` is `false`, the sink only accumulates bytes in its buffer.
+    /// Programmatic embedders can pass `capture_handle: Some(arc)` to mirror
+    /// writes into an externally-owned ring; YAML scenarios always leave it
+    /// `None` because the field is `serde(skip)`.
+    #[cfg_attr(feature = "config", serde(rename = "memory"))]
+    Memory {
+        /// Whether to record `(Instant, bytes)` on every write.
+        #[cfg_attr(feature = "config", serde(default))]
+        capture: bool,
+
+        /// Cap on retained captured events. Defaults to `1_000_000` when
+        /// `capture` is `true` and the field is omitted.
+        #[cfg_attr(feature = "config", serde(default))]
+        max_events: Option<usize>,
+
+        /// Programmatic capture handle for embedders. `None` for YAML.
+        #[cfg_attr(feature = "config", serde(skip))]
+        capture_handle: Option<Arc<Mutex<CapturedRing>>>,
     },
 
     /// Batch encoded events and deliver them via HTTP POST.
@@ -371,11 +397,8 @@ pub enum SinkConfig {
 
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
 ///
-/// The optional `labels` parameter is used only by the Loki sink (feature
-/// `http`) to set stream labels. For all other sink types, pass `None`. Log
-/// scenarios pass the scenario-level labels here so that Loki stream labels
-/// are configured at the same level as every other signal type.
-pub fn create_sink(
+/// `labels` populates Loki stream labels; pass `None` for every other sink.
+pub async fn create_sink(
     config: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
 ) -> Result<Box<dyn Sink>, SondaError> {
@@ -384,7 +407,7 @@ pub fn create_sink(
     let _ = &labels;
     match config {
         SinkConfig::Stdout => Ok(Box::new(stdout::StdoutSink::new())),
-        SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path))?)),
+        SinkConfig::File { path } => Ok(Box::new(file::FileSink::new(Path::new(path)).await?)),
         SinkConfig::Tcp {
             address,
             retry: retry_cfg,
@@ -393,9 +416,25 @@ pub fn create_sink(
                 .as_ref()
                 .map(retry::RetryPolicy::from_config)
                 .transpose()?;
-            Ok(Box::new(tcp::TcpSink::new(address, rp)?))
+            Ok(Box::new(tcp::TcpSink::new(address, rp).await?))
         }
-        SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address)?)),
+        SinkConfig::Udp { address } => Ok(Box::new(udp::UdpSink::new(address).await?)),
+        SinkConfig::Memory {
+            capture,
+            max_events,
+            capture_handle,
+        } => {
+            if let Some(handle) = capture_handle {
+                Ok(Box::new(memory::MemorySink::with_shared_capture(
+                    Arc::clone(handle),
+                )))
+            } else if *capture {
+                let max = max_events.unwrap_or(1_000_000);
+                Ok(Box::new(memory::MemorySink::with_capture(max)))
+            } else {
+                Ok(Box::new(memory::MemorySink::new()))
+            }
+        }
         #[cfg(feature = "http")]
         SinkConfig::HttpPush {
             url,
@@ -462,14 +501,10 @@ pub fn create_sink(
                 None => Some(std::time::Duration::from_secs(5)),
             }
             .unwrap_or(std::time::Duration::ZERO);
-            Ok(Box::new(kafka::KafkaSink::new(
-                brokers,
-                topic,
-                rp,
-                tls.as_ref(),
-                sasl.as_ref(),
-                buffer_age,
-            )?))
+            Ok(Box::new(
+                kafka::KafkaSink::new(brokers, topic, rp, tls.as_ref(), sasl.as_ref(), buffer_age)
+                    .await?,
+            ))
         }
         #[cfg(feature = "http")]
         SinkConfig::Loki {
@@ -533,14 +568,17 @@ pub fn create_sink(
                 None => Some(std::time::Duration::from_secs(5)),
             }
             .unwrap_or(std::time::Duration::ZERO);
-            Ok(Box::new(otlp_grpc::OtlpGrpcSink::new(
-                endpoint,
-                *signal_type,
-                bs,
-                resource_attrs,
-                rp,
-                buffer_age,
-            )?))
+            Ok(Box::new(
+                otlp_grpc::OtlpGrpcSink::new(
+                    endpoint,
+                    *signal_type,
+                    bs,
+                    resource_attrs,
+                    rp,
+                    buffer_age,
+                )
+                .await?,
+            ))
         }
         #[cfg(not(feature = "http"))]
         SinkConfig::HttpPushDisabled { .. } => {
@@ -576,17 +614,17 @@ pub fn create_sink(
 mod tests {
     use super::*;
 
-    #[test]
-    fn create_sink_stdout_returns_ok() {
-        let result = create_sink(&SinkConfig::Stdout, None);
+    #[tokio::test]
+    async fn create_sink_stdout_returns_ok() {
+        let result = create_sink(&SinkConfig::Stdout, None).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn create_sink_stdout_write_and_flush_succeed() {
-        let mut sink = create_sink(&SinkConfig::Stdout, None).unwrap();
-        assert!(sink.write(b"").is_ok());
-        assert!(sink.flush().is_ok());
+    #[tokio::test]
+    async fn create_sink_stdout_write_and_flush_succeed() {
+        let mut sink = create_sink(&SinkConfig::Stdout, None).await.unwrap();
+        assert!(sink.write(b"").await.is_ok());
+        assert!(sink.flush().await.is_ok());
     }
 
     #[cfg(feature = "config")]
@@ -597,13 +635,12 @@ mod tests {
         assert!(matches!(config, SinkConfig::Stdout));
     }
 
-    #[test]
-    fn sink_config_is_cloneable() {
+    #[tokio::test]
+    async fn sink_config_is_cloneable() {
         let config = SinkConfig::Stdout;
         let cloned = config.clone();
-        // Both variants should produce valid sinks
-        assert!(create_sink(&config, None).is_ok());
-        assert!(create_sink(&cloned, None).is_ok());
+        assert!(create_sink(&config, None).await.is_ok());
+        assert!(create_sink(&cloned, None).await.is_ok());
     }
 
     #[test]
@@ -941,10 +978,9 @@ sink:
     /// before returning an error. Run with `cargo test -- --ignored` when the
     /// test environment can tolerate network delays.
     #[cfg(feature = "kafka")]
-    #[test]
+    #[tokio::test]
     #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
-    fn create_sink_kafka_with_unreachable_broker_returns_err() {
-        // Port 1 is privileged and will always refuse connections.
+    async fn create_sink_kafka_with_unreachable_broker_returns_err() {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:1".to_string(),
             topic: "sonda-test".to_string(),
@@ -953,17 +989,16 @@ sink:
             tls: None,
             sasl: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_err(),
             "create_sink should propagate the broker connection failure"
         );
     }
 
-    /// create_sink with an empty broker string returns Err immediately.
     #[cfg(feature = "kafka")]
-    #[test]
-    fn create_sink_kafka_with_empty_broker_returns_err() {
+    #[tokio::test]
+    async fn create_sink_kafka_with_empty_broker_returns_err() {
         let config = SinkConfig::Kafka {
             brokers: String::new(),
             topic: "sonda-test".to_string(),
@@ -972,7 +1007,7 @@ sink:
             tls: None,
             sasl: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_err(),
             "create_sink should reject an empty broker string"
@@ -980,8 +1015,8 @@ sink:
     }
 
     #[cfg(feature = "kafka")]
-    #[test]
-    fn create_sink_kafka_with_invalid_max_buffer_age_returns_err() {
+    #[tokio::test]
+    async fn create_sink_kafka_with_invalid_max_buffer_age_returns_err() {
         let config = SinkConfig::Kafka {
             brokers: "127.0.0.1:9092".to_string(),
             topic: "sonda-test".to_string(),
@@ -990,7 +1025,7 @@ sink:
             tls: None,
             sasl: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_err(),
             "create_sink should reject an unparseable max_buffer_age before connecting"
@@ -1106,11 +1141,9 @@ headers: {}
     // Feature gate: `http` feature controls HttpPush and Loki availability
     // ---------------------------------------------------------------------------
 
-    /// When the `http` feature is enabled, `SinkConfig::HttpPush` must be
-    /// constructible and the factory must produce a valid sink.
     #[cfg(feature = "http")]
-    #[test]
-    fn http_feature_enables_http_push_variant() {
+    #[tokio::test]
+    async fn http_feature_enables_http_push_variant() {
         let config = SinkConfig::HttpPush {
             url: "http://127.0.0.1:19999/push".to_string(),
             content_type: None,
@@ -1119,18 +1152,16 @@ headers: {}
             headers: None,
             retry: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_ok(),
             "HttpPush variant must be available when http feature is enabled"
         );
     }
 
-    /// When the `http` feature is enabled, `SinkConfig::Loki` must be
-    /// constructible and the factory must produce a valid sink.
     #[cfg(feature = "http")]
-    #[test]
-    fn http_feature_enables_loki_variant() {
+    #[tokio::test]
+    async fn http_feature_enables_loki_variant() {
         let config = SinkConfig::Loki {
             url: "http://127.0.0.1:19999".to_string(),
             batch_size: None,
@@ -1138,7 +1169,7 @@ headers: {}
             max_buffer_age: None,
             retry: None,
         };
-        let result = create_sink(&config, None);
+        let result = create_sink(&config, None).await;
         assert!(
             result.is_ok(),
             "Loki variant must be available when http feature is enabled"
@@ -1165,12 +1196,9 @@ headers: {}
         assert!(matches!(config, SinkConfig::Loki { .. }));
     }
 
-    /// Non-HTTP sinks (stdout, file, tcp, udp) must remain available
-    /// regardless of the `http` feature flag.
-    #[test]
-    fn non_http_sinks_available_without_http_feature() {
-        // This test compiles and runs with or without the `http` feature.
-        assert!(create_sink(&SinkConfig::Stdout, None).is_ok());
+    #[tokio::test]
+    async fn non_http_sinks_available_without_http_feature() {
+        assert!(create_sink(&SinkConfig::Stdout, None).await.is_ok());
     }
 
     // ---------------------------------------------------------------------------
@@ -1266,10 +1294,11 @@ retry:
     }
 
     #[cfg(not(feature = "kafka"))]
-    #[test]
-    fn create_sink_kafka_disabled_returns_feature_hint_error() {
+    #[tokio::test]
+    async fn create_sink_kafka_disabled_returns_feature_hint_error() {
         let config = SinkConfig::KafkaDisabled {};
         let err = create_sink(&config, None)
+            .await
             .err()
             .expect("must return Err for disabled variant");
         let msg = err.to_string();
@@ -1293,10 +1322,11 @@ retry:
     }
 
     #[cfg(not(feature = "http"))]
-    #[test]
-    fn create_sink_http_push_disabled_returns_feature_hint_error() {
+    #[tokio::test]
+    async fn create_sink_http_push_disabled_returns_feature_hint_error() {
         let config = SinkConfig::HttpPushDisabled {};
         let err = create_sink(&config, None)
+            .await
             .err()
             .expect("must return Err for disabled variant");
         let msg = err.to_string();
@@ -1320,10 +1350,11 @@ retry:
     }
 
     #[cfg(not(feature = "http"))]
-    #[test]
-    fn create_sink_loki_disabled_returns_feature_hint_error() {
+    #[tokio::test]
+    async fn create_sink_loki_disabled_returns_feature_hint_error() {
         let config = SinkConfig::LokiDisabled {};
         let err = create_sink(&config, None)
+            .await
             .err()
             .expect("must return Err for disabled variant");
         let msg = err.to_string();
@@ -1347,10 +1378,11 @@ retry:
     }
 
     #[cfg(not(feature = "remote-write"))]
-    #[test]
-    fn create_sink_remote_write_disabled_returns_feature_hint_error() {
+    #[tokio::test]
+    async fn create_sink_remote_write_disabled_returns_feature_hint_error() {
         let config = SinkConfig::RemoteWriteDisabled {};
         let err = create_sink(&config, None)
+            .await
             .err()
             .expect("must return Err for disabled variant");
         let msg = err.to_string();
@@ -1364,8 +1396,8 @@ retry:
         );
     }
 
-    #[test]
-    fn default_write_log_event_forwards_encoded_bytes_to_write() {
+    #[tokio::test]
+    async fn default_write_log_event_forwards_encoded_bytes_to_write() {
         use crate::model::log::{LogEvent, Severity};
         use crate::model::metric::Labels;
         use memory::MemorySink;
@@ -1382,16 +1414,152 @@ retry:
         );
         let encoded = b"<encoded payload>";
 
-        // MemorySink does not override `write_log_event`, so the call must
-        // route through the default impl and end up appended to `buffer`
-        // exactly as `write(encoded)` would.
         sink.write_log_event(&event, encoded)
+            .await
             .expect("default write_log_event must succeed");
 
         assert_eq!(
             sink.buffer, encoded,
             "default impl must forward the encoded bytes to write() unchanged"
         );
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_without_capture_returns_ok() {
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: None,
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"hello").await.unwrap();
+        sink.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_with_capture_returns_usable_sink() {
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(8),
+            capture_handle: None,
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"one").await.unwrap();
+        sink.write(b"two").await.unwrap();
+        sink.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_with_shared_capture_handle_mirrors_writes() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(8)));
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"one").await.unwrap();
+        sink.write(b"two").await.unwrap();
+        let guard = ring.lock().unwrap();
+        assert_eq!(guard.len(), 2);
+        assert_eq!(guard.events()[0].1, b"one");
+        assert_eq!(guard.events()[1].1, b"two");
+    }
+
+    #[tokio::test]
+    async fn create_sink_memory_capture_handle_takes_precedence_over_capture_flag() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(4)));
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(1_000_000),
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let mut sink = create_sink(&cfg, None).await.unwrap();
+        sink.write(b"shared").await.unwrap();
+        assert_eq!(ring.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_deserializes_with_type_field() {
+        let yaml = "type: memory\ncapture: true\nmax_events: 64";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(64),
+                capture_handle: None,
+            }
+        ));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_defaults_when_fields_omitted() {
+        let yaml = "type: memory";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: false,
+                max_events: None,
+                capture_handle: None,
+            }
+        ));
+    }
+
+    #[cfg(feature = "config")]
+    #[test]
+    fn sink_config_memory_capture_handle_is_skipped_in_yaml() {
+        let yaml = "type: memory\ncapture: true\nmax_events: 4\ncapture_handle: anything";
+        let config: SinkConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(matches!(
+            config,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(4),
+                capture_handle: None,
+            }
+        ));
+    }
+
+    #[test]
+    fn sink_config_memory_is_cloneable_and_debuggable() {
+        let cfg = SinkConfig::Memory {
+            capture: true,
+            max_events: Some(16),
+            capture_handle: None,
+        };
+        let cloned = cfg.clone();
+        assert!(matches!(
+            cloned,
+            SinkConfig::Memory {
+                capture: true,
+                max_events: Some(16),
+                capture_handle: None,
+            }
+        ));
+        let s = format!("{cfg:?}");
+        assert!(s.contains("Memory"));
+    }
+
+    #[test]
+    fn sink_config_memory_with_handle_is_cloneable_and_shares_ring() {
+        let ring = Arc::new(Mutex::new(memory::CapturedRing::new(2)));
+        let cfg = SinkConfig::Memory {
+            capture: false,
+            max_events: None,
+            capture_handle: Some(Arc::clone(&ring)),
+        };
+        let cloned = cfg.clone();
+        match cloned {
+            SinkConfig::Memory {
+                capture_handle: Some(h),
+                ..
+            } => assert!(Arc::ptr_eq(&h, &ring)),
+            _ => panic!("cloned variant must preserve the handle"),
+        }
     }
 
     #[cfg(all(not(feature = "otlp"), feature = "config"))]
@@ -1404,10 +1572,11 @@ retry:
     }
 
     #[cfg(not(feature = "otlp"))]
-    #[test]
-    fn create_sink_otlp_grpc_disabled_returns_feature_hint_error() {
+    #[tokio::test]
+    async fn create_sink_otlp_grpc_disabled_returns_feature_hint_error() {
         let config = SinkConfig::OtlpGrpcDisabled {};
         let err = create_sink(&config, None)
+            .await
             .err()
             .expect("must return Err for disabled variant");
         let msg = err.to_string();

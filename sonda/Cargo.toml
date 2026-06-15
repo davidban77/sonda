@@ -34,8 +34,13 @@ owo-colors = { version = "4", features = ["supports-colors"] }
 serde_json = { workspace = true }
 dialoguer = "0.12"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio-util = { version = "0.7", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
 insta = { workspace = true, features = ["filters"] }
 rstest = { workspace = true }
+
+[lints]
+workspace = true

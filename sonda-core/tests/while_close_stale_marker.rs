@@ -15,8 +15,9 @@
 
 mod common;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+
+use sonda_core::CancellationToken;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,12 +37,13 @@ struct CaptureSink {
     buf: Arc<Mutex<Vec<u8>>>,
 }
 
+#[async_trait::async_trait]
 impl Sink for CaptureSink {
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         self.buf.lock().unwrap().extend_from_slice(data);
         Ok(())
     }
-    fn flush(&mut self) -> Result<(), SondaError> {
+    async fn flush(&mut self) -> Result<(), SondaError> {
         Ok(())
     }
 }
@@ -105,7 +107,7 @@ fn run_with_capture(
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
 
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
@@ -119,18 +121,23 @@ fn run_with_capture(
     // close the gate at the right moment.
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
-        let shutdown = Arc::new(AtomicBool::new(true));
+        let cancel = CancellationToken::new();
         let gate_ctx = GateContext::new(rx, init)
             .with_delay(delay)
             .with_has_while(true);
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_runner),
             None,
             Some(gate_ctx),
-        )
+        ))
         .expect("runner must succeed");
         let _ = bus_for_thread;
     });
@@ -292,8 +299,6 @@ fn stale_marker_disabled_emits_no_close_sample() {
 
 #[test]
 fn non_remote_write_sink_no_close_marker_by_default() {
-    use sonda_core::sink::memory::MemorySink;
-
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -323,7 +328,9 @@ fn non_remote_write_sink_no_close_marker_by_default() {
         help: None,
     };
 
-    let mut sink = MemorySink::new();
+    let probe = CaptureSink::default();
+    let buf_handle = Arc::clone(&probe.buf);
+    let sink_for_thread: Box<dyn Sink> = Box::new(probe);
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -332,30 +339,35 @@ fn non_remote_write_sink_no_close_marker_by_default() {
     let stats_for_thread = Arc::clone(&stats);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
-        )
+        ))
         .expect("runner must succeed");
-        sink
     });
 
     thread::sleep(Duration::from_millis(50));
     bus.tick(1.0);
     thread::sleep(Duration::from_millis(150));
     bus.tick(0.0);
-    let sink_after = runner.join().expect("runner joined");
+    runner.join().expect("runner joined");
 
     // Every emitted line must be a running-state sample with value 1.0
     // (the constant generator). A close-emit closure on a non-remote-write
     // sink with no `snap_to` should never be installed, so no additional
     // `NaN` (StaleMarker) or `0` (SnapTo(0)) sample line can appear.
-    let text = std::str::from_utf8(&sink_after.buffer).expect("utf-8");
+    let captured = buf_handle.lock().unwrap();
+    let text = std::str::from_utf8(&captured).expect("utf-8");
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
     for line in &lines {
         let value_token = line
@@ -375,8 +387,6 @@ fn non_remote_write_sink_no_close_marker_by_default() {
 
 #[test]
 fn non_remote_write_sink_with_snap_to_emits_one_sample() {
-    use sonda_core::sink::memory::MemorySink;
-
     let bus = Arc::new(GateBus::new());
     bus.tick(0.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -413,7 +423,9 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
         help: None,
     };
 
-    let mut sink = MemorySink::new();
+    let probe = CaptureSink::default();
+    let buf_handle = Arc::clone(&probe.buf);
+    let sink_for_thread: Box<dyn Sink> = Box::new(probe);
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -422,11 +434,16 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
     let stats_for_thread = Arc::clone(&stats);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -434,21 +451,21 @@ fn non_remote_write_sink_with_snap_to_emits_one_sample() {
                     .with_delay(Some(delay))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("runner must succeed");
-        sink
     });
 
     thread::sleep(Duration::from_millis(50));
     bus.tick(1.0);
     thread::sleep(Duration::from_millis(150));
     bus.tick(0.0);
-    let sink_after = runner.join().expect("runner joined");
+    runner.join().expect("runner joined");
 
     // Tokenize each line as `<name> <value> <timestamp>` rather than substring
     // match — the assertion stays robust if PrometheusText ever renders integer
     // values as `99.0` or trailing whitespace differently.
-    let text = std::str::from_utf8(&sink_after.buffer).expect("utf-8");
+    let captured = buf_handle.lock().unwrap();
+    let text = std::str::from_utf8(&captured).expect("utf-8");
     let snap_count = text
         .lines()
         .filter(|l| !l.is_empty())
@@ -480,7 +497,7 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -519,11 +536,16 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -531,7 +553,7 @@ fn debounce_cancelled_close_emits_no_stale_marker() {
                     .with_delay(Some(delay))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("runner must succeed");
     });
 
@@ -579,7 +601,7 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -618,15 +640,20 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
-        )
+        ))
         .expect("runner must succeed");
     });
 
@@ -653,8 +680,6 @@ fn duration_expiry_while_gate_open_emits_stale_marker() {
 
 #[test]
 fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
-    use sonda_core::sink::memory::MemorySink;
-
     let bus = Arc::new(GateBus::new());
     bus.tick(1.0);
     let (rx, init) = bus.subscribe(while_gt_zero());
@@ -691,7 +716,9 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
         help: None,
     };
 
-    let mut sink = MemorySink::new();
+    let probe = CaptureSink::default();
+    let buf_handle = Arc::clone(&probe.buf);
+    let sink_for_thread: Box<dyn Sink> = Box::new(probe);
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -700,11 +727,16 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -712,16 +744,16 @@ fn duration_expiry_while_gate_open_drains_close_series_on_snap_to_sink() {
                     .with_delay(Some(delay))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("runner must succeed");
-        sink
     });
 
     // Gate stays open for the whole 200ms duration — the loop exits via
     // LoopExit::DurationExpired, not a running→paused commit.
-    let sink_after = runner.join().expect("runner joined");
+    runner.join().expect("runner joined");
 
-    let text = std::str::from_utf8(&sink_after.buffer).expect("utf-8");
+    let captured = buf_handle.lock().unwrap();
+    let text = std::str::from_utf8(&captured).expect("utf-8");
     let snap_count = text
         .lines()
         .filter(|l| !l.is_empty())
@@ -754,7 +786,7 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -793,11 +825,16 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -810,7 +847,7 @@ fn paused_to_finished_via_duration_after_running_emits_stale_marker() {
                     }))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("runner must succeed");
     });
 
@@ -846,7 +883,7 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -885,15 +922,20 @@ fn pending_to_finished_via_duration_emits_no_stale_marker() {
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
-        )
+        ))
         .expect("runner must succeed");
     });
 
@@ -928,7 +970,7 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
@@ -967,11 +1009,16 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
     let bus_for_thread = Arc::clone(&bus);
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -984,7 +1031,7 @@ fn multi_cycle_running_paused_to_finished_emits_one_stale_per_running_to_paused(
                     }))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("runner must succeed");
     });
 
@@ -1024,11 +1071,11 @@ fn shutdown_while_gate_open_emits_stale_marker() {
     let (rx, init) = bus.subscribe(while_gt_zero());
 
     let capture = CaptureSink::default();
-    let mut sink_handle = capture.clone();
+    let sink_for_thread: Box<dyn Sink> = Box::new(capture.clone());
     let stats = Arc::new(std::sync::RwLock::new(
         sonda_core::schedule::stats::ScenarioStats::default(),
     ));
-    let shutdown = Arc::new(AtomicBool::new(true));
+    let cancel = CancellationToken::new();
 
     let config = ScenarioConfig {
         base: BaseScheduleConfig {
@@ -1062,22 +1109,27 @@ fn shutdown_while_gate_open_emits_stale_marker() {
 
     let stats_for_thread = Arc::clone(&stats);
     let bus_for_thread = Arc::clone(&bus);
-    let shutdown_for_thread = Arc::clone(&shutdown);
+    let cancel_for_thread = cancel.clone();
     let runner = thread::spawn(move || {
         let _ = bus_for_thread;
-        sonda_core::schedule::runner::run_with_sink_gated(
+        let mut sink_handle = sink_for_thread;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(sonda_core::schedule::runner::run_with_sink_gated(
             &config,
             &mut sink_handle,
-            Some(shutdown_for_thread.as_ref()),
+            &cancel_for_thread,
             Some(stats_for_thread),
             None,
             Some(GateContext::new(rx, init).with_has_while(true)),
-        )
+        ))
         .expect("runner must succeed");
     });
 
     thread::sleep(Duration::from_millis(150));
-    shutdown.store(false, std::sync::atomic::Ordering::SeqCst);
+    cancel.cancel();
     runner.join().expect("runner joined");
 
     let buf = capture.buf.lock().unwrap().clone();

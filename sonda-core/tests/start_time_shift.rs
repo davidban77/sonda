@@ -3,8 +3,9 @@
 
 #![cfg(feature = "config")]
 
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+
+use sonda_core::CancellationToken;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,9 +19,32 @@ use sonda_core::generator::{GeneratorConfig, LogGeneratorConfig, TemplateConfig}
 use sonda_core::schedule::gate_bus::{GateBus, SubscriptionSpec, WhileSpec};
 use sonda_core::schedule::stats::ScenarioStats;
 use sonda_core::schedule::{histogram_runner, log_runner, runner, summary_runner, GateContext};
-use sonda_core::sink::memory::MemorySink;
-use sonda_core::sink::SinkConfig;
-use sonda_core::OnSinkError;
+use sonda_core::sink::{Sink, SinkConfig};
+use sonda_core::{OnSinkError, SondaError};
+
+type SharedBuf = Arc<Mutex<Vec<u8>>>;
+
+struct ProbeSink(SharedBuf);
+
+#[async_trait::async_trait]
+impl Sink for ProbeSink {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+        self.0
+            .lock()
+            .expect("probe sink mutex poisoned")
+            .extend_from_slice(data);
+        Ok(())
+    }
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        Ok(())
+    }
+}
+
+fn probe_sink() -> (Box<dyn Sink>, SharedBuf) {
+    let buf: SharedBuf = Arc::new(Mutex::new(Vec::new()));
+    let sink: Box<dyn Sink> = Box::new(ProbeSink(SharedBuf::clone(&buf)));
+    (sink, buf)
+}
 
 fn base(name: &str, rate: f64, duration: &str, start_time: Option<&str>) -> BaseScheduleConfig {
     BaseScheduleConfig {
@@ -81,16 +105,19 @@ fn now_ms() -> i128 {
         .as_millis() as i128
 }
 
-#[test]
-fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() {
+#[tokio::test]
+async fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() {
     // 2026-05-08T14:00:00Z = 1_778_248_800 s since epoch.
     let anchor_ms: i128 = 1_778_248_800_000;
     let config = metric_config("up", 5.0, "1s", Some("2026-05-08T14:00:00Z"));
 
-    let mut sink = MemorySink::new();
-    runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+    let (mut sink, buf) = probe_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
 
-    let timestamps = prometheus_timestamps_ms(&sink.buffer);
+    let captured = buf.lock().unwrap();
+    let timestamps = prometheus_timestamps_ms(&captured);
     assert!(
         timestamps.len() >= 2,
         "need at least 2 events to check advancement, got {}",
@@ -135,16 +162,19 @@ fn metric_absolute_past_start_time_anchors_first_event_at_exact_instant() {
     );
 }
 
-#[test]
-fn metric_relative_future_offset_shifts_events_ahead() {
+#[tokio::test]
+async fn metric_relative_future_offset_shifts_events_ahead() {
     let before = now_ms();
     let config = metric_config("up", 10.0, "400ms", Some("+24h"));
 
-    let mut sink = MemorySink::new();
-    runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+    let (mut sink, buf) = probe_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
     let after = now_ms();
 
-    let timestamps = prometheus_timestamps_ms(&sink.buffer);
+    let captured = buf.lock().unwrap();
+    let timestamps = prometheus_timestamps_ms(&captured);
     assert!(!timestamps.is_empty(), "expected emitted events");
 
     let shift = Duration::from_secs(24 * 3600).as_millis() as i128;
@@ -159,16 +189,19 @@ fn metric_relative_future_offset_shifts_events_ahead() {
     );
 }
 
-#[test]
-fn metric_relative_past_offset_shifts_events_back() {
+#[tokio::test]
+async fn metric_relative_past_offset_shifts_events_back() {
     let before = now_ms();
     let config = metric_config("up", 10.0, "400ms", Some("-7d"));
 
-    let mut sink = MemorySink::new();
-    runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+    let (mut sink, buf) = probe_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
     let after = now_ms();
 
-    let timestamps = prometheus_timestamps_ms(&sink.buffer);
+    let captured = buf.lock().unwrap();
+    let timestamps = prometheus_timestamps_ms(&captured);
     assert!(!timestamps.is_empty(), "expected emitted events");
 
     let shift = Duration::from_secs(7 * 86_400).as_millis() as i128;
@@ -188,16 +221,19 @@ fn omitted_start_time_yields_now_variant() {
     assert_eq!(parse_start_time("now").unwrap(), StartTime::Now);
 }
 
-#[test]
-fn metric_without_start_time_emits_at_real_now() {
+#[tokio::test]
+async fn metric_without_start_time_emits_at_real_now() {
     let before = now_ms();
     let config = metric_config("up", 10.0, "400ms", None);
 
-    let mut sink = MemorySink::new();
-    runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+    let (mut sink, buf) = probe_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
     let after = now_ms();
 
-    let timestamps = prometheus_timestamps_ms(&sink.buffer);
+    let captured = buf.lock().unwrap();
+    let timestamps = prometheus_timestamps_ms(&captured);
     assert!(!timestamps.is_empty(), "expected emitted events");
     for ts in &timestamps {
         assert!(
@@ -225,16 +261,19 @@ fn assert_all_in_past_window(timestamps: &[i128]) {
     }
 }
 
-#[test]
-fn metric_signal_honours_absolute_past_shift() {
+#[tokio::test]
+async fn metric_signal_honours_absolute_past_shift() {
     let config = metric_config("up", 5.0, "600ms", Some(ANCHOR_RFC3339));
-    let mut sink = MemorySink::new();
-    runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
-    assert_all_in_past_window(&prometheus_timestamps_ms(&sink.buffer));
+    let (mut sink, buf) = probe_sink();
+    runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+    let captured = buf.lock().unwrap();
+    assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
-#[test]
-fn log_signal_honours_absolute_past_shift() {
+#[tokio::test]
+async fn log_signal_honours_absolute_past_shift() {
     let config = LogScenarioConfig {
         base: base("logshift", 5.0, "600ms", Some(ANCHOR_RFC3339)),
         generator: LogGeneratorConfig::Template {
@@ -248,12 +287,15 @@ fn log_signal_honours_absolute_past_shift() {
         encoder: EncoderConfig::JsonLines { precision: None },
     };
 
-    let mut sink = MemorySink::new();
-    log_runner::run_logs_with_sink(&config, &mut sink, None, None).expect("run must succeed");
+    let (mut sink, buf) = probe_sink();
+    log_runner::run_logs_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
 
     // JSON Lines stamps an RFC 3339 millis timestamp; the year is sufficient
     // to confirm the log event carries the shifted wall_clock, not real now.
-    let text = std::str::from_utf8(&sink.buffer).expect("valid UTF-8");
+    let captured = buf.lock().unwrap();
+    let text = std::str::from_utf8(&captured).expect("valid UTF-8");
     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
     assert!(!lines.is_empty(), "expected emitted log lines");
     for line in &lines {
@@ -264,8 +306,8 @@ fn log_signal_honours_absolute_past_shift() {
     }
 }
 
-#[test]
-fn histogram_signal_honours_absolute_past_shift() {
+#[tokio::test]
+async fn histogram_signal_honours_absolute_past_shift() {
     let config = HistogramScenarioConfig {
         base: base("latency", 5.0, "600ms", Some(ANCHOR_RFC3339)),
         buckets: Some(vec![0.1, 0.5, 1.0]),
@@ -281,13 +323,16 @@ fn histogram_signal_honours_absolute_past_shift() {
         help: None,
     };
 
-    let mut sink = MemorySink::new();
-    histogram_runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
-    assert_all_in_past_window(&prometheus_timestamps_ms(&sink.buffer));
+    let (mut sink, buf) = probe_sink();
+    histogram_runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+    let captured = buf.lock().unwrap();
+    assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
-#[test]
-fn summary_signal_honours_absolute_past_shift() {
+#[tokio::test]
+async fn summary_signal_honours_absolute_past_shift() {
     let config = SummaryScenarioConfig {
         base: base("rpc_duration", 5.0, "600ms", Some(ANCHOR_RFC3339)),
         quantiles: Some(vec![0.5, 0.9]),
@@ -303,9 +348,12 @@ fn summary_signal_honours_absolute_past_shift() {
         help: None,
     };
 
-    let mut sink = MemorySink::new();
-    summary_runner::run_with_sink(&config, &mut sink, None, None).expect("run must succeed");
-    assert_all_in_past_window(&prometheus_timestamps_ms(&sink.buffer));
+    let (mut sink, buf) = probe_sink();
+    summary_runner::run_with_sink(&config, &mut sink, &CancellationToken::new(), None)
+        .await
+        .expect("run must succeed");
+    let captured = buf.lock().unwrap();
+    assert_all_in_past_window(&prometheus_timestamps_ms(&captured));
 }
 
 #[test]
@@ -330,18 +378,24 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
     };
 
     let config = metric_config("gated", 50.0, "2000ms", Some(ANCHOR_RFC3339));
-    let mut sink = MemorySink::new();
+    let (sink_init, buf) = probe_sink();
     let stats = Arc::new(RwLock::new(ScenarioStats::default()));
     let stats_for_thread = Arc::clone(&stats);
     let bus_for_thread = Arc::clone(&bus);
+    let buf_for_assert = SharedBuf::clone(&buf);
 
     let runner_handle = thread::spawn(move || {
         let _ = bus_for_thread;
-        let shutdown = Arc::new(AtomicBool::new(true));
-        runner::run_with_sink_gated(
+        let cancel = CancellationToken::new();
+        let mut sink = sink_init;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime must build");
+        rt.block_on(runner::run_with_sink_gated(
             &config,
             &mut sink,
-            Some(shutdown.as_ref()),
+            &cancel,
             Some(stats_for_thread),
             None,
             Some(
@@ -349,18 +403,18 @@ fn gated_close_emit_marker_lands_in_shifted_window() {
                     .with_delay(Some(delay))
                     .with_has_while(true),
             ),
-        )
+        ))
         .expect("gated runner must succeed");
-        sink
     });
 
     // Let the scenario accumulate shifted emissions, then close the gate so
     // the running → paused commit fires the close-emit marker.
     thread::sleep(Duration::from_millis(150));
     bus.tick(0.0);
-    let sink_after = runner_handle.join().expect("runner joined");
+    runner_handle.join().expect("runner joined");
 
-    let timestamps = prometheus_timestamps_ms(&sink_after.buffer);
+    let captured = buf_for_assert.lock().unwrap();
+    let timestamps = prometheus_timestamps_ms(&captured);
     assert!(
         timestamps.len() >= 2,
         "expected running samples plus a close marker, got {}",

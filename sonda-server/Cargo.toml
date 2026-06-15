@@ -27,19 +27,20 @@ path = "src/main.rs"
 sonda-core = { workspace = true }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["env"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["timeout", "limit"] }
+tower = { version = "0.5", features = ["limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 subtle = "2"
 
 [dev-dependencies]
-tower = "0.5"
 http-body-util = "0.1"
 hyper = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
@@ -47,3 +48,6 @@ libc = "0.2"
 tempfile = "3"
 insta = { workspace = true, features = ["filters", "redactions"] }
 rstest = { workspace = true }
+
+[lints]
+workspace = true

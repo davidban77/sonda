@@ -18,12 +18,13 @@
 
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use prost::Message;
 
 use crate::encoder::remote_write::{parse_length_prefixed_timeseries, TimeSeries, WriteRequest};
 use crate::sink::retry::RetryPolicy;
 use crate::sink::Sink;
-use crate::{EncoderError, SondaError};
+use crate::{EncoderError, RuntimeError, SondaError};
 
 /// Default batch size in TimeSeries entries — sized so low-rate scenarios flush within seconds.
 pub const DEFAULT_BATCH_SIZE: usize = 5;
@@ -108,87 +109,6 @@ impl RemoteWriteSink {
         })
     }
 
-    /// Build a WriteRequest from the current batch, prost-encode, snappy-compress,
-    /// and HTTP POST to the configured endpoint.
-    ///
-    /// Clears the batch on success or on unrecoverable error (to prevent unbounded
-    /// buffer growth).
-    fn send_batch(&mut self) -> Result<(), SondaError> {
-        if self.batch.is_empty() {
-            return Ok(());
-        }
-
-        // Reset on attempt, not success — the batch is cleared either way below.
-        self.last_flush_at = Instant::now();
-
-        // Build one WriteRequest containing all accumulated TimeSeries.
-        let write_request = WriteRequest {
-            timeseries: std::mem::take(&mut self.batch),
-        };
-
-        // Prost-encode the WriteRequest.
-        let encoded_len = write_request.encoded_len();
-        let mut proto_bytes = Vec::with_capacity(encoded_len);
-        write_request.encode(&mut proto_bytes).map_err(|e| {
-            SondaError::Encoder(EncoderError::Other(format!("protobuf encode error: {e}")))
-        })?;
-
-        // Snappy-compress using raw (block) format.
-        let mut snappy_encoder = snap::raw::Encoder::new();
-        let compressed = snappy_encoder.compress_vec(&proto_bytes).map_err(|e| {
-            SondaError::Encoder(EncoderError::Other(format!(
-                "snappy compression error: {e}"
-            )))
-        })?;
-
-        // POST with retry if configured.
-        let result = match &self.retry_policy {
-            Some(policy) => {
-                let policy = policy.clone();
-                policy.execute(|| self.do_post_checked(&compressed), Self::is_retryable)
-            }
-            None => self.do_post_checked(&compressed),
-        };
-
-        // 4xx errors (except 429) are non-retryable and treated as warn-and-discard.
-        match &result {
-            Err(SondaError::Sink(io_err)) if io_err.kind() == std::io::ErrorKind::InvalidInput => {
-                Ok(())
-            }
-            _ => result,
-        }
-    }
-
-    /// Perform a single HTTP POST and classify the response.
-    ///
-    /// - 2xx: `Ok(())`.
-    /// - 4xx (except 429): warns and returns non-retryable `Err`.
-    /// - 429, 5xx, transport: retryable `Err`.
-    fn do_post_checked(&self, body: &[u8]) -> Result<(), SondaError> {
-        let status = self.do_post(body)?;
-
-        if (200..300).contains(&status) {
-            return Ok(());
-        }
-
-        if (400..500).contains(&status) && status != 429 {
-            eprintln!(
-                "sonda: remote_write sink: received HTTP {} from '{}'; discarding batch",
-                status, self.url
-            );
-            return Err(SondaError::Sink(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("HTTP {} from '{}'", status, self.url),
-            )));
-        }
-
-        Err(SondaError::Sink(std::io::Error::other(format!(
-            "HTTP {} from '{}'",
-            status, self.url
-        ))))
-    }
-
-    /// Classify whether an error is retryable.
     fn is_retryable(err: &SondaError) -> bool {
         if let SondaError::Sink(io_err) = err {
             let msg = io_err.to_string();
@@ -200,16 +120,30 @@ impl RemoteWriteSink {
         false
     }
 
-    /// Perform a single HTTP POST of snappy-compressed protobuf to the endpoint.
-    ///
-    /// Sets the required Prometheus remote write headers:
-    /// - `Content-Type: application/x-protobuf`
-    /// - `Content-Encoding: snappy`
-    /// - `X-Prometheus-Remote-Write-Version: 0.1.0`
-    fn do_post(&self, body: &[u8]) -> Result<u16, SondaError> {
-        let response = self
-            .client
-            .post(&self.url)
+    fn do_post_checked_at(client: &ureq::Agent, url: &str, body: &[u8]) -> Result<(), SondaError> {
+        let status = Self::do_post_at(client, url, body)?;
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        if (400..500).contains(&status) && status != 429 {
+            eprintln!(
+                "sonda: remote_write sink: received HTTP {} from '{}'; discarding batch",
+                status, url
+            );
+            return Err(SondaError::Sink(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("HTTP {} from '{}'", status, url),
+            )));
+        }
+        Err(SondaError::Sink(std::io::Error::other(format!(
+            "HTTP {} from '{}'",
+            status, url
+        ))))
+    }
+
+    fn do_post_at(client: &ureq::Agent, url: &str, body: &[u8]) -> Result<u16, SondaError> {
+        let response = client
+            .post(url)
             .set("Content-Type", "application/x-protobuf")
             .set("Content-Encoding", "snappy")
             .set("X-Prometheus-Remote-Write-Version", "0.1.0")
@@ -220,18 +154,15 @@ impl RemoteWriteSink {
             Err(ureq::Error::Status(code, _)) => Ok(code),
             Err(e) => Err(SondaError::Sink(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
-                format!("remote write to '{}' failed: {}", self.url, e),
+                format!("remote write to '{}' failed: {}", url, e),
             ))),
         }
     }
 }
 
+#[async_trait]
 impl Sink for RemoteWriteSink {
-    /// Accept length-prefixed TimeSeries bytes from the encoder.
-    ///
-    /// Parses each `TimeSeries` from the data and adds it to the internal batch.
-    /// When the batch reaches `batch_size` entries, an automatic flush is triggered.
-    fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
+    async fn write(&mut self, data: &[u8]) -> Result<(), SondaError> {
         let timeseries_list = parse_length_prefixed_timeseries(data)?;
         self.batch.extend(timeseries_list);
 
@@ -240,24 +171,71 @@ impl Sink for RemoteWriteSink {
             !self.max_buffer_age.is_zero() && self.last_flush_at.elapsed() >= self.max_buffer_age;
         let should_flush = size_reached || age_reached;
         if should_flush {
-            self.send_batch()?;
+            self.send_via_blocking().await?;
         }
         self.last_write_delivered = should_flush;
 
         Ok(())
     }
 
-    /// Flush any remaining buffered TimeSeries to the remote write endpoint.
-    ///
-    /// Builds one `WriteRequest` containing all buffered `TimeSeries`, prost-encodes,
-    /// snappy-compresses, and HTTP POSTs the result. Safe to call multiple times;
-    /// returns `Ok(())` immediately if the batch is empty.
-    fn flush(&mut self) -> Result<(), SondaError> {
-        self.send_batch()
+    async fn flush(&mut self) -> Result<(), SondaError> {
+        self.send_via_blocking().await
     }
 
     fn last_write_delivered(&self) -> bool {
         self.last_write_delivered
+    }
+}
+
+impl RemoteWriteSink {
+    async fn send_via_blocking(&mut self) -> Result<(), SondaError> {
+        if self.batch.is_empty() {
+            return Ok(());
+        }
+        self.last_flush_at = Instant::now();
+        let write_request = WriteRequest {
+            timeseries: std::mem::take(&mut self.batch),
+        };
+        let encoded_len = write_request.encoded_len();
+        let mut proto_bytes = Vec::with_capacity(encoded_len);
+        write_request.encode(&mut proto_bytes).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!("protobuf encode error: {e}")))
+        })?;
+        let mut snappy_encoder = snap::raw::Encoder::new();
+        let compressed = snappy_encoder.compress_vec(&proto_bytes).map_err(|e| {
+            SondaError::Encoder(EncoderError::Other(format!(
+                "snappy compression error: {e}"
+            )))
+        })?;
+
+        let client = self.client.clone();
+        let url = self.url.clone();
+        let retry_policy = self.retry_policy.clone();
+        let join = tokio::task::spawn_blocking(move || {
+            do_send(&client, &url, &compressed, retry_policy.as_ref())
+        })
+        .await;
+        match join {
+            Ok(r) => r,
+            Err(e) => Err(SondaError::Runtime(RuntimeError::TaskPanicked(
+                e.to_string(),
+            ))),
+        }
+    }
+}
+
+fn do_send(
+    client: &ureq::Agent,
+    url: &str,
+    body: &[u8],
+    retry_policy: Option<&RetryPolicy>,
+) -> Result<(), SondaError> {
+    match retry_policy {
+        Some(policy) => policy.execute(
+            || RemoteWriteSink::do_post_checked_at(client, url, body),
+            RemoteWriteSink::is_retryable,
+        ),
+        None => RemoteWriteSink::do_post_checked_at(client, url, body),
     }
 }
 
@@ -366,13 +344,13 @@ mod tests {
     // Batch accumulation and explicit flush
     // -------------------------------------------------------------------------
 
-    #[test]
-    fn write_below_batch_size_does_not_trigger_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_below_batch_size_does_not_trigger_flush() {
         let (listener, url) = mock_server_listener();
 
         let mut sink =
             RemoteWriteSink::new(&url, 100, None, Duration::ZERO).expect("construct sink");
-        sink.write(&encode_one("cpu", 1.0)).expect("write");
+        sink.write(&encode_one("cpu", 1.0)).await.expect("write");
 
         listener.set_nonblocking(true).expect("set non-blocking");
         assert!(
@@ -381,32 +359,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn explicit_flush_sends_buffered_data() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explicit_flush_sends_buffered_data() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink =
             RemoteWriteSink::new(&url, 10_000, None, Duration::ZERO).expect("construct sink");
-        sink.write(&encode_one("cpu", 1.0)).expect("write");
-        sink.flush().expect("flush");
+        sink.write(&encode_one("cpu", 1.0)).await.expect("write");
+        sink.flush().await.expect("flush");
 
         let body = handle.join().expect("mock server thread panicked");
         let request = decode_write_request(&body);
         assert_eq!(request.timeseries.len(), 1, "flush must deliver the batch");
     }
 
-    // -------------------------------------------------------------------------
-    // last_write_delivered — buffered vs flushed
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn last_write_delivered_is_false_when_write_only_buffers() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_false_when_write_only_buffers() {
         let (listener, url) = mock_server_listener();
 
         let mut sink =
             RemoteWriteSink::new(&url, 100, None, Duration::ZERO).expect("construct sink");
-        sink.write(&encode_one("cpu", 1.0)).expect("write buffers");
+        sink.write(&encode_one("cpu", 1.0))
+            .await
+            .expect("write buffers");
 
         assert!(
             !sink.last_write_delivered(),
@@ -416,13 +392,14 @@ mod tests {
         assert!(listener.accept().is_err(), "no flush should have fired");
     }
 
-    #[test]
-    fn last_write_delivered_is_true_when_write_triggers_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn last_write_delivered_is_true_when_write_triggers_flush() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
         let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
         sink.write(&encode_one("cpu", 1.0))
+            .await
             .expect("write triggers flush");
 
         handle.join().expect("mock server thread panicked");
@@ -432,23 +409,21 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Time-based flush
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn time_based_flush_fires_when_buffer_age_exceeded() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn time_based_flush_fires_when_buffer_age_exceeded() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        // batch_size large enough that size never triggers; short max_buffer_age.
         let mut sink = RemoteWriteSink::new(&url, 10_000, None, Duration::from_millis(50))
             .expect("construct sink");
 
-        sink.write(&encode_one("first", 1.0)).expect("write 1");
+        sink.write(&encode_one("first", 1.0))
+            .await
+            .expect("write 1");
         thread::sleep(Duration::from_millis(200));
-        // Second write is past max_buffer_age → triggers a time-based flush.
-        sink.write(&encode_one("second", 2.0)).expect("write 2");
+        sink.write(&encode_one("second", 2.0))
+            .await
+            .expect("write 2");
 
         let body = handle.join().expect("mock server thread panicked");
         let request = decode_write_request(&body);
@@ -459,18 +434,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zero_max_buffer_age_disables_time_based_flush() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zero_max_buffer_age_disables_time_based_flush() {
         let (listener, url) = mock_server_listener();
 
         let mut sink =
             RemoteWriteSink::new(&url, 10_000, None, Duration::ZERO).expect("construct sink");
 
-        sink.write(&encode_one("first", 1.0)).expect("write 1");
+        sink.write(&encode_one("first", 1.0))
+            .await
+            .expect("write 1");
         thread::sleep(Duration::from_millis(150));
-        sink.write(&encode_one("second", 2.0)).expect("write 2");
+        sink.write(&encode_one("second", 2.0))
+            .await
+            .expect("write 2");
 
-        // With time-based flush disabled, no request should have arrived.
         listener.set_nonblocking(true).expect("set non-blocking");
         assert!(
             listener.accept().is_err(),
@@ -478,18 +456,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn size_triggered_flush_resets_the_buffer_age_timer() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn size_triggered_flush_resets_the_buffer_age_timer() {
         let (listener, url) = mock_server_listener();
         let handle = thread::spawn(move || accept_one_and_respond(&listener, 200));
 
-        // Small batch_size, max_buffer_age comfortably longer than the test runs.
         let mut sink =
             RemoteWriteSink::new(&url, 2, None, Duration::from_secs(60)).expect("construct sink");
 
-        // Fill the batch — the size trigger fires.
-        sink.write(&encode_one("a", 1.0)).expect("write 1");
-        sink.write(&encode_one("b", 2.0)).expect("write 2");
+        sink.write(&encode_one("a", 1.0)).await.expect("write 1");
+        sink.write(&encode_one("b", 2.0)).await.expect("write 2");
 
         let body = handle.join().expect("mock server thread panicked");
         let request = decode_write_request(&body);
@@ -499,29 +475,59 @@ mod tests {
             "size-triggered flush must deliver the full batch"
         );
 
-        // The size flush reset last_flush_at; a subsequent partial-batch write
-        // must NOT immediately time-flush against the (now closed) listener.
         sink.write(&encode_one("c", 3.0))
+            .await
             .expect("partial write after a size flush must not time-flush immediately");
     }
 
-    // -------------------------------------------------------------------------
-    // Factory wiring: create_sink for RemoteWrite config
-    // -------------------------------------------------------------------------
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_4xx_propagates_as_sink_error() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, 400));
 
-    #[test]
-    fn create_sink_remote_write_with_valid_url_returns_ok() {
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        let result = sink.write(&encode_one("cpu", 1.0)).await;
+        let _ = server.join();
+
+        match result {
+            Err(SondaError::Sink(io_err)) => {
+                assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidInput);
+                assert!(io_err.to_string().contains("HTTP 400"));
+            }
+            other => panic!("HTTP 4xx must surface as SondaError::Sink, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_5xx_propagates_as_sink_error() {
+        let (listener, url) = mock_server_listener();
+        let server = thread::spawn(move || accept_one_and_respond(&listener, 503));
+
+        let mut sink = RemoteWriteSink::new(&url, 1, None, Duration::ZERO).expect("construct sink");
+        let result = sink.write(&encode_one("cpu", 1.0)).await;
+        let _ = server.join();
+
+        match result {
+            Err(SondaError::Sink(io_err)) => {
+                assert!(io_err.to_string().contains("HTTP 503"));
+            }
+            other => panic!("HTTP 5xx must surface as SondaError::Sink, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_sink_remote_write_with_valid_url_returns_ok() {
         let config = SinkConfig::RemoteWrite {
             url: "http://127.0.0.1:19999/api/v1/write".to_string(),
             batch_size: None,
             max_buffer_age: None,
             retry: None,
         };
-        assert!(create_sink(&config, None).is_ok());
+        assert!(create_sink(&config, None).await.is_ok());
     }
 
-    #[test]
-    fn create_sink_remote_write_with_invalid_max_buffer_age_returns_err() {
+    #[tokio::test]
+    async fn create_sink_remote_write_with_invalid_max_buffer_age_returns_err() {
         let config = SinkConfig::RemoteWrite {
             url: "http://127.0.0.1:19999/api/v1/write".to_string(),
             batch_size: None,
@@ -529,7 +535,7 @@ mod tests {
             retry: None,
         };
         assert!(
-            create_sink(&config, None).is_err(),
+            create_sink(&config, None).await.is_err(),
             "invalid max_buffer_age must cause the factory to fail"
         );
     }
