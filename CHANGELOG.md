@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.16.1](https://github.com/davidban77/sonda/compare/v1.16.0...v1.16.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **server:** recover from poisoned RwLock in request-metrics middleware ([#473](https://github.com/davidban77/sonda/issues/473)) ([fa2daeb](https://github.com/davidban77/sonda/commit/fa2daebf67e2a1906cc47c463b961043dca74c31))
+
+
+### CI/CD
+
+* bump otel/opentelemetry-collector-contrib in /examples ([#451](https://github.com/davidban77/sonda/issues/451)) ([943f271](https://github.com/davidban77/sonda/commit/943f27133cb914b92e2bf117ad100ec9f8c48fd0))
+* bump prom/prometheus from v3.11.3 to v3.12.0 in /examples ([#450](https://github.com/davidban77/sonda/issues/450)) ([e324d9d](https://github.com/davidban77/sonda/commit/e324d9d2f8c97778a4cfdc381e63dbd4ed4c24b2))
+* bump victoriametrics/victoria-metrics in /examples ([#452](https://github.com/davidban77/sonda/issues/452)) ([9f394dd](https://github.com/davidban77/sonda/commit/9f394ddfe2ec6598f0e15a0abdb2d4c388cc6c3b))
+* bump victoriametrics/vmagent from v1.143.0 to v1.144.0 in /examples ([#448](https://github.com/davidban77/sonda/issues/448)) ([ae14a59](https://github.com/davidban77/sonda/commit/ae14a593fee74521825df41cd2a90aa3b14885dd))
+* bump victoriametrics/vmalert from v1.143.0 to v1.144.0 in /examples ([#449](https://github.com/davidban77/sonda/issues/449)) ([22b5020](https://github.com/davidban77/sonda/commit/22b5020b17c05a6516a8eeb8c3258122ce17c42a))
+
 ## [1.16.0](https://github.com/davidban77/sonda/compare/v1.15.0...v1.16.0) (2026-06-15)
 
 
