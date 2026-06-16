@@ -82,11 +82,17 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     cp "target/${RUST_TARGET}/release/sonda" /out/sonda && \
     cp "target/${RUST_TARGET}/release/sonda-server" /out/sonda-server
 
+# UID 65532 = upstream "nonroot" convention (distroless/nonroot, chainguard)
+RUN echo 'sonda:x:65532:65532::/:' > /tmp/passwd.sonda
+
 # Stage 2: Minimal runtime image
 FROM scratch
 
 COPY --from=builder /out/sonda /sonda
 COPY --from=builder /out/sonda-server /sonda-server
+COPY --from=builder /tmp/passwd.sonda /etc/passwd
+
+USER 65532:65532
 
 EXPOSE 8080
 

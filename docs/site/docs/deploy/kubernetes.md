@@ -95,10 +95,46 @@ helm install sonda ./helm/sonda \
 
 ### Security
 
+The container image runs as UID 65532 (the upstream "nonroot" convention used by distroless and Chainguard images). The chart ships matching `podSecurityContext` and `securityContext` defaults that satisfy the [restricted Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted) and pass Kyverno or OPA Gatekeeper policies that enforce `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, and `capabilities.drop: [ALL]` out of the box.
+
 | Value | Default | Description |
 |-------|---------|-------------|
-| `podSecurityContext` | `{}` | Pod-level security context (e.g., `fsGroup`) |
-| `securityContext` | `{}` | Container-level security context (e.g., `runAsNonRoot`, `readOnlyRootFilesystem`, `capabilities`) |
+| `podSecurityContext.runAsNonRoot` | `true` | Reject the pod if any container would run as UID 0 |
+| `podSecurityContext.runAsUser` | `65532` | UID the pod runs as |
+| `podSecurityContext.runAsGroup` | `65532` | GID the pod runs as |
+| `podSecurityContext.fsGroup` | `65532` | GID applied to mounted volumes |
+| `podSecurityContext.seccompProfile.type` | `RuntimeDefault` | Apply the container runtime's default seccomp profile |
+| `securityContext.runAsNonRoot` | `true` | Reject the container if it would run as UID 0 |
+| `securityContext.runAsUser` | `65532` | UID the container process runs as |
+| `securityContext.runAsGroup` | `65532` | GID the container process runs as |
+| `securityContext.allowPrivilegeEscalation` | `false` | Disallow `setuid` / file-capability escalation |
+| `securityContext.readOnlyRootFilesystem` | `true` | Mount `/` read-only; the server writes nothing outside `/tmp` and volume mounts |
+| `securityContext.capabilities.drop` | `[ALL]` | Drop every Linux capability |
+
+Override individual fields if your cluster uses a different UID convention, or replace the whole block to relax a constraint. The example below pins the container to UID 1000 (a common convention for managed clusters that mount Persistent Volumes with a fixed owner):
+
+```yaml title="my-values.yaml"
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+```
+
+!!! warning "Lists are replaced, not merged"
+    Helm deep-merges maps but replaces lists wholesale. Scalar overrides like `--set securityContext.runAsUser=1000` work key-by-key against the defaults above. Overriding `capabilities.drop`, however, replaces the entire `[ALL]` default — supply the full list you want (typically `[ALL]` plus any explicit exceptions) rather than the delta.
 
 ### Authentication
 
