@@ -95,7 +95,7 @@ If this counter climbs without a corresponding burst of new scenarios, your auto
 
 #### `sonda_server_worker_threads`
 
-Gauge. The tokio multi-thread worker count configured at startup — that is, the value of [`--workers`](server.md#tuning-resource-limits) or the cgroup-aware default `std::thread::available_parallelism()`.
+Gauge. The tokio multi-thread worker count configured at startup — that is, the value of [`--workers`](server.md#tuning-resource-limits) or the default `min(std::thread::available_parallelism(), 16)`. On Linux the default queries `sched_getaffinity`, so the count reflects the cpuset the process is allowed to run on, not CFS CPU quotas — see [Tuning resource limits](server.md#tuning-resource-limits) for the full caveat.
 
 #### `sonda_server_max_scenarios`
 

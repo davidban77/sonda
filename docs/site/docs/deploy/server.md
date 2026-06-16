@@ -232,7 +232,7 @@ RUST_LOG=debug sonda-server --port 8080
 | `--bind <ADDR>` | -- | `0.0.0.0` | Bind address |
 | `--api-key <KEY>` | `SONDA_API_KEY` | (unset) | Bearer token for `/scenarios/*`, `/events`, and metrics endpoints. See [Authentication](#authentication). |
 | `--catalog <DIR>` | `SONDA_CATALOG` | (unset) | Directory of scenario and pack YAML files. Lets `POST /scenarios` resolve `pack: <name>` references. See [Pack references over HTTP](http-api.md#pack-references-over-http). |
-| `--workers <N>` | -- | `available_parallelism()` | Tokio worker thread count. See [Tuning resource limits](#tuning-resource-limits). |
+| `--workers <N>` | -- | `min(available_parallelism(), 16)` | Tokio worker thread count. See [Tuning resource limits](#tuning-resource-limits). |
 | `--max-scenarios <N>` | -- | `0` (unlimited) | Maximum concurrent scenario rows. POSTs beyond the cap return [`429 capacity_exceeded`](http-api.md#capacity-and-resource-errors). |
 | `--max-inflight-requests <N>` | -- | `4 * workers` | Maximum concurrent in-flight control-plane HTTP requests. |
 | `--request-timeout <SECS>` | -- | `30` | Per-request timeout on control-plane routes. Returns [`408 request_timeout`](http-api.md#capacity-and-resource-errors) on expiry. |
@@ -248,7 +248,7 @@ The five resource-limit flags shape what the server accepts, how many scenarios 
 
 #### `--workers <N>`
 
-The size of the tokio multi-thread runtime. Bound: `N >= 1`. The default is `std::thread::available_parallelism()`, which respects cgroup CPU quotas — so the same binary picks 16 workers on a 16-core host and 2 workers on a Kubernetes pod with `cpu: 2000m` set. Override only when you want to deviate from the cgroup setting (for example, pin a workload to one worker to reduce context-switching noise during benchmarking).
+The size of the tokio multi-thread runtime. Bound: `N >= 1`. The default is `min(std::thread::available_parallelism(), 16)`. On Linux, `available_parallelism()` queries `sched_getaffinity`, so the count reflects the cpuset the process is allowed to run on — which is the full set of node CPUs by default in Kubernetes. CFS CPU quotas (`resources.limits.cpu`) do **not** reduce this count; if you want the worker pool to match a quota-restricted budget, set `--workers` explicitly. The `16` ceiling ensures that on a 64-core host sonda-server does not spawn 64 worker threads — the scheduler benefit drops off well before that and the extra threads add context-switch overhead. Override only when you want to deviate from the default (for example, `--workers 32` on a thoroughly benchmarked host that genuinely uses the parallelism, or `--workers 1` to pin a workload during benchmarking).
 
 The configured value is exported on [`sonda_server_worker_threads`](server-metrics.md#sonda_server_worker_threads) — use it to confirm the runtime sees the value you expect.
 

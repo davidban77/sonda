@@ -7,9 +7,11 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "sonda", version, about = "Synthetic telemetry generator", styles = clap_styles())]
 pub struct Cli {
+    /// Suppress status banners on stderr. Errors still print.
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
 
+    /// Print the resolved scenario config on startup.
     #[arg(short, long, global = true, conflicts_with = "quiet")]
     pub verbose: bool,
 
@@ -65,27 +67,35 @@ pub struct RunArgs {
     /// Path to a v2 YAML file, or `@name` for a catalog reference.
     pub scenario: String,
 
+    /// Override the scenario duration (e.g. `30s`, `1m`, `1h`).
     #[arg(long)]
     pub duration: Option<String>,
 
+    /// Override the scenario rate in events per second.
     #[arg(long)]
     pub rate: Option<f64>,
 
+    /// Override the sink type (e.g. `stdout`, `tcp`, `udp`, `file`, `http_push`, `loki`, `otlp_grpc`, `remote_write`).
     #[arg(long, help_heading = "Sink")]
     pub sink: Option<String>,
 
+    /// Endpoint URL for network sinks (TCP/UDP address, HTTP URL, etc.).
     #[arg(long, help_heading = "Sink")]
     pub endpoint: Option<String>,
 
+    /// Override the encoder type (e.g. `prometheus_text`, `influx_lp`, `json_lines`, `otlp`, `remote_write`, `syslog`).
     #[arg(long, help_heading = "Encoder")]
     pub encoder: Option<String>,
 
+    /// Write output to a file instead of using `--sink`. Mutually exclusive with `--sink`.
     #[arg(short = 'o', long, conflicts_with = "sink", help_heading = "Sink")]
     pub output: Option<PathBuf>,
 
+    /// Add a scenario label as `key=value`. Repeat the flag to add multiple labels.
     #[arg(long = "label", value_parser = parse_label, help_heading = "Scenario")]
     pub labels: Vec<(String, String)>,
 
+    /// Behaviour on sink write failure: `warn` (mark scenario degraded and keep emitting) or `fail` (terminate the scenario).
     #[arg(long, value_parser = parse_on_sink_error, help_heading = "Scenario")]
     pub on_sink_error: Option<sonda_core::OnSinkError>,
 }

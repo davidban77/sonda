@@ -8,7 +8,11 @@
 # a specific device and interface.
 #
 # Run with:
-#   sonda --catalog sonda-core/tests/fixtures/packs run examples/pack-scenario.yaml
+#   sonda --catalog examples/packs run examples/pack-scenario.yaml
+#
+# The pack referenced below (`telegraf_snmp_interface`) is shipped alongside
+# this file under `examples/packs/`, so the command above runs against a
+# self-contained catalog without depending on the repo's test fixtures.
 
 version: 2
 kind: runnable
