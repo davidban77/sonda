@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.17.0](https://github.com/davidban77/sonda/compare/v1.16.1...v1.17.0) (2026-06-16)
+
+
+### Features
+
+* **server:** sonda-server runs as non-root UID 65532 by default ([#475](https://github.com/davidban77/sonda/issues/475)) ([9917c6b](https://github.com/davidban77/sonda/commit/9917c6ba86abd5d70643b5c852a764a8cccb5bb1))
+
+
+### Documentation
+
+* **readme:** switch crate-version + license badges away from broken shields.io endpoints ([#479](https://github.com/davidban77/sonda/issues/479)) ([3e433d1](https://github.com/davidban77/sonda/commit/3e433d1d3b969e4ac6e02862bb3cefe3b76fc712))
+* surface flag descriptions in sonda run --help, self-contain pack example, document workers cap ([#477](https://github.com/davidban77/sonda/issues/477)) ([fcf309d](https://github.com/davidban77/sonda/commit/fcf309d23b4da7c9dd29050d230976a9fdd49499))
+
+
+### CI/CD
+
+* bump dtolnay/rust-toolchain from 1.95.0 to 1.100.0 ([#443](https://github.com/davidban77/sonda/issues/443)) ([8405197](https://github.com/davidban77/sonda/commit/8405197f2ad57023334a69a86674ddb22be7ff97))
+
 ## [1.16.1](https://github.com/davidban77/sonda/compare/v1.16.0...v1.16.1) (2026-06-16)
 
 
