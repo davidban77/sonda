@@ -36,10 +36,10 @@ pub async fn record_request_metrics(
 fn increment_counter(state: &AppState, route: String, method: String, status: u16) {
     let key = (route, method, status);
     {
-        let guard = state
-            .request_counters
-            .read()
-            .expect("request_counters lock poisoned");
+        let guard = match state.request_counters.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         if let Some(counter) = guard.get(&key) {
             counter.fetch_add(1, Ordering::Relaxed);
             return;
@@ -47,10 +47,10 @@ fn increment_counter(state: &AppState, route: String, method: String, status: u1
     }
     // Slow path: another writer may have created the entry between the read
     // drop and the write acquire — entry().or_insert_with handles both cases.
-    let mut guard = state
-        .request_counters
-        .write()
-        .expect("request_counters lock poisoned");
+    let mut guard = match state.request_counters.write() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     guard
         .entry(key)
         .or_insert_with(|| AtomicU64::new(0))
@@ -60,18 +60,70 @@ fn increment_counter(state: &AppState, route: String, method: String, status: u1
 fn observe_histogram(state: &AppState, route: String, method: String, seconds: f64) {
     let key = (route, method);
     {
-        let guard = state
-            .request_histograms
-            .read()
-            .expect("request_histograms lock poisoned");
+        let guard = match state.request_histograms.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         if let Some(shard) = guard.get(&key) {
             shard.observe(seconds);
             return;
         }
     }
-    let mut guard = state
-        .request_histograms
-        .write()
-        .expect("request_histograms lock poisoned");
+    let mut guard = match state.request_histograms.write() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     guard.entry(key).or_default().observe(seconds);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn poison<T: Send + Sync>(lock: &std::sync::RwLock<T>) {
+        std::thread::scope(|s| {
+            let _ = s
+                .spawn(|| {
+                    let _g = lock.write().expect("first write must succeed");
+                    panic!("intentional poison");
+                })
+                .join();
+        });
+    }
+
+    #[test]
+    fn increment_counter_survives_poisoned_request_counters_lock() {
+        let state = AppState::new();
+        poison(&state.request_counters);
+        assert!(state.request_counters.is_poisoned());
+
+        increment_counter(&state, "/test".to_string(), "GET".to_string(), 200);
+        increment_counter(&state, "/test".to_string(), "GET".to_string(), 200);
+
+        let guard = match state.request_counters.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let key = ("/test".to_string(), "GET".to_string(), 200u16);
+        let counter = guard.get(&key).expect("entry must exist");
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn observe_histogram_survives_poisoned_request_histograms_lock() {
+        let state = AppState::new();
+        poison(&state.request_histograms);
+        assert!(state.request_histograms.is_poisoned());
+
+        observe_histogram(&state, "/test".to_string(), "GET".to_string(), 0.123);
+        observe_histogram(&state, "/test".to_string(), "GET".to_string(), 0.456);
+
+        let guard = match state.request_histograms.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let key = ("/test".to_string(), "GET".to_string());
+        let snap = guard.get(&key).expect("entry must exist").snapshot();
+        assert_eq!(snap.count, 2);
+    }
 }
