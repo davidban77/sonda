@@ -49,17 +49,26 @@ resources:
     cpu: 500m
     memory: 256Mi
 
-# Pod-level security context.
-podSecurityContext: {}
-  # fsGroup: 1000
+# Pod-level security context. Defaults match the non-root image (UID 65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
-# Container-level security context.
-securityContext: {}
-  # runAsNonRoot: true
-  # readOnlyRootFilesystem: true
-  # capabilities:
-  #   drop:
-  #     - ALL
+# Container-level security context. Defaults match the non-root image (UID 65532).
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  # File-sink users: mount a writable volume or set readOnlyRootFilesystem: false.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # Scenario YAML files to mount as a ConfigMap.
 # Each key becomes a file under /scenarios in the container.
