@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.17.1](https://github.com/davidban77/sonda/compare/v1.17.0...v1.17.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **ci:** pin dtolnay/rust-toolchain to 1.95.0 + add drift guard ([#480](https://github.com/davidban77/sonda/issues/480)) ([e37289a](https://github.com/davidban77/sonda/commit/e37289acedbf47fd143f68e7ae0f7751c6fe3d30))
+
+
+### CI/CD
+
+* bump mendhak/http-https-echo from 40 to 41 in /examples ([#482](https://github.com/davidban77/sonda/issues/482)) ([5ba2387](https://github.com/davidban77/sonda/commit/5ba238794505d715d22b14e67fcd53f4dca50003))
+* bump otel/opentelemetry-collector-contrib in /examples ([#484](https://github.com/davidban77/sonda/issues/484)) ([a37eabb](https://github.com/davidban77/sonda/commit/a37eabb74bc8e4cd7ef91f1fff8c723899e0e697))
+* bump prom/alertmanager from v0.32.1 to v0.33.0 in /examples ([#486](https://github.com/davidban77/sonda/issues/486)) ([590e1e3](https://github.com/davidban77/sonda/commit/590e1e31d8f0327420800b548689db51e5d84a77))
+* bump victoriametrics/vmagent from v1.144.0 to v1.145.0 in /examples ([#485](https://github.com/davidban77/sonda/issues/485)) ([6fae049](https://github.com/davidban77/sonda/commit/6fae049a50366e101b3d5c7aa0ff2339eab3cc64))
+* bump victoriametrics/vmalert from v1.144.0 to v1.145.0 in /examples ([#483](https://github.com/davidban77/sonda/issues/483)) ([4e317be](https://github.com/davidban77/sonda/commit/4e317be7c351a95cc0c806a6c7472c730eb697e6))
+
 ## [1.17.0](https://github.com/davidban77/sonda/compare/v1.16.1...v1.17.0) (2026-06-16)
 
 
