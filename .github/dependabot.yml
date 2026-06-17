@@ -24,6 +24,12 @@ updates:
     commit-message:
       prefix: "ci"
     target-branch: "main"
+    ignore:
+      # dtolnay/rust-toolchain's tags ARE the Rust toolchain versions it installs —
+      # so auto-bumping `@1.95.0 → @1.100.0` would request a nonexistent Rust
+      # release and break the Release workflow. Bump this manually in sync with
+      # rust-toolchain.toml.
+      - dependency-name: "dtolnay/rust-toolchain"
 
   # Track image tags in examples/docker-compose-victoriametrics.yml so the
   # Live Infra UAT gate gets continuous backend-bump signal.
