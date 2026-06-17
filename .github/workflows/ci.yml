@@ -225,3 +225,27 @@ jobs:
       # Uses the actions runner's default Python 3.
       - name: Validate documented sonda commands
         run: python3 scripts/validate_docs_commands.py
+
+  release-pin-check:
+    name: release.yml rust-toolchain pin matches rust-toolchain.toml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Belt-and-braces guard against the `dtolnay/rust-toolchain@<X>` pin in
+      # release.yml drifting away from rust-toolchain.toml's `channel`.
+      # Dependabot has bumped this action twice (PRs #302, #443), both times
+      # requesting a nonexistent Rust release because the action's tag IS the
+      # toolchain version it installs. Dependabot is now configured to ignore
+      # the action; this check catches the next failure mode (a human edits
+      # one file but forgets the other).
+      - name: Verify release.yml pin matches rust-toolchain.toml
+        run: |
+          pinned=$(grep -oE 'dtolnay/rust-toolchain@[0-9.]+' .github/workflows/release.yml | head -1 | cut -d@ -f2)
+          expected=$(grep '^channel' rust-toolchain.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$pinned" != "$expected" ]; then
+            echo "::error::release.yml pins dtolnay/rust-toolchain@${pinned} but rust-toolchain.toml channel is ${expected}. Bump both together."
+            exit 1
+          fi
+          echo "OK: both pinned to ${pinned}"
