@@ -48,7 +48,12 @@ jobs:
         # rustup name) which does not have the target std — surfacing as
         # `error[E0463]: can't find crate for core`. Bumping rust-toolchain.toml
         # requires bumping this version too.
-        uses: dtolnay/rust-toolchain@1.100.0
+        #
+        # DO NOT let Dependabot bump this. The `dtolnay/rust-toolchain` action's
+        # tag IS the Rust toolchain version it installs — `@1.100.0` would request
+        # a nonexistent Rust release. Dependabot is configured to ignore this
+        # action (see .github/dependabot.yml) for exactly this reason.
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: ${{ matrix.target }}
 
