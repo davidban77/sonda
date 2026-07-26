@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "sonda"
-version = "1.17.0"
+version = "1.17.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-core"
-version = "1.17.0"
+version = "1.17.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "sonda-server"
-version = "1.17.0"
+version = "1.17.1"
 dependencies = [
  "anyhow",
  "axum",
