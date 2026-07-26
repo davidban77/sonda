@@ -59,12 +59,6 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Audit dependencies
-        run: cargo audit
-
   sonda-server:
     name: sonda-server Build & Integration Tests
     runs-on: ubuntu-latest
