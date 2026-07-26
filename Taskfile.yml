@@ -29,7 +29,7 @@ tasks:
   lint:
     desc: Run clippy and format check
     cmds:
-      - cargo clippy --workspace -- -D warnings
+      - cargo clippy --workspace --all-targets -- -D warnings
       - cargo fmt --all -- --check
 
   check:
@@ -57,18 +57,23 @@ tasks:
     cmds:
       - cargo doc --workspace --no-deps --open
 
+  fmt:
+    desc: Auto-format all code
+    cmds:
+      - cargo fmt --all
+
   # ---------------------------------------------------------------------------
-  # MkDocs Site (user-facing documentation)
+  # Documentation site
   # ---------------------------------------------------------------------------
   site:setup:
-    desc: Install MkDocs Material in a local venv (requires uv)
+    desc: Install MkDocs Material in a local venv (uv-managed)
     cmds:
       - |
         echo "Using uv to create venv and install dependencies..."
         uv venv docs/site/.venv
         uv pip install -r docs/site/requirements.txt --python docs/site/.venv/bin/python
         echo ""
-        echo "Done! Run 'task site:serve' to preview the docs."
+        echo "Done! Run 'task site:serve' to preview the docs locally."
     status:
       - test -f docs/site/.venv/bin/mkdocs
 
@@ -90,11 +95,6 @@ tasks:
     desc: Remove the MkDocs build output and venv
     cmds:
       - rm -rf docs/site/site docs/site/.venv
-
-  fmt:
-    desc: Auto-format all code
-    cmds:
-      - cargo fmt --all
 
   # ---------------------------------------------------------------------------
   # E2E Stack
