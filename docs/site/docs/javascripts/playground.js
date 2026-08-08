@@ -419,12 +419,11 @@ function formatNumber(value) {
 }
 
 function formatSeconds(secs) {
-  if (secs >= 60) {
-    const mins = Math.floor(secs / 60);
-    const rest = Math.round(secs % 60);
-    return rest ? `${mins}m${rest}s` : `${mins}m`;
-  }
-  return `${Math.round(secs)}s`;
+  const rounded = Math.round(secs);
+  if (rounded < 60) return `${rounded}s`;
+  const mins = Math.floor(rounded / 60);
+  const rest = rounded % 60;
+  return rest ? `${mins}m${rest}s` : `${mins}m`;
 }
 
 if (window.document$ && typeof window.document$.subscribe === "function") {
