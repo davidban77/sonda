@@ -59,7 +59,10 @@ extra_css:
 
 extra_javascript:
   - javascripts/sonda-term.js
+  - javascripts/sonda-hero.js
   - path: javascripts/playground.js
+    type: module
+  - path: javascripts/alert-lab.js
     type: module
 
 markdown_extensions:
@@ -192,7 +195,9 @@ nav:
       - Quickstart: get-started/quickstart.md
       - Your first scenario: get-started/your-first-scenario.md
       - Send to a real backend: get-started/send-to-a-backend.md
-  - Playground: playground/index.md
+  - Playground:
+      - playground/index.md
+      - Alert lab: playground/alert-lab.md
   - Build scenarios:
       - build/index.md
       - Concepts: build/concepts.md
