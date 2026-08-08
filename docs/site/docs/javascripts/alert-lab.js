@@ -68,19 +68,20 @@ const PRESETS = [
   {
     name: "Memory leak",
     op: ">",
-    threshold: 85,
-    forSecs: 20,
+    threshold: 70,
+    forSecs: 12,
     story:
-      "The leak crosses the threshold with plenty of runway left — pending for 20 seconds, then firing until the end of the window. Leaks are the easy case for for:.",
+      "The leak crosses the threshold about two-thirds in — pending for 12 seconds, then firing until the end of the window. Leaks are the easy case for for:.",
     yaml: scenario(
       "process_memory_percent",
       `    generator:
       type: leak
       baseline: 12.0
       ceiling: 96.0
-      time_to_ceiling: 100s
+      time_to_ceiling: 120s
 `,
-      { rate: 4, duration: "120s" }
+      // Rate 2 so the 240-tick sample window covers the full 120s ramp.
+      { rate: 2, duration: "120s" }
     ),
   },
   {
@@ -170,6 +171,7 @@ function boot() {
     play: document.getElementById("al-play"),
     state: document.getElementById("al-state"),
     chart: document.getElementById("al-chart"),
+    error: document.getElementById("al-error"),
     story: document.getElementById("al-story"),
     open: document.getElementById("al-open"),
   };
@@ -212,6 +214,18 @@ function boot() {
     await ensureWasm();
     const result = JSON.parse(sample_scenario(preset.yaml, MAX_TICKS));
     entry = result.ok && result.entries.length ? result.entries[0] : null;
+    if (!entry) {
+      // Surface the engine's own message instead of a silent blank chart —
+      // either a compile error or the reason the entry was skipped.
+      const reason = !result.ok
+        ? result.error
+        : result.skipped.length
+          ? result.skipped[0].reason
+          : "the scenario produced no metrics entries";
+      showError(el, reason || "the scenario could not be sampled");
+      return;
+    }
+    hideError(el);
     reevaluate();
     if (!reducedMotion) startSweep();
   };
@@ -266,6 +280,18 @@ function boot() {
   }).observe(document.body, { attributes: true, attributeFilter: ["data-md-color-scheme"] });
 
   loadPreset();
+}
+
+function showError(el, message) {
+  el.error.hidden = false;
+  el.error.textContent = message;
+  setStateChip(el.state, "inactive");
+  const ctx = el.chart.getContext("2d");
+  ctx.clearRect(0, 0, el.chart.width, el.chart.height);
+}
+
+function hideError(el) {
+  el.error.hidden = true;
 }
 
 function finalStateSummary(evaled) {
@@ -365,8 +391,7 @@ function draw(el, entry, evaled, rule, upTo) {
   const xSteps = Math.min(6, Math.max(2, Math.floor(plotW / 110)));
   for (let step = 0; step <= xSteps; step++) {
     const secs = (spanSecs * step) / xSteps;
-    const label = secs >= 60 ? `${Math.floor(secs / 60)}m${Math.round(secs % 60) || ""}${secs % 60 ? "s" : ""}` : `${Math.round(secs)}s`;
-    ctx.fillText(label, pad.left + (secs / spanSecs) * plotW, pad.top + plotH + 16);
+    ctx.fillText(formatSeconds(secs), pad.left + (secs / spanSecs) * plotW, pad.top + plotH + 16);
   }
 
   // Threshold line.
@@ -435,6 +460,14 @@ function formatNumber(value) {
   if (Math.abs(value) >= 1000) return value.toFixed(0);
   if (Math.abs(value) >= 10) return value.toFixed(1);
   return value.toFixed(2);
+}
+
+function formatSeconds(secs) {
+  const rounded = Math.round(secs);
+  if (rounded < 60) return `${rounded}s`;
+  const mins = Math.floor(rounded / 60);
+  const rest = rounded % 60;
+  return rest ? `${mins}m${rest}s` : `${mins}m`;
 }
 
 if (window.document$ && typeof window.document$.subscribe === "function") {

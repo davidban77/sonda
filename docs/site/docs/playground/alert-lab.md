@@ -42,6 +42,7 @@ shows the alert state the way Prometheus would walk it:
     <button id="al-play" type="button" class="md-button md-button--primary sonda-playground__run">Play</button>
     <span id="al-state" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite">inactive</span>
   </div>
+  <div id="al-error" class="sonda-playground__error" hidden></div>
   <canvas id="al-chart" class="sonda-playground__chart" height="380"
     aria-label="Signal chart with alert-state lane"></canvas>
   <p id="al-story" class="sonda-lab-story"></p>
