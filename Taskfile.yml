@@ -96,6 +96,11 @@ tasks:
     cmds:
       - rm -rf docs/site/site docs/site/.venv
 
+  site:waveforms:
+    desc: Regenerate the generator waveform SVGs embedded in the docs
+    cmds:
+      - cargo run -p sonda-core --example waveform_gallery
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------

@@ -1,3 +1,8 @@
+---
+title: Generators
+description: Every Sonda value generator — core waveforms, operational aliases, histogram and summary distributions, and log generators — with the shape each one produces.
+---
+
 # Generators
 
 A generator produces values for each tick of a scenario. For metrics, it produces `f64` values. For logs, it produces structured log events. You select a generator with the `generator.type` field.
@@ -34,6 +39,8 @@ For [logs](#log-generators), choose `template` for synthesized messages with fie
 ## Metric generators
 
 ### constant
+
+![The constant generator: a flat line at the configured value](img/generators/constant.svg)
 
 Returns the same value on every tick. Use it for baseline testing or known-value verification (for example, recording rule validation).
 
@@ -81,6 +88,8 @@ up 1 1774279694501
 When no generator is configured, the default is `constant` with `value: 0.0`.
 
 ### sine
+
+![The sine generator: a smooth wave oscillating around the offset](img/generators/sine.svg)
 
 Produces a sine wave that oscillates between `offset - amplitude` and `offset + amplitude`.
 
@@ -133,6 +142,8 @@ cpu 100 1774279697110
 
 ### sawtooth
 
+![The sawtooth generator: a linear ramp from min to max that resets each period](img/generators/sawtooth.svg)
+
 Ramps linearly from `min` to `max` and resets to `min` at the start of each period.
 
 | Parameter | Type | Required | Default | Description |
@@ -183,6 +194,8 @@ ramp 25 1774279702399
 ```
 
 ### uniform
+
+![The uniform generator: deterministic random values bounded between min and max](img/generators/uniform.svg)
 
 Produces uniformly distributed random values in the range `[min, max]`. Deterministic when seeded.
 
@@ -235,6 +248,8 @@ noise 27.068700996215277 1774279699731
 
 ### sequence
 
+![The sequence generator: explicit values stepped through in order, repeating](img/generators/sequence.svg)
+
 Steps through an explicit list of values. Use it to model specific incident patterns such as threshold crossings.
 
 | Parameter | Type | Required | Default | Description |
@@ -265,6 +280,8 @@ cpu_spike_test{instance="server-01",job="node"} 95 1774279709031
 ```
 
 ### step
+
+![The step generator: a monotonic staircase that wraps at the configured max](img/generators/step.svg)
 
 Produces a monotonically increasing counter value: `start + tick * step_size`. With `max` set, the value wraps using modular arithmetic to simulate a counter reset. This is the standard generator for testing PromQL `rate()` and `increase()` queries.
 
@@ -303,6 +320,8 @@ request_count{instance="web-01",job="app"} 4 1775192672943
     When scraped through [`sonda-server`](../deploy/http-api.md#aggregate-prometheus-scrape), a `step` scenario appears as a `# TYPE <name> counter` metric by default. Every other metric generator defaults to `gauge`. Override either default by setting [`metric_type:`](../reference/scenario-fields.md#prometheus-exposition-fields) on the scenario.
 
 ### spike
+
+![The spike generator: a steady baseline with short periodic spikes](img/generators/spike.svg)
 
 Outputs a constant baseline value with periodic spikes. During a spike window the value is `baseline + magnitude`; outside the window the value is `baseline`. Use it to test alert thresholds and anomaly detection rules that trigger on sudden value changes.
 
@@ -465,6 +484,8 @@ Aliases are shortcuts. At config load time, each alias is translated into a conc
 
 ### steady
 
+![The steady generator: a healthy oscillation with realistic noise](img/generators/steady.svg)
+
 Models a healthy "everything is fine" signal. Values oscillate gently around a center point with slight noise — the kind of metric you see on a server under normal load.
 
 | Parameter | Type | Default | Description |
@@ -491,6 +512,8 @@ Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-s
     `sonda new` walks through signal type → generator → rate → duration → sink and writes a ready-to-run YAML with the `steady` alias filled in.
 
 ### flap
+
+![The flap generator: a square wave alternating between up and down states](img/generators/flap.svg)
 
 Models a binary signal toggling between two states — an interface going up and down, a service alternating between healthy and unhealthy.
 
@@ -547,6 +570,8 @@ generator:
 
 ### saturation
 
+![The saturation generator: a resource filling to its ceiling and resetting, repeatedly](img/generators/saturation.svg)
+
 Models a resource that fills up and resets on a repeating cycle — disk usage growing between log rotations, a buffer draining when a consumer catches up.
 
 | Parameter | Type | Default | Description |
@@ -566,6 +591,8 @@ generator:
 Values ramp linearly from 20 to 95 over 5 minutes, then reset to 20 and repeat.
 
 ### leak
+
+![The leak generator: a one-way climb from baseline to ceiling](img/generators/leak.svg)
 
 Models a resource growing toward a ceiling without ever resetting — a memory leak, a connection pool that never releases, a queue that fills but never drains.
 
@@ -590,6 +617,8 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
 
 ### degradation
 
+![The degradation generator: a noisy upward drift from baseline toward the ceiling](img/generators/degradation.svg)
+
 Models gradual performance loss with realistic noise — latency increasing over time, error rates rising, throughput dropping.
 
 | Parameter | Type | Default | Description |
@@ -613,6 +642,8 @@ generator:
 Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each tick.
 
 ### spike_event
+
+![The spike_event generator: a quiet baseline interrupted by brief high plateaus](img/generators/spike_event.svg)
 
 Models periodic anomalous bursts above a baseline — CPU spikes, sudden request surges, momentary error floods.
 
