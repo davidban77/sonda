@@ -162,6 +162,7 @@ src/
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `config` | yes | Enables `serde::Deserialize` impls on all config types and pulls in `serde_yaml_ng` for YAML parsing. Disable for library consumers who construct configs in code and do not need YAML/JSON deserialization. |
+| `runtime` | yes | The async scheduling and delivery layer: `tokio`, `tokio-util`, the `schedule/` module, `emit.rs`, the tokio-backed sinks (`stdout`, `file`, `tcp`, `udp`, `channel`), and `create_sink()`. Disable for pure-engine consumers — generators, encoders, the compiler, and config types all work without it, which is how `sonda-wasm` compiles the engine to `wasm32-unknown-unknown`. The `http`/`kafka`/`remote-write`/`otlp` features all imply `runtime`. |
 | `http` | no | Enables `ureq` and HTTP-based sinks (`HttpPush`, `Loki`). |
 | `kafka` | no | Enables `rskafka` + `tokio` + `rustls` + `rustls-pemfile` + `webpki-roots` for the Kafka sink with TLS and SASL support. |
 | `remote-write` | no | Enables `prost` + `snap` + `ureq` for the Prometheus remote write encoder and sink. |

@@ -134,3 +134,8 @@ docker rm -f vm loki
 - [Run as a server](../deploy/server.md) — keep `sonda-server` running and POST scenarios over HTTP.
 - [Sinks](../build/sinks.md) — every sink type, full parameter reference.
 - [Test pipelines](../test/index.md) — test alert rules, recording rules, and full pipelines with the data you are now pushing.
+
+<div class="sonda-nav-footer">
+  <p><a href="../your-first-scenario/"><span class="sonda-nav-footer__label">Previous</span><span class="sonda-nav-footer__title">Your first scenario</span></a></p>
+  <p class="sonda-nav-footer__next"><a href="../../build/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Build scenarios</span></a></p>
+</div>

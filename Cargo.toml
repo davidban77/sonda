@@ -1,6 +1,11 @@
 [workspace]
-members = ["sonda-core", "sonda", "sonda-server"]
+members = ["sonda-core", "sonda", "sonda-server", "sonda-wasm"]
 resolver = "2"
+
+# Size-optimized build for the WebAssembly facade only; native binaries keep
+# the workspace default release profile.
+[profile.release.package.sonda-wasm]
+opt-level = "z"
 
 [workspace.package]
 version = "1.17.1"

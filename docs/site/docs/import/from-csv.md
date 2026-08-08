@@ -1,3 +1,8 @@
+---
+title: From a CSV file
+description: Convert a CSV export into a portable Sonda scenario with sonda new --from — pattern detection turns raw data into reusable, parameterised YAML.
+---
+
 # CSV Import
 
 This page covers `sonda new --from <csv>`. The command reads a CSV file, detects the pattern in each numeric column, and writes a Sonda scenario YAML. The result is a portable scenario you can check into a repository and run later.

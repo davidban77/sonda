@@ -96,6 +96,18 @@ tasks:
     cmds:
       - rm -rf docs/site/site docs/site/.venv
 
+  site:waveforms:
+    desc: Regenerate the generator waveform SVGs embedded in the docs
+    cmds:
+      - cargo run -p sonda-core --example waveform_gallery
+
+  site:wasm:
+    desc: Rebuild the playground WebAssembly bundle (needs wasm-bindgen-cli matching Cargo.lock)
+    cmds:
+      - rustup target add wasm32-unknown-unknown
+      - cargo build -p sonda-wasm --release --target wasm32-unknown-unknown
+      - wasm-bindgen target/wasm32-unknown-unknown/release/sonda_wasm.wasm --target web --no-typescript --out-dir docs/site/docs/javascripts/
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------

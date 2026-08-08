@@ -2,7 +2,9 @@
 //!
 //! All sinks implement the `Sink` trait.
 
+#[cfg(feature = "runtime")]
 pub mod channel;
+#[cfg(feature = "runtime")]
 pub mod file;
 #[cfg(feature = "http")]
 pub mod http;
@@ -16,11 +18,16 @@ pub mod otlp_grpc;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
 pub mod retry;
+#[cfg(feature = "runtime")]
 pub mod stdout;
+#[cfg(feature = "runtime")]
 pub mod tcp;
+#[cfg(feature = "runtime")]
 pub mod udp;
 
+#[cfg(feature = "runtime")]
 use std::collections::HashMap;
+#[cfg(feature = "runtime")]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -398,6 +405,7 @@ pub enum SinkConfig {
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
 ///
 /// `labels` populates Loki stream labels; pass `None` for every other sink.
+#[cfg(feature = "runtime")]
 pub async fn create_sink(
     config: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
@@ -614,12 +622,14 @@ pub async fn create_sink(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_stdout_returns_ok() {
         let result = create_sink(&SinkConfig::Stdout, None).await;
         assert!(result.is_ok());
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_stdout_write_and_flush_succeed() {
         let mut sink = create_sink(&SinkConfig::Stdout, None).await.unwrap();
@@ -635,6 +645,7 @@ mod tests {
         assert!(matches!(config, SinkConfig::Stdout));
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn sink_config_is_cloneable() {
         let config = SinkConfig::Stdout;
@@ -978,6 +989,7 @@ sink:
     /// before returning an error. Run with `cargo test -- --ignored` when the
     /// test environment can tolerate network delays.
     #[cfg(feature = "kafka")]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     #[ignore = "requires network timeout which is slow; run with --ignored when desired"]
     async fn create_sink_kafka_with_unreachable_broker_returns_err() {
@@ -997,6 +1009,7 @@ sink:
     }
 
     #[cfg(feature = "kafka")]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_kafka_with_empty_broker_returns_err() {
         let config = SinkConfig::Kafka {
@@ -1015,6 +1028,7 @@ sink:
     }
 
     #[cfg(feature = "kafka")]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_kafka_with_invalid_max_buffer_age_returns_err() {
         let config = SinkConfig::Kafka {
@@ -1142,6 +1156,7 @@ headers: {}
     // ---------------------------------------------------------------------------
 
     #[cfg(feature = "http")]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn http_feature_enables_http_push_variant() {
         let config = SinkConfig::HttpPush {
@@ -1160,6 +1175,7 @@ headers: {}
     }
 
     #[cfg(feature = "http")]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn http_feature_enables_loki_variant() {
         let config = SinkConfig::Loki {
@@ -1196,6 +1212,7 @@ headers: {}
         assert!(matches!(config, SinkConfig::Loki { .. }));
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn non_http_sinks_available_without_http_feature() {
         assert!(create_sink(&SinkConfig::Stdout, None).await.is_ok());
@@ -1294,6 +1311,7 @@ retry:
     }
 
     #[cfg(not(feature = "kafka"))]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_kafka_disabled_returns_feature_hint_error() {
         let config = SinkConfig::KafkaDisabled {};
@@ -1322,6 +1340,7 @@ retry:
     }
 
     #[cfg(not(feature = "http"))]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_http_push_disabled_returns_feature_hint_error() {
         let config = SinkConfig::HttpPushDisabled {};
@@ -1350,6 +1369,7 @@ retry:
     }
 
     #[cfg(not(feature = "http"))]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_loki_disabled_returns_feature_hint_error() {
         let config = SinkConfig::LokiDisabled {};
@@ -1378,6 +1398,7 @@ retry:
     }
 
     #[cfg(not(feature = "remote-write"))]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_remote_write_disabled_returns_feature_hint_error() {
         let config = SinkConfig::RemoteWriteDisabled {};
@@ -1396,6 +1417,7 @@ retry:
         );
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn default_write_log_event_forwards_encoded_bytes_to_write() {
         use crate::model::log::{LogEvent, Severity};
@@ -1424,6 +1446,7 @@ retry:
         );
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_memory_without_capture_returns_ok() {
         let cfg = SinkConfig::Memory {
@@ -1436,6 +1459,7 @@ retry:
         sink.flush().await.unwrap();
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_memory_with_capture_returns_usable_sink() {
         let cfg = SinkConfig::Memory {
@@ -1449,6 +1473,7 @@ retry:
         sink.flush().await.unwrap();
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_memory_with_shared_capture_handle_mirrors_writes() {
         let ring = Arc::new(Mutex::new(memory::CapturedRing::new(8)));
@@ -1466,6 +1491,7 @@ retry:
         assert_eq!(guard.events()[1].1, b"two");
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_memory_capture_handle_takes_precedence_over_capture_flag() {
         let ring = Arc::new(Mutex::new(memory::CapturedRing::new(4)));
@@ -1572,6 +1598,7 @@ retry:
     }
 
     #[cfg(not(feature = "otlp"))]
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn create_sink_otlp_grpc_disabled_returns_feature_hint_error() {
         let config = SinkConfig::OtlpGrpcDisabled {};

@@ -63,5 +63,3 @@ Start with **Concepts** if you have finished [Get started](../get-started/index.
     How network sinks buffer events before delivery, the size and time thresholds that flush the buffer, and the trade-offs when tuning them.
 
 </div>
-</content>
-</invoke>

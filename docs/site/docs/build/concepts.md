@@ -1,6 +1,21 @@
+---
+title: Concepts
+description: How Sonda's parts nest — scenarios, entries, generators, encoders, sinks, and packs — and what a multi-scenario run looks like.
+---
+
 # Concepts
 
 This page covers how Sonda's four parts nest, how packs let you reuse metric definitions, and what a multi-scenario run looks like. It assumes you have read [Your first scenario](../get-started/your-first-scenario.md), which introduces the scenario file, generator, encoder, and sink.
+
+Every entry in a scenario file drives the same pipeline: a generator shapes the values, an encoder formats them, and a sink delivers them to your backend.
+
+```mermaid
+flowchart LR
+  E["Entry<br/>rate · duration · schedule"] --> G["Generator<br/>shapes the values"]
+  G --> N["Encoder<br/>formats the bytes"]
+  N --> S["Sink<br/>delivers them"]
+  S --> B["Your backend<br/>Prometheus · Loki · Kafka · OTel"]
+```
 
 ## How the parts nest
 
@@ -274,5 +289,3 @@ For entries that depend on each other in time, see `after:` and `while:` on the 
 - [**Scenario Files**](scenario-files.md) — full file-format reference, including `defaults:`, `after:` and `while:` chains, and [sink-error policy](../reference/glossary.md#sink-error-policy).
 - [**Scenario Fields**](../reference/scenario-fields.md) — per-entry fields: generators, schedules, labels, encoders, sinks.
 - [**Catalogs and packs**](catalogs-and-packs.md) — directory layout, `sonda list`, `sonda show`, and how to write your own packs.
-</content>
-</invoke>

@@ -1,3 +1,8 @@
+---
+title: Scenario file format
+description: The version 2 scenario YAML format — top-level fields, shared defaults, multi-scenario files, packs, after dependencies, and clock groups.
+---
+
 # Scenario Files
 
 A scenario file is a YAML document that describes one or many signals. One top-level block declares shared defaults; another lists the scenarios. Packs, `after:` temporal dependencies, and clock groups all compose inside the same file.

@@ -1,3 +1,8 @@
+---
+title: Log files
+description: Replay captured log lines from a structured CSV with log_csv_replay — original severities, fields, and timing derived from the timestamp column.
+---
+
 # Log CSV Replay
 
 This page covers `log_csv_replay`. You point it at a structured CSV, and Sonda replays each row as a `LogEvent` at the cadence recorded in the file. It is the log-side counterpart of [`csv_replay` for metrics](grafana-exports.md).

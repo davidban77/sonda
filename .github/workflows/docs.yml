@@ -17,17 +17,27 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Full history so git-revision-date-localized shows real dates.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
+      - name: Install social-card system libraries
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev libfreetype6-dev libffi-dev libjpeg-dev libpng-dev libz-dev
+
       - name: Install dependencies
         run: pip install -r docs/site/requirements.txt
 
       - name: Build site (strict mode)
         run: mkdocs build --strict -f docs/site/mkdocs.yml
+        env:
+          SONDA_SOCIAL_CARDS: "true"
 
       - name: Deploy to GitHub Pages
         run: mkdocs gh-deploy --force -f docs/site/mkdocs.yml
+        env:
+          SONDA_SOCIAL_CARDS: "true"

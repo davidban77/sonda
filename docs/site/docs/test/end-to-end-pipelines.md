@@ -7,17 +7,21 @@ description: Validate the full path from synthetic signal generation through TSD
 
 You've written alert rules and shipped them. You changed a vmagent relabel rule. You added a new encoder, swapped a sink, pointed at a different backend. The unit tests pass — but does the data actually arrive, in the shape your downstream consumers expect, and does the alert at the end of the chain actually fire?
 
+## Pick your validation shape
+
 This page covers four shapes of end-to-end validation. The local **Alerting pipeline** runs vmalert + Alertmanager + a webhook receiver so you can watch one alert flow from synthetic metric to delivered notification. The **End-to-end pipeline test** is a coverage matrix: every signal × encoder × sink combo, with a curl + jq assertion at the end. **CI validation** wires the alerting loop into GitHub Actions as a required check on every PR that touches alert rules. **Production pipeline validation** covers the lighter-weight smoke checks — exit codes, line counts, multi-format diffs — for catching regressions before they reach the backend.
 
 Pick the tab that matches your scenario.
 
 <a id="alerting-pipeline-dev"></a>
 
+## Run the alerting pipeline locally
+
 === "Alerting pipeline (dev)"
 
     You'll run a complete **Sonda -> VictoriaMetrics -> vmalert -> Alertmanager -> webhook** pipeline and watch an alert flow from synthetic metric to delivered notification.
 
-    ## What you'll build
+    ### What you'll build
 
     ```
     sonda (host CLI)        VictoriaMetrics        vmalert         Alertmanager     webhook-receiver
@@ -237,6 +241,8 @@ Pick the tab that matches your scenario.
     | `examples/alertmanager/alertmanager.yml` | Alertmanager config: route all alerts to webhook |
     | `examples/docker-compose-victoriametrics.yml` | Docker Compose (use `--profile alerting`) |
 
+## Push a known value, query it back
+
 === "End-to-end pipeline test"
 
     You changed an encoder, swapped a sink, or pointed at a new backend. Unit tests pass and the smoke checks show bytes leaving the wire — but did the data actually land in the backend you query against? This tab shows the canonical end-to-end loop: start a real backend, push a known value, query it back.
@@ -369,6 +375,8 @@ Pick the tab that matches your scenario.
     ```
 
     To verify the alert rules themselves cross thresholds correctly, see [Alert Testing](alert-testing.md).
+
+## Validate alert rules in CI
 
 === "CI validation"
 
@@ -760,6 +768,8 @@ Pick the tab that matches your scenario.
     | `examples/ci-alert-validation.yaml` | Sonda scenario: constant 95.0 to VictoriaMetrics |
     | `examples/alertmanager/alert-rules.yml` | vmalert rules: HighCpuUsage and ElevatedCpuUsage |
     | `.github/workflows/alert-validation.yml` | GitHub Actions workflow (VM + vmalert via `docker run`) |
+
+## Smoke-test the production pipeline
 
 === "Production pipeline validation"
 

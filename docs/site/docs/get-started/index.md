@@ -25,3 +25,8 @@ This section takes you from no Sonda installed to a synthetic metric reaching a 
 
 !!! tip "Where to next"
     After you finish here, read [Build scenarios](../build/index.md) to write YAML you can check into git. To produce data that drives your alert rules, see [Test pipelines](../test/index.md).
+
+<div class="sonda-nav-footer">
+  <p></p>
+  <p class="sonda-nav-footer__next"><a href="quickstart/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Quickstart</span></a></p>
+</div>

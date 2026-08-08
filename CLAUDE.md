@@ -12,6 +12,8 @@ This is a Cargo workspace with three crates:
 - **sonda-core** — library crate: all domain logic (generators, encoders, sinks, schedules).
 - **sonda** — binary crate: CLI (thin layer over core, clap + YAML config).
 - **sonda-server** — binary crate: HTTP API control plane (axum, post-MVP).
+- **sonda-wasm** — cdylib crate: WebAssembly facade over the pure engine (core without the
+  `runtime` feature) that powers the docs-site playground. Rebuild the bundle with `task site:wasm`.
 
 No business logic lives outside sonda-core. If the CLI or server needs new behavior, it goes in core.
 

@@ -1,3 +1,8 @@
+---
+title: As a server
+description: Install, configure, and operate sonda-server — the HTTP control plane for running Sonda scenarios as a long-lived service, including sink URL networking.
+---
+
 # Server API
 
 `sonda-server` is the HTTP control plane for Sonda. It is a long-running process. You send scenarios to it over REST, then inspect or stop them. Use it when you want Sonda as a service instead of a one-shot CLI command. Common cases: integrating Sonda into CI pipelines, test harnesses, or dashboards, or keeping a synthetic-telemetry baseline alive for hours or days.

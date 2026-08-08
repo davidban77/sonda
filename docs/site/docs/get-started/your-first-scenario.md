@@ -143,3 +143,8 @@ The four parts are independent. Combine them and you have everything Sonda does.
 | Sink | `sink.type`, `sink.url` | Destination |
 
 You now know enough to read the rest of the docs. Next: [send your scenario to a real backend](send-to-a-backend.md) — Prometheus remote-write, Loki, or OTLP — without leaving your laptop.
+
+<div class="sonda-nav-footer">
+  <p><a href="../quickstart/"><span class="sonda-nav-footer__label">Previous</span><span class="sonda-nav-footer__title">Quickstart</span></a></p>
+  <p class="sonda-nav-footer__next"><a href="../send-to-a-backend/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Send to a real backend</span></a></p>
+</div>

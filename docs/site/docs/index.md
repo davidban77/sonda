@@ -8,7 +8,7 @@ hide:
 
 <div class="sonda-hero" markdown>
 
-<span class="sonda-hero__badge">Synthetic telemetry · v1.9</span>
+<span class="sonda-hero__badge">Synthetic telemetry · open source</span>
 
 <h1 class="sonda-hero__title">Synthetic telemetry generator for testing observability pipelines.</h1>
 
@@ -20,7 +20,13 @@ hide:
 [See it on GitHub](https://github.com/davidban77/sonda){ .md-button }
 </div>
 
-<div class="sonda-hero__install">curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh</div>
+<div class="sonda-hero__install" markdown>
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/davidban77/sonda/main/install.sh | sh
+```
+
+</div>
 
 </div>
 
@@ -43,11 +49,16 @@ sonda new --template -o hello.yaml
 sonda run hello.yaml --duration 3s
 ```
 
-```text title="stdout (Prometheus exposition)"
-example_metric 1 1777243958972
-example_metric 1 1777243959978
-example_metric 1 1777243960981
-```
+<div class="sonda-term" data-sonda-term aria-label="Terminal session showing sonda generating metrics">
+<div class="sonda-term__bar" aria-hidden="true"><i></i><i></i><i></i><span>sonda — bash</span></div>
+<pre class="sonda-term__screen"><code><span class="sonda-term__line" data-t="cmd">sonda new --template -o hello.yaml</span>
+<span class="sonda-term__line" data-t="out">wrote hello.yaml</span>
+<span class="sonda-term__line" data-t="cmd">sonda run hello.yaml --duration 3s</span>
+<span class="sonda-term__line" data-t="out">example_metric 1 1777243958972</span>
+<span class="sonda-term__line" data-t="out">example_metric 1 1777243959978</span>
+<span class="sonda-term__line" data-t="out">example_metric 1 1777243960981</span>
+<span class="sonda-term__line" data-t="out">■ example_metric  completed in 3.0s | events 3 | bytes 90 | errors 0</span></code></pre>
+</div>
 
 Each line uses the Prometheus exposition format: `metric_name value timestamp_ms`. See the [glossary](reference/glossary.md#prometheus-exposition-format) for the full definition.
 

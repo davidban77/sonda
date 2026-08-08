@@ -2316,6 +2316,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonda-wasm"
+version = "1.17.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sonda-core",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,3 +1,8 @@
+---
+title: Grafana exports
+description: Replay a Grafana CSV export through Sonda with csv_replay — same values, labels, and cadence, for verifying alert rules and ingest paths.
+---
+
 # Grafana CSV Export Replay
 
 This page covers replaying a Grafana CSV export through Sonda. You give Sonda the file, and it sends the same values, with the same labels, at the same cadence, into your pipeline. Use this to verify alert rules, test recording rules, or validate a new ingest path.
