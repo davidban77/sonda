@@ -129,3 +129,8 @@ You have a metric streaming. The next pages take this further, one topic at a ti
 - **[Send to a real backend](send-to-a-backend.md)** — change the `sink:` block to reach Prometheus `remote_write` or Loki. Includes `docker run` commands for each backend.
 - **[Generators](../build/generators.md)** — the eight value patterns (`sine`, `step`, `spike`, and others), with parameters for each.
 - **[CLI Reference](../reference/cli-flags.md)** — every flag for `run`, `list`, `show`, and `new`.
+
+<div class="sonda-nav-footer">
+  <p><a href="../"><span class="sonda-nav-footer__label">Previous</span><span class="sonda-nav-footer__title">Get started</span></a></p>
+  <p class="sonda-nav-footer__next"><a href="../your-first-scenario/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Your first scenario</span></a></p>
+</div>

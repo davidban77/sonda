@@ -193,27 +193,39 @@
   box-shadow: 0 6px 18px rgba(253, 186, 116, 0.30);
 }
 
+/* The install one-liner is a real fenced code block so Material's copy
+ * button applies (the single most-copied line on the site). These rules
+ * restyle it back into the hero's dark pill. */
 .sonda-hero__install {
   margin-top: 1.5rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.65rem 0.9rem;
+  max-width: 48rem;
+}
+
+.sonda-hero__install .highlight {
+  margin: 0;
+}
+
+.sonda-hero__install .highlight pre {
+  margin: 0;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(253, 186, 116, 0.20);
   border-radius: 8px;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 0.88rem;
-  color: #e2e8f0;
-  white-space: nowrap;
-  overflow-x: auto;
-  max-width: 100%;
 }
 
-.sonda-hero__install::before {
-  content: "$";
+.sonda-hero__install .highlight pre > code {
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 0.88rem;
+  padding: 0.65rem 3rem 0.65rem 0.9rem;
+}
+
+.sonda-hero__install .md-clipboard {
+  color: rgba(226, 232, 240, 0.55);
+}
+
+.sonda-hero__install .md-clipboard:hover,
+.sonda-hero__install .md-clipboard:focus {
   color: var(--sonda-accent-bright);
-  font-weight: 700;
 }
 
 /* ---------- Section hero (per-page) ------------------------------------ */
@@ -655,4 +667,110 @@
   .sonda-section-hero .sonda-section-hero__title { font-size: 1.55rem; }
   .md-typeset .sonda-section-hero__subtitle,
   .sonda-section-hero .sonda-section-hero__subtitle { font-size: 0.98rem; }
+}
+
+/* ---------- Animated terminal (homepage demo) --------------------------- */
+/* Markup ships every line statically, so the demo reads fine with no JS
+ * and under prefers-reduced-motion; javascripts/sonda-term.js replays it
+ * as a typed session when motion is allowed. */
+
+.sonda-term {
+  background: var(--sonda-gradient-start);
+  border: 1px solid rgba(253, 186, 116, 0.16);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 1rem 0 1.5rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+}
+
+.sonda-term__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.9rem;
+  background: rgba(0, 0, 0, 0.30);
+  border-bottom: 1px solid rgba(253, 186, 116, 0.10);
+}
+
+.sonda-term__bar i {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: rgba(226, 232, 240, 0.22);
+}
+
+.sonda-term__bar i:first-child { background: rgba(249, 115, 22, 0.75); }
+
+.sonda-term__bar span {
+  margin-left: 0.4rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: rgba(226, 232, 240, 0.55);
+}
+
+.sonda-term__replay {
+  margin-left: auto;
+  border: 1px solid rgba(253, 186, 116, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sonda-accent-bright);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.7rem;
+  cursor: pointer;
+}
+
+.sonda-term__replay:hover,
+.sonda-term__replay:focus-visible {
+  background: rgba(253, 186, 116, 0.15);
+}
+
+.md-typeset .sonda-term__screen {
+  margin: 0;
+  padding: 1rem 1.1rem 1.2rem;
+  background: transparent;
+  min-height: 10.5em;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  /* Collapse the source newlines between line spans — each span is already
+   * display:block, so preserved newlines would double the line spacing. */
+  white-space: normal;
+}
+
+.sonda-term__screen code {
+  background: transparent;
+  padding: 0;
+  color: #94a3b8;
+}
+
+.sonda-term__line { display: block; white-space: pre-wrap; }
+.sonda-term__line.is-hidden { display: none; }
+
+.sonda-term__line[data-t="cmd"] { color: #e2e8f0; }
+
+.sonda-term__line[data-t="cmd"]::before {
+  content: "$ ";
+  color: var(--sonda-accent-bright);
+  font-weight: 700;
+}
+
+.sonda-term__line.is-typing::after {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  background: var(--sonda-accent-bright);
+  animation: sonda-term-blink 0.9s steps(1) infinite;
+}
+
+@keyframes sonda-term-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sonda-term__line.is-typing::after { animation: none; }
 }
