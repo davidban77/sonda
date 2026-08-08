@@ -26,11 +26,13 @@ pub mod analysis;
 pub mod catalog;
 pub mod compiler;
 pub mod config;
+#[cfg(feature = "runtime")]
 pub mod emit;
 pub mod encoder;
 pub mod generator;
 pub mod model;
 pub mod packs;
+#[cfg(feature = "runtime")]
 pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
@@ -57,12 +59,17 @@ pub use model::log::Severity;
 pub use model::metric::Labels;
 pub use model::metric::MetricEvent;
 pub use model::metric::ValidatedMetricName;
+#[cfg(feature = "runtime")]
 pub use schedule::gate_bus::{
     GateBusResolver, GateEdgeSender, PendingRef, PendingResolution, RegistryError,
 };
+#[cfg(feature = "runtime")]
 pub use schedule::handle::ScenarioHandle;
+#[cfg(feature = "runtime")]
 pub use schedule::launch::{launch_scenario, prepare_entries, validate_entry, PreparedEntry};
+#[cfg(feature = "runtime")]
 pub use schedule::stats::{ScenarioState, ScenarioStats};
+#[cfg(feature = "runtime")]
 pub use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "config")]

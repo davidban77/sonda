@@ -63,6 +63,7 @@ pub enum Distribution {
 /// This is the single conversion point used by both the histogram and summary
 /// runners to translate the deserialized configuration enum into the runtime
 /// sampling model.
+#[cfg_attr(not(feature = "runtime"), allow(dead_code))]
 pub(crate) fn to_distribution(config: &DistributionConfig) -> Distribution {
     match config {
         DistributionConfig::Exponential { rate } => Distribution::Exponential { rate: *rate },

@@ -2,7 +2,9 @@
 //!
 //! All sinks implement the `Sink` trait.
 
+#[cfg(feature = "runtime")]
 pub mod channel;
+#[cfg(feature = "runtime")]
 pub mod file;
 #[cfg(feature = "http")]
 pub mod http;
@@ -16,11 +18,16 @@ pub mod otlp_grpc;
 #[cfg(feature = "remote-write")]
 pub mod remote_write;
 pub mod retry;
+#[cfg(feature = "runtime")]
 pub mod stdout;
+#[cfg(feature = "runtime")]
 pub mod tcp;
+#[cfg(feature = "runtime")]
 pub mod udp;
 
+#[cfg(feature = "runtime")]
 use std::collections::HashMap;
+#[cfg(feature = "runtime")]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -398,6 +405,7 @@ pub enum SinkConfig {
 /// Create a boxed [`Sink`] from the given [`SinkConfig`].
 ///
 /// `labels` populates Loki stream labels; pass `None` for every other sink.
+#[cfg(feature = "runtime")]
 pub async fn create_sink(
     config: &SinkConfig,
     labels: Option<&HashMap<String, String>>,
