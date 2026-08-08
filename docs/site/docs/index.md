@@ -16,7 +16,7 @@ hide:
 
 <div class="sonda-hero__ctas" markdown>
 [Get started in 5 minutes](get-started/quickstart.md){ .md-button .md-button--primary }
-[See what you can test](test/index.md){ .md-button }
+[Try it in your browser](playground/index.md){ .md-button }
 [See it on GitHub](https://github.com/davidban77/sonda){ .md-button }
 </div>
 
@@ -95,6 +95,106 @@ cpu_usage{host="web-01"} 85.35533905932738 1777243960481
 ```
 
 Sonda includes a CLI (`sonda`) and an optional HTTP server (`sonda-server`). The CLI is enough for laptop and CI use. The server accepts scenarios over a REST API. The same scenario file runs from your laptop, from CI, or from [`sonda-server`](deploy/server.md). For a guided walkthrough that pushes to Prometheus or Loki, see [Getting Started](get-started/quickstart.md).
+
+## No install required
+
+The real Sonda engine runs in your browser, compiled to WebAssembly. Edit a scenario and watch the signal it produces — then run the same YAML unchanged with `sonda run`.
+
+<div class="grid cards" markdown>
+
+-   :material-chart-bell-curve: __[Scenario playground](playground/index.md)__
+
+    Edit scenario YAML and see the exact values Sonda will emit — every
+    generator, operational alias, and encoder, with real compile errors.
+
+-   :material-bell-ring: __[Alert lab](playground/alert-lab.md)__
+
+    Set a threshold and a `for:` duration against a failure pattern and watch
+    the alert go pending → firing → resolved, in sync with the signal.
+
+</div>
+
+## What do you want to test?
+
+Every one of these is a small YAML file. Pick the failure, not the framework.
+
+=== "Alert rules"
+
+    Trigger, resolve, and debounce alerts with signals shaped like real failures.
+
+    ```yaml
+    generator:
+      type: spike_event
+      baseline: 120.0
+      spike_height: 400.0
+      spike_duration: 5s
+      spike_interval: 30s
+    ```
+
+    [Alert testing →](test/alert-testing.md)
+
+=== "Cardinality"
+
+    Inject label churn on a schedule and watch what your TSDB does under it.
+
+    ```yaml
+    cardinality_spikes:
+      - label: pod
+        every: 60s
+        for: 10s
+        cardinality: 500
+        strategy: random
+    ```
+
+    [Capacity planning →](test/capacity-planning.md)
+
+=== "Incident replay"
+
+    Export a Grafana panel from a real outage and replay it at the original cadence.
+
+    ```yaml
+    generator:
+      type: csv_replay
+      file: incident-2026-05-18.csv
+      timescale: 4.0   # replay 4x faster
+    ```
+
+    [Grafana exports →](import/grafana-exports.md)
+
+=== "Fleet dashboards"
+
+    Fill a demo dashboard with a believable fleet instead of one flat line.
+
+    ```yaml
+    generator: { type: steady, center: 45.0, noise: 3.0 }
+    dynamic_labels:
+      - key: host
+        strategy: counter
+        prefix: web-
+        cardinality: 12
+    ```
+
+    [Send to a real backend →](get-started/send-to-a-backend.md)
+
+## Why not a bash loop?
+
+Honest answer: a bash loop piping to `curl` is fine for checking that the port
+is open. It stops being fine the moment the *shape* of the data matters —
+alert thresholds, rate() windows, cardinality limits, retention behavior.
+
+| | bash + curl | Avalanche | flog | Sonda |
+|---|---|---|---|---|
+| Realistic value shapes (`sine`, `flap`, `leak`) | hand-rolled | — | — | ✓ |
+| Correlated failures (`after:`, `while:`) | — | — | — | ✓ |
+| Replay real incidents from CSV | — | — | — | ✓ |
+| Metrics *and* logs, histograms, summaries | scripted | metrics only | logs only | ✓ |
+| Remote-write, OTLP, Kafka, Loki, InfluxDB LP | curl-able only | remote-write | files/stdout | ✓ |
+| Scheduled gaps, bursts, cardinality spikes | — | churn only | — | ✓ |
+| Single static binary | n/a | ✓ | ✓ | ✓ |
+
+Avalanche is excellent at raw cardinality volume and flog at log throughput —
+if that's the whole job, use them. Sonda is for when the pipeline has to be
+tested against telemetry that *behaves* like production.
 
 ## Why Sonda
 
