@@ -323,6 +323,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn sink_file_error_produces_sink_variant() {
         let result = sink::file::FileSink::new(std::path::Path::new(
@@ -637,6 +638,7 @@ generator:
     }
 
     /// EncoderConfig, SinkConfig, and GeneratorConfig are all constructible
+    #[cfg(feature = "runtime")]
     #[tokio::test]
     async fn factory_functions_work_without_deserialization() {
         use crate::encoder::{create_encoder, EncoderConfig};

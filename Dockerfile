@@ -53,12 +53,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY sonda-core/Cargo.toml sonda-core/Cargo.toml
 COPY sonda/Cargo.toml sonda/Cargo.toml
 COPY sonda-server/Cargo.toml sonda-server/Cargo.toml
+COPY sonda-wasm/Cargo.toml sonda-wasm/Cargo.toml
 
 # Create dummy source files so cargo can fetch and cache dependencies
-RUN mkdir -p sonda-core/src sonda/src sonda-server/src && \
+RUN mkdir -p sonda-core/src sonda/src sonda-server/src sonda-wasm/src && \
     echo "pub fn dummy() {}" > sonda-core/src/lib.rs && \
     echo "fn main() {}" > sonda/src/main.rs && \
-    echo "fn main() {}" > sonda-server/src/main.rs
+    echo "fn main() {}" > sonda-server/src/main.rs && \
+    echo "pub fn dummy() {}" > sonda-wasm/src/lib.rs
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
@@ -68,9 +70,10 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 COPY sonda-core/ sonda-core/
 COPY sonda/ sonda/
 COPY sonda-server/ sonda-server/
+COPY sonda-wasm/ sonda-wasm/
 
 # Touch source files to invalidate the dummy build cache
-RUN touch sonda-core/src/lib.rs sonda/src/main.rs sonda-server/src/main.rs
+RUN touch sonda-core/src/lib.rs sonda/src/main.rs sonda-server/src/main.rs sonda-wasm/src/lib.rs
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     if [ -s /tmp/cross-env ]; then export $(cat /tmp/cross-env); fi && \
