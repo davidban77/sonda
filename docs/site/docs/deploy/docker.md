@@ -1,3 +1,8 @@
+---
+title: Docker
+description: Run Sonda from the published Docker image — one-shot CLI scenarios, the HTTP server, bundled Compose observability stacks, and building your own image.
+---
+
 # Docker
 
 Use the Docker image when you want Sonda without a local Rust toolchain. Common cases are CI runners, a colleague's laptop, or running alongside the bundled observability stacks (Prometheus, VictoriaMetrics, Grafana) shown later on this page. The image is a single artifact. It carries both the `sonda` CLI and the `sonda-server` HTTP API. The same `docker run` works for a one-shot scenario or a long-running server.

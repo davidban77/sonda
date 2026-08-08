@@ -1,3 +1,8 @@
+---
+title: Sinks
+description: Reference for every Sonda sink — stdout, file, and network destinations like remote_write, Loki, and OTLP, with parameters and YAML examples.
+---
+
 # Sinks
 
 A sink delivers encoded bytes to a destination. Set the destination with the `sink.type` field. The default is `stdout`.

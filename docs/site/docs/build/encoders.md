@@ -1,3 +1,8 @@
+---
+title: Encoders
+description: Reference for every Sonda encoder — wire formats like prometheus_text and json_lines, their parameters, defaults, and example output.
+---
+
 # Encoders
 
 An encoder serializes events into a wire format before a sink writes them. Set the format with the `encoder.type` field. Metric scenarios default to `prometheus_text`; log scenarios default to `json_lines`.

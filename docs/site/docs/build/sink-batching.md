@@ -1,3 +1,8 @@
+---
+title: Sink batching
+description: How Sonda's batching sinks buffer and flush events — the batch_size and max_buffer_age triggers, and how each network sink applies them.
+---
+
 # Sink Batching
 
 When you run a Sonda scenario, metrics often appear in chunks on stdout or arrive at VictoriaMetrics in bursts. That is batching at work, and it is intentional.

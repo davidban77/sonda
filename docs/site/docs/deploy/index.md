@@ -29,4 +29,9 @@ Sonda runs anywhere a Linux container runs. The same binary works on your laptop
 
     The Helm chart, Service DNS layout, API-key Secret pattern, and resource limits.
 
+-   :material-chart-line: __[Server metrics](server-metrics.md)__
+
+    The `/metrics` endpoint of `sonda-server`: every exported series, what it
+    measures, and how to scrape it from Prometheus.
+
 </div>

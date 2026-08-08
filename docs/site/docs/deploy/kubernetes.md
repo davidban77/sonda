@@ -1,3 +1,8 @@
+---
+title: Kubernetes
+description: Deploy sonda-server in Kubernetes with the bundled Helm chart — every value, probe setting, and auth option for an in-cluster synthetic-telemetry baseline.
+---
+
 # Kubernetes
 
 Run `sonda-server` in Kubernetes when you want a continuous synthetic-telemetry baseline running *inside* the cluster. The service emits known metrics through your stack at all times. A flat Grafana panel then means "the data stopped," not "the scrape config broke." It is the difference between guessing whether a quiet dashboard is a real outage and knowing it in one look.
