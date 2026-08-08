@@ -210,7 +210,9 @@ function boot() {
     el.threshold.value = String(preset.threshold);
     el.forSel.value = String(preset.forSecs);
     el.story.textContent = preset.story;
-    el.open.href = "./#yaml=" + toBase64Url(preset.yaml);
+    // Relative to /playground/alert-lab/, the playground index is one level
+    // up — "./" would point the link back at this very page.
+    el.open.href = "../#yaml=" + toBase64Url(preset.yaml);
     await ensureWasm();
     const result = JSON.parse(sample_scenario(preset.yaml, MAX_TICKS));
     entry = result.ok && result.entries.length ? result.entries[0] : null;
