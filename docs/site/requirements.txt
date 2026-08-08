@@ -1,2 +1,6 @@
-mkdocs-material>=9.5
-mkdocs-redirects>=1.2
+mkdocs-material[imaging]>=9.5,<10
+# Pinned: mkdocs-redirects 1.2.3 on PyPI was republished by the "ProperDocs"
+# MkDocs fork — it force-installs their fork and injects ads into builds.
+# 1.2.2 is the last release from the original maintainers.
+mkdocs-redirects==1.2.2
+mkdocs-git-revision-date-localized-plugin>=1.2

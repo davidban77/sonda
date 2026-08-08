@@ -8,9 +8,6 @@ copyright: Copyright &copy; 2026 David Flores · Built with Material for MkDocs
 
 not_in_nav: |
   /includes/
-  /guides/index.md
-  /configuration/index.md
-  /deployment/index.md
 
 theme:
   name: material
@@ -60,6 +57,9 @@ theme:
 extra_css:
   - stylesheets/sonda.css
 
+extra_javascript:
+  - javascripts/sonda-term.js
+
 markdown_extensions:
   - abbr
   - admonition
@@ -75,6 +75,11 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.keys
   - pymdownx.mark
   - pymdownx.smartsymbols
@@ -96,6 +101,13 @@ markdown_extensions:
 
 plugins:
   - search
+  # Social cards need cairo + network access to fetch fonts, so they render
+  # only in the deploy workflow (SONDA_SOCIAL_CARDS=true), not local builds.
+  - social:
+      enabled: !ENV [SONDA_SOCIAL_CARDS, false]
+  - git-revision-date-localized:
+      enable_creation_date: false
+      type: date
   - redirects:
       redirect_maps:
         # Legacy v2 scenario path
