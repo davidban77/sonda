@@ -6,35 +6,35 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Install Sonda, run your first scenario, and send synthetic telemetry to a real backend.">
+        <meta name="description" content="Watch an alert go inactive, pending, firing, and resolved against a live Sonda signal — threshold, comparison, and for-duration semantics in your browser.">
       
       
       
-        <link rel="canonical" href="https://davidban77.github.io/sonda/get-started/">
+        <link rel="canonical" href="https://davidban77.github.io/sonda/playground/alert-lab/">
       
       
-        <link rel="prev" href="..">
+        <link rel="prev" href="../">
       
       
-        <link rel="next" href="quickstart/">
+        <link rel="next" href="../../build/">
       
       
         
       
       
-      <link rel="icon" href="../assets/favicon.svg">
+      <link rel="icon" href="../../assets/favicon.svg">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>Get started - Sonda</title>
+        <title>Alert lab - Sonda</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -53,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="../stylesheets/sonda.css">
+      <link rel="stylesheet" href="../../stylesheets/sonda.css">
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -63,17 +63,17 @@
     
   
 <meta property="og:type" content="website" />
-<meta property="og:title" content="Get started - Sonda" />
-<meta property="og:description" content="Install Sonda, run your first scenario, and send synthetic telemetry to a real backend." />
-<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/get-started/index.png" />
+<meta property="og:title" content="Alert lab - Sonda" />
+<meta property="og:description" content="Watch an alert go inactive, pending, firing, and resolved against a live Sonda signal — threshold, comparison, and for-duration semantics in your browser." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/playground/alert-lab.png" />
 <meta property="og:image:type" content="image/png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:url" content="https://davidban77.github.io/sonda/get-started/" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/playground/alert-lab/" />
 <meta property="twitter:card" content="summary_large_image" />
-<meta property="twitter:title" content="Get started - Sonda" />
-<meta property="twitter:description" content="Install Sonda, run your first scenario, and send synthetic telemetry to a real backend." />
-<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/get-started/index.png" />
+<meta property="twitter:title" content="Alert lab - Sonda" />
+<meta property="twitter:description" content="Watch an alert go inactive, pending, firing, and resolved against a live Sonda signal — threshold, comparison, and for-duration semantics in your browser." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/playground/alert-lab.png" />
 </head>
   
   
@@ -93,7 +93,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#get-started" class="md-skip">
+        <a href="#watch-an-alert-fire-before-you-page-anyone" class="md-skip">
           Skip to content
         </a>
       
@@ -109,9 +109,9 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-header__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -128,7 +128,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Get started
+              Alert lab
             
           </span>
         </div>
@@ -240,7 +240,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -257,13 +257,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../get-started/" class="md-tabs__link">
           
   
   
@@ -281,11 +279,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../playground/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -307,7 +307,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../build/" class="md-tabs__link">
+        <a href="../../build/" class="md-tabs__link">
           
   
   
@@ -329,7 +329,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../test/" class="md-tabs__link">
+        <a href="../../test/" class="md-tabs__link">
           
   
   
@@ -351,7 +351,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../import/" class="md-tabs__link">
+        <a href="../../import/" class="md-tabs__link">
           
   
   
@@ -373,7 +373,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../deploy/" class="md-tabs__link">
+        <a href="../../deploy/" class="md-tabs__link">
           
   
   
@@ -395,7 +395,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../reference/" class="md-tabs__link">
+        <a href="../../reference/" class="md-tabs__link">
           
   
   
@@ -426,7 +426,9 @@
           
             
               
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" hidden>
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -437,9 +439,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
+    <a href="../.." title="Sonda" class="md-nav__button md-logo" aria-label="Sonda" data-md-component="logo">
       
-  <img src="../assets/sonda-logo.svg" alt="logo">
+  <img src="../../assets/sonda-logo.svg" alt="logo">
 
     </a>
     Sonda
@@ -466,7 +468,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -490,8 +492,6 @@
       
   
   
-    
-  
   
   
     
@@ -511,23 +511,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="./" class="md-nav__link md-nav__link--active">
+            <a href="../../get-started/" class="md-nav__link ">
               
   
   
@@ -545,13 +542,13 @@
             </a>
             
               
-              <label class="md-nav__link md-nav__link--active" for="__nav_2" id="__nav_2_label" tabindex="">
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -571,7 +568,7 @@
   
   
     <li class="md-nav__item">
-      <a href="quickstart/" class="md-nav__link">
+      <a href="../../get-started/quickstart/" class="md-nav__link">
         
   
   
@@ -599,7 +596,7 @@
   
   
     <li class="md-nav__item">
-      <a href="your-first-scenario/" class="md-nav__link">
+      <a href="../../get-started/your-first-scenario/" class="md-nav__link">
         
   
   
@@ -627,7 +624,7 @@
   
   
     <li class="md-nav__item">
-      <a href="send-to-a-backend/" class="md-nav__link">
+      <a href="../../get-started/send-to-a-backend/" class="md-nav__link">
         
   
   
@@ -659,6 +656,8 @@
       
   
   
+    
+  
   
   
     
@@ -674,20 +673,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../playground/" class="md-nav__link ">
+            <a href="../" class="md-nav__link ">
               
   
   
@@ -705,13 +707,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -728,10 +730,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../playground/alert-lab/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Alert lab
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -747,6 +776,48 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-lane-is-showing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the lane is showing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-it-for-real" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run it for real
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -805,7 +876,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../build/" class="md-nav__link ">
+            <a href="../../build/" class="md-nav__link ">
               
   
   
@@ -849,7 +920,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/concepts/" class="md-nav__link">
+      <a href="../../build/concepts/" class="md-nav__link">
         
   
   
@@ -877,7 +948,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/scenario-files/" class="md-nav__link">
+      <a href="../../build/scenario-files/" class="md-nav__link">
         
   
   
@@ -905,7 +976,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/generators/" class="md-nav__link">
+      <a href="../../build/generators/" class="md-nav__link">
         
   
   
@@ -933,7 +1004,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/encoders/" class="md-nav__link">
+      <a href="../../build/encoders/" class="md-nav__link">
         
   
   
@@ -961,7 +1032,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/sinks/" class="md-nav__link">
+      <a href="../../build/sinks/" class="md-nav__link">
         
   
   
@@ -989,7 +1060,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/sink-batching/" class="md-nav__link">
+      <a href="../../build/sink-batching/" class="md-nav__link">
         
   
   
@@ -1017,7 +1088,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/scheduling/" class="md-nav__link">
+      <a href="../../build/scheduling/" class="md-nav__link">
         
   
   
@@ -1045,7 +1116,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../build/catalogs-and-packs/" class="md-nav__link">
+      <a href="../../build/catalogs-and-packs/" class="md-nav__link">
         
   
   
@@ -1119,7 +1190,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../test/" class="md-nav__link ">
+            <a href="../../test/" class="md-nav__link ">
               
   
   
@@ -1163,7 +1234,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/alert-testing/" class="md-nav__link">
+      <a href="../../test/alert-testing/" class="md-nav__link">
         
   
   
@@ -1191,7 +1262,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/recording-rules/" class="md-nav__link">
+      <a href="../../test/recording-rules/" class="md-nav__link">
         
   
   
@@ -1219,7 +1290,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/end-to-end-pipelines/" class="md-nav__link">
+      <a href="../../test/end-to-end-pipelines/" class="md-nav__link">
         
   
   
@@ -1247,7 +1318,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/synthetic-monitoring/" class="md-nav__link">
+      <a href="../../test/synthetic-monitoring/" class="md-nav__link">
         
   
   
@@ -1275,7 +1346,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/capacity-planning/" class="md-nav__link">
+      <a href="../../test/capacity-planning/" class="md-nav__link">
         
   
   
@@ -1303,7 +1374,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-device-telemetry/" class="md-nav__link">
+      <a href="../../test/network-device-telemetry/" class="md-nav__link">
         
   
   
@@ -1331,7 +1402,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/network-automation-testing/" class="md-nav__link">
+      <a href="../../test/network-automation-testing/" class="md-nav__link">
         
   
   
@@ -1359,7 +1430,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../test/examples/" class="md-nav__link">
+      <a href="../../test/examples/" class="md-nav__link">
         
   
   
@@ -1423,7 +1494,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../import/" class="md-nav__link ">
+            <a href="../../import/" class="md-nav__link ">
               
   
   
@@ -1467,7 +1538,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/from-csv/" class="md-nav__link">
+      <a href="../../import/from-csv/" class="md-nav__link">
         
   
   
@@ -1495,7 +1566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/grafana-exports/" class="md-nav__link">
+      <a href="../../import/grafana-exports/" class="md-nav__link">
         
   
   
@@ -1523,7 +1594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../import/log-files/" class="md-nav__link">
+      <a href="../../import/log-files/" class="md-nav__link">
         
   
   
@@ -1593,7 +1664,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../deploy/" class="md-nav__link ">
+            <a href="../../deploy/" class="md-nav__link ">
               
   
   
@@ -1637,7 +1708,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/cli/" class="md-nav__link">
+      <a href="../../deploy/cli/" class="md-nav__link">
         
   
   
@@ -1665,7 +1736,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server/" class="md-nav__link">
+      <a href="../../deploy/server/" class="md-nav__link">
         
   
   
@@ -1693,7 +1764,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/http-api/" class="md-nav__link">
+      <a href="../../deploy/http-api/" class="md-nav__link">
         
   
   
@@ -1721,7 +1792,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/server-metrics/" class="md-nav__link">
+      <a href="../../deploy/server-metrics/" class="md-nav__link">
         
   
   
@@ -1749,7 +1820,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/docker/" class="md-nav__link">
+      <a href="../../deploy/docker/" class="md-nav__link">
         
   
   
@@ -1777,7 +1848,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deploy/kubernetes/" class="md-nav__link">
+      <a href="../../deploy/kubernetes/" class="md-nav__link">
         
   
   
@@ -1843,7 +1914,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../reference/" class="md-nav__link ">
+            <a href="../../reference/" class="md-nav__link ">
               
   
   
@@ -1887,7 +1958,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/cli-flags/" class="md-nav__link">
+      <a href="../../reference/cli-flags/" class="md-nav__link">
         
   
   
@@ -1915,7 +1986,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/scenario-fields/" class="md-nav__link">
+      <a href="../../reference/scenario-fields/" class="md-nav__link">
         
   
   
@@ -1943,7 +2014,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/glossary/" class="md-nav__link">
+      <a href="../../reference/glossary/" class="md-nav__link">
         
   
   
@@ -1971,7 +2042,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/troubleshooting/" class="md-nav__link">
+      <a href="../../reference/troubleshooting/" class="md-nav__link">
         
   
   
@@ -2007,7 +2078,9 @@
             
             
               
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" hidden>
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -2018,6 +2091,36 @@
   
     
   
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-lane-is-showing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the lane is showing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#run-it-for-real" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run it for real
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -2031,38 +2134,79 @@
               <article class="md-content__inner md-typeset">
                 
                   
+  
+
 
 
   
   
 
 
-<h1 id="get-started">Get started<a class="headerlink" href="#get-started" title="Permanent link">&para;</a></h1>
-<p>This section takes you from no Sonda installed to a synthetic metric reaching a real <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> or <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr> backend. Allow about fifteen minutes from end to end.</p>
-<div class="grid cards">
+<div class="sonda-section-hero">
+<p><span class="sonda-section-hero__eyebrow">Alert lab</span></p>
+<h1 id="watch-an-alert-fire-before-you-page-anyone">Watch an alert fire — before you page anyone<a class="headerlink" href="#watch-an-alert-fire-before-you-page-anyone" title="Permanent link">&para;</a></h1>
+<p>Pick a failure pattern, set a threshold and a <code>for:</code> duration, and press play.
+The signal comes from the real Sonda engine (the same
+<a href="../">WebAssembly build</a> as the playground); the lane below the chart
+shows the alert state the way <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> would walk it:
+<span class="sonda-lab-chip sonda-lab-chip--inactive">inactive</span> →
+<span class="sonda-lab-chip sonda-lab-chip--pending">pending</span> →
+<span class="sonda-lab-chip sonda-lab-chip--firing">firing</span> → resolved.</p>
+</div>
+<div id="sonda-alert-lab" class="sonda-playground">
+  <div class="sonda-playground__controls">
+    <label class="sonda-playground__label" for="al-preset">Scenario</label>
+    <select id="al-preset" class="sonda-playground__select" aria-label="Failure pattern preset"></select>
+    <label class="sonda-playground__label" for="al-op">Alert when</label>
+    <select id="al-op" class="sonda-playground__select" aria-label="Comparison operator">
+      <option value=">">value &gt;</option>
+      <option value="<">value &lt;</option>
+    </select>
+    <input id="al-threshold" class="sonda-playground__select sonda-lab-number" type="number"
+      step="1" aria-label="Threshold value">
+    <label class="sonda-playground__label" for="al-for">for:</label>
+    <select id="al-for" class="sonda-playground__select" aria-label="For duration">
+      <option value="0">0s</option>
+      <option value="6">6s</option>
+      <option value="12">12s</option>
+      <option value="20">20s</option>
+      <option value="30">30s</option>
+    </select>
+    <button id="al-play" type="button" class="md-button md-button--primary sonda-playground__run">Play</button>
+    <span id="al-state" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite">inactive</span>
+  </div>
+  <canvas id="al-chart" class="sonda-playground__chart" height="380"
+    aria-label="Signal chart with alert-state lane"></canvas>
+  <p id="al-story" class="sonda-lab-story"></p>
+  <p class="sonda-lab-open-link"><a id="al-open" href="index.md">Edit this scenario in the playground →</a></p>
+  <noscript><p><strong>The alert lab needs JavaScript</strong> — it runs the Sonda engine
+  in your browser via WebAssembly.</p></noscript>
+</div>
+
+<h2 id="what-the-lane-is-showing">What the lane is showing<a class="headerlink" href="#what-the-lane-is-showing" title="Permanent link">&para;</a></h2>
+<p>The evaluator walks the sampled series exactly the way a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> alert rule
+would walk <abbr title="Prometheus pull model -- the server periodically GETs an exposition endpoint to ingest metrics.">scrape</abbr> samples:</p>
 <ul>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m13.13 22.19-1.63-3.83c1.57-.58 3.04-1.36 4.4-2.27zM5.64 12.5l-3.83-1.63 6.1-2.77C7 9.46 6.22 10.93 5.64 12.5M21.61 2.39S16.66.269 11 5.93c-2.19 2.19-3.5 4.6-4.35 6.71-.28.75-.09 1.57.46 2.13l2.13 2.12c.55.56 1.37.74 2.12.46A19.1 19.1 0 0 0 18.07 13c5.66-5.66 3.54-10.61 3.54-10.61m-7.07 7.07c-.78-.78-.78-2.05 0-2.83s2.05-.78 2.83 0c.77.78.78 2.05 0 2.83s-2.05.78-2.83 0m-5.66 7.07-1.41-1.41zM6.24 22l3.64-3.64c-.34-.09-.67-.24-.97-.45L4.83 22zM2 22h1.41l4.77-4.76-1.42-1.41L2 20.59zm0-2.83 4.09-4.08c-.21-.3-.36-.62-.45-.97L2 17.76z"/></svg></span> <strong><a href="quickstart/">Quickstart</a></strong></p>
-<p>Install Sonda, generate a starter YAML file with <code>sonda new --template</code>, and <abbr title="Loki's smallest indexed unit -- identified by its label set.">stream</abbr> a metric to stdout. Five minutes.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 13.5v8H3v-8zm-2 2H5v4h4zM12 2l5.5 9h-11zm0 3.86L10.08 9h3.84zM17.5 13c2.5 0 4.5 2 4.5 4.5S20 22 17.5 22 13 20 13 17.5s2-4.5 4.5-4.5m0 2a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg></span> <strong><a href="your-first-scenario/">Your first <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></a></strong></p>
-<p>The four parts of a Sonda <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>: <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file, <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>, <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>. Each part comes with a small YAML example.</p>
-</li>
-<li>
-<p><span class="twemoji"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.4 7.5c.8.8.8 2.1 0 2.8l-2.8 2.8-7.8-7.8 2.8-2.8c.8-.8 2.1-.8 2.8 0l1.8 1.8 3-3 1.4 1.4-3 3zm-5.8 5.8-1.4-1.4-2.8 2.8-2.1-2.1 2.8-2.8-1.4-1.4-2.8 2.8-1.5-1.4-2.8 2.8c-.8.8-.8 2.1 0 2.8l1.8 1.8-4 4 1.4 1.4 4-4 1.8 1.8c.8.8 2.1.8 2.8 0l2.8-2.8-1.4-1.4z"/></svg></span> <strong><a href="send-to-a-backend/">Send to a real backend</a></strong></p>
-<p>Point your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> at <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> (<code>remote_write</code>) or <abbr title="Grafana's log aggregation system. Stores logs indexed by labels rather than full-text.">Loki</abbr>. Includes the <code>docker run</code> commands to start each backend locally.</p>
-</li>
+<li><strong>inactive</strong> — the condition is false.</li>
+<li><strong>pending</strong> — the condition is true, but hasn't held for the full <code>for:</code>
+  duration yet. If the signal recovers first, no alert ever fires. This is
+  what makes <code>for:</code> the standard defense against flapping.</li>
+<li><strong>firing</strong> — the condition has held continuously for <code>for:</code>. This is when
+  <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> would notify you.</li>
+<li><strong>resolved</strong> — the condition went false while firing (marked with a tick on
+  the lane).</li>
 </ul>
-</div>
-<div class="admonition tip">
-<p class="admonition-title">Where to next</p>
-<p>After you finish here, read <a href="../build/">Build scenarios</a> to write YAML you can check into git. To produce data that drives your alert rules, see <a href="../test/">Test pipelines</a>.</p>
-</div>
-<div class="sonda-nav-footer">
-  <p></p>
-  <p class="sonda-nav-footer__next"><a href="quickstart/"><span class="sonda-nav-footer__label">Next</span><span class="sonda-nav-footer__title">Quickstart</span></a></p>
-</div>
+<p>Try the <em>Link blips, then a real outage</em> preset both ways: with <code>for: 6s</code> the
+two short blips never page, and the real outage still fires. Set <code>for: 0s</code>
+and every blip becomes a page — that's the on-call experience <code>for:</code> exists
+to prevent.</p>
+<h2 id="run-it-for-real">Run it for real<a class="headerlink" href="#run-it-for-real" title="Permanent link">&para;</a></h2>
+<p>The lab simulates rule evaluation; the real thing is one config file away.
+<a href="../../test/alert-testing/">Alert testing</a> walks the same patterns against a
+live <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> + <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> stack (the repository ships a
+<a href="../../deploy/docker/">Compose stack</a> with <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> wired up), and
+<a href="../../test/end-to-end-pipelines/">CI validation</a> turns them into exit codes
+for your pipeline.</p>
 
 
 
@@ -2083,7 +2227,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 20:27:47 UTC">August 8, 2026</span>
   </span>
 
     
@@ -2093,6 +2237,8 @@
   </aside>
 
 
+
+  
 
 
 
@@ -2118,10 +2264,12 @@
   
     
       
+        
+      
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href=".." class="md-footer__link md-footer__link--prev" aria-label="Previous: Home">
+          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: Playground">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -2131,20 +2279,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Home
+                Playground
               </div>
             </div>
           </a>
         
         
           
-          <a href="quickstart/" class="md-footer__link md-footer__link--next" aria-label="Next: Quickstart">
+          <a href="../../build/" class="md-footer__link md-footer__link--next" aria-label="Next: Build scenarios">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Quickstart
+                Build scenarios
               </div>
             </div>
             <div class="md-footer__button md-icon">
@@ -2209,18 +2357,18 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
-        <script src="../javascripts/sonda-term.js"></script>
+        <script src="../../javascripts/sonda-term.js"></script>
       
-        <script src="../javascripts/sonda-hero.js"></script>
+        <script src="../../javascripts/sonda-hero.js"></script>
       
-        <script src="../javascripts/playground.js" type="module"></script>
+        <script src="../../javascripts/playground.js" type="module"></script>
       
-        <script src="../javascripts/alert-lab.js" type="module"></script>
+        <script src="../../javascripts/alert-lab.js" type="module"></script>
       
     
   </body>
