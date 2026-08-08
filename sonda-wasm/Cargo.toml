@@ -1,0 +1,19 @@
+[package]
+name = "sonda-wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "WebAssembly facade over the sonda-core engine, powering the docs-site playground"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sonda-core = { path = "../sonda-core", default-features = false, features = ["config"] }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
