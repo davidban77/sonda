@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Synthetic telemetry generator for the people who run the pipeline — metrics, logs, histograms, and summaries shaped like the real thing, in a single static binary.">
+        <meta name="description" content="How Sonda's parts nest — scenarios, entries, generators, encoders, sinks, and packs — and what a multi-scenario run looks like.">
       
       
       
@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/favicon.svg">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -61,7 +61,20 @@
 
     
     
-  </head>
+  
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Concepts - Sonda" />
+<meta property="og:description" content="How Sonda's parts nest — scenarios, entries, generators, encoders, sinks, and packs — and what a multi-scenario run looks like." />
+<meta property="og:image" content="https://davidban77.github.io/sonda/assets/images/social/build/concepts.png" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:url" content="https://davidban77.github.io/sonda/build/concepts/" />
+<meta property="twitter:card" content="summary_large_image" />
+<meta property="twitter:title" content="Concepts - Sonda" />
+<meta property="twitter:description" content="How Sonda's parts nest — scenarios, entries, generators, encoders, sinks, and packs — and what a multi-scenario run looks like." />
+<meta property="twitter:image" content="https://davidban77.github.io/sonda/assets/images/social/build/concepts.png" />
+</head>
   
   
     
@@ -259,6 +272,25 @@
         </a>
       </li>
     
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../playground/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Playground
+
+      </a>
+    </li>
   
 
       
@@ -619,6 +651,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../../playground/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playground
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -662,7 +721,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
           <div class="md-nav__link md-nav__container">
@@ -684,14 +743,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_3">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1111,7 +1170,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1133,14 +1192,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1415,7 +1474,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1437,14 +1496,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1585,7 +1644,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1607,14 +1666,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1835,7 +1894,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
           <div class="md-nav__link md-nav__container">
@@ -1857,14 +1916,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_7" id="__nav_7_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2131,6 +2190,12 @@
 
 <h1 id="concepts">Concepts<a class="headerlink" href="#concepts" title="Permanent link">&para;</a></h1>
 <p>This page covers how Sonda's four parts nest, how packs let you reuse metric definitions, and what a multi-<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> run looks like. It assumes you have read <a href="../../get-started/your-first-scenario/">Your first <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></a>, which introduces the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file, <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>, <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>.</p>
+<p>Every entry in a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file drives the same pipeline: a <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> shapes the values, an <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr> formats them, and a <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> delivers them to your backend.</p>
+<pre class="mermaid"><code>flowchart LR
+  E["Entry&lt;br/&gt;rate · duration · schedule"] --&gt; G["Generator&lt;br/&gt;shapes the values"]
+  G --&gt; N["Encoder&lt;br/&gt;formats the bytes"]
+  N --&gt; S["Sink&lt;br/&gt;delivers them"]
+  S --&gt; B["Your backend&lt;br/&gt;Prometheus · Loki · Kafka · OTel"]</code></pre>
 <h2 id="how-the-parts-nest">How the parts nest<a class="headerlink" href="#how-the-parts-nest" title="Permanent link">&para;</a></h2>
 <p>A <abbr title="Directory of scenario YAML files Sonda walks with --catalog &lt;dir&gt;.">catalog</abbr> is a directory of <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> files. Each <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> file lists one or more entries. Each entry either declares its own <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>, <abbr title="Sonda component that serialises events into a wire format (Prometheus text, OTLP, JSON lines).">encoder</abbr>, and <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, or references a <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr>. A <abbr title="Reusable bundle of metric names + label schemas referenced from a scenario by name.">pack</abbr> is a separate file that holds a reusable bundle of metric definitions.</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>catalog/                       &lt;-- a directory of YAML files you point sonda at
@@ -2364,9 +2429,7 @@
 <ul>
 <li><a href="../scenario-files/"><strong>Scenario Files</strong></a> — full file-format reference, including <code>defaults:</code>, <code>after:</code> and <code>while:</code> chains, and <a href="../../reference/glossary/#sink-error-policy"><abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>-error policy</a>.</li>
 <li><a href="../../reference/scenario-fields/"><strong>Scenario Fields</strong></a> — per-entry fields: generators, schedules, labels, encoders, sinks.</li>
-<li><a href="../catalogs-and-packs/"><strong>Catalogs and packs</strong></a> — directory layout, <code>sonda list</code>, <code>sonda show</code>, and how to write your own packs.
-</content>
-</invoke></li>
+<li><a href="../catalogs-and-packs/"><strong>Catalogs and packs</strong></a> — directory layout, <code>sonda list</code>, <code>sonda show</code>, and how to write your own packs.</li>
 </ul>
 
 
@@ -2375,6 +2438,27 @@
 
 
 
+  
+    
+  
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+  </span>
+
+    
+    
+    
+    
+  </aside>
 
 
 
@@ -2496,7 +2580,11 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.indexes", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.footer", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/sonda-term.js"></script>
+      
+        <script src="../../javascripts/playground.js" type="module"></script>
       
     
   </body>
