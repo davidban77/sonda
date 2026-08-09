@@ -1,27 +1,22 @@
-//! Prometheus-compatible client for alert-state polling.
+//! Prometheus-compatible acquisition for alert-state polling.
 //!
 //! Queries the instant-query API (`/api/v1/query`) for the built-in
 //! `ALERTS` metric, which every Prometheus-compatible evaluator (Prometheus,
 //! VictoriaMetrics/vmalert) exposes with an `alertstate` label of `pending`
-//! or `firing` while a rule is active.
+//! or `firing` while a rule is active. This module only *acquires* state —
+//! deadline decisions belong to [`crate::verify::evaluator`].
 
 use std::fmt::Write as _;
+use std::time::Duration;
 
-use crate::verify::AlertExpectation;
-use crate::{ConfigError, SondaError};
-
-/// Observed state of one alert at a single poll.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlertState {
-    /// No `ALERTS` series matched the expectation's selector.
-    Inactive,
-    /// Matched series exist, but none with `alertstate="firing"`.
-    Pending,
-    /// At least one matched series has `alertstate="firing"`.
-    Firing,
-}
+use crate::verify::{AlertExpectation, AlertState};
+use crate::{SondaError, VerifyError};
 
 /// Minimal blocking client for the Prometheus instant-query API.
+///
+/// Every request carries an overall timeout — a stalled endpoint returns a
+/// [`VerifyError::Query`] instead of parking the calling thread forever,
+/// which keeps polling loops bounded and interruptible.
 pub struct PrometheusClient {
     query_url: String,
     agent: ureq::Agent,
@@ -29,12 +24,13 @@ pub struct PrometheusClient {
 
 impl PrometheusClient {
     /// Create a client for a Prometheus-compatible base URL
-    /// (e.g. `http://localhost:9090`).
-    pub fn new(base_url: &str) -> Self {
+    /// (e.g. `http://localhost:9090`), with an overall per-request timeout
+    /// covering connect, write, and read.
+    pub fn new(base_url: &str, timeout: Duration) -> Self {
         let base = base_url.trim_end_matches('/');
         Self {
             query_url: format!("{base}/api/v1/query"),
-            agent: ureq::AgentBuilder::new().build(),
+            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
         }
     }
 
@@ -42,9 +38,9 @@ impl PrometheusClient {
     ///
     /// # Errors
     ///
-    /// Returns [`SondaError::Config`] when the endpoint is unreachable or
-    /// responds with a non-success API status — callers decide whether to
-    /// retry (transient network errors during startup are normal).
+    /// Returns [`SondaError::Verify`] when the endpoint is unreachable,
+    /// times out, or responds with an unusable payload — callers polling in
+    /// a loop treat these as retryable until their deadline.
     pub fn alert_state(&self, expectation: &AlertExpectation) -> Result<AlertState, SondaError> {
         let query = alerts_query(expectation);
         let body = self
@@ -53,18 +49,24 @@ impl PrometheusClient {
             .query("query", &query)
             .call()
             .map_err(|e| {
-                SondaError::Config(ConfigError::invalid(format!(
-                    "prometheus query failed against {}: {e}",
-                    self.query_url
-                )))
+                SondaError::Verify(VerifyError::Query {
+                    url: self.query_url.clone(),
+                    reason: e.to_string(),
+                })
             })?
             .into_string()
             .map_err(|e| {
-                SondaError::Config(ConfigError::invalid(format!(
-                    "prometheus response could not be read: {e}"
-                )))
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.query_url.clone(),
+                    reason: format!("response could not be read: {e}"),
+                })
             })?;
-        parse_alert_state(&body)
+        parse_alert_state(&body).map_err(|reason| {
+            SondaError::Verify(VerifyError::BadResponse {
+                url: self.query_url.clone(),
+                reason,
+            })
+        })
     }
 }
 
@@ -103,18 +105,15 @@ fn escape_label_value(value: &str) -> String {
     escaped
 }
 
-/// Parse an instant-query response into an [`AlertState`].
-pub fn parse_alert_state(body: &str) -> Result<AlertState, SondaError> {
-    let parsed: serde_json::Value = serde_json::from_str(body).map_err(|e| {
-        SondaError::Config(ConfigError::invalid(format!(
-            "prometheus response is not valid JSON: {e}"
-        )))
-    })?;
+/// Parse an instant-query response body into an [`AlertState`].
+///
+/// Returns a human-readable reason on failure; the caller wraps it with the
+/// query URL into a [`VerifyError::BadResponse`].
+pub fn parse_alert_state(body: &str) -> Result<AlertState, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("not valid JSON: {e}"))?;
     if parsed["status"] != "success" {
-        return Err(SondaError::Config(ConfigError::invalid(format!(
-            "prometheus query returned status {:?}",
-            parsed["status"]
-        ))));
+        return Err(format!("query returned status {:?}", parsed["status"]));
     }
     let empty = Vec::new();
     let results = parsed["data"]["result"].as_array().unwrap_or(&empty);
@@ -192,5 +191,28 @@ mod tests {
     fn error_status_is_rejected() {
         let body = r#"{"status":"error","errorType":"bad_data","error":"boom"}"#;
         assert!(parse_alert_state(body).is_err());
+    }
+
+    #[test]
+    fn stalled_endpoint_times_out_with_verify_error() {
+        // A listener that accepts but never answers must produce a bounded
+        // Verify::Query error, not a parked thread (blocker 2).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _keep_alive = std::thread::spawn(move || {
+            let _streams: Vec<_> = listener.incoming().take(1).collect();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        let client = PrometheusClient::new(
+            &format!("http://{addr}"),
+            std::time::Duration::from_millis(300),
+        );
+        let started = std::time::Instant::now();
+        let result = client.alert_state(&expectation(None));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        match result {
+            Err(SondaError::Verify(VerifyError::Query { .. })) => {}
+            other => panic!("expected Verify::Query error, got {other:?}"),
+        }
     }
 }

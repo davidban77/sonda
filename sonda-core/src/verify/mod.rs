@@ -17,13 +17,28 @@
 //! the [`prometheus`] client (feature `http`) polls a Prometheus-compatible
 //! API's `ALERTS` metric to check each expectation.
 
+pub mod evaluator;
 #[cfg(feature = "http")]
 pub mod prometheus;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::{ConfigError, SondaError};
+use crate::SondaError;
+
+/// Observed state of one alert at a single poll.
+///
+/// Produced by acquisition (the [`prometheus`] client today, Alertmanager
+/// sampling in a later phase) and consumed by the [`evaluator`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertState {
+    /// No alert series matched the expectation's selector.
+    Inactive,
+    /// Matched series exist, but none is firing.
+    Pending,
+    /// At least one matched series is firing.
+    Firing,
+}
 
 /// Top-level `expect:` block of a scenario file.
 #[derive(Debug, Clone)]
@@ -87,6 +102,8 @@ impl AlertExpectation {
 /// unknown fields, an empty alert list, or invalid duration strings.
 #[cfg(feature = "config")]
 pub fn parse_expectations(yaml: &str) -> Result<Option<ExpectConfig>, SondaError> {
+    use crate::ConfigError;
+
     #[derive(serde::Deserialize)]
     struct ExpectProbe {
         #[serde(default)]

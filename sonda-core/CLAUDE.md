@@ -133,6 +133,17 @@ src/
 │                          + Σ delay; clock_group is auto-named
 │                          `chain_{lowest_lex_id}` per connected component
 │                          when none is explicit. Feature-gated (config).
+├── verify/
+│   ├── mod.rs          ← alert-expectation types for `sonda test`: ExpectConfig,
+│   │                      AlertExpectation, AlertState, parse_expectations() (config feature).
+│   │                      The `expect:` block is pure metadata to the compiler and runtime.
+│   ├── evaluator.rs    ← pure, feature-free verdicts: Observation timelines + a deadline
+│   │                      → Outcome (Pass | Late | Missed | Undecided). Owns EVERY deadline
+│   │                      comparison — acquisition layers must never decide pass/fail.
+│   └── prometheus.rs   ← acquisition (feature = "http"): blocking PrometheusClient with a
+│                          mandatory per-request timeout, queries the ALERTS metric via the
+│                          instant-query API. Errors are SondaError::Verify, retryable by
+│                          polling loops. Alertmanager acquisition is planned as a sibling.
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
