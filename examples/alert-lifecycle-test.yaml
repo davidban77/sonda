@@ -62,10 +62,14 @@ scenarios:
       host: sonda-test
       service: payment-service
 
+# The expectation matches on this scenario's own `host` label — ALERTS is
+# global, so scoping keeps a foreign HighCpuUsage from another series in
+# the same datastore from satisfying the firing check.
 expect:
   alerts:
     - alert: HighCpuUsage
       labels:
         severity: critical
+        host: sonda-test
       firing_within: 90s
       resolves_within: 2m

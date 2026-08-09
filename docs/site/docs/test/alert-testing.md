@@ -808,6 +808,7 @@ expect:
     - alert: HighCpuUsage
       labels:
         severity: critical
+        host: sonda-test
       firing_within: 90s
       resolves_within: 6m
 ```
@@ -818,6 +819,11 @@ expect:
   stops, the alert must stop firing. Leave slack for staleness — a pushed
   series takes a few minutes to go stale after the last sample.
 - `labels` narrows the match when one rule name fires for many label sets.
+  **Always include a label unique to your scenario** (here `host`, matching
+  the scenario's own `labels:`): the `ALERTS` metric is global, so an
+  unscoped expectation is satisfied by *any* firing alert with that name —
+  including ones your scenario never caused. On a shared or long-lived
+  Prometheus that turns a real failure into a false pass.
 
 Run it against any Prometheus-compatible query API (Prometheus,
 VictoriaMetrics with vmalert):

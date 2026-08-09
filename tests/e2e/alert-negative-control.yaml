@@ -6,6 +6,11 @@
 # against a live vmalert that the exit-code contract cannot false-pass.
 # Exercised by scripts/live_infra_uat.py (alert-test-fail-control row);
 # not a usage example, which is why it lives here and not in examples/.
+#
+# The expectation matches on this scenario's own `host` label: the ALERTS
+# metric is global, so without it a HighCpuUsage alert fired by any other
+# series in the same datastore would satisfy the expectation and turn the
+# control's guaranteed failure into a pass.
 
 version: 2
 kind: runnable
@@ -35,4 +40,5 @@ expect:
     - alert: HighCpuUsage
       labels:
         severity: critical
+        host: sonda-negative-control
       firing_within: 20s

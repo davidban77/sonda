@@ -154,8 +154,9 @@ MATRIX: tuple[MatrixRow, ...] = (
         failure_log_containers=("otel-collector", "loki"),
     ),
     # -- `sonda test` alert rows (self-verifying: exit code is the verdict) --
-    # Negative control runs first so the ALERTS metric has no residue from
-    # an earlier firing when it asserts "did not fire".
+    # Both fixtures scope their expectations to their own `host` label, so
+    # neither row's verdict can come from the other's ALERTS residue —
+    # ordering between them is a readability choice, not a correctness one.
     MatrixRow(
         name="alert-test-fail-control",
         profiles=("alerting",),
@@ -188,6 +189,10 @@ MATRIX: tuple[MatrixRow, ...] = (
             "--interval",
             "5s",
         ),
+        # Exit 0 already implies both checks held; pinning the resolution
+        # line proves the half this scenario exists to exercise actually
+        # ran, rather than inferring it.
+        expect_stderr="resolved after",
         # 90s scenario + firing/resolution polling; observed ~105s live.
         timeout_s=300.0,
     ),
