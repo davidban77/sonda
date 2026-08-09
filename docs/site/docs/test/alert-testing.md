@@ -795,6 +795,52 @@ The table below maps every pattern on this page to its generator and example fil
 | Push to VictoriaMetrics | any | `vm-push-scenario.yaml` |
 | Remote write | any | `remote-write-vm.yaml` |
 
+## Automate it with `sonda test`
+
+Everything above ends with you checking the Prometheus alerts page by hand.
+`sonda test` closes that loop: declare the expected outcome in the scenario
+file itself, and Sonda runs the scenario, polls the evaluator's `ALERTS`
+metric, and exits non-zero when reality disagrees.
+
+```yaml title="expect block (appended to any runnable scenario)"
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      labels:
+        severity: critical
+      firing_within: 90s
+      resolves_within: 6m
+```
+
+- `firing_within` counts from scenario start: the alert must reach the
+  `firing` state (not just `pending`) before the deadline.
+- `resolves_within` counts from scenario end and is optional: once emission
+  stops, the alert must stop firing. Leave slack for staleness — a pushed
+  series takes a few minutes to go stale after the last sample.
+- `labels` narrows the match when one rule name fires for many label sets.
+
+Run it against any Prometheus-compatible query API (Prometheus,
+VictoriaMetrics with vmalert):
+
+```bash
+sonda test examples/alert-expectation-test.yaml \
+  --prometheus-url http://localhost:8428
+```
+
+```text
+  PASS HighCpuUsage firing after 22s (within 90s)
+  PASS HighCpuUsage resolved after 4m41s (within 6m of scenario end)
+
+  PASS 1 alert expectation(s) verified (scenario ran 60s)
+```
+
+The exit code is the contract: `0` when every expectation holds, non-zero
+otherwise — which makes alert rules testable in CI. The
+[CI validation walkthrough](end-to-end-pipelines.md) shows the full pipeline;
+`--dry-run` validates the scenario and its `expect:` block without emitting
+or contacting Prometheus. The `expect:` block is pure metadata to `sonda run`
+— the same file works for both commands.
+
 ## Where to next
 
 - [End-to-end pipelines](end-to-end-pipelines.md) — confirm alerts fire through vmalert, Alertmanager, and a webhook receiver.

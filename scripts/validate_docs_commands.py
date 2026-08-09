@@ -35,12 +35,13 @@ DOCS_GLOB_ROOT = Path("docs/site/docs")
 # `mkdocs build` emits site output under `docs/site/site/`; skip it.
 DOCS_GLOB_EXCLUDE = (Path("docs/site/site"),)
 
-KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new"})
+KNOWN_SUBCOMMANDS: frozenset[str] = frozenset({"run", "list", "show", "new", "test"})
 
 # ``--dry-run`` is declared as a global flag (``#[arg(long, global = true)]``)
-# but only has an observable effect on ``run``. The validator only injects it
-# for ``run`` commands.
-DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset({"run"})
+# and short-circuits before any network I/O on both ``run`` and ``test``
+# (``test --dry-run`` validates the scenario and its expect: block without
+# contacting Prometheus). The validator injects it for both.
+DRY_RUNNABLE_SINGLE: frozenset[str] = frozenset({"run", "test"})
 
 DEFAULT_SONDA_BINARY = Path("target/release/sonda")
 
@@ -581,19 +582,19 @@ def validate_command(
 def _build_dry_run_argv(
     cmd: ExtractedCommand, sonda_bin: Path
 ) -> list[str]:
-    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` for the
-    ``run`` subcommand if not already present.
+    """Replace ``sonda`` with ``sonda_bin`` and inject ``--dry-run`` for
+    dry-runnable subcommands if not already present.
 
     ``--dry-run`` is declared as a clap global flag, so clap accepts it in
-    either position. We inject after the ``run`` verb purely as a stylistic
-    choice so the rendered command reads as ``sonda run --dry-run <args>``.
+    either position. We inject after the verb purely as a stylistic choice
+    so the rendered command reads as ``sonda run --dry-run <args>``.
     """
     argv = list(cmd.argv)
     argv[0] = str(sonda_bin)
     if "--dry-run" in argv:
         return argv
     for i, tok in enumerate(argv):
-        if tok == "run":
+        if tok in DRY_RUNNABLE_SINGLE:
             argv.insert(i + 1, "--dry-run")
             return argv
     return argv
