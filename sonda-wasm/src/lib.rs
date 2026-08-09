@@ -17,13 +17,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
+use sonda_core::compiler::compile_after::CompiledEntry;
 use sonda_core::compiler::expand::InMemoryPackResolver;
 use sonda_core::config::validate::parse_duration;
 use sonda_core::config::{ScenarioConfig, ScenarioEntry};
 use sonda_core::encoder::create_encoder;
 use sonda_core::generator::{create_generator, JitterWrapper, ValueGenerator};
 use sonda_core::model::metric::{Labels, MetricEvent, ValidatedMetricName};
-use sonda_core::{compile_scenario_file, desugar_entry};
+use sonda_core::{compile_scenario_file, compile_scenario_file_compiled, desugar_entry};
 
 /// Fixed base timestamp for encoded previews (milliseconds since epoch).
 ///
@@ -55,6 +56,13 @@ struct EntrySample {
     tick_secs: f64,
     /// Scenario duration in seconds, when bounded.
     duration_secs: Option<f64>,
+    /// Start offset on the shared timeline in seconds. Non-zero when the
+    /// compiler resolved an `after:` chain or the user set `phase_offset`.
+    offset_secs: f64,
+    /// Upstream entry id this entry's `after:` clause resolved against.
+    after_ref: Option<String>,
+    /// Human-readable `while:` gate description, when present.
+    while_label: Option<String>,
     values: Vec<f64>,
     labels: BTreeMap<String, String>,
     gap: Option<GapOut>,
@@ -116,15 +124,29 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
         }
     };
 
+    // The compiled view of the same file carries what the runtime entries
+    // fold away: the resolved `after:` upstream id and `while:` gates.
+    // Entry order is preserved through every compile phase, so join by index.
+    let compiled = compile_scenario_file_compiled(yaml, &resolver)
+        .map(|file| file.entries)
+        .unwrap_or_default();
+
     let mut sampled = Vec::new();
     let mut skipped = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
-        let id = entry_id(&entry, index);
+        // Prefer the compiled entry's real id (e.g. "memory") — the runtime
+        // entry only carries the metric name.
+        let id = compiled
+            .get(index)
+            .and_then(|c| c.id.clone())
+            .unwrap_or_else(|| entry_id(&entry, index));
         match desugar_entry(entry) {
-            Ok(ScenarioEntry::Metrics(config)) => match sample_metrics(&id, &config, max_ticks) {
-                Ok(sample) => sampled.push(sample),
-                Err(reason) => skipped.push(SkippedEntry { id, reason }),
-            },
+            Ok(ScenarioEntry::Metrics(config)) => {
+                match sample_metrics(&id, &config, compiled.get(index), max_ticks) {
+                    Ok(sample) => sampled.push(sample),
+                    Err(reason) => skipped.push(SkippedEntry { id, reason }),
+                }
+            }
             Ok(ScenarioEntry::Logs(_)) => skipped.push(SkippedEntry {
                 id,
                 reason: "log entries are not visualized in the playground yet".into(),
@@ -170,6 +192,7 @@ fn entry_id(entry: &ScenarioEntry, index: usize) -> String {
 fn sample_metrics(
     id: &str,
     config: &ScenarioConfig,
+    compiled: Option<&CompiledEntry>,
     max_ticks: u32,
 ) -> Result<EntrySample, String> {
     let rate = config.base.rate;
@@ -187,6 +210,27 @@ fn sample_metrics(
         Some(s) => Some(parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64()),
         None => None,
     };
+
+    // The compiled entry's phase_offset is the resolved total (user offset
+    // + after-chain crossing times + delays); fall back to the runtime
+    // entry's own field when the compiled join is unavailable.
+    let offset_secs = match compiled
+        .and_then(|c| c.phase_offset.as_deref())
+        .or(config.base.phase_offset.as_deref())
+    {
+        Some(s) => parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64(),
+        None => 0.0,
+    };
+    let after_ref = compiled.and_then(|c| c.after_ref.clone());
+    let while_label = compiled.and_then(|c| {
+        c.while_clause.as_ref().map(|w| {
+            let op = match w.op {
+                sonda_core::compiler::WhileOp::LessThan => "<",
+                sonda_core::compiler::WhileOp::GreaterThan => ">",
+            };
+            format!("while {} {} {}", w.ref_id, op, w.value)
+        })
+    });
 
     // Bound the sample count by the scenario duration when it is shorter
     // than the requested window.
@@ -238,6 +282,9 @@ fn sample_metrics(
         rate,
         tick_secs: 1.0 / rate,
         duration_secs,
+        offset_secs,
+        after_ref,
+        while_label,
         values,
         labels: labels_map,
         gap,
@@ -323,6 +370,44 @@ scenarios:
         // Flap at rate 4: 8 up ticks then 4 down ticks.
         assert_eq!(values[0], 1.0);
         assert_eq!(values[8], 0.0);
+    }
+
+    #[test]
+    fn after_chain_produces_offset_and_ref() {
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - id: memory
+    signal_type: metrics
+    name: memory_percent
+    duration: 120s
+    generator: { type: leak, baseline: 10.0, ceiling: 95.0, time_to_ceiling: 120s }
+  - id: latency
+    signal_type: metrics
+    name: latency_ms
+    duration: 30s
+    after: { ref: memory, op: '>', value: 40.0 }
+    generator: { type: leak, baseline: 120.0, ceiling: 450.0, time_to_ceiling: 30s }
+";
+        let json = sample_scenario(yaml, 240);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["ok"], true, "compile failed: {:?}", parsed["error"]);
+        let entries = parsed["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "memory");
+        assert_eq!(entries[0]["offset_secs"], 0.0);
+        assert_eq!(entries[1]["after_ref"], "memory");
+        // leak 10→95 over 120s crosses 40 at ~42.4s.
+        let offset = entries[1]["offset_secs"].as_f64().expect("offset");
+        assert!(
+            (41.0..44.0).contains(&offset),
+            "expected crossing near 42s, got {offset}"
+        );
     }
 
     #[test]
