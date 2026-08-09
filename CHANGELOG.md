@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.18.0](https://github.com/davidban77/sonda/compare/v1.17.1...v1.18.0) (2026-08-09)
+
+
+### Features
+
+* `sonda test` — alert expectations verified against Prometheus (W2 phase 1) ([#516](https://github.com/davidban77/sonda/issues/516)) ([3f2cc6a](https://github.com/davidban77/sonda/commit/3f2cc6a5a031bbf82e9f45d6b93c0d876d1d3c3f))
+* sonda test verdicts from stored samples + foreign-label warning (W2 phase 2) ([#528](https://github.com/davidban77/sonda/issues/528)) ([c491eeb](https://github.com/davidban77/sonda/commit/c491eeb41f25ac5489941f050a06009614ac1297))
+* **wasm:** causal-chain visualization in the playground ([#515](https://github.com/davidban77/sonda/issues/515)) ([6da1fcf](https://github.com/davidban77/sonda/commit/6da1fcfc0ed7dcb1dbad094b7a78ee4be521ab62))
+
+
+### Bug Fixes
+
+* **docs:** point the alert lab's playground link at the playground ([#513](https://github.com/davidban77/sonda/issues/513)) ([ac54b3d](https://github.com/davidban77/sonda/commit/ac54b3dd30706d1e4552cea0f49b620c7b3c1670))
+* **docs:** repair the alert lab memory-leak preset and surface engine errors ([#512](https://github.com/davidban77/sonda/issues/512)) ([7177792](https://github.com/davidban77/sonda/commit/7177792587e38fb0a915b0e7e74df7338234d5da))
+
+
+### Documentation
+
+* **site:** alert lab and homepage revamp — phases 3 and 4 ([#511](https://github.com/davidban77/sonda/issues/511)) ([a6f16da](https://github.com/davidban77/sonda/commit/a6f16da2e40dbe772cfd4c08ad79f6066673939d))
+* **site:** give the playground a real editor (CodeMirror 6) ([#514](https://github.com/davidban77/sonda/issues/514)) ([1921515](https://github.com/davidban77/sonda/commit/1921515e4c3a97fe875ac72350da538d6d5e18aa))
+* **site:** UX revamp — hygiene fixes, waveform gallery, and a wasm playground ([#510](https://github.com/davidban77/sonda/issues/510)) ([1f7e9b3](https://github.com/davidban77/sonda/commit/1f7e9b3b046928ca4bbba6102f51d3353f0d57d5))
+
+
+### CI/CD
+
+* bump actions/cache from 5 to 6 ([#499](https://github.com/davidban77/sonda/issues/499)) ([639e8d4](https://github.com/davidban77/sonda/commit/639e8d460ed8d500f7d8ef99b023a408fa45d835))
+* bump actions/setup-python from 6 to 7 ([#508](https://github.com/davidban77/sonda/issues/508)) ([a82cf27](https://github.com/davidban77/sonda/commit/a82cf27e197de3a3f9eb522de093ea6ae4a82197))
+* bump apache/kafka from 4.2.0 to 4.3.1 in /examples ([#496](https://github.com/davidban77/sonda/issues/496)) ([50e8ba4](https://github.com/davidban77/sonda/commit/50e8ba4d431087e0e48cd96faeed2305fab4721e))
+* bump grafana/grafana from 13.0.1 to 13.1.2 in /examples ([#495](https://github.com/davidban77/sonda/issues/495)) ([c3190ce](https://github.com/davidban77/sonda/commit/c3190ce0a473d7a23fe443131e09afa30e7a25d0))
+* bump taiki-e/install-action from 2 to 2.85.5 ([#509](https://github.com/davidban77/sonda/issues/509)) ([cd8a7c5](https://github.com/davidban77/sonda/commit/cd8a7c5055c09e6b1c49687a44ac1dbe1e2be5ba))
+* bump victoriametrics/victoria-metrics in /examples ([#500](https://github.com/davidban77/sonda/issues/500)) ([9156c83](https://github.com/davidban77/sonda/commit/9156c83d46c4b1bfa712d3846953b74d68ef922d))
+* bump victoriametrics/vmagent from v1.145.0 to v1.149.0 in /examples ([#498](https://github.com/davidban77/sonda/issues/498)) ([024e7e3](https://github.com/davidban77/sonda/commit/024e7e3bc301cfde9bce01d6da5c4576a3a19605))
+* bump victoriametrics/vmalert from v1.145.0 to v1.149.0 in /examples ([#497](https://github.com/davidban77/sonda/issues/497)) ([e6e5533](https://github.com/davidban77/sonda/commit/e6e55332ccfa52cd0f7bcef5d4f2ced2e2ad69de))
+* move cargo audit to a dedicated scheduled workflow ([#506](https://github.com/davidban77/sonda/issues/506)) ([16acadb](https://github.com/davidban77/sonda/commit/16acadb40d3406edcc63d1454551878005c677cd))
+
 ## [1.17.1](https://github.com/davidban77/sonda/compare/v1.17.0...v1.17.1) (2026-06-17)
 
 
