@@ -120,6 +120,51 @@ scenarios:
 `,
   },
   {
+    name: "Cascading failure (after: chain)",
+    yaml: `version: 2
+kind: runnable
+defaults:
+  rate: 4
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - id: memory
+    signal_type: metrics
+    name: memory_percent
+    rate: 2
+    duration: 120s
+    generator:
+      type: leak
+      baseline: 10.0
+      ceiling: 95.0
+      time_to_ceiling: 120s
+    labels: { service: checkout }
+  - id: latency
+    signal_type: metrics
+    name: latency_ms
+    duration: 30s
+    after: { ref: memory, op: ">", value: 40.0 }
+    generator:
+      type: leak
+      baseline: 120.0
+      ceiling: 450.0
+      time_to_ceiling: 30s
+    labels: { service: checkout }
+  - id: errors
+    signal_type: metrics
+    name: http_errors_total
+    duration: 40s
+    after: { ref: latency, op: ">", value: 350.0 }
+    generator:
+      type: spike
+      baseline: 0.0
+      magnitude: 40.0
+      duration_secs: 3
+      interval_secs: 8
+    labels: { service: checkout }
+`,
+  },
+  {
     name: "Correlated pair (CPU + errors)",
     yaml: `version: 2
 kind: runnable
@@ -384,7 +429,11 @@ function drawChart(canvas, entries) {
       if (value < min) min = value;
       if (value > max) max = value;
     }
-    spanSecs = Math.max(spanSecs, (entry.values.length - 1) * entry.tick_secs);
+    const offset = entry.offset_secs || 0;
+    const seriesEnd = offset + (entry.values.length - 1) * entry.tick_secs;
+    // Bound each series' window contribution to where it actually emits.
+    spanSecs = Math.max(spanSecs, seriesEnd);
+    entry._end_secs = seriesEnd;
   }
   if (!Number.isFinite(min)) return;
   if (max - min < 1e-9) {
@@ -398,23 +447,25 @@ function drawChart(canvas, entries) {
   const x = (secs) => pad.left + (secs / spanSecs) * plotW;
   const y = (value) => pad.top + (1 - (value - min) / (max - min)) * plotH;
 
-  // Schedule windows first, underneath the traces. Bursts occupy the head of
-  // each cycle, gaps the tail — matching the engine's window math.
+  // Schedule windows first, underneath the traces. Windows are relative to
+  // each scenario's own start, so shift them by the entry's offset. Bursts
+  // occupy the head of each cycle, gaps the tail — matching the engine.
   for (const entry of entries) {
+    const offset = entry.offset_secs || 0;
     if (entry.burst) {
       ctx.fillStyle = colors.burst;
-      for (let start = 0; start < spanSecs; start += entry.burst.every_secs) {
-        const end = Math.min(start + entry.burst.for_secs, spanSecs);
+      for (let start = offset; start < entry._end_secs; start += entry.burst.every_secs) {
+        const end = Math.min(start + entry.burst.for_secs, entry._end_secs);
         ctx.fillRect(x(start), pad.top, x(end) - x(start), plotH);
       }
     }
     if (entry.gap) {
       ctx.fillStyle = colors.gap;
       const { every_secs, for_secs } = entry.gap;
-      for (let cycle = 0; cycle * every_secs < spanSecs; cycle++) {
-        const start = cycle * every_secs + (every_secs - for_secs);
-        const end = Math.min(start + for_secs, spanSecs);
-        if (start >= spanSecs) break;
+      for (let cycle = 0; offset + cycle * every_secs < entry._end_secs; cycle++) {
+        const start = offset + cycle * every_secs + (every_secs - for_secs);
+        const end = Math.min(start + for_secs, entry._end_secs);
+        if (start >= entry._end_secs) break;
         ctx.fillRect(x(start), pad.top, x(end) - x(start), plotH);
       }
     }
@@ -444,17 +495,61 @@ function drawChart(canvas, entries) {
   }
 
   entries.forEach((entry, index) => {
+    const offset = entry.offset_secs || 0;
     ctx.strokeStyle = SERIES_COLORS[index % SERIES_COLORS.length];
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
     ctx.beginPath();
     entry.values.forEach((value, tick) => {
-      const px = x(tick * entry.tick_secs);
+      const px = x(offset + tick * entry.tick_secs);
       const py = y(value);
       if (tick === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     });
     ctx.stroke();
+  });
+
+  // Causal connectors: where an `after:` chain resolved, drop a dashed line
+  // from the upstream trace at the crossing time down to the dependent
+  // series' first point, with an arrowhead and label.
+  ctx.font = "10px ui-monospace, monospace";
+  entries.forEach((entry, index) => {
+    const offset = entry.offset_secs || 0;
+    if (entry.after_ref) {
+      const upstream = entries.find((e) => e.id === entry.after_ref);
+      if (upstream && entry.values.length) {
+        const upOffset = upstream.offset_secs || 0;
+        const upTick = Math.round((offset - upOffset) / upstream.tick_secs);
+        const upValue = upstream.values[Math.max(0, Math.min(upTick, upstream.values.length - 1))];
+        const fromY = y(upValue);
+        const toY = y(entry.values[0]);
+        const px = x(offset);
+        const color = SERIES_COLORS[index % SERIES_COLORS.length];
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 4]);
+        ctx.beginPath();
+        ctx.moveTo(px, fromY);
+        ctx.lineTo(px, toY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const dir = toY >= fromY ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(px, toY);
+        ctx.lineTo(px - 4, toY - dir * 7);
+        ctx.lineTo(px + 4, toY - dir * 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.textAlign = "left";
+        ctx.fillText(`after ${entry.after_ref}`, px + 6, (fromY + toY) / 2 + 3);
+      }
+    }
+    if (entry.while_label && entry.values.length) {
+      ctx.fillStyle = SERIES_COLORS[index % SERIES_COLORS.length];
+      ctx.textAlign = "left";
+      ctx.fillText(entry.while_label, x(offset) + 6, y(entry.values[0]) - 8);
+    }
   });
 }
 
