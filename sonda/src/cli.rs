@@ -130,13 +130,17 @@ pub struct TestArgs {
     pub scenario: String,
 
     /// Base URL of the Prometheus-compatible API evaluating the alert rules
-    /// (e.g. `http://localhost:9090`).
+    /// (e.g. `http://localhost:9090`). Required except with `--dry-run`.
     #[arg(long, env = "SONDA_PROMETHEUS_URL")]
-    pub prometheus_url: String,
+    pub prometheus_url: Option<String>,
 
     /// Poll interval for alert-state checks (e.g. `5s`).
     #[arg(long, default_value = "5s")]
     pub interval: String,
+
+    /// Overall timeout for each alert-state query (connect + read).
+    #[arg(long, default_value = "10s")]
+    pub query_timeout: String,
 }
 
 #[derive(Debug, Args)]

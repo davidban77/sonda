@@ -114,8 +114,10 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
   A poller thread watches the `ALERTS` metric while the scenario runs through the same
   machinery as `sonda run`; firing deadlines count from scenario start, resolution deadlines
   from scenario end. Exits non-zero when any expectation fails — this is the CI entry point
-  for alert-rule testing. Orchestration in `test_cmd.rs`; expectation parsing and the
-  Prometheus client live in `sonda_core::verify`.
+  for alert-rule testing. `test_cmd.rs` only orchestrates and renders: it records timestamped
+  observation timelines and every pass/fail decision is made by
+  `sonda_core::verify::evaluator` (parsing and the Prometheus client also live in
+  `sonda_core::verify`).
 
 All subcommands route through the unified `sonda_core::prepare_entries` + `sonda_core::launch_scenario`
 API. No per-signal-type dispatch in main.rs.

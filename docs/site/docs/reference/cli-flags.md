@@ -278,8 +278,9 @@ sonda test examples/alert-expectation-test.yaml \
 
 | Flag | Description |
 |------|-------------|
-| `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`). Required; also read from `SONDA_PROMETHEUS_URL`. |
+| `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`). Required except with `--dry-run`; also read from `SONDA_PROMETHEUS_URL`. |
 | `--interval <DUR>` | Poll interval for alert-state checks. Default `5s`. |
+| `--query-timeout <DUR>` | Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default `10s`. |
 
 The scenario runs exactly as `sonda run` would (no overrides). Firing
 deadlines are measured from scenario start; resolution deadlines from
