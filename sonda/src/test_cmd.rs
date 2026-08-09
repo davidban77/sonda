@@ -134,35 +134,48 @@ pub fn run(
 
 /// Confirm the endpoint answers a query for **every** expectation before
 /// starting the scenario — a malformed selector on any of them should fail
-/// here, not mid-run (review M3). A few retries tolerate a Prometheus that
-/// is still starting up in CI; each attempt is bounded by the query timeout.
+/// here, not mid-run (review M3). Retries apply only to the first
+/// expectation, as a connectivity gate tolerating a Prometheus still
+/// starting up in CI; once it answers, the remaining selectors are probed
+/// exactly once each. Against a dead endpoint the total cost is therefore
+/// bounded by 3 query timeouts, independent of expectation count (review M4).
 fn preflight(
     client: &PrometheusClient,
     expect: &ExpectConfig,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
     const ATTEMPTS: u32 = 3;
-    let mut last_err = None;
+    let Some(first) = expect.alerts.first() else {
+        return Ok(());
+    };
+    let mut gate = None;
     for attempt in 0..ATTEMPTS {
         if cancel.is_cancelled() {
             bail!("interrupted");
         }
-        match expect
-            .alerts
-            .iter()
-            .try_for_each(|expectation| client.alert_state(expectation).map(|_| ()))
-        {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
+        match client.alert_state(first) {
+            Ok(_) => {
+                gate = None;
+                break;
+            }
+            Err(e) => gate = Some(e),
         }
         if attempt + 1 < ATTEMPTS {
             std::thread::sleep(Duration::from_secs(2));
         }
     }
-    bail!(
-        "{}",
-        last_err.map_or_else(|| "unreachable".to_string(), |e| e.to_string())
-    )
+    if let Some(e) = gate {
+        bail!("{e}");
+    }
+    for expectation in &expect.alerts[1..] {
+        if cancel.is_cancelled() {
+            bail!("interrupted");
+        }
+        client
+            .alert_state(expectation)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    Ok(())
 }
 
 /// Poll every expectation until it is settled — firing observed, or a fresh
@@ -215,6 +228,12 @@ fn spawn_firing_poller(
 /// Poll resolution for every expectation that fired, recording query errors
 /// as observations (review W1) with timestamps captured after each query.
 /// Timestamps are relative to scenario end.
+///
+/// All pending expectations are polled in **one** loop, each settling
+/// independently against the shared `ended_at` anchor — exactly like the
+/// firing poller. Serializing them would let one expectation's wait push
+/// another's first query past its own deadline, leaving that window
+/// unobserved (round-2 review blocker).
 fn check_resolutions(
     client: &PrometheusClient,
     expect: &ExpectConfig,
@@ -223,40 +242,55 @@ fn check_resolutions(
     interval: Duration,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<Option<Outcome>>> {
-    let mut outcomes = Vec::with_capacity(expect.alerts.len());
-    for (index, expectation) in expect.alerts.iter().enumerate() {
-        let deadline = expectation
-            .resolves_within()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        // Resolution applies only when a deadline is declared and the alert
-        // actually fired (on time or late) — a never-fired alert's story is
-        // already told by its firing failure.
-        let fired = matches!(
-            firing_outcomes[index],
-            Outcome::Pass { .. } | Outcome::Late { .. }
-        );
-        let Some(deadline) = deadline.filter(|_| fired) else {
-            outcomes.push(None);
-            continue;
-        };
+    let mut timelines: Vec<Option<(Duration, Vec<Observation>)>> = expect
+        .alerts
+        .iter()
+        .enumerate()
+        .map(|(index, expectation)| {
+            let deadline = expectation
+                .resolves_within()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // Resolution applies only when a deadline is declared and the
+            // alert actually fired (on time or late) — a never-fired alert's
+            // story is already told by its firing failure.
+            let fired = matches!(
+                firing_outcomes[index],
+                Outcome::Pass { .. } | Outcome::Late { .. }
+            );
+            Ok(deadline.filter(|_| fired).map(|d| (d, Vec::new())))
+        })
+        .collect::<anyhow::Result<_>>()?;
 
-        let mut timeline: Vec<Observation> = Vec::new();
-        loop {
-            if cancel.is_cancelled() {
-                bail!("interrupted during resolution checks");
-            }
-            let state = client.alert_state(expectation).map_err(|e| e.to_string());
+    let mut pending: Vec<usize> = timelines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.as_ref().map(|_| index))
+        .collect();
+    while !pending.is_empty() {
+        if cancel.is_cancelled() {
+            bail!("interrupted during resolution checks");
+        }
+        pending.retain(|&index| {
+            let Some((deadline, timeline)) = &mut timelines[index] else {
+                return false;
+            };
+            let state = client
+                .alert_state(&expect.alerts[index])
+                .map_err(|e| e.to_string());
             let at = ended_at.elapsed();
             let resolved = matches!(state, Ok(ref s) if !matches!(s, AlertState::Firing));
             timeline.push(Observation::new(at, state));
-            if resolved || at >= deadline {
-                break;
-            }
+            !(resolved || at >= *deadline)
+        });
+        if !pending.is_empty() {
             std::thread::sleep(interval);
         }
-        outcomes.push(Some(evaluate_resolution(&timeline, deadline)));
     }
-    Ok(outcomes)
+
+    Ok(timelines
+        .into_iter()
+        .map(|entry| entry.map(|(deadline, timeline)| evaluate_resolution(&timeline, deadline)))
+        .collect())
 }
 
 fn report(
@@ -299,17 +333,29 @@ fn report(
                     expectation.firing_within
                 );
             }
-            _ => {
+            Outcome::Undecided {
+                observed_at,
+                last_error,
+            } => {
                 failures += 1;
                 let why = if poller_died {
-                    "the poller thread stopped unexpectedly"
+                    "the poller thread stopped unexpectedly".to_string()
                 } else {
-                    "polling ended before the deadline"
+                    undecided_reason(observed_at, "firing")
                 };
                 eprintln!(
-                    "  {} {alert}: no verdict — {why}, so firing within {} is unproven",
+                    "  {} {alert}: no verdict — {why}, so firing within {} is unproven{}",
                     fail_marker(),
-                    expectation.firing_within
+                    expectation.firing_within,
+                    error_detail(last_error)
+                );
+            }
+            // Outcome is #[non_exhaustive]; treat future variants as failures.
+            other => {
+                failures += 1;
+                eprintln!(
+                    "  {} {alert}: unrecognized firing outcome {other:?}",
+                    fail_marker()
                 );
             }
         }
@@ -340,10 +386,22 @@ fn report(
                     fail_marker()
                 );
             }
-            Some(_) => {
+            Some(Outcome::Undecided {
+                observed_at,
+                last_error,
+            }) => {
                 failures += 1;
                 eprintln!(
-                    "  {} {alert}: no resolution verdict — polling ended before the deadline",
+                    "  {} {alert}: no resolution verdict — {}, so resolving within {resolves_within} is unproven{}",
+                    fail_marker(),
+                    undecided_reason(observed_at, "resolution"),
+                    error_detail(last_error)
+                );
+            }
+            Some(other) => {
+                failures += 1;
+                eprintln!(
+                    "  {} {alert}: unrecognized resolution outcome {other:?}",
                     fail_marker()
                 );
             }
@@ -362,6 +420,25 @@ fn report(
     } else {
         bail!("{failures} alert expectation(s) failed");
     }
+}
+
+/// Explain an [`Outcome::Undecided`]: either the transition was eventually
+/// seen but nothing successful covered the deadline window, or polling
+/// stopped before the deadline.
+fn undecided_reason(observed_at: &Option<Duration>, transition: &str) -> String {
+    match observed_at {
+        Some(at) => format!(
+            "{transition} was first observed at {at:.0?} with no successful query inside the window"
+        ),
+        None => "polling ended before the deadline".to_string(),
+    }
+}
+
+fn error_detail(last_error: &Option<String>) -> String {
+    last_error
+        .as_deref()
+        .map(|e| format!(" (last query error: {e})"))
+        .unwrap_or_default()
 }
 
 fn pass_marker() -> String {

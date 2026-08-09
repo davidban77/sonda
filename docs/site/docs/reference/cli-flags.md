@@ -288,6 +288,12 @@ scenario end. A scenario without an `expect:` block is rejected. With
 `--dry-run`, the scenario and its expectations are validated and printed
 without emitting events or contacting Prometheus.
 
+Before the scenario starts, a preflight confirms the endpoint answers a
+query for every expectation. Only the first expectation is retried (3
+attempts, for a Prometheus still starting up in CI); the rest are probed
+once each, so preflight against a dead endpoint fails within about three
+query timeouts regardless of how many expectations the scenario declares.
+
 ## Exit codes
 
 | Code | Meaning |
