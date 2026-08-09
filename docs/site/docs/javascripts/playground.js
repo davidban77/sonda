@@ -163,7 +163,46 @@ function ensureWasm() {
   return wasmReady;
 }
 
-function boot() {
+/* Wrap the fallback textarea in the same interface the CodeMirror factory
+ * returns, so the rest of the page never cares which editor is mounted. */
+function textareaEditor(textarea, { onChange, onRun }) {
+  textarea.addEventListener("input", onChange);
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      onRun();
+    }
+  });
+  return {
+    getValue: () => textarea.value,
+    setValue: (text) => {
+      textarea.value = text;
+    },
+    setDark: () => {},
+    setEngineError: () => {},
+    focus: () => textarea.focus(),
+  };
+}
+
+async function mountEditor(textarea, hooks) {
+  try {
+    const { createScenarioEditor } = await import("./sonda-editor.js");
+    const editor = createScenarioEditor({
+      parent: textarea.parentElement,
+      doc: textarea.value,
+      dark: document.body.getAttribute("data-md-color-scheme") === "slate",
+      onChange: hooks.onChange,
+      onRun: hooks.onRun,
+    });
+    textarea.hidden = true;
+    return editor;
+  } catch {
+    // Bundle missing or import unsupported — the plain textarea still works.
+    return textareaEditor(textarea, hooks);
+  }
+}
+
+async function boot() {
   const root = document.getElementById("sonda-playground");
   if (!root || root.dataset.ready) return;
   root.dataset.ready = "1";
@@ -190,14 +229,16 @@ function boot() {
 
   let lastResult = null;
   let debounceTimer = 0;
+  let editor = null;
 
   const run = async () => {
     el.status.textContent = "compiling…";
     try {
       await ensureWasm();
-      const result = JSON.parse(sample_scenario(el.editor.value, MAX_TICKS));
+      const result = JSON.parse(sample_scenario(editor.getValue(), MAX_TICKS));
       lastResult = result;
       render(el, result);
+      editor.setEngineError(result.ok ? null : result.error);
       el.status.textContent = result.ok ? "" : "compile error";
     } catch (err) {
       el.status.textContent = "engine failed to load";
@@ -210,15 +251,18 @@ function boot() {
     debounceTimer = window.setTimeout(run, DEBOUNCE_MS);
   };
 
-  el.editor.addEventListener("input", scheduleRun);
+  const shared = fromLocationHash();
+  el.editor.value = shared !== null ? shared : PRESETS[0].yaml;
+  editor = await mountEditor(el.editor, { onChange: scheduleRun, onRun: run });
+
   el.run.addEventListener("click", run);
   el.preset.addEventListener("change", () => {
-    el.editor.value = PRESETS[Number(el.preset.value)].yaml;
+    editor.setValue(PRESETS[Number(el.preset.value)].yaml);
     run();
   });
   el.share.addEventListener("click", () => {
     const url = new URL(window.location.href);
-    url.hash = "yaml=" + toBase64Url(el.editor.value);
+    url.hash = "yaml=" + toBase64Url(editor.getValue());
     navigator.clipboard.writeText(url.toString()).then(() => {
       el.share.textContent = "Copied!";
       window.setTimeout(() => {
@@ -227,15 +271,17 @@ function boot() {
     });
   });
 
-  // Redraw on container resize and on light/dark scheme change.
+  // Redraw on container resize; re-render chart and editor theme on
+  // light/dark scheme change.
   new ResizeObserver(() => lastResult && render(el, lastResult)).observe(el.chart.parentElement);
-  new MutationObserver(() => lastResult && render(el, lastResult)).observe(document.body, {
+  new MutationObserver(() => {
+    if (lastResult) render(el, lastResult);
+    editor.setDark(document.body.getAttribute("data-md-color-scheme") === "slate");
+  }).observe(document.body, {
     attributes: true,
     attributeFilter: ["data-md-color-scheme"],
   });
 
-  const shared = fromLocationHash();
-  el.editor.value = shared !== null ? shared : PRESETS[0].yaml;
   run();
 }
 
