@@ -1,0 +1,38 @@
+# Negative control for the e2e harness — this test MUST fail.
+#
+# Emits `docker_alert_cpu` well below the HighCpuUsage threshold
+# (rule: docker_alert_cpu > 90 for 5s), then expects the alert to fire
+# anyway. `sonda test` must exit 1 with "did not fire within" — proving
+# against a live vmalert that the exit-code contract cannot false-pass.
+# Exercised by scripts/live_infra_uat.py (alert-test-fail-control row);
+# not a usage example, which is why it lives here and not in examples/.
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 5
+  duration: 10s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: http://localhost:8428/api/v1/write
+
+scenarios:
+  - id: cpu_low
+    signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: constant
+      value: 10.0
+    labels:
+      host: sonda-negative-control
+      service: payment-service
+
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      labels:
+        severity: critical
+      firing_within: 20s

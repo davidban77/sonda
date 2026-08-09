@@ -1,0 +1,71 @@
+# Full alert lifecycle test — firing AND fast resolution, end to end.
+#
+# Two phases write the same series: a high phase holds `docker_alert_cpu`
+# above the critical threshold so HighCpuUsage
+# (examples/alertmanager/alert-rules.yml: docker_alert_cpu > 90 for 5s)
+# must fire, then a recovery phase drops the value to 30 so the rule's
+# query empties out and the alert genuinely resolves — no waiting for
+# series staleness. Both entries carry identical labels on purpose: the
+# recovery samples must land in the *same* series, so the newest sample
+# wins the instant-query lookback. Distinct labels would leave the stale
+# 95s visible for minutes.
+#
+# Run against the alerting Compose profile
+# (examples/docker-compose-victoriametrics.yml --profile alerting):
+#
+#   sonda test examples/alert-lifecycle-test.yaml \
+#     --prometheus-url http://localhost:8428 --interval 5s
+#
+# Timeline: firing at ~15s (5s `for:` + 5s evaluation interval + write
+# latency), recovery starts at 60s, alert resolves within a couple of
+# evaluation rounds — observed almost immediately once the scenario ends
+# at 90s. This is the fast counterpart to
+# examples/alert-expectation-test.yaml, which proves the staleness-based
+# resolution path instead.
+#
+# Compare examples/alert-expectation-test.yaml (single phase, resolution
+# via staleness). This file is exercised live by the e2e harness
+# (scripts/live_infra_uat.py, alert-test-pass row).
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 5
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: http://localhost:8428/api/v1/write
+
+scenarios:
+  - id: cpu_high
+    signal_type: metrics
+    name: docker_alert_cpu
+    duration: 60s
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+      service: payment-service
+
+  - id: cpu_recovery
+    signal_type: metrics
+    name: docker_alert_cpu
+    duration: 30s
+    phase_offset: "60s"
+    generator:
+      type: constant
+      value: 30.0
+    labels:
+      host: sonda-test
+      service: payment-service
+
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      labels:
+        severity: critical
+      firing_within: 90s
+      resolves_within: 2m

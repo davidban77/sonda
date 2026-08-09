@@ -841,6 +841,15 @@ otherwise — which makes alert rules testable in CI. The
 or contacting Prometheus. The `expect:` block is pure metadata to `sonda run`
 — the same file works for both commands.
 
+Resolution above leans on series staleness (emission stops, the rule's
+query eventually empties out), which takes minutes. For a fast, explicit
+recovery, `examples/alert-lifecycle-test.yaml` adds a second phase that
+drops the same series below the threshold — the alert resolves within a
+couple of evaluation rounds of scenario end. Both examples run
+continuously against a live VictoriaMetrics + vmalert stack in CI (the
+Live Infra UAT workflow), alongside a negative control that proves a
+non-firing alert exits `1`.
+
 ## Where to next
 
 - [End-to-end pipelines](end-to-end-pipelines.md) — confirm alerts fire through vmalert, Alertmanager, and a webhook receiver.

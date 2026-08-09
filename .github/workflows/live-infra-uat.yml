@@ -68,10 +68,12 @@ jobs:
           mkdir -p compose-logs
           docker compose -f examples/docker-compose-victoriametrics.yml \
             --profile loki --profile otel-collector --profile prometheus \
+            --profile alerting \
             ps > compose-logs/ps.txt 2>&1 || true
-          for svc in victoriametrics vmagent prometheus loki otel-collector; do
+          for svc in victoriametrics vmagent prometheus loki otel-collector vmalert alertmanager; do
             docker compose -f examples/docker-compose-victoriametrics.yml \
               --profile loki --profile otel-collector --profile prometheus \
+              --profile alerting \
               logs --no-color --tail 500 "$svc" \
               > "compose-logs/${svc}.log" 2>&1 || true
           done

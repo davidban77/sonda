@@ -74,6 +74,19 @@ class MatrixRow:
     # primary suspect (the backend the row queries); additional entries cover
     # forwarders in the path (e.g., otel-collector).
     failure_log_containers: tuple[str, ...]
+    # CLI verb to invoke. "run" pushes data and then polls verify_url;
+    # "test" is self-verifying (its exit code IS the verdict), so rows
+    # using it leave verify_url empty and set the expectations below.
+    verb: str = "run"
+    # Extra argv appended after the scenario path (e.g. --prometheus-url).
+    extra_args: tuple[str, ...] = ()
+    # Expected exit code. Non-zero rows are negative controls proving the
+    # failure path fails; expect_stderr then pins WHICH failure it was.
+    expect_exit: int = 0
+    # Substring that must appear in stderr. Empty = no stderr assertion.
+    expect_stderr: str = ""
+    # Per-row wall-clock budget. Alert-lifecycle rows outlive the default.
+    timeout_s: float = SCENARIO_TIMEOUT_S
 
 
 @dataclasses.dataclass
@@ -140,6 +153,44 @@ MATRIX: tuple[MatrixRow, ...] = (
         ),
         failure_log_containers=("otel-collector", "loki"),
     ),
+    # -- `sonda test` alert rows (self-verifying: exit code is the verdict) --
+    # Negative control runs first so the ALERTS metric has no residue from
+    # an earlier firing when it asserts "did not fire".
+    MatrixRow(
+        name="alert-test-fail-control",
+        profiles=("alerting",),
+        subcommand="metrics",
+        scenario=Path("tests/e2e/alert-negative-control.yaml"),
+        verify_url="",
+        failure_log_containers=("vmalert", "victoriametrics"),
+        verb="test",
+        extra_args=(
+            "--prometheus-url",
+            "http://localhost:8428",
+            "--interval",
+            "5s",
+        ),
+        expect_exit=1,
+        expect_stderr="did not fire within",
+        timeout_s=120.0,
+    ),
+    MatrixRow(
+        name="alert-test-pass",
+        profiles=("alerting",),
+        subcommand="metrics",
+        scenario=Path("examples/alert-lifecycle-test.yaml"),
+        verify_url="",
+        failure_log_containers=("vmalert", "victoriametrics"),
+        verb="test",
+        extra_args=(
+            "--prometheus-url",
+            "http://localhost:8428",
+            "--interval",
+            "5s",
+        ),
+        # 90s scenario + firing/resolution polling; observed ~105s live.
+        timeout_s=300.0,
+    ),
 )
 
 # Backends keyed by compose profile. The empty-tuple key is for the default
@@ -157,6 +208,10 @@ BACKENDS_BY_PROFILE: dict[str, tuple[Backend, ...]] = {
     ),
     "otel-collector": (
         Backend(name="otel-collector", health_url="http://localhost:13133/"),
+    ),
+    "alerting": (
+        Backend(name="vmalert", health_url="http://localhost:8880/health"),
+        Backend(name="alertmanager", health_url="http://localhost:9093/-/healthy"),
     ),
 }
 
@@ -403,15 +458,18 @@ def run_scenario(
     scenario: Path,
     repo_root: Path,
     *,
+    verb: str = "run",
+    extra_args: Sequence[str] = (),
     timeout_s: float = SCENARIO_TIMEOUT_S,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke ``sonda run <scenario>`` and return the completed process.
-    Run from ``repo_root`` so relative paths resolve. The ``subcommand``
-    parameter is kept on ``MatrixRow`` as a hint about the signal type
-    documented in the matrix; the 1.9 CLI dispatches purely by YAML."""
+    """Invoke ``sonda <verb> <scenario> [extra_args...]`` and return the
+    completed process. Run from ``repo_root`` so relative paths resolve.
+    The ``subcommand`` parameter is kept on ``MatrixRow`` as a hint about
+    the signal type documented in the matrix; the 1.9 CLI dispatches purely
+    by YAML."""
     _ = subcommand
     return subprocess.run(
-        [str(sonda_bin), "run", str(scenario)],
+        [str(sonda_bin), verb, str(scenario), *extra_args],
         capture_output=True,
         text=True,
         timeout=timeout_s,
@@ -439,13 +497,19 @@ def run_row(
 
     try:
         proc = run_scenario(
-            sonda_bin, row.subcommand, row.scenario, repo_root,
+            sonda_bin,
+            row.subcommand,
+            row.scenario,
+            repo_root,
+            verb=row.verb,
+            extra_args=row.extra_args,
+            timeout_s=row.timeout_s,
         )
     except subprocess.TimeoutExpired:
         return RowResult(
             row=row,
             ok=False,
-            message=f"scenario timed out after {SCENARIO_TIMEOUT_S:.0f}s",
+            message=f"scenario timed out after {row.timeout_s:.0f}s",
             duration_s=_now_s() - start,
         )
     except FileNotFoundError:
@@ -456,29 +520,42 @@ def run_row(
             duration_s=_now_s() - start,
         )
 
-    if proc.returncode != 0:
+    if proc.returncode != row.expect_exit:
         stderr_tail = (proc.stderr or "").strip().splitlines()[-20:]
         return RowResult(
             row=row,
             ok=False,
             message=(
-                f"sonda exited {proc.returncode}\n"
+                f"sonda exited {proc.returncode} (expected {row.expect_exit})\n"
                 + "\n".join(f"    {line}" for line in stderr_tail)
             ),
             duration_s=_now_s() - start,
         )
 
-    verify_url = materialize_verify_url(row.verify_url)
-    if not wait_for_verify(verify_url):
+    if row.expect_stderr and row.expect_stderr not in (proc.stderr or ""):
+        stderr_tail = (proc.stderr or "").strip().splitlines()[-20:]
         return RowResult(
             row=row,
             ok=False,
             message=(
-                f"verify URL did not return non-empty data.result within "
-                f"{VERIFY_TIMEOUT_S:.0f}s: {verify_url}"
+                f"stderr missing expected substring {row.expect_stderr!r}\n"
+                + "\n".join(f"    {line}" for line in stderr_tail)
             ),
             duration_s=_now_s() - start,
         )
+
+    if row.verify_url:
+        verify_url = materialize_verify_url(row.verify_url)
+        if not wait_for_verify(verify_url):
+            return RowResult(
+                row=row,
+                ok=False,
+                message=(
+                    f"verify URL did not return non-empty data.result within "
+                    f"{VERIFY_TIMEOUT_S:.0f}s: {verify_url}"
+                ),
+                duration_s=_now_s() - start,
+            )
 
     return RowResult(row=row, ok=True, duration_s=_now_s() - start)
 
@@ -931,9 +1008,31 @@ class _MatrixIntegrityTests(unittest.TestCase):
         for row in MATRIX:
             self.assertIn(row.subcommand, {"metrics", "logs"}, row.name)
 
-    def test_scenario_paths_are_under_examples(self) -> None:
+    def test_scenario_paths_are_under_known_roots(self) -> None:
+        # examples/ for user-facing scenarios; tests/ for harness-only
+        # fixtures (e.g. the deliberately-failing negative control).
         for row in MATRIX:
-            self.assertEqual(row.scenario.parts[0], "examples", row.name)
+            self.assertIn(row.scenario.parts[0], {"examples", "tests"}, row.name)
+
+    def test_verbs_are_known(self) -> None:
+        for row in MATRIX:
+            self.assertIn(row.verb, {"run", "test"}, row.name)
+
+    def test_self_verifying_rows_have_no_verify_url(self) -> None:
+        # `sonda test` rows carry their verdict in the exit code — a verify
+        # URL on one would mean the row's success criteria are ambiguous.
+        for row in MATRIX:
+            if row.verb == "test":
+                self.assertEqual(row.verify_url, "", row.name)
+            else:
+                self.assertTrue(row.verify_url, row.name)
+
+    def test_negative_controls_pin_their_failure(self) -> None:
+        # A row expected to fail must also pin WHICH failure via stderr,
+        # otherwise any crash would satisfy it.
+        for row in MATRIX:
+            if row.expect_exit != 0:
+                self.assertTrue(row.expect_stderr, row.name)
 
     def test_profiles_are_recognised(self) -> None:
         # Every profile a row asks for must appear in BACKENDS_BY_PROFILE,
