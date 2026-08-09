@@ -8,6 +8,7 @@ mod progress;
 mod scenario_loader;
 mod sink_format;
 mod status;
+mod test_cmd;
 
 use std::process;
 use std::sync::Arc;
@@ -65,6 +66,7 @@ fn run() -> anyhow::Result<()> {
         Commands::List(ref args) => list_catalog(args, catalog)?,
         Commands::Show(ref args) => show_entry(args, catalog)?,
         Commands::New(ref args) => new::run(args)?,
+        Commands::Test(ref args) => test_cmd::run(&rt, args, &cli, catalog, verbosity, &cancel)?,
     }
 
     Ok(())

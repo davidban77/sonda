@@ -264,12 +264,42 @@ sonda new -o my-scenario.yaml
 
 The prompts cover signal type, generator, rate, duration, sink, and output destination. Cancel with Ctrl+C at any point. Nothing is written until you confirm the output path.
 
+## `sonda test`
+
+Run a scenario and verify its top-level `expect:` alert expectations against
+a Prometheus-compatible query API. See
+[Alert testing](../test/alert-testing.md#automate-it-with-sonda-test) for the
+`expect:` block format.
+
+```bash
+sonda test examples/alert-expectation-test.yaml \
+  --prometheus-url http://localhost:8428
+```
+
+| Flag | Description |
+|------|-------------|
+| `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`). Required except with `--dry-run`; also read from `SONDA_PROMETHEUS_URL`. |
+| `--interval <DUR>` | Poll interval for alert-state checks. Default `5s`. |
+| `--query-timeout <DUR>` | Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default `10s`. |
+
+The scenario runs exactly as `sonda run` would (no overrides). Firing
+deadlines are measured from scenario start; resolution deadlines from
+scenario end. A scenario without an `expect:` block is rejected. With
+`--dry-run`, the scenario and its expectations are validated and printed
+without emitting events or contacting Prometheus.
+
+Before the scenario starts, a preflight confirms the endpoint answers a
+query for every expectation. Only the first expectation is retried (3
+attempts, for a Prometheus still starting up in CI); the rest are probed
+once each, so preflight against a dead endpoint fails within about three
+query timeouts regardless of how many expectations the scenario declares.
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
-| `0` | Success. |
-| `1` | Runtime error (scenario failed, sink unreachable, validation rejected the YAML). |
+| `0` | Success. For `sonda test`: every alert expectation held. |
+| `1` | Runtime error (scenario failed, sink unreachable, validation rejected the YAML), or a `sonda test` expectation failed. |
 | `2` | Clap parse error (unknown flag, unrecognized subcommand, missing required argument). |
 
 ## Status output

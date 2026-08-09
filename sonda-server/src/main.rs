@@ -30,7 +30,7 @@ use crate::state::AppState;
 
 /// Subcommands the dispatch shim forwards to the sibling `sonda` binary.
 /// Mirror of `sonda`'s clap definition.
-const SONDA_SUBCOMMANDS: &[&str] = &["run", "list", "show", "new"];
+const SONDA_SUBCOMMANDS: &[&str] = &["run", "list", "show", "new", "test"];
 
 /// Command-line arguments for sonda-server.
 ///
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn dispatch_list_covers_all_known_subcommands() {
-        let expected = ["run", "list", "show", "new"];
+        let expected = ["run", "list", "show", "new", "test"];
         assert_eq!(SONDA_SUBCOMMANDS.len(), expected.len());
         for name in expected {
             assert!(

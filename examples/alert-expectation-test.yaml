@@ -1,0 +1,47 @@
+# Alert expectation test — `sonda test` end to end.
+#
+# Holds `docker_alert_cpu` above the critical threshold so the HighCpuUsage
+# rule (examples/alertmanager/alert-rules.yml: docker_alert_cpu > 90 for 5s)
+# must fire, then lets it resolve after the scenario ends. The `expect:`
+# block turns that into a pass/fail check with CI-friendly exit codes.
+#
+# Run against the alerting Compose profile
+# (examples/docker-compose-victoriametrics.yml --profile alerting):
+#
+#   sonda test examples/alert-expectation-test.yaml \
+#     --prometheus-url http://localhost:8428
+#
+# vmalert evaluates every 5s with `for: 5s`, so firing_within: 90s has slack
+# to spare. Resolution relies on the series going stale after emission stops,
+# which takes a few minutes — hence the generous resolves_within.
+
+version: 2
+kind: runnable
+
+defaults:
+  rate: 5
+  duration: 60s
+  encoder:
+    type: remote_write
+  sink:
+    type: remote_write
+    url: http://localhost:8428/api/v1/write
+
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: docker_alert_cpu
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+      service: payment-service
+
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      labels:
+        severity: critical
+      firing_within: 90s
+      resolves_within: 6m

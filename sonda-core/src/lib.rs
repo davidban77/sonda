@@ -36,6 +36,7 @@ pub mod packs;
 pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
+pub mod verify;
 
 pub use compiler::UnresolvedBehavior;
 pub use config::aliases::{desugar_entry, desugar_scenario_config};
@@ -124,6 +125,42 @@ pub enum SondaError {
     /// surface YAML validation feedback are not confused by thread panics.
     #[error("runtime error: {0}")]
     Runtime(#[from] RuntimeError),
+
+    /// An error from alert-expectation verification (`sonda test`).
+    ///
+    /// Network and response failures while querying a verification endpoint.
+    /// Separated from [`ConfigError`] so callers can distinguish "your YAML
+    /// is wrong" from "the TSDB is unreachable" — both reach the user, but
+    /// only one is theirs to fix by editing the scenario.
+    #[error("verification error: {0}")]
+    Verify(#[from] VerifyError),
+}
+
+/// Errors from querying an alert-verification endpoint.
+///
+/// Produced by [`verify::prometheus::PrometheusClient`]: transient network
+/// failures, HTTP errors, timeouts, and malformed API payloads. Callers
+/// polling in a loop typically treat these as retryable until a deadline.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum VerifyError {
+    /// The endpoint could not be queried (connection, HTTP status, timeout).
+    #[error("query against {url} failed: {reason}")]
+    Query {
+        /// The query URL that failed.
+        url: String,
+        /// Human-readable failure description from the HTTP layer.
+        reason: String,
+    },
+
+    /// The endpoint responded, but not with a usable API payload.
+    #[error("unusable response from {url}: {reason}")]
+    BadResponse {
+        /// The query URL that produced the response.
+        url: String,
+        /// What made the payload unusable.
+        reason: String,
+    },
 }
 
 /// Errors related to scenario configuration validation.

@@ -107,6 +107,13 @@ pub struct ScenarioFile {
     /// Empty when `kind: composable` — composable files carry no entries.
     #[cfg_attr(feature = "config", serde(default))]
     pub scenarios: Vec<Entry>,
+    /// Optional alert expectations consumed by `sonda test`. Pure metadata —
+    /// ignored by every compiler phase and by the runtime.
+    #[cfg_attr(
+        feature = "config",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub expect: Option<crate::verify::ExpectConfig>,
 }
 
 /// Discriminator declaring the role of a v2 YAML file.

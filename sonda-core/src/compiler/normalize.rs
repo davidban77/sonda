@@ -1432,6 +1432,7 @@ scenarios:
             description: None,
             defaults: None,
             scenarios: Vec::new(),
+            expect: None,
         };
         let normalized = normalize(file).expect("must normalize empty list");
         assert_eq!(normalized.version, 2);
