@@ -2871,6 +2871,10 @@ a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertman
 <td><code>--query-timeout &lt;DUR&gt;</code></td>
 <td>Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default <code>10s</code>.</td>
 </tr>
+<tr>
+<td><code>--query-step &lt;DUR&gt;</code></td>
+<td>Grid resolution for the post-hoc range queries that produce the verdict timelines. Match your rule evaluation interval. Default <code>5s</code>.</td>
+</tr>
 </tbody>
 </table>
 <p>The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> runs exactly as <code>sonda run</code> would (no overrides). Firing
@@ -2878,6 +2882,13 @@ deadlines are measured from <abbr title="Sonda's unit of work -- a YAML file des
 <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> end. A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> without an <code>expect:</code> block is rejected. With
 <code>--dry-run</code>, the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and its expectations are validated and printed
 without emitting events or contacting <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>.</p>
+<p>Verdicts are read from the datastore, not from the polling loop: live
+polling (at <code>--interval</code>) only decides when each check has settled, then a
+range query reconstructs what actually happened from the stored <code>ALERTS</code>
+samples at <code>--query-step</code> resolution. Reported transition times are sample
+times — independent of how often <code>sonda test</code> polled. If the range API is
+unavailable, the verdict falls back to the live poll timeline with a
+warning.</p>
 <p>Before the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> starts, a preflight confirms the endpoint answers a
 query for every expectation. Only the first expectation is retried (3
 attempts, for a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> still starting up in CI); the rest are probed
@@ -2943,7 +2954,7 @@ query timeouts regardless of how many expectations the <abbr title="Sonda's unit
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 18:32:57 UTC">August 9, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 22:32:36 UTC">August 9, 2026</span>
   </span>
 
     
