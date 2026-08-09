@@ -141,6 +141,11 @@ pub struct TestArgs {
     /// Overall timeout for each alert-state query (connect + read).
     #[arg(long, default_value = "10s")]
     pub query_timeout: String,
+
+    /// Grid resolution for the post-hoc range queries that produce the
+    /// verdict timelines. Match your rule evaluation interval.
+    #[arg(long, default_value = "5s")]
+    pub query_step: String,
 }
 
 #[derive(Debug, Args)]

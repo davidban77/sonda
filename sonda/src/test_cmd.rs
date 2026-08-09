@@ -1,27 +1,49 @@
 //! `sonda test` — run a scenario and verify its `expect:` alert expectations.
 //!
-//! Orchestration and rendering only: a poller thread records timestamped
-//! [`Observation`]s of the Prometheus `ALERTS` metric while the scenario
-//! runs through the exact same machinery as `sonda run`; every deadline
-//! decision is made by `sonda_core::verify::evaluator` over those
-//! timelines. Firing deadlines are measured from scenario start, resolution
-//! deadlines from scenario end. The process exits non-zero when any
-//! expectation fails — `sonda test` in CI turns alert rules into a test
-//! suite.
+//! Orchestration and rendering only: every deadline decision is made by
+//! `sonda_core::verify::evaluator` over [`Observation`] timelines. Two
+//! acquisition layers feed it:
+//!
+//! - **Live polling** (instant queries) runs while the scenario does and
+//!   only decides *when each check has settled* — firing observed, resolved,
+//!   or deadline covered.
+//! - **Range queries** then reconstruct the verdict timeline from the
+//!   samples the rule evaluator actually stored, at rule-evaluation
+//!   resolution — so verdicts are not quantized by the poll interval or
+//!   skewed by time spent polling other expectations. When range
+//!   acquisition fails or disagrees with what live polling saw (remote-
+//!   write lag), the live timeline is the warned-about fallback.
+//!
+//! Firing deadlines are measured from scenario start, resolution deadlines
+//! from scenario end. The process exits non-zero when any expectation
+//! fails — `sonda test` in CI turns alert rules into a test suite.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context};
 use owo_colors::{OwoColorize, Stream::Stderr};
 use sonda_core::verify::evaluator::{evaluate_firing, evaluate_resolution, Observation, Outcome};
 use sonda_core::verify::prometheus::PrometheusClient;
-use sonda_core::verify::{parse_expectations, AlertState, ExpectConfig};
+use sonda_core::verify::{foreign_label_values, parse_expectations, AlertState, ExpectConfig};
 use sonda_core::CancellationToken;
 
 use crate::cli::{self, Cli, Verbosity};
+
+/// Which check a verdict timeline is being acquired for — determines what
+/// "the range data is missing something live polling saw" means.
+#[derive(Clone, Copy)]
+enum Check {
+    Firing,
+    Resolution,
+}
+
+/// Per-expectation live resolution polling result: `None` when the check
+/// doesn't apply, otherwise the deadline and the recorded timeline.
+type ResolutionPoll = Option<(Duration, Vec<Observation>)>;
 
 pub fn run(
     rt: &tokio::runtime::Runtime,
@@ -43,6 +65,11 @@ pub fn run(
         .map_err(|e| anyhow::anyhow!("invalid --interval: {e}"))?;
     let query_timeout = sonda_core::config::validate::parse_duration(&args.query_timeout)
         .map_err(|e| anyhow::anyhow!("invalid --query-timeout: {e}"))?;
+    let query_step = sonda_core::config::validate::parse_duration(&args.query_step)
+        .map_err(|e| anyhow::anyhow!("invalid --query-step: {e}"))?;
+    if query_step.is_zero() {
+        bail!("--query-step must be positive");
+    }
 
     // --dry-run validates and prints the scenario without emitting or
     // polling — and therefore without needing an endpoint at all.
@@ -66,7 +93,10 @@ pub fn run(
 
     // The firing poller runs alongside the scenario. `stop` cuts it short
     // when the scenario itself fails — no point waiting out deadlines to
-    // report a sink error (review W3).
+    // report a sink error (review W3). The wall clock is captured at the
+    // same moment as the monotonic anchor: range queries speak unix time,
+    // observation timestamps speak durations-since-anchor.
+    let started_wall = SystemTime::now();
     let started_at = Instant::now();
     let stop = Arc::new(AtomicBool::new(false));
     let (timeline_tx, timeline_rx) = mpsc::channel::<Vec<Vec<Observation>>>();
@@ -90,30 +120,54 @@ pub fn run(
         return run_result;
     }
 
+    let ended_wall = started_wall + ended_at.duration_since(started_at);
     let poller_died = poller.join().is_err();
     let firing_timelines = timeline_rx.try_recv().ok();
     if cancel.is_cancelled() {
         bail!("interrupted before alert expectations could be verified");
     }
 
-    // A panicked or silent poller yields no timelines; the evaluator maps
-    // empty timelines to Undecided, and the report says why (review W4).
-    let firing_timelines =
-        firing_timelines.unwrap_or_else(|| vec![Vec::new(); expect.alerts.len()]);
+    // A panicked or silent poller yields no live timelines; range
+    // acquisition below can still recover a verdict from the datastore,
+    // and when it can't, the evaluator maps the empty timeline to
+    // Undecided and the report says why (review W4).
+    let live_firing = firing_timelines.unwrap_or_else(|| vec![Vec::new(); expect.alerts.len()]);
 
-    let firing_outcomes: Vec<Outcome> = expect
-        .alerts
-        .iter()
-        .zip(&firing_timelines)
-        .map(|(expectation, timeline)| {
-            let deadline = expectation
-                .firing_within()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            Ok(evaluate_firing(timeline, deadline))
-        })
-        .collect::<anyhow::Result<_>>()?;
+    // One settling pause before the verdict queries: the rule evaluator
+    // remote-writes ALERTS on its own cadence, and the freshest samples
+    // need a beat to land.
+    std::thread::sleep(query_step.min(Duration::from_secs(5)));
+    if cancel.is_cancelled() {
+        bail!("interrupted before alert expectations could be verified");
+    }
 
-    let resolution_outcomes = check_resolutions(
+    let mut warnings: Vec<String> = Vec::new();
+    let mut matched_firing_series: Vec<BTreeMap<String, String>> = Vec::new();
+
+    let anchor_start = unix_secs(started_wall);
+    let mut firing_outcomes: Vec<Outcome> = Vec::with_capacity(expect.alerts.len());
+    for (index, expectation) in expect.alerts.iter().enumerate() {
+        if cancel.is_cancelled() {
+            bail!("interrupted before alert expectations could be verified");
+        }
+        let deadline = expectation
+            .firing_within()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let (timeline, series) = verdict_timeline(
+            &client,
+            expectation,
+            &live_firing[index],
+            deadline,
+            anchor_start,
+            query_step,
+            Check::Firing,
+            &mut warnings,
+        );
+        matched_firing_series.extend(series);
+        firing_outcomes.push(evaluate_firing(&timeline, deadline));
+    }
+
+    let resolution_live = poll_resolutions(
         &client,
         &expect,
         &firing_outcomes,
@@ -121,6 +175,51 @@ pub fn run(
         interval,
         cancel,
     )?;
+
+    let anchor_end = unix_secs(ended_wall);
+    let mut resolution_outcomes: Vec<Option<Outcome>> = Vec::with_capacity(expect.alerts.len());
+    for (expectation, live) in expect.alerts.iter().zip(&resolution_live) {
+        if cancel.is_cancelled() {
+            bail!("interrupted during resolution checks");
+        }
+        let Some((deadline, live)) = live else {
+            resolution_outcomes.push(None);
+            continue;
+        };
+        let (timeline, series) = verdict_timeline(
+            &client,
+            expectation,
+            live,
+            *deadline,
+            anchor_end,
+            query_step,
+            Check::Resolution,
+            &mut warnings,
+        );
+        matched_firing_series.extend(series);
+        resolution_outcomes.push(Some(evaluate_resolution(&timeline, *deadline)));
+    }
+
+    // Provenance: an expectation that matched an alert carrying label
+    // values this scenario never emitted is probably under-scoped —
+    // ALERTS is global (#527 review).
+    let emitted = emitted_label_values(&args.scenario, catalog);
+    let mut foreign_seen: BTreeSet<(String, String)> = BTreeSet::new();
+    for series in &matched_firing_series {
+        for (key, value) in foreign_label_values(series, &emitted) {
+            if foreign_seen.insert((key.clone(), value.clone())) {
+                warnings.push(format!(
+                    "matched an ALERTS series with {key}=\"{value}\", which this scenario \
+                     never emits — another series may have triggered the alert; scope \
+                     `expect.labels` to something unique to this scenario"
+                ));
+            }
+        }
+    }
+
+    for warning in &warnings {
+        eprintln!("  {} {warning}", warn_marker());
+    }
 
     report(
         &expect,
@@ -130,6 +229,123 @@ pub fn run(
         started_at,
         ended_at,
     )
+}
+
+fn unix_secs(t: SystemTime) -> f64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Acquire the verdict timeline for one check: a range query over the
+/// window live polling settled, falling back to the live timeline (with a
+/// warning) when the range API fails or its data lags what polling saw.
+/// Verdicts are still made only by the evaluator — this chooses *which
+/// observations* it gets, never what they mean.
+#[allow(clippy::too_many_arguments)]
+fn verdict_timeline(
+    client: &PrometheusClient,
+    expectation: &sonda_core::verify::AlertExpectation,
+    live: &[Observation],
+    deadline: Duration,
+    window_anchor: f64,
+    query_step: Duration,
+    check: Check,
+    warnings: &mut Vec<String>,
+) -> (Vec<Observation>, Vec<BTreeMap<String, String>>) {
+    const ATTEMPTS: u32 = 3;
+    let step_secs = query_step.as_secs_f64();
+    // The window ends one step past where live polling settled; a dead
+    // poller leaves no timeline, so aim one step past the deadline and let
+    // the now-clamp below decide how much of that is real.
+    let settled = live
+        .last()
+        .map(|o| o.at)
+        .unwrap_or(deadline + query_step)
+        .as_secs_f64();
+    let desired_end = window_anchor + settled + step_secs;
+
+    let mut last_error = None;
+    for attempt in 0..ATTEMPTS {
+        // Never query past now: future grid points would read as Inactive
+        // and could fabricate coverage the datastore doesn't have.
+        let end = desired_end.min(unix_secs(SystemTime::now()));
+        if end <= window_anchor {
+            break;
+        }
+        match client.range_timeline(expectation, window_anchor, end, query_step, window_anchor) {
+            Ok(timeline) => {
+                if range_covers_live(live, &timeline.observations, check) {
+                    return (timeline.observations, timeline.firing_series);
+                }
+                last_error = None;
+            }
+            Err(e) => last_error = Some(e.to_string()),
+        }
+        if attempt + 1 < ATTEMPTS {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    let reason = last_error.map_or_else(
+        || "range data lags what live polling observed".to_string(),
+        |e| format!("range query failed: {e}"),
+    );
+    warnings.push(format!(
+        "{} verdict for {} uses the live poll timeline ({reason})",
+        match check {
+            Check::Firing => "firing",
+            Check::Resolution => "resolution",
+        },
+        expectation.alert
+    ));
+    (live.to_vec(), Vec::new())
+}
+
+/// Whether the range grid reflects the decisive state live polling saw —
+/// remote-write lag can leave the freshest samples unwritten at query time.
+fn range_covers_live(live: &[Observation], range: &[Observation], check: Check) -> bool {
+    match check {
+        Check::Firing => {
+            let live_fired = live
+                .iter()
+                .any(|o| matches!(o.state, Ok(AlertState::Firing)));
+            let range_fired = range
+                .iter()
+                .any(|o| matches!(o.state, Ok(AlertState::Firing)));
+            !live_fired || range_fired
+        }
+        Check::Resolution => {
+            let live_resolved = live
+                .iter()
+                .any(|o| matches!(o.state, Ok(ref s) if !matches!(s, AlertState::Firing)));
+            let range_still_firing_at_end =
+                matches!(range.last().map(|o| &o.state), Some(Ok(AlertState::Firing)));
+            !live_resolved || !range_still_firing_at_end
+        }
+    }
+}
+
+/// Every label value the compiled scenario emits, keyed by label name.
+/// Best-effort: the scenario already compiled and ran, so a load failure
+/// here only disables provenance warnings, never the verdict.
+fn emitted_label_values(
+    scenario: &str,
+    catalog: Option<&std::path::Path>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut emitted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if let Ok(compiled) = crate::scenario_loader::load_scenario_compiled(scenario, catalog) {
+        for entry in &compiled.entries {
+            if let Some(labels) = &entry.labels {
+                for (key, value) in labels {
+                    emitted
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(value.clone());
+                }
+            }
+        }
+    }
+    emitted
 }
 
 /// Confirm the endpoint answers a query for **every** expectation before
@@ -225,24 +441,26 @@ fn spawn_firing_poller(
     Ok(handle)
 }
 
-/// Poll resolution for every expectation that fired, recording query errors
-/// as observations (review W1) with timestamps captured after each query.
-/// Timestamps are relative to scenario end.
+/// Live-poll resolution for every expectation that fired, recording query
+/// errors as observations (review W1) with timestamps captured after each
+/// query, relative to scenario end. This only decides *when each check has
+/// settled* — resolved, or deadline covered; the verdict timeline comes
+/// from a range query afterwards.
 ///
 /// All pending expectations are polled in **one** loop, each settling
 /// independently against the shared `ended_at` anchor — exactly like the
 /// firing poller. Serializing them would let one expectation's wait push
 /// another's first query past its own deadline, leaving that window
 /// unobserved (round-2 review blocker).
-fn check_resolutions(
+fn poll_resolutions(
     client: &PrometheusClient,
     expect: &ExpectConfig,
     firing_outcomes: &[Outcome],
     ended_at: Instant,
     interval: Duration,
     cancel: &CancellationToken,
-) -> anyhow::Result<Vec<Option<Outcome>>> {
-    let mut timelines: Vec<Option<(Duration, Vec<Observation>)>> = expect
+) -> anyhow::Result<Vec<ResolutionPoll>> {
+    let mut timelines: Vec<ResolutionPoll> = expect
         .alerts
         .iter()
         .enumerate()
@@ -287,10 +505,7 @@ fn check_resolutions(
         }
     }
 
-    Ok(timelines
-        .into_iter()
-        .map(|entry| entry.map(|(deadline, timeline)| evaluate_resolution(&timeline, deadline)))
-        .collect())
+    Ok(timelines)
 }
 
 fn report(
@@ -307,17 +522,17 @@ fn report(
         let alert = &expectation.alert;
         match &firing[index] {
             Outcome::Pass { at } => eprintln!(
-                "  {} {alert} firing after {:.0?} (within {})",
+                "  {} {alert} firing after {} (within {})",
                 pass_marker(),
-                at,
+                fmt_after(*at),
                 expectation.firing_within
             ),
             Outcome::Late { at, .. } => {
                 failures += 1;
                 eprintln!(
-                    "  {} {alert} fired after {:.0?} — later than firing_within {}",
+                    "  {} {alert} fired after {} — later than firing_within {}",
                     fail_marker(),
-                    at,
+                    fmt_after(*at),
                     expectation.firing_within
                 );
             }
@@ -363,16 +578,16 @@ fn report(
         match &resolutions[index] {
             None => {}
             Some(Outcome::Pass { at }) => eprintln!(
-                "  {} {alert} resolved after {:.0?} (within {resolves_within} of scenario end)",
+                "  {} {alert} resolved after {} (within {resolves_within} of scenario end)",
                 pass_marker(),
-                at
+                fmt_after(*at)
             ),
             Some(Outcome::Late { at, .. }) => {
                 failures += 1;
                 eprintln!(
-                    "  {} {alert} resolved after {:.0?} — later than resolves_within {resolves_within}",
+                    "  {} {alert} resolved after {} — later than resolves_within {resolves_within}",
                     fail_marker(),
-                    at
+                    fmt_after(*at)
                 );
             }
             Some(Outcome::Missed { last_error, .. }) => {
@@ -441,12 +656,25 @@ fn error_detail(last_error: &Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// Render a transition offset; zero reads "0s", not "0ns".
+fn fmt_after(at: Duration) -> String {
+    if at.is_zero() {
+        "0s".to_string()
+    } else {
+        format!("{at:.0?}")
+    }
+}
+
 fn pass_marker() -> String {
     format!("{}", "PASS".if_supports_color(Stderr, |t| t.green()))
 }
 
 fn fail_marker() -> String {
     format!("{}", "FAIL".if_supports_color(Stderr, |t| t.red()))
+}
+
+fn warn_marker() -> String {
+    format!("{}", "WARN".if_supports_color(Stderr, |t| t.yellow()))
 }
 
 /// `sonda test` runs the scenario exactly as written — no overrides.
