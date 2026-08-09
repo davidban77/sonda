@@ -60,6 +60,8 @@ pub enum Commands {
     Show(ShowArgs),
     /// Scaffold a new scenario YAML.
     New(NewArgs),
+    /// Run a scenario and verify its `expect:` alert expectations.
+    Test(TestArgs),
 }
 
 #[derive(Debug, Args)]
@@ -119,6 +121,22 @@ pub struct ListArgs {
 pub struct ShowArgs {
     /// `@name` of a catalog entry.
     pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct TestArgs {
+    /// Path to a v2 YAML file with an `expect:` block, or `@name` for a
+    /// catalog reference.
+    pub scenario: String,
+
+    /// Base URL of the Prometheus-compatible API evaluating the alert rules
+    /// (e.g. `http://localhost:9090`).
+    #[arg(long, env = "SONDA_PROMETHEUS_URL")]
+    pub prometheus_url: String,
+
+    /// Poll interval for alert-state checks (e.g. `5s`).
+    #[arg(long, default_value = "5s")]
+    pub interval: String,
 }
 
 #[derive(Debug, Args)]

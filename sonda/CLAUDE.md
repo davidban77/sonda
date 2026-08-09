@@ -109,12 +109,22 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
   and maps detected patterns to operational vocabulary aliases. `-o <path>` writes to a file;
   otherwise the YAML is printed to stdout.
 
+- **`sonda test`** — run a scenario and verify its top-level `expect:` alert expectations
+  against a Prometheus-compatible API (`--prometheus-url`, env `SONDA_PROMETHEUS_URL`).
+  A poller thread watches the `ALERTS` metric while the scenario runs through the same
+  machinery as `sonda run`; firing deadlines count from scenario start, resolution deadlines
+  from scenario end. Exits non-zero when any expectation fails — this is the CI entry point
+  for alert-rule testing. Orchestration in `test_cmd.rs`; expectation parsing and the
+  Prometheus client live in `sonda_core::verify`.
+
 All subcommands route through the unified `sonda_core::prepare_entries` + `sonda_core::launch_scenario`
 API. No per-signal-type dispatch in main.rs.
 
 ## Adding a New Subcommand
 
-The CLI is intentionally restricted to four verbs. Adding a fifth verb is an architectural decision
+The CLI is intentionally restricted to five verbs (`test` was added as the alert-testing
+entry point — rationale: it composes `run` with verification and cannot be expressed as a
+`run` flag without overloading its exit-code contract). Adding another verb is an architectural decision
 that should be paired with a written rationale — most workflows are better expressed by adding flags
 to `sonda run` or by extending the catalog metadata that `sonda list` / `sonda show` surface. If
 a new verb is genuinely warranted:
