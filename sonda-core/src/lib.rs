@@ -36,6 +36,7 @@ pub mod packs;
 pub mod schedule;
 pub mod sink;
 pub(crate) mod util;
+pub mod verify;
 
 pub use compiler::UnresolvedBehavior;
 pub use config::aliases::{desugar_entry, desugar_scenario_config};

@@ -255,6 +255,10 @@ struct FlatFile {
     #[serde(default)]
     overrides: Option<std::collections::BTreeMap<String, crate::packs::MetricOverride>>,
 
+    // Alert expectations (sonda test) — metadata, passed through untouched.
+    #[serde(default)]
+    expect: Option<crate::verify::ExpectConfig>,
+
     // Histogram / summary fields
     #[serde(default)]
     distribution: Option<crate::config::DistributionConfig>,
@@ -343,6 +347,7 @@ impl FlatFile {
             description: None,
             defaults: None,
             scenarios: vec![entry],
+            expect: self.expect,
         }
     }
 }
@@ -449,6 +454,7 @@ fn parse_composable(yaml: &str) -> Result<ScenarioFile, ParseError> {
         description: header.description,
         defaults: None,
         scenarios: Vec::new(),
+        expect: None,
     })
 }
 
