@@ -127,10 +127,25 @@ fn alert_world(
     resolve_at: Option<f64>,
     host: &'static str,
 ) -> impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static {
+    skewed_alert_world(fire_at, resolve_at, host, 0.0)
+}
+
+/// [`alert_world`] whose *server clock* runs `skew` seconds ahead of the
+/// local one (negative = behind). `time()` queries, matrix sample
+/// timestamps, and range-window interpretation all live on that server
+/// clock; alert behaviour stays fixed relative to first contact. A world
+/// with skew is the discriminating fixture for verdict-anchor bugs: the
+/// reported transition times must not move with the skew.
+fn skewed_alert_world(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+    skew: f64,
+) -> impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static {
     let anchor: Arc<std::sync::OnceLock<(std::time::Instant, f64)>> =
         Arc::new(std::sync::OnceLock::new());
     move |_, request_line| {
-        let (mono0, unix0) = *anchor.get_or_init(|| {
+        let (mono0, unix0_local) = *anchor.get_or_init(|| {
             (
                 std::time::Instant::now(),
                 std::time::SystemTime::now()
@@ -139,9 +154,22 @@ fn alert_world(
                     .as_secs_f64(),
             )
         });
-        if let Some((start, end, step)) = parse_range_params(request_line) {
+        let unix0_server = unix0_local + skew;
+        if request_line.contains("query=time") {
+            let server_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("epoch")
+                .as_secs_f64()
+                + skew;
             (
-                matrix_body(start, end, step, unix0, fire_at, resolve_at, host),
+                format!(
+                    r#"{{"status":"success","data":{{"resultType":"scalar","result":[{server_now:.3},"{server_now:.3}"]}}}}"#
+                ),
+                NO_STALL,
+            )
+        } else if let Some((start, end, step)) = parse_range_params(request_line) {
+            (
+                matrix_body(start, end, step, unix0_server, fire_at, resolve_at, host),
                 NO_STALL,
             )
         } else {
@@ -557,6 +585,79 @@ fn firing_verdict_uses_sample_time_not_poll_time() {
     );
     assert!(
         stderr.contains("firing after 400ms (within 1s)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn verdicts_survive_a_server_clock_running_ahead() {
+    // #528 review blocker, direction 1: the server's clock is 1s ahead of
+    // the local one. The alert fires 400ms in (real time) against a 1s
+    // deadline — a clear pass. A local-anchored conversion would read the
+    // firing sample as landing at 1.4s and flip the verdict to Late.
+    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(0.3), None, "sonda-test", 1.0));
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(
+        &dir,
+        &scenario_with_expect(
+            "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 1s
+",
+        ),
+    );
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "server-clock skew must not move the verdict\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("firing after 400ms (within 1s)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn verdicts_survive_a_server_clock_running_behind() {
+    // #528 review blocker, direction 2 — the dangerous one: the server's
+    // clock is 1.5s behind. The alert fires at 2s (real time) against a 1s
+    // deadline, so FAIL is the only correct verdict. A local-anchored
+    // conversion would see the firing sample at 2 - 1.5 = 0.5s and report
+    // a false PASS with the deadline apparently met.
+    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(2.0), None, "sonda-test", -1.5));
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(
+        &dir,
+        &scenario_with_expect(
+            "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 1s
+",
+        ),
+    );
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a missed deadline must not become a pass under negative skew\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("did not fire within 1s"),
         "stderr: {stderr}"
     );
 }

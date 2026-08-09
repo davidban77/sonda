@@ -22,12 +22,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context};
 use owo_colors::{OwoColorize, Stream::Stderr};
 use sonda_core::verify::evaluator::{evaluate_firing, evaluate_resolution, Observation, Outcome};
-use sonda_core::verify::prometheus::PrometheusClient;
+use sonda_core::verify::prometheus::{PrometheusClient, ServerClock};
 use sonda_core::verify::{foreign_label_values, parse_expectations, AlertState, ExpectConfig};
 use sonda_core::CancellationToken;
 
@@ -91,6 +91,18 @@ pub fn run(
     preflight(&client, &expect, cancel)
         .with_context(|| format!("prometheus preflight against {prometheus_url} failed"))?;
 
+    // Verdict anchors must live on the *server's* clock — range samples
+    // carry server timestamps, and subtracting a local anchor from them
+    // bakes any clock skew straight into the verdicts.
+    let clock = client.server_clock().unwrap_or_else(|e| {
+        eprintln!(
+            "  {} could not measure the server clock ({e}); assuming zero offset — \
+             verdict times may be skewed by any clock difference",
+            warn_marker()
+        );
+        ServerClock::identity()
+    });
+
     // The firing poller runs alongside the scenario. `stop` cuts it short
     // when the scenario itself fails — no point waiting out deadlines to
     // report a sink error (review W3). The wall clock is captured at the
@@ -144,7 +156,7 @@ pub fn run(
     let mut warnings: Vec<String> = Vec::new();
     let mut matched_firing_series: Vec<BTreeMap<String, String>> = Vec::new();
 
-    let anchor_start = unix_secs(started_wall);
+    let anchor_start = clock.at(started_wall);
     let mut firing_outcomes: Vec<Outcome> = Vec::with_capacity(expect.alerts.len());
     for (index, expectation) in expect.alerts.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -155,6 +167,7 @@ pub fn run(
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let (timeline, series) = verdict_timeline(
             &client,
+            &clock,
             expectation,
             &live_firing[index],
             deadline,
@@ -176,7 +189,7 @@ pub fn run(
         cancel,
     )?;
 
-    let anchor_end = unix_secs(ended_wall);
+    let anchor_end = clock.at(ended_wall);
     let mut resolution_outcomes: Vec<Option<Outcome>> = Vec::with_capacity(expect.alerts.len());
     for (expectation, live) in expect.alerts.iter().zip(&resolution_live) {
         if cancel.is_cancelled() {
@@ -188,6 +201,7 @@ pub fn run(
         };
         let (timeline, series) = verdict_timeline(
             &client,
+            &clock,
             expectation,
             live,
             *deadline,
@@ -231,20 +245,16 @@ pub fn run(
     )
 }
 
-fn unix_secs(t: SystemTime) -> f64 {
-    t.duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
-
 /// Acquire the verdict timeline for one check: a range query over the
 /// window live polling settled, falling back to the live timeline (with a
 /// warning) when the range API fails or its data lags what polling saw.
 /// Verdicts are still made only by the evaluator — this chooses *which
-/// observations* it gets, never what they mean.
+/// observations* it gets, never what they mean. All window arithmetic is
+/// in **server** coordinates (`window_anchor` comes from [`ServerClock`]).
 #[allow(clippy::too_many_arguments)]
 fn verdict_timeline(
     client: &PrometheusClient,
+    clock: &ServerClock,
     expectation: &sonda_core::verify::AlertExpectation,
     live: &[Observation],
     deadline: Duration,
@@ -267,9 +277,10 @@ fn verdict_timeline(
 
     let mut last_error = None;
     for attempt in 0..ATTEMPTS {
-        // Never query past now: future grid points would read as Inactive
-        // and could fabricate coverage the datastore doesn't have.
-        let end = desired_end.min(unix_secs(SystemTime::now()));
+        // Never query past the server's now: future grid points would read
+        // as Inactive and could fabricate coverage the datastore doesn't
+        // have. Local now would defeat the clamp under skew.
+        let end = desired_end.min(clock.now());
         if end <= window_anchor {
             break;
         }

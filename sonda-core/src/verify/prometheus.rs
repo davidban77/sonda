@@ -34,6 +34,45 @@ pub struct PrometheusClient {
     agent: ureq::Agent,
 }
 
+/// Snapshot of the datastore's clock, expressed as an offset from the
+/// local one.
+///
+/// Range samples carry *server* timestamps; verdict anchors captured from
+/// the *local* clock must be translated into server coordinates before any
+/// subtraction, or the clock offset between the two hosts is silently
+/// baked into every verdict — one second of skew flips a tight deadline,
+/// and negative skew can turn a missed deadline into a false pass.
+#[derive(Debug, Clone, Copy)]
+pub struct ServerClock {
+    offset_secs: f64,
+}
+
+impl ServerClock {
+    /// A clock with no offset — for when the server's clock could not be
+    /// measured and local time is the only (warned-about) option.
+    pub fn identity() -> Self {
+        Self { offset_secs: 0.0 }
+    }
+
+    /// Measured server-minus-local offset in seconds.
+    pub fn offset_secs(&self) -> f64 {
+        self.offset_secs
+    }
+
+    /// A local wall-clock instant, expressed in server coordinates.
+    pub fn at(&self, t: std::time::SystemTime) -> f64 {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+            + self.offset_secs
+    }
+
+    /// The current moment, expressed in server coordinates.
+    pub fn now(&self) -> f64 {
+        self.at(std::time::SystemTime::now())
+    }
+}
+
 /// The reconstructed history of one expectation over a queried window.
 #[derive(Debug, Clone)]
 pub struct RangeTimeline {
@@ -93,9 +132,52 @@ impl PrometheusClient {
         })
     }
 
-    /// Reconstruct an expectation's state history over `[start, end]` (unix
-    /// seconds) at `step` resolution, with observation timestamps measured
-    /// from `anchor` (unix seconds — scenario start for firing checks,
+    /// Measure the server's clock with an instant `time()` query,
+    /// bracketing the request with local readings so the offset is taken
+    /// against the request's midpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError::Verify`] when the endpoint is unreachable,
+    /// times out, or responds with an unusable payload — callers should
+    /// fall back to [`ServerClock::identity`] with a warning rather than
+    /// abort.
+    pub fn server_clock(&self) -> Result<ServerClock, SondaError> {
+        let local_before = ServerClock::identity().now();
+        let body = self
+            .agent
+            .get(&self.query_url)
+            .query("query", "time()")
+            .call()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::Query {
+                    url: self.query_url.clone(),
+                    reason: e.to_string(),
+                })
+            })?
+            .into_string()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.query_url.clone(),
+                    reason: format!("response could not be read: {e}"),
+                })
+            })?;
+        let local_after = ServerClock::identity().now();
+        let server = parse_server_time(&body).map_err(|reason| {
+            SondaError::Verify(VerifyError::BadResponse {
+                url: self.query_url.clone(),
+                reason,
+            })
+        })?;
+        Ok(ServerClock {
+            offset_secs: server - (local_before + local_after) / 2.0,
+        })
+    }
+
+    /// Reconstruct an expectation's state history over `[start, end]`
+    /// (**server** unix seconds — see [`ServerClock`]) at `step`
+    /// resolution, with observation timestamps measured from `anchor`
+    /// (also server unix seconds — scenario start for firing checks,
     /// scenario end for resolution checks).
     ///
     /// # Errors
@@ -138,6 +220,38 @@ impl PrometheusClient {
                 reason,
             })
         })
+    }
+}
+
+/// Parse an instant `time()` response into the server's evaluation
+/// timestamp in unix seconds.
+///
+/// Prometheus answers with a scalar (`result: [ts, "ts"]`); VictoriaMetrics
+/// answers with a one-series vector whose `value: [ts, "..."]`. In both
+/// shapes the *evaluation timestamp* field is the server's clock — the
+/// stringified value is not used, because VM computes `time()` at
+/// `now - search.latencyOffset` (30s behind by default) while stamping the
+/// evaluation timestamp with the actual now.
+///
+/// Returns a human-readable reason on failure; the caller wraps it with
+/// the query URL into a [`VerifyError::BadResponse`].
+pub fn parse_server_time(body: &str) -> Result<f64, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("not valid JSON: {e}"))?;
+    if parsed["status"] != "success" {
+        return Err(format!("query returned status {:?}", parsed["status"]));
+    }
+    let data = &parsed["data"];
+    match &data["resultType"] {
+        t if t == "scalar" => data["result"][0]
+            .as_f64()
+            .ok_or_else(|| "scalar result carries no timestamp".to_string()),
+        t if t == "vector" => data["result"][0]["value"][0]
+            .as_f64()
+            .ok_or_else(|| "vector result carries no timestamp".to_string()),
+        other => Err(format!(
+            "expected resultType \"scalar\" or \"vector\", got {other:?}"
+        )),
     }
 }
 
@@ -427,6 +541,40 @@ mod tests {
         ]}}"#;
         let timeline = parse_range_timeline(body, 0.0, 10.0, 5.0, 0.0).expect("parse");
         assert_eq!(timeline.firing_series.len(), 2);
+    }
+
+    #[test]
+    fn server_time_parses_prometheus_scalar() {
+        let body = r#"{"status":"success","data":{"resultType":"scalar","result":[1754700000.123,"1754700000.123"]}}"#;
+        let ts = parse_server_time(body).expect("parse");
+        assert!((ts - 1_754_700_000.123).abs() < 1e-6);
+    }
+
+    #[test]
+    fn server_time_parses_victoriametrics_vector_from_eval_timestamp() {
+        // VM answers time() as a one-series vector, and computes the string
+        // value at now - search.latencyOffset (30s behind by default). The
+        // evaluation timestamp is the server's actual clock — observed live
+        // against v1.149.0.
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1786311458,"1786311428.689"]}]}}"#;
+        let ts = parse_server_time(body).expect("parse");
+        assert!((ts - 1_786_311_458.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn server_time_rejects_empty_vector_and_matrix() {
+        let empty = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+        assert!(parse_server_time(empty).is_err());
+        let matrix = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        assert!(parse_server_time(matrix).is_err());
+    }
+
+    #[test]
+    fn server_clock_translates_local_instants() {
+        let clock = ServerClock { offset_secs: -6.0 };
+        let t = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+        assert!((clock.at(t) - 994.0).abs() < 1e-9);
+        assert_eq!(ServerClock::identity().offset_secs(), 0.0);
     }
 
     #[test]
