@@ -18,14 +18,15 @@ use tempfile::TempDir;
 const EMPTY_RESULT: &str = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
 const FIRING_RESULT: &str = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{"alertname":"HighCpuUsage","alertstate":"firing"},"value":[1,"1"]}]}}"#;
 
-/// Serve scripted instant-query responses. `respond(n, request_line)` picks
-/// the body and an artificial delay for the n-th request (0-based); the raw
-/// request line carries the query, so tests with several expectations can
-/// script per-alert behavior by matching on the alert name. Each connection
-/// is handled on its own thread so a stalled response never blocks the next
-/// request. The server runs until the listener drops at test end.
+/// Serve scripted query responses. `respond(n, request_line)` picks the
+/// body and an artificial delay for the n-th request (0-based); the raw
+/// request line carries the path and query, so responders distinguish
+/// instant queries from `/api/v1/query_range` and script per-alert behavior
+/// by matching on the alert name. Each connection is handled on its own
+/// thread so a stalled response never blocks the next request. The server
+/// runs until the listener drops at test end.
 fn mock_prometheus(
-    respond: impl Fn(usize, &str) -> (&'static str, std::time::Duration) + Send + Sync + 'static,
+    respond: impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static,
 ) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock prometheus");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
@@ -65,6 +66,124 @@ fn mock_prometheus(
 
 const NO_STALL: std::time::Duration = std::time::Duration::ZERO;
 
+/// Extract `(start, end, step)` from a `/api/v1/query_range` request line;
+/// `None` for instant queries.
+fn parse_range_params(request_line: &str) -> Option<(f64, f64, f64)> {
+    if !request_line.contains("/api/v1/query_range") {
+        return None;
+    }
+    let target = request_line.split_whitespace().nth(1)?;
+    let (_, params) = target.split_once('?')?;
+    let (mut start, mut end, mut step) = (None, None, None);
+    for pair in params.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        match key {
+            "start" => start = value.parse().ok(),
+            "end" => end = value.parse().ok(),
+            "step" => step = value.parse().ok(),
+            _ => {}
+        }
+    }
+    Some((start?, end?, step?))
+}
+
+/// Build a range-query matrix body: one firing series (with `host`) whose
+/// samples cover the grid points where `unix_ts - anchor_unix` falls inside
+/// `[fire_at, resolve_at)` seconds.
+fn matrix_body(
+    start: f64,
+    end: f64,
+    step: f64,
+    anchor_unix: f64,
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &str,
+) -> String {
+    let mut values = Vec::new();
+    let steps = ((end - start) / step).floor() as u64;
+    for index in 0..=steps {
+        let ts = start + index as f64 * step;
+        let offset = ts - anchor_unix;
+        let firing = fire_at.is_some_and(|f| offset >= f) && resolve_at.is_none_or(|r| offset < r);
+        if firing {
+            values.push(format!("[{ts:.3},\"1\"]"));
+        }
+    }
+    if values.is_empty() {
+        return r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#.to_string();
+    }
+    format!(
+        r#"{{"status":"success","data":{{"resultType":"matrix","result":[{{"metric":{{"alertname":"HighCpuUsage","alertstate":"firing","host":"{host}"}},"values":[{}]}}]}}}}"#,
+        values.join(",")
+    )
+}
+
+/// A time-consistent fake alert: firing during `[fire_at, resolve_at)`
+/// seconds measured from the mock's first request. Instant and range
+/// queries answer from the same clock, so live polling and post-hoc range
+/// acquisition see one coherent world.
+fn alert_world(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+) -> impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static {
+    skewed_alert_world(fire_at, resolve_at, host, 0.0)
+}
+
+/// [`alert_world`] whose *server clock* runs `skew` seconds ahead of the
+/// local one (negative = behind). `time()` queries, matrix sample
+/// timestamps, and range-window interpretation all live on that server
+/// clock; alert behaviour stays fixed relative to first contact. A world
+/// with skew is the discriminating fixture for verdict-anchor bugs: the
+/// reported transition times must not move with the skew.
+fn skewed_alert_world(
+    fire_at: Option<f64>,
+    resolve_at: Option<f64>,
+    host: &'static str,
+    skew: f64,
+) -> impl Fn(usize, &str) -> (String, std::time::Duration) + Send + Sync + 'static {
+    let anchor: Arc<std::sync::OnceLock<(std::time::Instant, f64)>> =
+        Arc::new(std::sync::OnceLock::new());
+    move |_, request_line| {
+        let (mono0, unix0_local) = *anchor.get_or_init(|| {
+            (
+                std::time::Instant::now(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("epoch")
+                    .as_secs_f64(),
+            )
+        });
+        let unix0_server = unix0_local + skew;
+        if request_line.contains("query=time") {
+            let server_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("epoch")
+                .as_secs_f64()
+                + skew;
+            (
+                format!(
+                    r#"{{"status":"success","data":{{"resultType":"scalar","result":[{server_now:.3},"{server_now:.3}"]}}}}"#
+                ),
+                NO_STALL,
+            )
+        } else if let Some((start, end, step)) = parse_range_params(request_line) {
+            (
+                matrix_body(start, end, step, unix0_server, fire_at, resolve_at, host),
+                NO_STALL,
+            )
+        } else {
+            let offset = mono0.elapsed().as_secs_f64();
+            let firing =
+                fire_at.is_some_and(|f| offset >= f) && resolve_at.is_none_or(|r| offset < r);
+            (
+                (if firing { FIRING_RESULT } else { EMPTY_RESULT }).to_string(),
+                NO_STALL,
+            )
+        }
+    }
+}
+
 fn scenario_with_expect(expect_block: &str) -> String {
     format!(
         "version: 2
@@ -95,10 +214,9 @@ fn write_scenario(dir: &TempDir, yaml: &str) -> std::path::PathBuf {
 
 #[test]
 fn passes_when_alert_fires_and_resolves() {
-    // Firing from the first poll; inactive again once resolution polling
-    // starts (from request 3 on).
-    let (url, _hits) =
-        mock_prometheus(|n, _| (if n < 3 { FIRING_RESULT } else { EMPTY_RESULT }, NO_STALL));
+    // Firing from the first instant, resolving one second in — shortly
+    // after the 300ms scenario ends.
+    let (url, _hits) = mock_prometheus(alert_world(Some(0.0), Some(1.0), "sonda-test"));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -115,6 +233,7 @@ fn passes_when_alert_fires_and_resolves() {
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -133,7 +252,7 @@ fn passes_when_alert_fires_and_resolves() {
 
 #[test]
 fn fails_when_alert_never_fires() {
-    let (url, _hits) = mock_prometheus(|_, _| (EMPTY_RESULT, NO_STALL));
+    let (url, _hits) = mock_prometheus(alert_world(None, None, "sonda-test"));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -149,6 +268,7 @@ fn fails_when_alert_never_fires() {
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -211,16 +331,12 @@ fn dry_run_validates_without_polling() {
 
 #[test]
 fn fails_when_alert_fires_after_deadline() {
-    // Round-1 blocker 1, reproduction B: the alert eventually reports
-    // firing, but only after firing_within has passed — must be a failure,
-    // not a pass. Request 0 is the preflight (fast); the poller's first
-    // query returns inactive immediately (window coverage — without it the
-    // verdict is Undecided, not Late), then queries stall 400ms against the
-    // 200ms deadline.
-    let (url, _hits) = mock_prometheus(|n, _| match n {
-        0 | 1 => (EMPTY_RESULT, NO_STALL),
-        _ => (FIRING_RESULT, std::time::Duration::from_millis(400)),
-    });
+    // #516 round-1 blocker 1, reproduction B: the alert fires, but only
+    // after firing_within has passed — must be a failure, not a pass. The
+    // world fires at 300ms against a 200ms deadline; the range grid has
+    // pre-deadline coverage (inactive samples) and then the late firing
+    // sample, so the verdict is Late.
+    let (url, _hits) = mock_prometheus(alert_world(Some(0.3), None, "sonda-test"));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -236,6 +352,7 @@ fn fails_when_alert_fires_after_deadline() {
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -253,23 +370,10 @@ fn fails_when_alert_fires_after_deadline() {
 fn fails_when_second_resolution_is_delayed_past_deadline() {
     // A genuinely blown resolution deadline must be a failure: both alerts
     // stay firing until 1200ms after the first request, so MustResolveFast
-    // is observed still firing through its whole 200ms window (concurrent
-    // resolution polling covers it from scenario end — round-2 review
-    // blocker) while SlowToResolve's 4s deadline still passes. The switch
-    // is anchored on the mock's first request, not process spawn, so binary
-    // startup time doesn't skew the fixture (round-2 review M5).
-    let first_hit = Arc::new(std::sync::OnceLock::new());
-    let (url, _hits) = mock_prometheus(move |_, _| {
-        let started = *first_hit.get_or_init(std::time::Instant::now);
-        (
-            if started.elapsed() < std::time::Duration::from_millis(1200) {
-                FIRING_RESULT
-            } else {
-                EMPTY_RESULT
-            },
-            NO_STALL,
-        )
-    });
+    // is still firing through its whole 200ms window while SlowToResolve's
+    // 4s deadline passes. The world is anchored on the mock's first
+    // request, not process spawn (#527 review M5).
+    let (url, _hits) = mock_prometheus(alert_world(Some(0.0), Some(1.2), "sonda-test"));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -289,6 +393,7 @@ fn fails_when_second_resolution_is_delayed_past_deadline() {
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -309,23 +414,18 @@ fn fails_when_second_resolution_is_delayed_past_deadline() {
 
 #[test]
 fn parallel_resolutions_do_not_blind_each_others_windows() {
-    // Round-2 review blocker, discriminating case: SlowLane needs ~10 polls
-    // (~1s) to resolve against a 3s deadline while FastLane resolves on its
-    // very first resolution query against a 300ms one. With concurrent
-    // resolution polling both PASS. If polling regresses to sequential,
-    // SlowLane's wait pushes FastLane's first query past 300ms and the run
-    // fails — this test must go red.
-    let slow_hits = Arc::new(AtomicUsize::new(0));
-    let fast_hits = Arc::new(AtomicUsize::new(0));
-    let (url, _hits) = mock_prometheus(move |_, request_line| {
+    // #516 round-2 blocker heritage: SlowLane keeps firing for 1.5s against
+    // a 3s resolution deadline while FastLane resolves right at scenario
+    // end against a 300ms one. Both must PASS — no expectation's window may
+    // be blinded by another's wait, whether by concurrent polling or by the
+    // range-acquired verdict timelines.
+    let slow = alert_world(Some(0.0), Some(1.5), "sonda-test");
+    let fast = alert_world(Some(0.0), Some(0.4), "sonda-test");
+    let (url, _hits) = mock_prometheus(move |n, request_line| {
         if request_line.contains("SlowLane") {
-            // Hits 0 (preflight) and 1 (firing poll) must show firing; then
-            // ~10 firing resolution polls before resolving.
-            let n = slow_hits.fetch_add(1, Ordering::SeqCst);
-            (if n < 12 { FIRING_RESULT } else { EMPTY_RESULT }, NO_STALL)
+            slow(n, request_line)
         } else {
-            let n = fast_hits.fetch_add(1, Ordering::SeqCst);
-            (if n < 2 { FIRING_RESULT } else { EMPTY_RESULT }, NO_STALL)
+            fast(n, request_line)
         }
     });
     let dir = TempDir::new().expect("tempdir");
@@ -347,6 +447,7 @@ fn parallel_resolutions_do_not_blind_each_others_windows() {
     let output = Command::new(sonda_bin())
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -365,7 +466,8 @@ fn bounded_failure_when_endpoint_stalls_before_answering() {
     // Review blocker 2, reproduction C: an endpoint that accepts the
     // connection and never answers in time must produce a bounded non-zero
     // exit (preflight timeout), not a SIGINT-proof hang.
-    let (url, _hits) = mock_prometheus(|_, _| (EMPTY_RESULT, std::time::Duration::from_secs(60)));
+    let (url, _hits) =
+        mock_prometheus(|_, _| (EMPTY_RESULT.to_string(), std::time::Duration::from_secs(60)));
     let dir = TempDir::new().expect("tempdir");
     let path = write_scenario(
         &dir,
@@ -405,9 +507,9 @@ fn mid_run_stall_surfaces_query_errors_on_missed_deadline() {
     // silently passing.
     let (url, _hits) = mock_prometheus(|n, _| {
         if n == 0 {
-            (EMPTY_RESULT, NO_STALL)
+            (EMPTY_RESULT.to_string(), NO_STALL)
         } else {
-            (EMPTY_RESULT, std::time::Duration::from_secs(30))
+            (EMPTY_RESULT.to_string(), std::time::Duration::from_secs(30))
         }
     });
     let dir = TempDir::new().expect("tempdir");
@@ -427,6 +529,7 @@ fn mid_run_stall_surfaces_query_errors_on_missed_deadline() {
         .args(["test", path.to_str().expect("utf8 path")])
         .args(["--prometheus-url", &url])
         .args(["--interval", "100ms", "--query-timeout", "300ms"])
+        .args(["--query-step", "300ms"])
         .output()
         .expect("run sonda test");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -438,6 +541,172 @@ fn mid_run_stall_surfaces_query_errors_on_missed_deadline() {
     );
     assert!(
         stderr.contains("did not fire within 600ms") && stderr.contains("last query error"),
+        "stderr: {stderr}"
+    );
+    // With the range API also stalled, the verdict falls back to the live
+    // poll timeline — and says so.
+    assert!(
+        stderr.contains("uses the live poll timeline"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn firing_verdict_uses_sample_time_not_poll_time() {
+    // The range-acquisition contract: transition times come from the stored
+    // samples, not from when polling happened to look. The alert fires at
+    // 300ms against a 1s deadline, but the live poll interval is a huge 2s
+    // — poll-based verdicts would see the firing at ~2s and call it Late.
+    // The range grid shows the 400ms sample, so this must PASS. Goes red if
+    // verdicts revert to the poll timeline.
+    let (url, _hits) = mock_prometheus(alert_world(Some(0.3), None, "sonda-test"));
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(
+        &dir,
+        &scenario_with_expect(
+            "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 1s
+",
+        ),
+    );
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "2s"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "sample-time verdict must pass despite the coarse poll interval\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("firing after 400ms (within 1s)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn verdicts_survive_a_server_clock_running_ahead() {
+    // #528 review blocker, direction 1: the server's clock is 1s ahead of
+    // the local one. The alert fires 400ms in (real time) against a 1s
+    // deadline — a clear pass. A local-anchored conversion would read the
+    // firing sample as landing at 1.4s and flip the verdict to Late.
+    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(0.3), None, "sonda-test", 1.0));
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(
+        &dir,
+        &scenario_with_expect(
+            "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 1s
+",
+        ),
+    );
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "server-clock skew must not move the verdict\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("firing after 400ms (within 1s)"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn verdicts_survive_a_server_clock_running_behind() {
+    // #528 review blocker, direction 2 — the dangerous one: the server's
+    // clock is 1.5s behind. The alert fires at 2s (real time) against a 1s
+    // deadline, so FAIL is the only correct verdict. A local-anchored
+    // conversion would see the firing sample at 2 - 1.5 = 0.5s and report
+    // a false PASS with the deadline apparently met.
+    let (url, _hits) = mock_prometheus(skewed_alert_world(Some(2.0), None, "sonda-test", -1.5));
+    let dir = TempDir::new().expect("tempdir");
+    let path = write_scenario(
+        &dir,
+        &scenario_with_expect(
+            "expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 1s
+",
+        ),
+    );
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a missed deadline must not become a pass under negative skew\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("did not fire within 1s"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn warns_when_matched_series_carries_foreign_label_values() {
+    // #527 review, W2 follow-up: ALERTS is global, so an expectation can
+    // match an alert another series caused. When the matched firing series
+    // carries a label value the scenario never emits, say so.
+    let (url, _hits) = mock_prometheus(alert_world(Some(0.0), None, "intruder-host"));
+    let dir = TempDir::new().expect("tempdir");
+    let yaml = "version: 2
+kind: runnable
+defaults:
+  rate: 10
+  duration: 300ms
+  encoder:
+    type: prometheus_text
+  sink:
+    type: memory
+scenarios:
+  - id: cpu
+    signal_type: metrics
+    name: cpu_usage
+    generator:
+      type: constant
+      value: 95.0
+    labels:
+      host: sonda-test
+expect:
+  alerts:
+    - alert: HighCpuUsage
+      firing_within: 5s
+";
+    let path = write_scenario(&dir, yaml);
+
+    let output = Command::new(sonda_bin())
+        .args(["test", path.to_str().expect("utf8 path")])
+        .args(["--prometheus-url", &url, "--interval", "100ms"])
+        .args(["--query-step", "200ms"])
+        .output()
+        .expect("run sonda test");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The firing check itself passes — the warning is advisory.
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("WARN")
+            && stderr.contains("host=\"intruder-host\"")
+            && stderr.contains("scope `expect.labels`"),
         "stderr: {stderr}"
     );
 }
@@ -503,7 +772,7 @@ fn failed_scenario_reports_immediately_without_waiting_out_deadlines() {
     // Review W3: a scenario that dies at launch (unreachable TCP sink) must
     // surface its own error promptly instead of blocking behind a long
     // firing_within.
-    let (url, _hits) = mock_prometheus(|_, _| (EMPTY_RESULT, NO_STALL));
+    let (url, _hits) = mock_prometheus(|_, _| (EMPTY_RESULT.to_string(), NO_STALL));
     let dir = TempDir::new().expect("tempdir");
     let yaml = "version: 2
 kind: runnable

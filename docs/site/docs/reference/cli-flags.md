@@ -281,12 +281,21 @@ sonda test examples/alert-expectation-test.yaml \
 | `--prometheus-url <URL>` | Base URL of the Prometheus-compatible API evaluating the alert rules (e.g. `http://localhost:9090`). Required except with `--dry-run`; also read from `SONDA_PROMETHEUS_URL`. |
 | `--interval <DUR>` | Poll interval for alert-state checks. Default `5s`. |
 | `--query-timeout <DUR>` | Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default `10s`. |
+| `--query-step <DUR>` | Grid resolution for the post-hoc range queries that produce the verdict timelines. Match your rule evaluation interval. Default `5s`. |
 
 The scenario runs exactly as `sonda run` would (no overrides). Firing
 deadlines are measured from scenario start; resolution deadlines from
 scenario end. A scenario without an `expect:` block is rejected. With
 `--dry-run`, the scenario and its expectations are validated and printed
 without emitting events or contacting Prometheus.
+
+Verdicts are read from the datastore, not from the polling loop: live
+polling (at `--interval`) only decides when each check has settled, then a
+range query reconstructs what actually happened from the stored `ALERTS`
+samples at `--query-step` resolution. Reported transition times are sample
+times — independent of how often `sonda test` polled. If the range API is
+unavailable, the verdict falls back to the live poll timeline with a
+warning.
 
 Before the scenario starts, a preflight confirms the endpoint answers a
 query for every expectation. Only the first expectation is retried (3

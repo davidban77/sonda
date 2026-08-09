@@ -90,6 +90,31 @@ impl AlertExpectation {
     }
 }
 
+/// Label values on a matched alert series that the scenario never emitted.
+///
+/// The `ALERTS` metric is global: an expectation can match an alert another
+/// series caused. This compares a matched series' labels against the label
+/// values the scenario actually emits — for every label key the scenario
+/// uses, a differing value on the series means the alert (at least partly)
+/// came from outside the scenario. Callers surface these as warnings so an
+/// under-scoped expectation is loud instead of silently green. Label keys
+/// the scenario never sets (e.g. `alertname`, `alertstate`, rule labels
+/// like `severity`) are not compared — the scenario has no opinion on them.
+pub fn foreign_label_values(
+    series: &BTreeMap<String, String>,
+    emitted: &BTreeMap<String, std::collections::BTreeSet<String>>,
+) -> Vec<(String, String)> {
+    series
+        .iter()
+        .filter(|(key, value)| {
+            emitted
+                .get(*key)
+                .is_some_and(|values| !values.contains(*value))
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 /// Extract and validate the `expect:` block from scenario YAML.
 ///
 /// Returns `Ok(None)` when the file has no `expect:` block. The probe is
@@ -134,6 +159,74 @@ pub fn parse_expectations(yaml: &str) -> Result<Option<ExpectConfig>, SondaError
         expectation.resolves_within()?;
     }
     Ok(Some(config))
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn emitted(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+        pairs
+            .iter()
+            .map(|(k, vs)| {
+                (
+                    k.to_string(),
+                    vs.iter().map(|v| v.to_string()).collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect()
+    }
+
+    fn series(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn matching_values_produce_no_warnings() {
+        let foreign = foreign_label_values(
+            &series(&[("host", "sonda-test"), ("alertname", "HighCpuUsage")]),
+            &emitted(&[("host", &["sonda-test"])]),
+        );
+        assert!(foreign.is_empty());
+    }
+
+    #[test]
+    fn differing_value_on_an_emitted_key_is_foreign() {
+        // The #527 review's exact case: expectation matched an alert from
+        // host=ci-test-node while the scenario only emitted host=sonda-test.
+        let foreign = foreign_label_values(
+            &series(&[("host", "ci-test-node"), ("severity", "critical")]),
+            &emitted(&[("host", &["sonda-test"]), ("service", &["payments"])]),
+        );
+        assert_eq!(
+            foreign,
+            vec![("host".to_string(), "ci-test-node".to_string())]
+        );
+    }
+
+    #[test]
+    fn keys_the_scenario_never_sets_are_ignored() {
+        // alertname / alertstate / rule labels are not scenario labels.
+        let foreign = foreign_label_values(
+            &series(&[("alertname", "HighCpuUsage"), ("severity", "critical")]),
+            &emitted(&[("host", &["sonda-test"])]),
+        );
+        assert!(foreign.is_empty());
+    }
+
+    #[test]
+    fn any_emitted_value_for_the_key_matches() {
+        // Multi-entry scenarios can emit several values for one key.
+        let foreign = foreign_label_values(
+            &series(&[("host", "b")]),
+            &emitted(&[("host", &["a", "b"])]),
+        );
+        assert!(foreign.is_empty());
+    }
 }
 
 #[cfg(all(test, feature = "config"))]

@@ -111,13 +111,17 @@ the single discovery surface. The verbosity model is captured in the `Verbosity`
 
 - **`sonda test`** — run a scenario and verify its top-level `expect:` alert expectations
   against a Prometheus-compatible API (`--prometheus-url`, env `SONDA_PROMETHEUS_URL`).
-  A poller thread watches the `ALERTS` metric while the scenario runs through the same
-  machinery as `sonda run`; firing deadlines count from scenario start, resolution deadlines
-  from scenario end. Exits non-zero when any expectation fails — this is the CI entry point
-  for alert-rule testing. `test_cmd.rs` only orchestrates and renders: it records timestamped
-  observation timelines and every pass/fail decision is made by
-  `sonda_core::verify::evaluator` (parsing and the Prometheus client also live in
-  `sonda_core::verify`).
+  Live polling of the `ALERTS` metric (a poller thread beside the same run machinery as
+  `sonda run`) only decides when each check has *settled*; the verdict timeline is then
+  reconstructed by a range query over the stored samples at `--query-step` resolution, so
+  transition times are sample times, not poll times (fallback to the live timeline, with a
+  warning, when the range API fails). Firing deadlines count from scenario start, resolution
+  deadlines from scenario end. Exits non-zero when any expectation fails — this is the CI
+  entry point for alert-rule testing. Matched firing series are provenance-checked against
+  the scenario's own emitted labels (`ALERTS` is global; a foreign label value warns).
+  `test_cmd.rs` only orchestrates and renders: every pass/fail decision is made by
+  `sonda_core::verify::evaluator` (parsing, the Prometheus client, and the provenance
+  check also live in `sonda_core::verify`).
 
 All subcommands route through the unified `sonda_core::prepare_entries` + `sonda_core::launch_scenario`
 API. No per-signal-type dispatch in main.rs.

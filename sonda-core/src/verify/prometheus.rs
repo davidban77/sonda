@@ -1,14 +1,25 @@
 //! Prometheus-compatible acquisition for alert-state polling.
 //!
-//! Queries the instant-query API (`/api/v1/query`) for the built-in
-//! `ALERTS` metric, which every Prometheus-compatible evaluator (Prometheus,
-//! VictoriaMetrics/vmalert) exposes with an `alertstate` label of `pending`
-//! or `firing` while a rule is active. This module only *acquires* state —
-//! deadline decisions belong to [`crate::verify::evaluator`].
+//! Two acquisition paths against the built-in `ALERTS` metric, which every
+//! Prometheus-compatible evaluator (Prometheus, VictoriaMetrics/vmalert)
+//! exposes with an `alertstate` label of `pending` or `firing` while a rule
+//! is active:
+//!
+//! - **Instant queries** (`/api/v1/query`) drive *live* polling — deciding
+//!   when a check has settled and can stop waiting.
+//! - **Range queries** (`/api/v1/query_range`) produce the *verdict*
+//!   timeline after the fact: the actual samples the evaluator wrote, at
+//!   the rule-evaluation cadence, free of the caller's poll-interval
+//!   quantization and of latency introduced by polling other expectations.
+//!
+//! This module only *acquires* state — deadline decisions belong to
+//! [`crate::verify::evaluator`].
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
 
+use crate::verify::evaluator::Observation;
 use crate::verify::{AlertExpectation, AlertState};
 use crate::{SondaError, VerifyError};
 
@@ -19,7 +30,58 @@ use crate::{SondaError, VerifyError};
 /// which keeps polling loops bounded and interruptible.
 pub struct PrometheusClient {
     query_url: String,
+    range_url: String,
     agent: ureq::Agent,
+}
+
+/// Snapshot of the datastore's clock, expressed as an offset from the
+/// local one.
+///
+/// Range samples carry *server* timestamps; verdict anchors captured from
+/// the *local* clock must be translated into server coordinates before any
+/// subtraction, or the clock offset between the two hosts is silently
+/// baked into every verdict — one second of skew flips a tight deadline,
+/// and negative skew can turn a missed deadline into a false pass.
+#[derive(Debug, Clone, Copy)]
+pub struct ServerClock {
+    offset_secs: f64,
+}
+
+impl ServerClock {
+    /// A clock with no offset — for when the server's clock could not be
+    /// measured and local time is the only (warned-about) option.
+    pub fn identity() -> Self {
+        Self { offset_secs: 0.0 }
+    }
+
+    /// Measured server-minus-local offset in seconds.
+    pub fn offset_secs(&self) -> f64 {
+        self.offset_secs
+    }
+
+    /// A local wall-clock instant, expressed in server coordinates.
+    pub fn at(&self, t: std::time::SystemTime) -> f64 {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+            + self.offset_secs
+    }
+
+    /// The current moment, expressed in server coordinates.
+    pub fn now(&self) -> f64 {
+        self.at(std::time::SystemTime::now())
+    }
+}
+
+/// The reconstructed history of one expectation over a queried window.
+#[derive(Debug, Clone)]
+pub struct RangeTimeline {
+    /// One observation per grid step, anchored on the caller's anchor
+    /// timestamp. A step with no matching sample is `Inactive`.
+    pub observations: Vec<Observation>,
+    /// Label sets of every distinct firing series seen in the window —
+    /// input for [`crate::verify::foreign_label_values`] provenance checks.
+    pub firing_series: Vec<BTreeMap<String, String>>,
 }
 
 impl PrometheusClient {
@@ -30,6 +92,7 @@ impl PrometheusClient {
         let base = base_url.trim_end_matches('/');
         Self {
             query_url: format!("{base}/api/v1/query"),
+            range_url: format!("{base}/api/v1/query_range"),
             agent: ureq::AgentBuilder::new().timeout(timeout).build(),
         }
     }
@@ -68,6 +131,212 @@ impl PrometheusClient {
             })
         })
     }
+
+    /// Measure the server's clock with an instant `time()` query,
+    /// bracketing the request with local readings so the offset is taken
+    /// against the request's midpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError::Verify`] when the endpoint is unreachable,
+    /// times out, or responds with an unusable payload — callers should
+    /// fall back to [`ServerClock::identity`] with a warning rather than
+    /// abort.
+    pub fn server_clock(&self) -> Result<ServerClock, SondaError> {
+        let local_before = ServerClock::identity().now();
+        let body = self
+            .agent
+            .get(&self.query_url)
+            .query("query", "time()")
+            .call()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::Query {
+                    url: self.query_url.clone(),
+                    reason: e.to_string(),
+                })
+            })?
+            .into_string()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.query_url.clone(),
+                    reason: format!("response could not be read: {e}"),
+                })
+            })?;
+        let local_after = ServerClock::identity().now();
+        let server = parse_server_time(&body).map_err(|reason| {
+            SondaError::Verify(VerifyError::BadResponse {
+                url: self.query_url.clone(),
+                reason,
+            })
+        })?;
+        Ok(ServerClock {
+            offset_secs: server - (local_before + local_after) / 2.0,
+        })
+    }
+
+    /// Reconstruct an expectation's state history over `[start, end]`
+    /// (**server** unix seconds — see [`ServerClock`]) at `step`
+    /// resolution, with observation timestamps measured from `anchor`
+    /// (also server unix seconds — scenario start for firing checks,
+    /// scenario end for resolution checks).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SondaError::Verify`] when the endpoint is unreachable,
+    /// times out, or responds with an unusable payload.
+    pub fn range_timeline(
+        &self,
+        expectation: &AlertExpectation,
+        start: f64,
+        end: f64,
+        step: Duration,
+        anchor: f64,
+    ) -> Result<RangeTimeline, SondaError> {
+        let query = alerts_query(expectation);
+        let body = self
+            .agent
+            .get(&self.range_url)
+            .query("query", &query)
+            .query("start", &format!("{start:.3}"))
+            .query("end", &format!("{end:.3}"))
+            .query("step", &format!("{:.3}", step.as_secs_f64()))
+            .call()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::Query {
+                    url: self.range_url.clone(),
+                    reason: e.to_string(),
+                })
+            })?
+            .into_string()
+            .map_err(|e| {
+                SondaError::Verify(VerifyError::BadResponse {
+                    url: self.range_url.clone(),
+                    reason: format!("response could not be read: {e}"),
+                })
+            })?;
+        parse_range_timeline(&body, start, end, step.as_secs_f64(), anchor).map_err(|reason| {
+            SondaError::Verify(VerifyError::BadResponse {
+                url: self.range_url.clone(),
+                reason,
+            })
+        })
+    }
+}
+
+/// Parse an instant `time()` response into the server's evaluation
+/// timestamp in unix seconds.
+///
+/// Prometheus answers with a scalar (`result: [ts, "ts"]`); VictoriaMetrics
+/// answers with a one-series vector whose `value: [ts, "..."]`. In both
+/// shapes the *evaluation timestamp* field is the server's clock — the
+/// stringified value is not used, because VM computes `time()` at
+/// `now - search.latencyOffset` (30s behind by default) while stamping the
+/// evaluation timestamp with the actual now.
+///
+/// Returns a human-readable reason on failure; the caller wraps it with
+/// the query URL into a [`VerifyError::BadResponse`].
+pub fn parse_server_time(body: &str) -> Result<f64, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("not valid JSON: {e}"))?;
+    if parsed["status"] != "success" {
+        return Err(format!("query returned status {:?}", parsed["status"]));
+    }
+    let data = &parsed["data"];
+    match &data["resultType"] {
+        t if t == "scalar" => data["result"][0]
+            .as_f64()
+            .ok_or_else(|| "scalar result carries no timestamp".to_string()),
+        t if t == "vector" => data["result"][0]["value"][0]
+            .as_f64()
+            .ok_or_else(|| "vector result carries no timestamp".to_string()),
+        other => Err(format!(
+            "expected resultType \"scalar\" or \"vector\", got {other:?}"
+        )),
+    }
+}
+
+/// Parse a range-query response into a [`RangeTimeline`].
+///
+/// The grid runs `start..=end` at `step` (all unix seconds). Prometheus
+/// aligns matrix samples to the requested grid, so states are keyed by
+/// millisecond-rounded timestamps; a grid point with no matching sample is
+/// `Inactive` — the rule produced no series there (with staleness markers,
+/// exactly what an instant query at that moment would have said). Steps at
+/// or before `anchor` clamp to zero.
+pub fn parse_range_timeline(
+    body: &str,
+    start: f64,
+    end: f64,
+    step_secs: f64,
+    anchor: f64,
+) -> Result<RangeTimeline, String> {
+    if !step_secs.is_finite() || step_secs <= 0.0 {
+        return Err(format!("step must be positive, got {step_secs}"));
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("not valid JSON: {e}"))?;
+    if parsed["status"] != "success" {
+        return Err(format!("query returned status {:?}", parsed["status"]));
+    }
+    let result_type = &parsed["data"]["resultType"];
+    if result_type != "matrix" {
+        return Err(format!(
+            "expected resultType \"matrix\", got {result_type:?}"
+        ));
+    }
+    let empty = Vec::new();
+    let series_list = parsed["data"]["result"].as_array().unwrap_or(&empty);
+
+    let mut firing_at: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    let mut pending_at: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    let mut firing_series: Vec<BTreeMap<String, String>> = Vec::new();
+    for series in series_list {
+        let firing = series["metric"]["alertstate"] == "firing";
+        if firing {
+            let labels: BTreeMap<String, String> = series["metric"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !firing_series.contains(&labels) {
+                firing_series.push(labels);
+            }
+        }
+        for value in series["values"].as_array().unwrap_or(&empty) {
+            let Some(ts) = value[0].as_f64() else {
+                continue;
+            };
+            let key = (ts * 1000.0).round() as i64;
+            if firing {
+                firing_at.insert(key);
+            } else {
+                pending_at.insert(key);
+            }
+        }
+    }
+
+    let mut observations = Vec::new();
+    let steps = ((end - start) / step_secs).floor() as u64;
+    for index in 0..=steps {
+        let ts = start + index as f64 * step_secs;
+        let key = (ts * 1000.0).round() as i64;
+        let state = if firing_at.contains(&key) {
+            AlertState::Firing
+        } else if pending_at.contains(&key) {
+            AlertState::Pending
+        } else {
+            AlertState::Inactive
+        };
+        let at = Duration::from_secs_f64((ts - anchor).max(0.0));
+        observations.push(Observation::new(at, Ok(state)));
+    }
+    Ok(RangeTimeline {
+        observations,
+        firing_series,
+    })
 }
 
 /// Build the `ALERTS{...}` selector for an expectation.
@@ -191,6 +460,136 @@ mod tests {
     fn error_status_is_rejected() {
         let body = r#"{"status":"error","errorType":"bad_data","error":"boom"}"#;
         assert!(parse_alert_state(body).is_err());
+    }
+
+    fn states(timeline: &RangeTimeline) -> Vec<AlertState> {
+        timeline
+            .observations
+            .iter()
+            .map(|o| *o.state.as_ref().expect("range states are never errors"))
+            .collect()
+    }
+
+    #[test]
+    fn range_grid_reconstructs_the_full_lifecycle() {
+        // Grid 100..=120 step 5: inactive, pending, firing, firing, gone.
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"alertname":"HighCpuUsage","alertstate":"pending","host":"sonda-test"},
+             "values":[[105,"1"]]},
+            {"metric":{"alertname":"HighCpuUsage","alertstate":"firing","host":"sonda-test"},
+             "values":[[110,"1"],[115,"1"]]}
+        ]}}"#;
+        let timeline = parse_range_timeline(body, 100.0, 120.0, 5.0, 100.0).expect("parse");
+        assert_eq!(
+            states(&timeline),
+            vec![
+                AlertState::Inactive,
+                AlertState::Pending,
+                AlertState::Firing,
+                AlertState::Firing,
+                AlertState::Inactive,
+            ]
+        );
+        // Observations are anchored: first at 0s, last at 20s.
+        assert_eq!(timeline.observations[0].at, Duration::from_secs(0));
+        assert_eq!(timeline.observations[4].at, Duration::from_secs(20));
+        assert_eq!(timeline.firing_series.len(), 1);
+        assert_eq!(
+            timeline.firing_series[0].get("host").map(String::as_str),
+            Some("sonda-test")
+        );
+    }
+
+    #[test]
+    fn range_transition_time_is_the_sample_time_not_a_poll_time() {
+        // The whole point of range acquisition: the firing observation's
+        // timestamp comes from the stored sample (anchor+5s), regardless of
+        // when or how often anyone polled.
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"alertname":"X","alertstate":"firing"},"values":[[1005,"1"],[1010,"1"]]}
+        ]}}"#;
+        let timeline = parse_range_timeline(body, 1000.0, 1010.0, 5.0, 1000.0).expect("parse");
+        let first_firing = timeline
+            .observations
+            .iter()
+            .find(|o| matches!(o.state, Ok(AlertState::Firing)))
+            .expect("firing observed");
+        assert_eq!(first_firing.at, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn range_empty_result_is_all_inactive_with_full_coverage() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        let timeline = parse_range_timeline(body, 0.0, 10.0, 5.0, 0.0).expect("parse");
+        assert_eq!(
+            states(&timeline),
+            vec![
+                AlertState::Inactive,
+                AlertState::Inactive,
+                AlertState::Inactive
+            ]
+        );
+        assert!(timeline.firing_series.is_empty());
+    }
+
+    #[test]
+    fn range_collects_distinct_firing_series_labels() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[
+            {"metric":{"alertname":"X","alertstate":"firing","host":"a"},"values":[[5,"1"]]},
+            {"metric":{"alertname":"X","alertstate":"firing","host":"b"},"values":[[5,"1"]]},
+            {"metric":{"alertname":"X","alertstate":"firing","host":"a"},"values":[[10,"1"]]}
+        ]}}"#;
+        let timeline = parse_range_timeline(body, 0.0, 10.0, 5.0, 0.0).expect("parse");
+        assert_eq!(timeline.firing_series.len(), 2);
+    }
+
+    #[test]
+    fn server_time_parses_prometheus_scalar() {
+        let body = r#"{"status":"success","data":{"resultType":"scalar","result":[1754700000.123,"1754700000.123"]}}"#;
+        let ts = parse_server_time(body).expect("parse");
+        assert!((ts - 1_754_700_000.123).abs() < 1e-6);
+    }
+
+    #[test]
+    fn server_time_parses_victoriametrics_vector_from_eval_timestamp() {
+        // VM answers time() as a one-series vector, and computes the string
+        // value at now - search.latencyOffset (30s behind by default). The
+        // evaluation timestamp is the server's actual clock — observed live
+        // against v1.149.0.
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1786311458,"1786311428.689"]}]}}"#;
+        let ts = parse_server_time(body).expect("parse");
+        assert!((ts - 1_786_311_458.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn server_time_rejects_empty_vector_and_matrix() {
+        let empty = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+        assert!(parse_server_time(empty).is_err());
+        let matrix = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        assert!(parse_server_time(matrix).is_err());
+    }
+
+    #[test]
+    fn server_clock_translates_local_instants() {
+        let clock = ServerClock { offset_secs: -6.0 };
+        let t = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
+        assert!((clock.at(t) - 994.0).abs() < 1e-9);
+        assert_eq!(ServerClock::identity().offset_secs(), 0.0);
+    }
+
+    #[test]
+    fn range_vector_result_is_rejected() {
+        // An instant-query response fed to the range parser is a bad
+        // payload, not an empty timeline.
+        let body = r#"{"status":"success","data":{"resultType":"vector","result":[]}}"#;
+        let err = parse_range_timeline(body, 0.0, 10.0, 5.0, 0.0).expect_err("must reject");
+        assert!(err.contains("matrix"), "{err}");
+    }
+
+    #[test]
+    fn range_zero_step_is_rejected() {
+        let body = r#"{"status":"success","data":{"resultType":"matrix","result":[]}}"#;
+        assert!(parse_range_timeline(body, 0.0, 10.0, 0.0, 0.0).is_err());
     }
 
     #[test]
