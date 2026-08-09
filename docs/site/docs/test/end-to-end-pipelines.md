@@ -330,9 +330,11 @@ Pick the tab that matches your scenario.
     | Logs | `json_lines` | `loki` | `examples/loki-json-lines.yaml` | `curl -sG 'http://localhost:3100/loki/api/v1/query_range' --data-urlencode 'query={job="sonda"}' \| jq '.data.result \| length'` |
     | Logs | `json_lines` | `kafka` | `examples/kafka-json-logs.yaml` | `docker exec <kafka> /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic sonda-logs --from-beginning --timeout-ms 5000` |
     | Metrics | `influx_lp` | `file` | `examples/influx-file.yaml` | `wc -l < /tmp/sonda-influx-output.txt` |
+    | Metrics | `remote_write` | `remote_write` (VM + vmalert) | `examples/alert-lifecycle-test.yaml` | `sonda test examples/alert-lifecycle-test.yaml --prometheus-url http://localhost:8428 --interval 5s` — self-verifying: exit 0 means the alert fired *and* resolved on deadline |
+    | Metrics | `remote_write` | `remote_write` (VM + vmalert, negative control) | `tests/e2e/alert-negative-control.yaml` | Same `sonda test` shape — must exit 1 with `did not fire within`, proving the failure path fails |
 
     !!! info "Compose profiles"
-        Loki, Kafka, Prometheus, and the OTel Collector are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
+        Loki, Kafka, Prometheus, the OTel Collector, and the alerting stack (vmalert + Alertmanager, needed by the two `sonda test` rows) are behind profiles to keep the base stack lean. Bring up only what each row needs. The vmagent row uses the default stack — no extra profile.
         ```bash
         docker compose -f examples/docker-compose-victoriametrics.yml \
           --profile loki --profile kafka --profile prometheus --profile otel-collector up -d

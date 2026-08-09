@@ -808,6 +808,7 @@ expect:
     - alert: HighCpuUsage
       labels:
         severity: critical
+        host: sonda-test
       firing_within: 90s
       resolves_within: 6m
 ```
@@ -818,6 +819,11 @@ expect:
   stops, the alert must stop firing. Leave slack for staleness — a pushed
   series takes a few minutes to go stale after the last sample.
 - `labels` narrows the match when one rule name fires for many label sets.
+  **Always include a label unique to your scenario** (here `host`, matching
+  the scenario's own `labels:`): the `ALERTS` metric is global, so an
+  unscoped expectation is satisfied by *any* firing alert with that name —
+  including ones your scenario never caused. On a shared or long-lived
+  Prometheus that turns a real failure into a false pass.
 
 Run it against any Prometheus-compatible query API (Prometheus,
 VictoriaMetrics with vmalert):
@@ -840,6 +846,15 @@ otherwise — which makes alert rules testable in CI. The
 `--dry-run` validates the scenario and its `expect:` block without emitting
 or contacting Prometheus. The `expect:` block is pure metadata to `sonda run`
 — the same file works for both commands.
+
+Resolution above leans on series staleness (emission stops, the rule's
+query eventually empties out), which takes minutes. For a fast, explicit
+recovery, `examples/alert-lifecycle-test.yaml` adds a second phase that
+drops the same series below the threshold — the alert resolves within a
+couple of evaluation rounds of scenario end. Both examples run
+continuously against a live VictoriaMetrics + vmalert stack in CI (the
+Live Infra UAT workflow), alongside a negative control that proves a
+non-firing alert exits `1`.
 
 ## Where to next
 
