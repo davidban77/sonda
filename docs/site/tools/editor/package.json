@@ -1,0 +1,15 @@
+{
+  "name": "sonda-editor",
+  "private": true,
+  "description": "Builds the vendored CodeMirror bundle for the docs-site playground (task site:editor)",
+  "scripts": {
+    "build": "esbuild src/editor.js --bundle --format=esm --minify --outfile=../../docs/javascripts/sonda-editor.js"
+  },
+  "devDependencies": {
+    "@codemirror/lang-yaml": "^6.1.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/theme-one-dark": "^6.1.3",
+    "codemirror": "^6.0.2",
+    "esbuild": "^0.28.2"
+  }
+}
