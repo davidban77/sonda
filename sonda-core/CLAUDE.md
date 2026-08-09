@@ -141,9 +141,13 @@ src/
 │   │                      → Outcome (Pass | Late | Missed | Undecided). Owns EVERY deadline
 │   │                      comparison — acquisition layers must never decide pass/fail.
 │   └── prometheus.rs   ← acquisition (feature = "http"): blocking PrometheusClient with a
-│                          mandatory per-request timeout, queries the ALERTS metric via the
-│                          instant-query API. Errors are SondaError::Verify, retryable by
-│                          polling loops. Alertmanager acquisition is planned as a sibling.
+│                          mandatory per-request timeout. Instant queries (alert_state) drive
+│                          live settling; range queries (range_timeline) reconstruct verdict
+│                          timelines from the stored ALERTS samples — grid parse in
+│                          parse_range_timeline, firing-series labels collected for the
+│                          foreign_label_values provenance check (verify/mod.rs). Errors are
+│                          SondaError::Verify, retryable by polling loops. Alertmanager
+│                          acquisition is planned as a sibling.
 └── config/
     ├── mod.rs          ← BaseScheduleConfig (shared schedule/delivery fields: name, rate, duration,
     │                      gaps, bursts, cardinality_spikes, dynamic_labels, labels, sink,
