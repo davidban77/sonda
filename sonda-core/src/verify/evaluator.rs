@@ -41,7 +41,11 @@ pub enum Outcome {
         /// When the transition was first observed.
         at: Duration,
     },
-    /// The transition was observed, but only after the deadline.
+    /// The transition was observed after the deadline, **and** a successful
+    /// observation at or before the deadline showed it had not happened yet.
+    /// Without that evidence the window is unobserved and the verdict is
+    /// [`Outcome::Undecided`], not `Late` — a single post-deadline sample
+    /// cannot prove lateness.
     Late {
         /// When the transition was first observed.
         at: Duration,
@@ -56,11 +60,21 @@ pub enum Outcome {
         /// distinguishes "the alert never fired" from "we could not ask".
         last_error: Option<String>,
     },
-    /// Polling stopped before the deadline without observing the
-    /// transition — no verdict is provable from the data. Callers must
-    /// treat this as a failure and say *why* it is not a [`Outcome::Missed`]
-    /// (e.g. the poller died).
-    Undecided,
+    /// The deadline window was not actually observed, so no verdict is
+    /// provable from the data. Two ways to get here: polling stopped before
+    /// the deadline without seeing the transition, or the transition *was*
+    /// seen after the deadline but no successful observation inside the
+    /// window proved it hadn't already happened. Callers must treat this as
+    /// a failure and say *why* it is not a [`Outcome::Missed`] (e.g. the
+    /// poller died, or the first successful query landed too late).
+    Undecided {
+        /// When the transition was eventually observed, if it was — after
+        /// the deadline, with no pre-deadline evidence to make it `Late`.
+        observed_at: Option<Duration>,
+        /// The most recent query error at or before the deadline, if any —
+        /// often the reason the window went unobserved.
+        last_error: Option<String>,
+    },
 }
 
 impl Outcome {
@@ -91,8 +105,11 @@ pub fn evaluate_resolution(observations: &[Observation], deadline: Duration) -> 
 }
 
 /// Shared walk: find the first observation whose state satisfies `is_success`
-/// and compare its timestamp against the deadline. When none does, the
-/// verdict depends on whether polling provably covered the deadline.
+/// and compare its timestamp against the deadline. A verdict is only as good
+/// as its evidence: `Late` additionally requires a successful pre-deadline
+/// observation showing a non-success state (proof the transition had not
+/// happened by the deadline), and `Missed` requires that polling provably
+/// covered the deadline. Everything short of that evidence is `Undecided`.
 fn evaluate(
     observations: &[Observation],
     deadline: Duration,
@@ -100,19 +117,32 @@ fn evaluate(
 ) -> Outcome {
     let mut last_error = None;
     let mut covered = false;
+    let mut evidence = false;
     for observation in observations {
         match &observation.state {
             Ok(state) if is_success(state) => {
                 return if observation.at <= deadline {
                     Outcome::Pass { at: observation.at }
-                } else {
+                } else if evidence {
                     Outcome::Late {
                         at: observation.at,
                         deadline,
                     }
+                } else {
+                    // Success seen only after the deadline, with nothing
+                    // successful inside the window: the window went
+                    // unobserved, so "late" cannot be asserted.
+                    Outcome::Undecided {
+                        observed_at: Some(observation.at),
+                        last_error,
+                    }
                 };
             }
-            Ok(_) => {}
+            Ok(_) => {
+                if observation.at <= deadline {
+                    evidence = true;
+                }
+            }
             Err(e) => {
                 // Only errors before the deadline explain a miss; a late
                 // error cannot be why the transition wasn't seen in time.
@@ -131,7 +161,10 @@ fn evaluate(
             last_error,
         }
     } else {
-        Outcome::Undecided
+        Outcome::Undecided {
+            observed_at: None,
+            last_error,
+        }
     }
 }
 
@@ -173,8 +206,9 @@ mod tests {
 
     #[test]
     fn firing_after_deadline_is_late_not_pass() {
-        // Blocker 1, reproduction B: observed 3s after a 200ms deadline.
-        let outcome = evaluate_firing(&[firing(3000)], ms(200));
+        // Round-1 blocker 1, reproduction B: observed 3s after a 200ms
+        // deadline — with a pre-deadline sample proving it wasn't firing yet.
+        let outcome = evaluate_firing(&[inactive(100), firing(3000)], ms(200));
         assert_eq!(
             outcome,
             Outcome::Late {
@@ -183,6 +217,49 @@ mod tests {
             }
         );
         assert!(!outcome.passed());
+    }
+
+    #[test]
+    fn late_success_without_window_coverage_is_undecided_not_late() {
+        // Round-2 W5: a single post-deadline sample proves nothing about the
+        // window — asserting Late from it would be a confident wrong verdict.
+        let outcome = evaluate_firing(&[firing(3000)], ms(200));
+        assert_eq!(
+            outcome,
+            Outcome::Undecided {
+                observed_at: Some(ms(3000)),
+                last_error: None
+            }
+        );
+        assert!(!outcome.passed());
+    }
+
+    #[test]
+    fn errors_inside_window_do_not_count_as_late_evidence() {
+        // Round-2 W5: a failed query proves nothing about the alert's state,
+        // so errors-then-late-success is Undecided, carrying the error.
+        let outcome = evaluate_firing(&[error(100, "refused"), firing(3000)], ms(200));
+        assert_eq!(
+            outcome,
+            Outcome::Undecided {
+                observed_at: Some(ms(3000)),
+                last_error: Some("refused".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn evidence_exactly_at_deadline_supports_late() {
+        // Boundary: a successful non-success sample at at == deadline is
+        // window coverage.
+        let outcome = evaluate_firing(&[inactive(200), firing(900)], ms(200));
+        assert_eq!(
+            outcome,
+            Outcome::Late {
+                at: ms(900),
+                deadline: ms(200)
+            }
+        );
     }
 
     #[test]
@@ -232,12 +309,24 @@ mod tests {
     fn polling_that_stops_early_is_undecided() {
         // Coverage not proven: last observation is before the deadline.
         let outcome = evaluate_firing(&[inactive(100), inactive(200)], ms(500));
-        assert_eq!(outcome, Outcome::Undecided);
+        assert_eq!(
+            outcome,
+            Outcome::Undecided {
+                observed_at: None,
+                last_error: None
+            }
+        );
     }
 
     #[test]
     fn empty_timeline_is_undecided() {
-        assert_eq!(evaluate_firing(&[], ms(500)), Outcome::Undecided);
+        assert_eq!(
+            evaluate_firing(&[], ms(500)),
+            Outcome::Undecided {
+                observed_at: None,
+                last_error: None
+            }
+        );
     }
 
     #[test]
@@ -248,13 +337,28 @@ mod tests {
 
     #[test]
     fn resolution_after_deadline_is_late() {
-        // Blocker 1, reproduction A: resolved 322ms after a 200ms deadline.
-        let outcome = evaluate_resolution(&[inactive(322)], ms(200));
+        // Round-1 blocker 1, reproduction A: resolved 322ms after a 200ms
+        // deadline, with a pre-deadline sample showing it still firing.
+        let outcome = evaluate_resolution(&[firing(150), inactive(322)], ms(200));
         assert_eq!(
             outcome,
             Outcome::Late {
                 at: ms(322),
                 deadline: ms(200)
+            }
+        );
+    }
+
+    #[test]
+    fn lone_late_resolution_without_coverage_is_undecided() {
+        // Round-2 W5 mirrored on the resolution side: the first successful
+        // query landing after the deadline is not proof of lateness.
+        let outcome = evaluate_resolution(&[inactive(322)], ms(200));
+        assert_eq!(
+            outcome,
+            Outcome::Undecided {
+                observed_at: Some(ms(322)),
+                last_error: None
             }
         );
     }
