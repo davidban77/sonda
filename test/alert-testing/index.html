@@ -3565,8 +3565,9 @@ metric, and exits non-zero when reality disagrees.</p>
 </span><span id="__span-44-3"><a id="__codelineno-44-3" name="__codelineno-44-3" href="#__codelineno-44-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">alert</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HighCpuUsage</span>
 </span><span id="__span-44-4"><a id="__codelineno-44-4" name="__codelineno-44-4" href="#__codelineno-44-4"></a><span class="w">      </span><span class="nt">labels</span><span class="p">:</span>
 </span><span id="__span-44-5"><a id="__codelineno-44-5" name="__codelineno-44-5" href="#__codelineno-44-5"></a><span class="w">        </span><span class="nt">severity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">critical</span>
-</span><span id="__span-44-6"><a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a><span class="w">      </span><span class="nt">firing_within</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">90s</span>
-</span><span id="__span-44-7"><a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a><span class="w">      </span><span class="nt">resolves_within</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6m</span>
+</span><span id="__span-44-6"><a id="__codelineno-44-6" name="__codelineno-44-6" href="#__codelineno-44-6"></a><span class="w">        </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonda-test</span>
+</span><span id="__span-44-7"><a id="__codelineno-44-7" name="__codelineno-44-7" href="#__codelineno-44-7"></a><span class="w">      </span><span class="nt">firing_within</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">90s</span>
+</span><span id="__span-44-8"><a id="__codelineno-44-8" name="__codelineno-44-8" href="#__codelineno-44-8"></a><span class="w">      </span><span class="nt">resolves_within</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">6m</span>
 </span></code></pre></div>
 <ul>
 <li><code>firing_within</code> counts from <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> start: the alert must reach the
@@ -3574,7 +3575,12 @@ metric, and exits non-zero when reality disagrees.</p>
 <li><code>resolves_within</code> counts from <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> end and is optional: once emission
   stops, the alert must stop firing. Leave slack for staleness — a pushed
   series takes a few minutes to go stale after the last sample.</li>
-<li><code>labels</code> narrows the match when one rule name fires for many label sets.</li>
+<li><code>labels</code> narrows the match when one rule name fires for many label sets.
+  <strong>Always include a label unique to your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr></strong> (here <code>host</code>, matching
+  the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr>'s own <code>labels:</code>): the <code>ALERTS</code> metric is global, so an
+  unscoped expectation is satisfied by <em>any</em> firing alert with that name —
+  including ones your <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> never caused. On a shared or long-lived
+  <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> that turns a real failure into a false pass.</li>
 </ul>
 <p>Run it against any <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible query API (<abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>,
 <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> with <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr>):</p>
@@ -3592,6 +3598,14 @@ otherwise — which makes alert rules testable in CI. The
 <code>--dry-run</code> validates the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and its <code>expect:</code> block without emitting
 or contacting <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>. The <code>expect:</code> block is pure metadata to <code>sonda run</code>
 — the same file works for both commands.</p>
+<p>Resolution above leans on series staleness (emission stops, the rule's
+query eventually empties out), which takes minutes. For a fast, explicit
+recovery, <code>examples/alert-lifecycle-test.yaml</code> adds a second phase that
+drops the same series below the threshold — the alert resolves within a
+couple of evaluation rounds of <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> end. Both examples run
+continuously against a live <abbr title="High-performance Prometheus-compatible TSDB with native remote-write and import endpoints.">VictoriaMetrics</abbr> + <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> stack in CI (the
+Live Infra UAT workflow), alongside a negative control that proves a
+non-firing alert exits <code>1</code>.</p>
 <h2 id="where-to-next">Where to next<a class="headerlink" href="#where-to-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../end-to-end-pipelines/">End-to-end pipelines</a> — confirm alerts fire through <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr>, <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr>, and a webhook receiver.</li>
@@ -3619,7 +3633,7 @@ or contacting <abbr title="Open-source TSDB and monitoring system; ships PromQL 
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 18:32:57 UTC">August 9, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 19:21:56 UTC">August 9, 2026</span>
   </span>
 
     
