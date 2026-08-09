@@ -56,9 +56,16 @@ Everything the metrics engine supports works in the playground: the
 preview. [Gaps and bursts](../build/scheduling.md) appear as shaded bands on
 the chart.
 
+[Histogram](../build/generators.md#histogram) entries render as a bucket
+heatmap — one row per bucket, cell intensity showing where each tick's
+observations landed, so a `mean_shift_per_sec` degradation is visible as
+mass drifting into higher buckets. [Summary](../build/generators.md#summary)
+entries render as quantile bands (p50 brightest, tail quantiles above). Try
+the *Latency histogram + quantiles* preset.
+
 Two things do not run in a browser sandbox: `csv_replay` (no filesystem — use
-[`sonda new --from`](../import/from-csv.md) locally) and log/histogram/summary
-entries, which are compiled and validated but not visualized yet.
+[`sonda new --from`](../import/from-csv.md) locally) and log entries, which
+are compiled and validated but not visualized yet.
 
 When the shape looks right, the same YAML runs unchanged with
 [`sonda run`](../deploy/cli.md) — or straight against a

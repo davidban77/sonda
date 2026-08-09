@@ -19,9 +19,16 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use sonda_core::compiler::compile_after::CompiledEntry;
 use sonda_core::compiler::expand::InMemoryPackResolver;
-use sonda_core::config::validate::parse_duration;
-use sonda_core::config::{ScenarioConfig, ScenarioEntry};
+use sonda_core::config::validate::{
+    parse_duration, validate_histogram_config, validate_summary_config,
+};
+use sonda_core::config::{
+    BaseScheduleConfig, HistogramScenarioConfig, ScenarioConfig, ScenarioEntry,
+    SummaryScenarioConfig,
+};
 use sonda_core::encoder::create_encoder;
+use sonda_core::generator::histogram::HistogramGenerator;
+use sonda_core::generator::summary::SummaryGenerator;
 use sonda_core::generator::{create_generator, JitterWrapper, ValueGenerator};
 use sonda_core::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use sonda_core::{compile_scenario_file, compile_scenario_file_compiled, desugar_entry};
@@ -43,7 +50,52 @@ struct SampleResult {
     /// Compile error with the engine's real message, when `ok` is false.
     error: Option<String>,
     entries: Vec<EntrySample>,
+    histograms: Vec<HistogramEntrySample>,
+    summaries: Vec<SummaryEntrySample>,
     skipped: Vec<SkippedEntry>,
+}
+
+/// One sampled histogram entry — per-tick, per-bucket observation counts
+/// for a heatmap.
+#[derive(Serialize)]
+struct HistogramEntrySample {
+    id: String,
+    name: String,
+    rate: f64,
+    /// Seconds between consecutive ticks (`1 / rate`) for the x-axis.
+    tick_secs: f64,
+    /// Scenario duration in seconds, when bounded.
+    duration_secs: Option<f64>,
+    /// Start offset on the shared timeline in seconds.
+    offset_secs: f64,
+    /// Finite bucket upper bounds; every `counts` row carries one extra
+    /// final cell for the `+Inf` bucket.
+    bucket_bounds: Vec<f64>,
+    /// `counts[tick][i]` — observations landing in bucket `i` during that
+    /// tick (NOT cumulative, NOT `le`-style: each observation appears in
+    /// exactly one cell, which is what a heatmap wants).
+    counts: Vec<Vec<u64>>,
+    labels: BTreeMap<String, String>,
+}
+
+/// One sampled summary entry — per-tick quantile values for band lines.
+#[derive(Serialize)]
+struct SummaryEntrySample {
+    id: String,
+    name: String,
+    rate: f64,
+    /// Seconds between consecutive ticks (`1 / rate`) for the x-axis.
+    tick_secs: f64,
+    /// Scenario duration in seconds, when bounded.
+    duration_secs: Option<f64>,
+    /// Start offset on the shared timeline in seconds.
+    offset_secs: f64,
+    /// Quantile targets, sorted ascending (e.g. `[0.5, 0.9, 0.95, 0.99]`).
+    quantiles: Vec<f64>,
+    /// `values[tick][i]` — the computed value for `quantiles[i]` at that
+    /// tick.
+    values: Vec<Vec<f64>>,
+    labels: BTreeMap<String, String>,
 }
 
 /// One sampled metrics entry.
@@ -102,7 +154,7 @@ pub fn sample_scenario(yaml: &str, max_ticks: u32) -> String {
     let result = run(yaml, max_ticks);
     serde_json::to_string(&result).unwrap_or_else(|err| {
         format!(
-            "{{\"ok\":false,\"error\":\"internal serialization error: {}\",\"entries\":[],\"skipped\":[]}}",
+            "{{\"ok\":false,\"error\":\"internal serialization error: {}\",\"entries\":[],\"histograms\":[],\"summaries\":[],\"skipped\":[]}}",
             err.to_string().replace('"', "'")
         )
     })
@@ -119,6 +171,8 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
                 ok: false,
                 error: Some(err.to_string()),
                 entries: Vec::new(),
+                histograms: Vec::new(),
+                summaries: Vec::new(),
                 skipped: Vec::new(),
             }
         }
@@ -132,6 +186,8 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
         .unwrap_or_default();
 
     let mut sampled = Vec::new();
+    let mut histograms = Vec::new();
+    let mut summaries = Vec::new();
     let mut skipped = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
         // Prefer the compiled entry's real id (e.g. "memory") — the runtime
@@ -147,17 +203,21 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
                     Err(reason) => skipped.push(SkippedEntry { id, reason }),
                 }
             }
+            Ok(ScenarioEntry::Histogram(config)) => {
+                match sample_histogram(&id, &config, compiled.get(index), max_ticks) {
+                    Ok(sample) => histograms.push(sample),
+                    Err(reason) => skipped.push(SkippedEntry { id, reason }),
+                }
+            }
+            Ok(ScenarioEntry::Summary(config)) => {
+                match sample_summary(&id, &config, compiled.get(index), max_ticks) {
+                    Ok(sample) => summaries.push(sample),
+                    Err(reason) => skipped.push(SkippedEntry { id, reason }),
+                }
+            }
             Ok(ScenarioEntry::Logs(_)) => skipped.push(SkippedEntry {
                 id,
                 reason: "log entries are not visualized in the playground yet".into(),
-            }),
-            Ok(ScenarioEntry::Histogram(_)) => skipped.push(SkippedEntry {
-                id,
-                reason: "histogram entries are not visualized in the playground yet".into(),
-            }),
-            Ok(ScenarioEntry::Summary(_)) => skipped.push(SkippedEntry {
-                id,
-                reason: "summary entries are not visualized in the playground yet".into(),
             }),
             // ScenarioEntry is non_exhaustive; future signal types surface
             // here as skipped rather than breaking the playground build.
@@ -176,8 +236,138 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
         ok: true,
         error: None,
         entries: sampled,
+        histograms,
+        summaries,
         skipped,
     }
+}
+
+/// Duration and resolved timeline offset shared by every entry kind.
+fn entry_timing(
+    base: &BaseScheduleConfig,
+    compiled: Option<&CompiledEntry>,
+) -> Result<(Option<f64>, f64), String> {
+    let duration_secs = match base.duration.as_deref() {
+        Some(s) => Some(parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64()),
+        None => None,
+    };
+    // The compiled entry's phase_offset is the resolved total (user offset
+    // + after-chain crossing times + delays); fall back to the runtime
+    // entry's own field when the compiled join is unavailable.
+    let offset_secs = match compiled
+        .and_then(|c| c.phase_offset.as_deref())
+        .or(base.phase_offset.as_deref())
+    {
+        Some(s) => parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64(),
+        None => 0.0,
+    };
+    Ok((duration_secs, offset_secs))
+}
+
+/// Sample count bounded by the requested window and the scenario duration.
+fn bounded_ticks(max_ticks: u32, cap: u32, rate: f64, duration_secs: Option<f64>) -> u64 {
+    let mut ticks = max_ticks.clamp(2, cap) as u64;
+    if let Some(secs) = duration_secs {
+        let duration_ticks = (secs * rate).ceil() as u64;
+        ticks = ticks.min(duration_ticks.max(2));
+    }
+    ticks
+}
+
+fn labels_map(base: &BaseScheduleConfig) -> BTreeMap<String, String> {
+    base.labels
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+fn sample_histogram(
+    id: &str,
+    config: &HistogramScenarioConfig,
+    compiled: Option<&CompiledEntry>,
+    max_ticks: u32,
+) -> Result<HistogramEntrySample, String> {
+    // The facade bypasses prepare_entries, so run the same validation the
+    // runtime would (sorted buckets, sane distribution) here.
+    validate_histogram_config(config).map_err(|e| e.to_string())?;
+    let mut generator = HistogramGenerator::from_config(config);
+    let (duration_secs, offset_secs) = entry_timing(&config.base, compiled)?;
+    // Heatmap payloads carry bucket_count cells per tick — cap the window
+    // tighter than the line chart's.
+    let ticks = bounded_ticks(max_ticks, 512, config.base.rate, duration_secs);
+    let bucket_bounds = generator.buckets().to_vec();
+
+    // The generator reports Prometheus-style cumulative `le` counts (across
+    // ticks AND across the bucket chain). A heatmap wants each observation
+    // exactly once: de-cumulate across ticks first, then along the chain,
+    // with a final `+Inf` cell from the total count.
+    let mut counts = Vec::with_capacity(ticks as usize);
+    let mut prev_le: Vec<u64> = vec![0; bucket_bounds.len()];
+    let mut prev_total: u64 = 0;
+    for tick in 0..ticks {
+        let sample = generator.observe(tick);
+        let tick_le: Vec<u64> = sample
+            .bucket_counts
+            .iter()
+            .zip(&prev_le)
+            .map(|(now, before)| now.saturating_sub(*before))
+            .collect();
+        let tick_total = sample.count.saturating_sub(prev_total);
+        let mut row = Vec::with_capacity(bucket_bounds.len() + 1);
+        let mut below = 0u64;
+        for &le in &tick_le {
+            row.push(le.saturating_sub(below));
+            below = le;
+        }
+        row.push(tick_total.saturating_sub(below));
+        counts.push(row);
+        prev_le = sample.bucket_counts;
+        prev_total = sample.count;
+    }
+
+    Ok(HistogramEntrySample {
+        id: id.to_string(),
+        name: config.base.name.clone(),
+        rate: config.base.rate,
+        tick_secs: 1.0 / config.base.rate,
+        duration_secs,
+        offset_secs,
+        bucket_bounds,
+        counts,
+        labels: labels_map(&config.base),
+    })
+}
+
+fn sample_summary(
+    id: &str,
+    config: &SummaryScenarioConfig,
+    compiled: Option<&CompiledEntry>,
+    max_ticks: u32,
+) -> Result<SummaryEntrySample, String> {
+    validate_summary_config(config).map_err(|e| e.to_string())?;
+    let mut generator = SummaryGenerator::from_config(config);
+    let (duration_secs, offset_secs) = entry_timing(&config.base, compiled)?;
+    let ticks = bounded_ticks(max_ticks, 1024, config.base.rate, duration_secs);
+    let quantiles = generator.quantiles().to_vec();
+
+    let mut values = Vec::with_capacity(ticks as usize);
+    for tick in 0..ticks {
+        let sample = generator.observe(tick);
+        values.push(sample.quantiles.iter().map(|(_, value)| *value).collect());
+    }
+
+    Ok(SummaryEntrySample {
+        id: id.to_string(),
+        name: config.base.name.clone(),
+        rate: config.base.rate,
+        tick_secs: 1.0 / config.base.rate,
+        duration_secs,
+        offset_secs,
+        quantiles,
+        values,
+        labels: labels_map(&config.base),
+    })
 }
 
 fn entry_id(entry: &ScenarioEntry, index: usize) -> String {
@@ -206,21 +396,7 @@ fn sample_metrics(
         _ => generator,
     };
 
-    let duration_secs = match config.base.duration.as_deref() {
-        Some(s) => Some(parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64()),
-        None => None,
-    };
-
-    // The compiled entry's phase_offset is the resolved total (user offset
-    // + after-chain crossing times + delays); fall back to the runtime
-    // entry's own field when the compiled join is unavailable.
-    let offset_secs = match compiled
-        .and_then(|c| c.phase_offset.as_deref())
-        .or(config.base.phase_offset.as_deref())
-    {
-        Some(s) => parse_duration(s).map_err(|e| e.to_string())?.as_secs_f64(),
-        None => 0.0,
-    };
+    let (duration_secs, offset_secs) = entry_timing(&config.base, compiled)?;
     let after_ref = compiled.and_then(|c| c.after_ref.clone());
     let while_label = compiled.and_then(|c| {
         c.while_clause.as_ref().map(|w| {
@@ -232,23 +408,9 @@ fn sample_metrics(
         })
     });
 
-    // Bound the sample count by the scenario duration when it is shorter
-    // than the requested window.
-    let mut ticks = max_ticks.clamp(2, 4096) as u64;
-    if let Some(secs) = duration_secs {
-        let duration_ticks = (secs * rate).ceil() as u64;
-        ticks = ticks.min(duration_ticks.max(2));
-    }
-
+    let ticks = bounded_ticks(max_ticks, 4096, rate, duration_secs);
     let values: Vec<f64> = (0..ticks).map(|tick| generator.value(tick)).collect();
-
-    let labels_map: BTreeMap<String, String> = config
-        .base
-        .labels
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+    let labels_map = labels_map(&config.base);
 
     let gap = match &config.base.gaps {
         Some(g) => Some(GapOut {
@@ -408,6 +570,106 @@ scenarios:
             (41.0..44.0).contains(&offset),
             "expected crossing near 42s, got {offset}"
         );
+    }
+
+    #[test]
+    fn histogram_entry_samples_a_heatmap_grid() {
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 10s
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - id: latency
+    signal_type: histogram
+    name: http_request_duration_seconds
+    distribution: { type: exponential, rate: 10.0 }
+    observations_per_tick: 100
+    seed: 42
+    labels: { handler: /api }
+";
+        let json = sample_scenario(yaml, 240);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["ok"], true, "compile failed: {:?}", parsed["error"]);
+        let histogram = &parsed["histograms"][0];
+        assert_eq!(histogram["id"], "latency");
+        // Default Prometheus buckets: 11 finite bounds.
+        let bounds = histogram["bucket_bounds"].as_array().expect("bounds");
+        assert_eq!(bounds.len(), 11);
+        // 10s at rate 2 → 20 ticks; each row has one extra +Inf cell and
+        // its cells sum to exactly observations_per_tick.
+        let counts = histogram["counts"].as_array().expect("counts");
+        assert_eq!(counts.len(), 20);
+        for row in counts {
+            let row = row.as_array().expect("row");
+            assert_eq!(row.len(), 12);
+            let total: u64 = row.iter().map(|c| c.as_u64().expect("cell")).sum();
+            assert_eq!(total, 100, "each tick's cells must sum to obs/tick");
+        }
+    }
+
+    #[test]
+    fn summary_entry_samples_quantile_series() {
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 10s
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - id: rpc
+    signal_type: summary
+    name: rpc_duration_seconds
+    distribution: { type: normal, mean: 0.1, stddev: 0.02 }
+    observations_per_tick: 100
+    seed: 42
+";
+        let json = sample_scenario(yaml, 240);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["ok"], true, "compile failed: {:?}", parsed["error"]);
+        let summary = &parsed["summaries"][0];
+        assert_eq!(summary["quantiles"].as_array().map(Vec::len), Some(4));
+        let values = summary["values"].as_array().expect("values");
+        assert_eq!(values.len(), 20);
+        for row in values {
+            let row = row.as_array().expect("row");
+            assert_eq!(row.len(), 4);
+            // Quantile values are sorted along the targets: p50 <= p99.
+            let p50 = row[0].as_f64().expect("p50");
+            let p99 = row[3].as_f64().expect("p99");
+            assert!(p50 <= p99, "p50 {p50} must not exceed p99 {p99}");
+        }
+    }
+
+    #[test]
+    fn invalid_histogram_config_is_skipped_with_reason() {
+        // Unsorted buckets never reach the generator — the same validation
+        // the runtime runs reports through the skip channel.
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 10s
+  encoder: { type: prometheus_text }
+  sink: { type: stdout }
+scenarios:
+  - id: bad
+    signal_type: histogram
+    name: broken_histogram
+    buckets: [5.0, 1.0, 2.0]
+    distribution: { type: exponential, rate: 10.0 }
+";
+        let json = sample_scenario(yaml, 60);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["histograms"].as_array().map(Vec::len), Some(0));
+        assert_eq!(parsed["skipped"][0]["id"], "bad");
     }
 
     #[test]

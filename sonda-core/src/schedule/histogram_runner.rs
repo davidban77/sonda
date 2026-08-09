@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::HistogramScenarioConfig;
 use crate::encoder::create_encoder;
-use crate::generator::histogram::{to_distribution, HistogramGenerator, DEFAULT_HISTOGRAM_BUCKETS};
+use crate::generator::histogram::HistogramGenerator;
 use crate::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use crate::schedule::core_loop::{
     self, GateContext, TickContext, TickOutput, TickResult, WriteCommand,
@@ -42,24 +42,10 @@ pub async fn run_with_sink_gated(
 ) -> Result<(), SondaError> {
     let schedule = ParsedSchedule::from_base_config(&config.base)?;
 
-    // Resolve histogram parameters with defaults.
-    let buckets: Vec<f64> = config
-        .buckets
-        .clone()
-        .unwrap_or_else(|| DEFAULT_HISTOGRAM_BUCKETS.to_vec());
-    let distribution = to_distribution(&config.distribution);
-    let observations_per_tick = config.observations_per_tick.unwrap_or(100);
-    let mean_shift_per_sec = config.mean_shift_per_sec.unwrap_or(0.0);
-    let seed = config.seed.unwrap_or(0);
-
-    let mut histogram_gen = HistogramGenerator::new(
-        buckets.clone(),
-        distribution,
-        observations_per_tick,
-        mean_shift_per_sec,
-        seed,
-        config.rate,
-    );
+    // Defaults resolution is shared with every other consumer (the wasm
+    // playground facade included) via from_config.
+    let mut histogram_gen = HistogramGenerator::from_config(config);
+    let buckets: Vec<f64> = histogram_gen.buckets().to_vec();
 
     let encoder = create_encoder(&config.encoder)?;
 
