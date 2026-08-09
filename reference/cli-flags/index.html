@@ -2091,6 +2091,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sonda-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2418,6 +2429,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sonda-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sonda test
+      
+    </span>
+  </a>
   
 </li>
       
@@ -2821,6 +2843,46 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>sonda<span class="w"> </span>new<span class="w"> </span>-o<span class="w"> </span>my-scenario.yaml
 </span></code></pre></div>
 <p>The prompts cover signal type, <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr>, rate, duration, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr>, and output destination. Cancel with Ctrl+C at any point. Nothing is written until you confirm the output path.</p>
+<h2 id="sonda-test"><code>sonda test</code><a class="headerlink" href="#sonda-test" title="Permanent link">&para;</a></h2>
+<p>Run a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and verify its top-level <code>expect:</code> alert expectations against
+a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible query API. See
+<a href="../../test/alert-testing/#automate-it-with-sonda-test">Alert testing</a> for the
+<code>expect:</code> block format.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>sonda<span class="w"> </span><span class="nb">test</span><span class="w"> </span>examples/alert-expectation-test.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="w">  </span>--prometheus-url<span class="w"> </span>http://localhost:8428
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--prometheus-url &lt;URL&gt;</code></td>
+<td>Base URL of the <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>-compatible API evaluating the alert rules (e.g. <code>http://localhost:9090</code>). Required except with <code>--dry-run</code>; also read from <code>SONDA_PROMETHEUS_URL</code>.</td>
+</tr>
+<tr>
+<td><code>--interval &lt;DUR&gt;</code></td>
+<td>Poll interval for alert-state checks. Default <code>5s</code>.</td>
+</tr>
+<tr>
+<td><code>--query-timeout &lt;DUR&gt;</code></td>
+<td>Overall timeout for each alert-state query (connect + read), so a stalled endpoint fails fast instead of hanging. Default <code>10s</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> runs exactly as <code>sonda run</code> would (no overrides). Firing
+deadlines are measured from <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> start; resolution deadlines from
+<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> end. A <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> without an <code>expect:</code> block is rejected. With
+<code>--dry-run</code>, the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> and its expectations are validated and printed
+without emitting events or contacting <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr>.</p>
+<p>Before the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> starts, a preflight confirms the endpoint answers a
+query for every expectation. Only the first expectation is retried (3
+attempts, for a <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> still starting up in CI); the rest are probed
+once each, so preflight against a dead endpoint fails within about three
+query timeouts regardless of how many expectations the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> declares.</p>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2832,11 +2894,11 @@
 <tbody>
 <tr>
 <td><code>0</code></td>
-<td>Success.</td>
+<td>Success. For <code>sonda test</code>: every alert expectation held.</td>
 </tr>
 <tr>
 <td><code>1</code></td>
-<td>Runtime error (<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> failed, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> unreachable, validation rejected the YAML).</td>
+<td>Runtime error (<abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> failed, <abbr title="Sonda component that delivers encoded bytes to a destination (stdout, HTTP push, Kafka, OTLP gRPC).">sink</abbr> unreachable, validation rejected the YAML), or a <code>sonda test</code> expectation failed.</td>
 </tr>
 <tr>
 <td><code>2</code></td>
@@ -2847,19 +2909,19 @@
 <h2 id="status-output">Status output<a class="headerlink" href="#status-output" title="Permanent link">&para;</a></h2>
 <p>Sonda prints colored lifecycle banners to stderr while a <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> runs. Banners go to stderr and data goes to stdout. You can redirect stdout to a file or pipe it without mixing in banner text.</p>
 <h3 id="start-and-stop-banners">Start and stop banners<a class="headerlink" href="#start-and-stop-banners" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-22-1"><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>▶ cpu_usage_percent  signal_type: metrics | rate: 10/s | encoder: prometheus_text | sink: stdout | duration: 30s
-</span><span id="__span-22-2"><a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a>...
-</span><span id="__span-22-3"><a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a>■ cpu_usage_percent  completed in 30.0s | events: 300 | bytes: 12.3 KB | errors: 0
+<div class="language-text highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>▶ cpu_usage_percent  signal_type: metrics | rate: 10/s | encoder: prometheus_text | sink: stdout | duration: 30s
+</span><span id="__span-23-2"><a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a>...
+</span><span id="__span-23-3"><a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a>■ cpu_usage_percent  completed in 30.0s | events: 300 | bytes: 12.3 KB | errors: 0
 </span></code></pre></div>
 <h3 id="live-progress">Live progress<a class="headerlink" href="#live-progress" title="Permanent link">&para;</a></h3>
 <p>Between the start and stop banners, Sonda updates a progress line every 200ms on TTYs and every 5s on non-TTYs:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-23-1"><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>  ~ cpu_usage_percent  events: 1,234 | rate: 9.8/s | bytes: 12.3 KB | elapsed: 5.2s
+<div class="language-text highlight"><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>  ~ cpu_usage_percent  events: 1,234 | rate: 9.8/s | bytes: 12.3 KB | elapsed: 5.2s
 </span></code></pre></div>
 <p>Colors are automatic. Sonda respects <a href="https://no-color.org"><code>NO_COLOR</code></a> and disables ANSI when stderr is not a terminal.</p>
 <h3 id="verbosity">Verbosity<a class="headerlink" href="#verbosity" title="Permanent link">&para;</a></h3>
 <p><code>--quiet</code> suppresses banners and progress. Errors still print. <code>--verbose</code> prints the resolved <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> config at startup, then runs normally. The two flags are mutually exclusive.</p>
-<div class="language-bash highlight"><span class="filename">examples/cpu-spike.yaml</span><pre><span></span><code><span id="__span-24-1"><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a>sonda<span class="w"> </span>-q<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w"> </span>&gt;<span class="w"> </span>metrics.txt<span class="w">    </span><span class="c1"># quiet for scripts</span>
-</span><span id="__span-24-2"><a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a>sonda<span class="w"> </span>-v<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w">                  </span><span class="c1"># print config first</span>
+<div class="language-bash highlight"><span class="filename">examples/cpu-spike.yaml</span><pre><span></span><code><span id="__span-25-1"><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>sonda<span class="w"> </span>-q<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w"> </span>&gt;<span class="w"> </span>metrics.txt<span class="w">    </span><span class="c1"># quiet for scripts</span>
+</span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>sonda<span class="w"> </span>-v<span class="w"> </span>run<span class="w"> </span>examples/cpu-spike.yaml<span class="w">                  </span><span class="c1"># print config first</span>
 </span></code></pre></div>
 
 
@@ -2881,7 +2943,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="May 24, 2026 10:21:38 UTC">May 24, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 9, 2026 18:32:57 UTC">August 9, 2026</span>
   </span>
 
     
