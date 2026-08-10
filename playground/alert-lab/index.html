@@ -2175,6 +2175,7 @@ shows the alert state the way <abbr title="Open-source TSDB and monitoring syste
       <option value="30">30s</option>
     </select>
     <button id="al-play" type="button" class="md-button md-button--primary sonda-playground__run">Play</button>
+    <button id="al-export" type="button" class="md-button sonda-playground__share">Copy sonda test setup</button>
     <span id="al-state" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite">inactive</span>
   </div>
   <div id="al-error" class="sonda-playground__error" hidden></div>
@@ -2182,6 +2183,8 @@ shows the alert state the way <abbr title="Open-source TSDB and monitoring syste
     aria-label="Signal chart with alert-state lane"></canvas>
   <p id="al-story" class="sonda-lab-story"></p>
   <p class="sonda-lab-open-link"><a id="al-open" href="index.md">Edit this scenario in the playground →</a></p>
+  <pre id="al-export-out" class="sonda-playground__output" hidden
+    aria-label="Generated sonda test scenario and alert rule"></pre>
   <noscript><p><strong>The alert lab needs JavaScript</strong> — it runs the Sonda engine
   in your browser via WebAssembly.</p></noscript>
 </div>
@@ -2204,12 +2207,16 @@ two short blips never page, and the real outage still fires. Set <code>for: 0s</
 and every blip becomes a page — that's the on-call experience <code>for:</code> exists
 to prevent.</p>
 <h2 id="run-it-for-real">Run it for real<a class="headerlink" href="#run-it-for-real" title="Permanent link">&para;</a></h2>
-<p>The lab simulates rule evaluation; the real thing is one config file away.
-<a href="../../test/alert-testing/">Alert testing</a> walks the same patterns against a
-live <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> + <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> stack (the repository ships a
+<p>The lab simulates rule evaluation; the real thing is one button away.
+<strong>Copy sonda test setup</strong> exports the rule you just tuned as a ready-to-run
+package: the <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> YAML with a label-scoped <code>expect:</code> block appended
+(<code>firing_within</code> derived from when the rule actually fired in the preview),
+headed by the matching <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr>/<abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> alert rule. Save it, add the rule
+to your rules file, and <code>sonda test</code> turns what you watched here into an
+exit code. <a href="../../test/alert-testing/">Alert testing</a> walks the same patterns
+against a live <abbr title="Open-source TSDB and monitoring system; ships PromQL and Alertmanager.">Prometheus</abbr> + <abbr title="Prometheus component that handles alert routing, deduplication, grouping, and silencing.">Alertmanager</abbr> stack (the repository ships a
 <a href="../../deploy/docker/">Compose stack</a> with <abbr title="VictoriaMetrics's PromQL-compatible alert + recording rule evaluator.">vmalert</abbr> wired up), and
-<a href="../../test/end-to-end-pipelines/">CI validation</a> turns them into exit codes
-for your pipeline.</p>
+<a href="../../test/end-to-end-pipelines/">CI validation</a> covers the pipeline side.</p>
 
 
 
@@ -2230,7 +2237,7 @@ for your pipeline.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 10, 2026 09:15:43 UTC">August 10, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 10, 2026 15:13:27 UTC">August 10, 2026</span>
   </span>
 
     

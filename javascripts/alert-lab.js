@@ -7,6 +7,13 @@
  * (inactive / pending / firing, with resolve markers).
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
+import {
+  buildTestExport,
+  defaultThreshold,
+  evaluate,
+  fromBase64Url,
+  toBase64Url,
+} from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const SWEEP_SECONDS = 11; // wall-clock length of one full playback sweep
@@ -133,31 +140,6 @@ function ensureWasm() {
   return wasmReady;
 }
 
-/* Walk the series the way a Prometheus rule walks scrape samples: pending
- * while the condition holds but hasn't lasted `for:` yet, firing once it
- * has, back to inactive (recording a resolve) when it goes false. */
-function evaluate(values, tickSecs, op, threshold, forSecs) {
-  const states = new Array(values.length);
-  const resolves = [];
-  let run = 0;
-  let wasFiring = false;
-  for (let i = 0; i < values.length; i++) {
-    const cond = op === ">" ? values[i] > threshold : values[i] < threshold;
-    if (!cond) {
-      if (wasFiring) resolves.push(i);
-      run = 0;
-      wasFiring = false;
-      states[i] = "inactive";
-    } else {
-      run += 1;
-      const heldSecs = (run - 1) * tickSecs;
-      states[i] = heldSecs >= forSecs ? "firing" : "pending";
-      wasFiring = states[i] === "firing";
-    }
-  }
-  return { states, resolves };
-}
-
 function boot() {
   const root = document.getElementById("sonda-alert-lab");
   if (!root || root.dataset.ready) return;
@@ -174,6 +156,8 @@ function boot() {
     error: document.getElementById("al-error"),
     story: document.getElementById("al-story"),
     open: document.getElementById("al-open"),
+    exportBtn: document.getElementById("al-export"),
+    exportOut: document.getElementById("al-export-out"),
   };
 
   // A scenario carried over from the playground (#yaml=…) becomes a
@@ -197,6 +181,7 @@ function boot() {
   let entry = null; // sampled series from the engine
   let evaled = null;
   let animation = 0;
+  let currentYaml = null; // the scenario source behind `entry`
 
   const currentRule = () => ({
     op: el.op.value,
@@ -218,6 +203,8 @@ function boot() {
     const isCustom = el.preset.value === "custom" && customYaml !== null;
     const preset = isCustom ? null : PRESETS[Number(el.preset.value)];
     const yaml = isCustom ? customYaml : preset.yaml;
+    currentYaml = yaml;
+    if (el.exportOut) el.exportOut.hidden = true;
     // Everything that doesn't need the sampled series is assigned BEFORE
     // sampling, so a scenario that fails to sample never shows rule fields
     // belonging to a previously selected preset next to the error banner.
@@ -303,6 +290,29 @@ function boot() {
     if (reducedMotion) reevaluate();
     else startSweep();
   });
+  if (el.exportBtn) {
+    el.exportBtn.addEventListener("click", () => {
+      if (!entry || !evaled || currentYaml === null) return;
+      const text = buildTestExport({
+        yaml: currentYaml,
+        entry,
+        rule: currentRule(),
+        evaled,
+      });
+      el.exportOut.textContent = text;
+      el.exportOut.hidden = false;
+      const done = (label) => {
+        el.exportBtn.textContent = label;
+        window.setTimeout(() => {
+          el.exportBtn.textContent = "Copy sonda test setup";
+        }, 1600);
+      };
+      navigator.clipboard.writeText(text).then(
+        () => done("Copied!"),
+        () => done("Copy below ↓")
+      );
+    });
+  }
 
   new ResizeObserver(() => {
     if (entry && evaled && !animation) {
@@ -341,20 +351,6 @@ function setStateChip(chip, state) {
   chip.className = `sonda-lab-chip sonda-lab-chip--${state}`;
 }
 
-function toBase64Url(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = "";
-  bytes.forEach((b) => (binary += String.fromCharCode(b)));
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(encoded) {
-  const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
 function fromLocationHash() {
   const match = window.location.hash.match(/^#yaml=(.+)$/);
   if (!match) return null;
@@ -363,32 +359,6 @@ function fromLocationHash() {
   } catch {
     return null;
   }
-}
-
-/* Starting threshold for a scenario the lab has never seen: a value the
- * signal actually crosses (60% up its range), rounded to a tidy number so
- * the input reads like something a human chose. A flat series has no range
- * to cross, so the threshold seats just below the value instead — `>`
- * fires immediately and tuning starts from a live alert rather than one
- * that provably cannot fire (constant scenarios are common bridge
- * traffic). */
-function defaultThreshold(values) {
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return 1;
-  if (max - min < Math.max(1e-9, Math.abs(max) * 1e-9)) {
-    if (max === 0) return -1;
-    return tidyNumber(max > 0 ? max * 0.9 : max * 1.1);
-  }
-  const mid = min + (max - min) * 0.6;
-  if (mid === 0) return 0;
-  return tidyNumber(mid);
-}
-
-/* Round to two leading digits; guards float dust like 60.000000000000004. */
-function tidyNumber(value) {
-  const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(value))) - 1);
-  return Number((Math.round(value / magnitude) * magnitude).toPrecision(3));
 }
 
 function palette() {
