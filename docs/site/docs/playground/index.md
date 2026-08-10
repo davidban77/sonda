@@ -66,9 +66,12 @@ mass drifting into higher buckets. [Summary](../build/generators.md#summary)
 entries render as quantile bands (p50 brightest, tail quantiles above). Try
 the *Latency histogram + quantiles* preset.
 
-Two things do not run in a browser sandbox: `csv_replay` (no filesystem — use
-[`sonda new --from`](../import/from-csv.md) locally) and log entries, which
-are compiled and validated but not visualized yet.
+[Log entries](../build/generators.md#log-generators) render as a synthetic
+log stream — template messages resolved from their field pools, severity
+colored, timed on the scenario timeline — with the `json_lines` output in the
+encoded preview. Try the *Synthetic log stream* preset. One thing does not
+run in a browser sandbox: `csv_replay` (metric or log) needs the filesystem —
+use [`sonda new --from`](../import/from-csv.md) locally.
 
 When the shape looks right, **Test an alert →** carries the scenario into the
 [alert lab](alert-lab.md) so you can tune a threshold + `for:` rule against

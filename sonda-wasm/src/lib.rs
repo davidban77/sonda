@@ -7,9 +7,11 @@
 //! come back with their real messages.
 //!
 //! Only the pure engine is linked (`sonda-core` without the `runtime`
-//! feature), so the crate compiles to `wasm32-unknown-unknown`. Entries that
-//! need a clock or the filesystem in the browser (logs, `csv_replay`) are
-//! reported as skipped rather than sampled.
+//! feature), so the crate compiles to `wasm32-unknown-unknown`. Log entries
+//! sample through the clock-free `LogGenerator::generate_at` path with
+//! synthesized timestamps; entries that need the filesystem in the browser
+//! (metric and log `csv_replay`) are reported as skipped rather than
+//! sampled.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,13 +25,16 @@ use sonda_core::config::validate::{
     parse_duration, validate_histogram_config, validate_summary_config,
 };
 use sonda_core::config::{
-    BaseScheduleConfig, HistogramScenarioConfig, ScenarioConfig, ScenarioEntry,
+    BaseScheduleConfig, HistogramScenarioConfig, LogScenarioConfig, ScenarioConfig, ScenarioEntry,
     SummaryScenarioConfig,
 };
 use sonda_core::encoder::create_encoder;
 use sonda_core::generator::histogram::HistogramGenerator;
 use sonda_core::generator::summary::SummaryGenerator;
-use sonda_core::generator::{create_generator, JitterWrapper, ValueGenerator};
+use sonda_core::generator::{
+    create_generator, create_log_generator, JitterWrapper, LogGeneratorConfig, ValueGenerator,
+};
+use sonda_core::model::log::Severity;
 use sonda_core::model::metric::{Labels, MetricEvent, ValidatedMetricName};
 use sonda_core::{compile_scenario_file, compile_scenario_file_compiled, desugar_entry};
 
@@ -43,6 +48,9 @@ const PREVIEW_EPOCH_MS: u64 = 1_777_000_000_000;
 /// How many encoded lines the preview pane shows per entry.
 const PREVIEW_EVENTS: usize = 5;
 
+/// How many rendered log lines the logs pane shows per entry.
+const LOG_LINES_CAP: u32 = 240;
+
 /// Result envelope returned to JavaScript as JSON.
 #[derive(Serialize)]
 struct SampleResult {
@@ -52,7 +60,36 @@ struct SampleResult {
     entries: Vec<EntrySample>,
     histograms: Vec<HistogramEntrySample>,
     summaries: Vec<SummaryEntrySample>,
+    logs: Vec<LogEntrySample>,
     skipped: Vec<SkippedEntry>,
+}
+
+/// One sampled log entry — rendered lines for the logs pane plus an
+/// encoded preview from the entry's configured encoder.
+#[derive(Serialize)]
+struct LogEntrySample {
+    id: String,
+    name: String,
+    rate: f64,
+    /// Seconds between consecutive events (`1 / rate`).
+    tick_secs: f64,
+    /// Scenario duration in seconds, when bounded.
+    duration_secs: Option<f64>,
+    /// Start offset on the shared timeline in seconds.
+    offset_secs: f64,
+    /// Rendered log lines, capped at [`LOG_LINES_CAP`].
+    lines: Vec<LogLineOut>,
+    encoded_preview: String,
+    labels: BTreeMap<String, String>,
+}
+
+/// One rendered log line. `severity` serializes lowercase (`"info"`).
+#[derive(Serialize)]
+struct LogLineOut {
+    /// Seconds since scenario start on the shared timeline.
+    secs: f64,
+    severity: Severity,
+    message: String,
 }
 
 /// One sampled histogram entry — per-tick, per-bucket observation counts
@@ -154,7 +191,7 @@ pub fn sample_scenario(yaml: &str, max_ticks: u32) -> String {
     let result = run(yaml, max_ticks);
     serde_json::to_string(&result).unwrap_or_else(|err| {
         format!(
-            "{{\"ok\":false,\"error\":\"internal serialization error: {}\",\"entries\":[],\"histograms\":[],\"summaries\":[],\"skipped\":[]}}",
+            "{{\"ok\":false,\"error\":\"internal serialization error: {}\",\"entries\":[],\"histograms\":[],\"summaries\":[],\"logs\":[],\"skipped\":[]}}",
             err.to_string().replace('"', "'")
         )
     })
@@ -173,6 +210,7 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
                 entries: Vec::new(),
                 histograms: Vec::new(),
                 summaries: Vec::new(),
+                logs: Vec::new(),
                 skipped: Vec::new(),
             }
         }
@@ -188,6 +226,7 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
     let mut sampled = Vec::new();
     let mut histograms = Vec::new();
     let mut summaries = Vec::new();
+    let mut logs = Vec::new();
     let mut skipped = Vec::new();
     for (index, entry) in entries.into_iter().enumerate() {
         // Prefer the compiled entry's real id (e.g. "memory") — the runtime
@@ -215,10 +254,12 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
                     Err(reason) => skipped.push(SkippedEntry { id, reason }),
                 }
             }
-            Ok(ScenarioEntry::Logs(_)) => skipped.push(SkippedEntry {
-                id,
-                reason: "log entries are not visualized in the playground yet".into(),
-            }),
+            Ok(ScenarioEntry::Logs(config)) => {
+                match sample_logs(&id, &config, compiled.get(index), max_ticks) {
+                    Ok(sample) => logs.push(sample),
+                    Err(reason) => skipped.push(SkippedEntry { id, reason }),
+                }
+            }
             // ScenarioEntry is non_exhaustive; future signal types surface
             // here as skipped rather than breaking the playground build.
             Ok(_) => skipped.push(SkippedEntry {
@@ -238,6 +279,7 @@ fn run(yaml: &str, max_ticks: u32) -> SampleResult {
         entries: sampled,
         histograms,
         summaries,
+        logs,
         skipped,
     }
 }
@@ -455,6 +497,74 @@ fn sample_metrics(
     })
 }
 
+/// Sample a log entry: render the event stream via the clock-free
+/// `LogGenerator::generate_at` path with timestamps synthesized from the
+/// preview epoch, and encode the first few events with the entry's
+/// configured encoder.
+///
+/// `csv_replay` needs the filesystem and is reported as skipped, the same
+/// contract as the metric `csv_replay`.
+fn sample_logs(
+    id: &str,
+    config: &LogScenarioConfig,
+    compiled: Option<&CompiledEntry>,
+    max_ticks: u32,
+) -> Result<LogEntrySample, String> {
+    if matches!(config.generator, LogGeneratorConfig::CsvReplay { .. }) {
+        return Err(
+            "log csv_replay reads a file — no filesystem in the browser; run it locally with `sonda run`"
+                .into(),
+        );
+    }
+    let generator = create_log_generator(&config.generator).map_err(|e| e.to_string())?;
+    let encoder = create_encoder(&config.encoder).map_err(|e| e.to_string())?;
+    let (duration_secs, offset_secs) = entry_timing(&config.base, compiled)?;
+    let rate = config.base.rate;
+    let ticks = bounded_ticks(max_ticks, LOG_LINES_CAP, rate, duration_secs);
+    let tick_secs = 1.0 / rate;
+    let labels = labels_map(&config.base);
+    let pairs: Vec<(&str, &str)> = labels
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let event_labels = Labels::from_pairs(&pairs).map_err(|e| e.to_string())?;
+
+    let mut lines = Vec::with_capacity(ticks as usize);
+    let mut preview = Vec::new();
+    for tick in 0..ticks {
+        let secs = offset_secs + tick as f64 * tick_secs;
+        let timestamp: SystemTime = UNIX_EPOCH
+            + Duration::from_millis(PREVIEW_EPOCH_MS)
+            + Duration::from_secs_f64(secs.max(0.0));
+        let mut event = generator.generate_at(tick, timestamp);
+        event.labels = event_labels.clone();
+        if (tick as usize) < PREVIEW_EVENTS {
+            // The runtime fails a log scenario whose encoder cannot encode
+            // logs (e.g. prometheus_text) — surface the same error here.
+            encoder
+                .encode_log(&event, &mut preview)
+                .map_err(|e| e.to_string())?;
+        }
+        lines.push(LogLineOut {
+            secs,
+            severity: event.severity,
+            message: event.message,
+        });
+    }
+
+    Ok(LogEntrySample {
+        id: id.to_string(),
+        name: config.base.name.clone(),
+        rate,
+        tick_secs,
+        duration_secs,
+        offset_secs,
+        lines,
+        encoded_preview: String::from_utf8_lossy(&preview).trim_end().to_string(),
+        labels,
+    })
+}
+
 /// Encode the first few sampled events with the entry's configured encoder.
 ///
 /// Timestamps are synthesized from a fixed base — the browser sandbox has no
@@ -487,6 +597,104 @@ fn encode_preview(config: &ScenarioConfig, values: &[f64]) -> Result<String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LOG_SCENARIO: &str = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 30s
+  encoder: { type: json_lines }
+  sink: { type: stdout }
+scenarios:
+  - id: app
+    signal_type: logs
+    name: app_logs
+    log_generator:
+      type: template
+      templates:
+        - message: \"Request from {ip} to {endpoint}\"
+          field_pools:
+            ip: [\"10.0.0.1\", \"10.0.0.2\"]
+            endpoint: [\"/api\", \"/health\"]
+      severity_weights: { info: 0.7, warn: 0.2, error: 0.1 }
+      seed: 7
+    labels: { service: api }
+";
+
+    #[test]
+    fn log_scenario_samples_lines_and_preview() {
+        let json = sample_scenario(LOG_SCENARIO, 240);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ok"], true, "log scenario must compile: {json}");
+        assert!(
+            parsed["skipped"].as_array().unwrap().is_empty(),
+            "template logs must not be skipped anymore: {json}"
+        );
+        let log = &parsed["logs"][0];
+        assert_eq!(log["id"], "app");
+        assert_eq!(log["name"], "app_logs");
+        let lines = log["lines"].as_array().unwrap();
+        // rate 2 × 30s = 60 events.
+        assert_eq!(lines.len(), 60);
+        assert_eq!(lines[0]["secs"], 0.0);
+        assert_eq!(lines[1]["secs"], 0.5);
+        let message = lines[0]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("Request from"),
+            "template resolved: {message}"
+        );
+        assert!(
+            !message.contains('{'),
+            "no unresolved placeholders: {message}"
+        );
+        let severity = lines[0]["severity"].as_str().unwrap();
+        assert!(["trace", "debug", "info", "warn", "error", "fatal"].contains(&severity));
+        // Encoded preview uses the json_lines encoder with the fixed epoch —
+        // deterministic and label-carrying.
+        let preview = log["encoded_preview"].as_str().unwrap();
+        assert!(
+            preview.contains("\"service\":\"api\""),
+            "labels in preview: {preview}"
+        );
+        assert_eq!(preview.lines().count(), PREVIEW_EVENTS);
+    }
+
+    #[test]
+    fn log_sampling_is_deterministic() {
+        assert_eq!(
+            sample_scenario(LOG_SCENARIO, 240),
+            sample_scenario(LOG_SCENARIO, 240),
+            "same YAML must produce byte-identical samples"
+        );
+    }
+
+    #[test]
+    fn log_csv_replay_is_skipped_with_a_reason() {
+        let yaml = "\
+version: 2
+kind: runnable
+defaults:
+  rate: 2
+  duration: 10s
+  encoder: { type: json_lines }
+  sink: { type: stdout }
+scenarios:
+  - id: replay
+    signal_type: logs
+    name: replayed
+    log_generator: { type: csv_replay, file: events.csv }
+";
+        let json = sample_scenario(yaml, 240);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert!(parsed["logs"].as_array().unwrap().is_empty());
+        let reason = parsed["skipped"][0]["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("filesystem"),
+            "reason explains the skip: {reason}"
+        );
+    }
 
     const SINE_SCENARIO: &str = "\
 version: 2
