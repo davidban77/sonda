@@ -23,6 +23,7 @@ jitter, and defaults behave exactly like `sonda run`.
     <select id="sp-preset" class="sonda-playground__select" aria-label="Load a preset scenario"></select>
     <button id="sp-run" type="button" class="md-button md-button--primary sonda-playground__run">Run</button>
     <button id="sp-share" type="button" class="md-button sonda-playground__share">Copy link</button>
+    <a id="sp-test-alert" class="md-button sonda-playground__share" href="alert-lab/">Test an alert →</a>
     <span id="sp-status" class="sonda-playground__status" role="status" aria-live="polite"></span>
   </div>
   <div class="sonda-playground__grid">
@@ -67,6 +68,8 @@ Two things do not run in a browser sandbox: `csv_replay` (no filesystem — use
 [`sonda new --from`](../import/from-csv.md) locally) and log entries, which
 are compiled and validated but not visualized yet.
 
-When the shape looks right, the same YAML runs unchanged with
-[`sonda run`](../deploy/cli.md) — or straight against a
+When the shape looks right, **Test an alert →** carries the scenario into the
+[alert lab](alert-lab.md) so you can tune a threshold + `for:` rule against
+this exact signal — and the same YAML runs unchanged with
+[`sonda run`](../deploy/cli.md) or straight against a
 [real backend](../get-started/send-to-a-backend.md).

@@ -176,6 +176,16 @@ function boot() {
     open: document.getElementById("al-open"),
   };
 
+  // A scenario carried over from the playground (#yaml=…) becomes a
+  // synthetic first preset, selected on load — the other half of the
+  // playground's "Test an alert →" bridge.
+  const customYaml = fromLocationHash();
+  if (customYaml !== null) {
+    const option = document.createElement("option");
+    option.value = "custom";
+    option.textContent = "Your scenario (from playground)";
+    el.preset.appendChild(option);
+  }
   PRESETS.forEach((preset, index) => {
     const option = document.createElement("option");
     option.value = String(index);
@@ -205,16 +215,14 @@ function boot() {
   };
 
   const loadPreset = async () => {
-    const preset = PRESETS[Number(el.preset.value)];
-    el.op.value = preset.op;
-    el.threshold.value = String(preset.threshold);
-    el.forSel.value = String(preset.forSecs);
-    el.story.textContent = preset.story;
+    const isCustom = el.preset.value === "custom" && customYaml !== null;
+    const preset = isCustom ? null : PRESETS[Number(el.preset.value)];
+    const yaml = isCustom ? customYaml : preset.yaml;
     // Relative to /playground/alert-lab/, the playground index is one level
     // up — "./" would point the link back at this very page.
-    el.open.href = "../#yaml=" + toBase64Url(preset.yaml);
+    el.open.href = "../#yaml=" + toBase64Url(yaml);
     await ensureWasm();
-    const result = JSON.parse(sample_scenario(preset.yaml, MAX_TICKS));
+    const result = JSON.parse(sample_scenario(yaml, MAX_TICKS));
     entry = result.ok && result.entries.length ? result.entries[0] : null;
     if (!entry) {
       // Surface the engine's own message instead of a silent blank chart —
@@ -226,6 +234,24 @@ function boot() {
           : "the scenario produced no metrics entries";
       showError(el, reason || "the scenario could not be sampled");
       return;
+    }
+    if (isCustom) {
+      // No preset rule to apply — start from a threshold the signal
+      // actually crosses and let the user tune from there.
+      el.op.value = ">";
+      el.threshold.value = String(defaultThreshold(entry.values));
+      el.forSel.value = "6";
+      const extra =
+        result.entries.length > 1 ? ` (first of ${result.entries.length} series)` : "";
+      el.story.textContent =
+        `Your scenario from the playground — tune the threshold and for: to see when ` +
+        `an alert on ${entry.name}${extra} would fire. The same expectation runs for ` +
+        `real with sonda test.`;
+    } else {
+      el.op.value = preset.op;
+      el.threshold.value = String(preset.threshold);
+      el.forSel.value = String(preset.forSecs);
+      el.story.textContent = preset.story;
     }
     hideError(el);
     reevaluate();
@@ -312,6 +338,38 @@ function toBase64Url(text) {
   let binary = "";
   bytes.forEach((b) => (binary += String.fromCharCode(b)));
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(encoded) {
+  const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function fromLocationHash() {
+  const match = window.location.hash.match(/^#yaml=(.+)$/);
+  if (!match) return null;
+  try {
+    return fromBase64Url(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+/* Starting threshold for a scenario the lab has never seen: a value the
+ * signal actually crosses (60% up its range), rounded to a tidy number so
+ * the input reads like something a human chose. */
+function defaultThreshold(values) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return 1;
+  const mid = min + (max - min) * 0.6;
+  if (mid === 0) return 0;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(mid))) - 1);
+  const rounded = Math.round(mid / magnitude) * magnitude;
+  // Guard float dust like 60.000000000000004 from the multiply.
+  return Number(rounded.toPrecision(3));
 }
 
 function palette() {

@@ -11,7 +11,9 @@ hide:
 
 # Watch an alert fire — before you page anyone
 
-Pick a failure pattern, set a threshold and a `for:` duration, and press play.
+Pick a failure pattern — or bring your own: the playground's
+**Test an alert →** button carries whatever scenario you're editing straight
+here. Set a threshold and a `for:` duration, and press play.
 The signal comes from the real Sonda engine (the same
 [WebAssembly build](index.md) as the playground); the lane below the chart
 shows the alert state the way Prometheus would walk it:
