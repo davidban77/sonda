@@ -75,6 +75,23 @@ export function evaluate(values, tickSecs, op, threshold, forSecs) {
   return { states, resolves };
 }
 
+/* Escape a label value for interpolation into a double-quoted context.
+ * PromQL string literals and YAML double-quoted scalars share these rules
+ * for the characters that matter here: backslash and quote must be
+ * escaped, newlines and tabs become escape sequences. Label KEYS need no
+ * treatment — they reached this code through the engine's label
+ * validation, so they match the Prometheus name charset; VALUES are
+ * arbitrary user strings and always pass through here (review #532:
+ * a numeric or empty value emitted bare breaks the generated YAML, and a
+ * quote breaks the generated PromQL). */
+export function escapeQuoted(value) {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
+
 /* PascalCase alert name from a metric name and a direction:
  * cpu_usage + ">" → CpuUsageHigh. */
 export function deriveAlertName(metricName, op) {
@@ -105,7 +122,7 @@ export function buildTestExport({ yaml, entry, rule, evaled }) {
   const labels = entry.labels || {};
   const labelKeys = Object.keys(labels).sort();
   const selector = labelKeys.length
-    ? `{${labelKeys.map((k) => `${k}="${labels[k]}"`).join(",")}}`
+    ? `{${labelKeys.map((k) => `${k}="${escapeQuoted(labels[k])}"`).join(",")}}`
     : "";
   const forSecs = rule.forSecs;
 
@@ -117,13 +134,18 @@ export function buildTestExport({ yaml, entry, rule, evaled }) {
     : null;
   const endsResolved = fired && evaled.states[evaled.states.length - 1] !== "firing";
 
+  // The expr is a YAML scalar containing PromQL: single-quote it at the
+  // YAML layer (apostrophes doubled, backslashes untouched) so PromQL's
+  // own escapes survive and label values with `: ` cannot break the rules
+  // file. escapeQuoted already handled the PromQL string-literal layer.
+  const expr = `${entry.name}${selector} ${rule.op} ${rule.threshold}`;
   const ruleLines = [
     "groups:",
     "  - name: sonda-lab",
     "    interval: 5s",
     "    rules:",
     `      - alert: ${alertName}`,
-    `        expr: ${entry.name}${selector} ${rule.op} ${rule.threshold}`,
+    `        expr: '${expr.replace(/'/g, "''")}'`,
     `        for: ${forSecs}s`,
     "        labels:",
     "          severity: critical",
@@ -131,7 +153,9 @@ export function buildTestExport({ yaml, entry, rule, evaled }) {
 
   const expectLines = ["expect:", "  alerts:", `    - alert: ${alertName}`, "      labels:", "        severity: critical"];
   for (const key of labelKeys) {
-    expectLines.push(`        ${key}: ${labels[key]}`);
+    // Always double-quoted: a bare numeric, boolean, `{`, `*`, colon-space
+    // or empty value is invalid (or worse, retyped) YAML.
+    expectLines.push(`        ${key}: "${escapeQuoted(labels[key])}"`);
   }
   expectLines.push(
     `      firing_within: ${firingWithin !== null ? `${firingWithin}s` : "60s # the rule never fired in the sampled preview — tune it in the lab first"}`

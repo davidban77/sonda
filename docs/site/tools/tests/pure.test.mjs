@@ -11,6 +11,7 @@ import {
   buildTestExport,
   defaultThreshold,
   deriveAlertName,
+  escapeQuoted,
   evaluate,
   fromBase64Url,
   niceDeadlineSecs,
@@ -141,11 +142,11 @@ test("export carries a label-scoped rule and expect block with derived deadlines
     evaled: { states, resolves: [200] },
   });
   assert.match(out, /alert: CpuUsageHigh/);
-  assert.match(out, /expr: cpu_usage\{host="web-01",service="api"\} > 64/);
+  assert.match(out, /expr: 'cpu_usage\{host="web-01",service="api"\} > 64'/);
   assert.match(out, /for: 12s/);
   assert.match(out, /firing_within: 45s/);
   assert.match(out, /resolves_within: 2m/);
-  assert.match(out, /host: web-01/); // expect.labels scoping
+  assert.match(out, /host: "web-01"/); // expect.labels scoping, always quoted
   assert.match(out, /severity: critical/);
   assert.match(out, /sonda test lab-scenario\.yaml/);
   assert.ok(out.includes(YAML.trimEnd()), "scenario YAML embedded verbatim");
@@ -183,6 +184,56 @@ test("export comments the expect block when the scenario already has one", () =>
   assert.match(out, /merge the one below by hand/);
   assert.match(out, /^# expect:/m); // our block arrives commented
   assert.match(out, /^#\s+alerts:/m);
+});
+
+// --- label-value escaping (review #532 blocker) ------------------------
+
+test("escapeQuoted handles quotes, backslashes, and control characters", () => {
+  assert.equal(escapeQuoted('net"ops'), 'net\\"ops');
+  assert.equal(escapeQuoted("a\\b"), "a\\\\b");
+  assert.equal(escapeQuoted("a\nb"), "a\\nb");
+  assert.equal(escapeQuoted("a\tb"), "a\\tb");
+  assert.equal(escapeQuoted("plain"), "plain");
+  assert.equal(escapeQuoted(""), "");
+});
+
+test("exports stay well-formed for every hostile label value (review #532 table)", () => {
+  // The reviewer's case table: each of these, emitted bare, produced a
+  // file the export's own instructions reject — or silently-broken PromQL.
+  const nasty = {
+    quote: 'net"ops',
+    backslash: "a\\b",
+    colon_space: "a: b",
+    numeric: "12345",
+    boolish: "true",
+    brace: "{x}",
+    asterisk: "*ref",
+    newline: "a\nb",
+    empty: "",
+  };
+  const states = Array(40).fill("inactive").concat(Array(40).fill("firing"));
+  const out = buildTestExport({
+    yaml: YAML,
+    entry: { ...ENTRY, labels: nasty },
+    rule: { op: ">", threshold: 64, forSecs: 12 },
+    evaled: { states, resolves: [] },
+  });
+  // Every YAML label line is a double-quoted scalar…
+  for (const key of Object.keys(nasty)) {
+    assert.match(out, new RegExp(`^\\s+${key}: ".*"$`, "m"), `label ${key} must be quoted`);
+  }
+  // …with quotes/backslashes escaped, so the quoting cannot be broken out of.
+  assert.match(out, /quote: "net\\"ops"/);
+  assert.match(out, /backslash: "a\\\\b"/);
+  assert.match(out, /newline: "a\\nb"/);
+  assert.match(out, /empty: ""/);
+  // The PromQL matcher gets the same treatment.
+  assert.match(out, /quote="net\\"ops"/);
+  assert.match(out, /backslash="a\\\\b"/);
+  assert.match(out, /empty=""/);
+  // No label value ever lands as a raw unquoted YAML scalar.
+  assert.doesNotMatch(out, /^\s+numeric: 12345$/m);
+  assert.doesNotMatch(out, /^\s+boolish: true$/m);
 });
 
 console.log(`${passed} pure-helper tests passed`);
