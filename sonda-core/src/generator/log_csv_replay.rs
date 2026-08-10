@@ -124,14 +124,23 @@ impl LogCsvReplayGenerator {
 }
 
 impl LogGenerator for LogCsvReplayGenerator {
-    fn generate(&self, tick: u64) -> LogEvent {
+    /// Replay the row for this tick, stamped with the caller's timestamp.
+    ///
+    /// Rows are stored with an inert placeholder timestamp; the emission
+    /// time belongs to the caller. (Previously rows were stamped with
+    /// `SystemTime::now()` at construction, so every replayed event in a
+    /// run carried the same load-time timestamp — clock-free construction
+    /// also fixes that.)
+    fn generate_at(&self, tick: u64, timestamp: std::time::SystemTime) -> LogEvent {
         let len = self.rows.len();
         let index = if self.repeat {
             (tick % len as u64) as usize
         } else {
             (tick.min((len - 1) as u64)) as usize
         };
-        self.rows[index].clone()
+        let mut event = self.rows[index].clone();
+        event.timestamp = timestamp;
+        event
     }
 }
 
@@ -253,8 +262,6 @@ fn build_rows(
     default_severity: Severity,
     out: &mut Vec<LogEvent>,
 ) -> Result<(usize, usize), SondaError> {
-    use std::time::SystemTime;
-
     let mut fallback_count = 0usize;
     for line in data_lines {
         let cells: Vec<String> = super::csv_header::split_csv_header_fields(line);
@@ -291,8 +298,10 @@ fn build_rows(
             }
         }
 
+        // Inert placeholder — generate_at() stamps the real emission time.
+        // Construction must stay clock-free so scenarios build on wasm.
         out.push(LogEvent::with_timestamp(
-            SystemTime::now(),
+            std::time::UNIX_EPOCH,
             severity,
             message,
             Labels::default(),
@@ -311,6 +320,24 @@ mod tests {
     #[test]
     fn log_csv_replay_generator_is_send_and_sync() {
         assert_send_sync::<LogCsvReplayGenerator>();
+    }
+
+    #[test]
+    fn generate_at_stamps_each_event_with_the_caller_timestamp() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let csv = "timestamp,severity,message\n1700000000,info,a\n1700000003,warn,b\n";
+        let gen = LogCsvReplayGenerator::from_str(csv, None, Severity::Info, true)
+            .expect("two-row CSV must load");
+        // Distinct per-tick timestamps — replayed events must NOT share one
+        // construction-time stamp (the pre-explicit-timestamp behavior).
+        let t0 = UNIX_EPOCH + Duration::from_secs(100);
+        let t1 = UNIX_EPOCH + Duration::from_secs(200);
+        let e0 = gen.generate_at(0, t0);
+        let e1 = gen.generate_at(1, t1);
+        assert_eq!(e0.timestamp, t0);
+        assert_eq!(e1.timestamp, t1);
+        assert_eq!(e0.message, "a");
+        assert_eq!(e1.message, "b");
     }
 
     #[test]

@@ -651,10 +651,22 @@ pub fn wrap_with_jitter(
 /// A log generator produces a `LogEvent` for a given tick index.
 ///
 /// Implementations must be deterministic for a given configuration and tick.
-/// Side effects are not allowed in `generate()`.
+/// Side effects are not allowed in `generate_at()` — in particular,
+/// implementations must never read the wall clock. That keeps the whole log
+/// path runnable on targets without one (`SystemTime::now()` panics on
+/// `wasm32-unknown-unknown`, where the docs-site playground samples log
+/// scenarios). The provided [`generate`](LogGenerator::generate) method is
+/// the only place the clock is touched, and only when a caller asks for it.
 pub trait LogGenerator: Send + Sync {
-    /// Produce a `LogEvent` for the given tick index (0-based, monotonically increasing).
-    fn generate(&self, tick: u64) -> LogEvent;
+    /// Produce a `LogEvent` for the given tick index (0-based, monotonically
+    /// increasing), stamped with the provided timestamp.
+    fn generate_at(&self, tick: u64, timestamp: std::time::SystemTime) -> LogEvent;
+
+    /// Produce a `LogEvent` for the given tick, stamped with the current
+    /// system time. Convenience for runtime callers on targets with a clock.
+    fn generate(&self, tick: u64) -> LogEvent {
+        self.generate_at(tick, std::time::SystemTime::now())
+    }
 }
 
 /// Configuration for one message template used by [`LogGeneratorConfig::Template`].
