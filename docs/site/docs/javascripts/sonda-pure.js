@@ -92,6 +92,78 @@ export function escapeQuoted(value) {
     .replace(/\t/g, "\\t");
 }
 
+/* Find the scrubbable numeric literal at `column` in a line of scenario
+ * YAML, or null. Powers the editor's drag-to-scrub gesture, so eligibility
+ * is deliberately narrow — a literal is scrubbable only when it stands
+ * alone as (part of) a YAML scalar value:
+ *
+ *   - preceded by start-of-value punctuation (space, `:`, `,`, `{`, `[`)
+ *     — rejects digits embedded in words (`web-01`, `checkout-7d4f9`);
+ *   - followed by end-of-value punctuation or a bare duration suffix
+ *     (`60s`, `1.5h`, `250ms`) — rejects dotted quads (`10.0.0.2`) and
+ *     scientific notation;
+ *   - not inside a quoted string — a number in a `message:` template is
+ *     prose, not a parameter (review #533 W1: the boundary checks alone
+ *     accept `"Request took 250 ms"` because the digits have spaces on
+ *     both sides INSIDE the string; an odd count of unescaped quotes
+ *     before the span means the span is inside one) — and not in a
+ *     comment;
+ *   - not the `version:` key, where +1 means a different config schema,
+ *     not a bigger signal.
+ */
+export function numberSpanAt(lineText, column) {
+  if (/^\s*version:/.test(lineText)) return null;
+  const hash = lineText.indexOf("#");
+  const insideQuotes = (upto) => {
+    let doubles = 0;
+    let singles = 0;
+    for (let i = 0; i < upto; i++) {
+      const c = lineText[i];
+      if (c === '"' && lineText[i - 1] !== "\\") doubles += 1;
+      else if (c === "'") singles += 1; // YAML escapes '' — pairs keep parity
+    }
+    return doubles % 2 === 1 || singles % 2 === 1;
+  };
+  const pattern = /-?\d+(?:\.\d+)?/g;
+  let match;
+  while ((match = pattern.exec(lineText)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (column < start) return null; // matches advance left-to-right
+    if (column > end) continue;
+    if (hash !== -1 && start > hash) return null;
+    if (insideQuotes(start)) continue;
+    const before = start === 0 ? "" : lineText[start - 1];
+    if (!/^[ \t:,{[]?$/.test(before)) continue;
+    const after = lineText.slice(end);
+    if (after !== "" && !/^[ \t,}\]]/.test(after) && !/^(?:ms|[smh])(?:$|[ \t,}\]])/.test(after)) {
+      continue;
+    }
+    return { start, end, text: match[0] };
+  }
+  return null;
+}
+
+/* Move a numeric literal by `steps` scrub increments, preserving its
+ * decimal format. The step is fixed by the ORIGINAL text for the whole
+ * gesture (no acceleration): one decimal place for floats, whole numbers
+ * for integers, scaled up one order below the value's own magnitude so
+ * `120` steps by 10 while `4` steps by 1 and `0.004` by 0.001. */
+export function scrubNumber(text, steps) {
+  const value = Number(text);
+  const dot = text.indexOf(".");
+  const decimals = dot === -1 ? 0 : text.length - dot - 1;
+  const fine = Math.pow(10, -decimals);
+  const magnitude = Math.abs(value);
+  const coarse = magnitude > 0 ? Math.pow(10, Math.floor(Math.log10(magnitude)) - 1) : fine;
+  const step = Math.max(fine, coarse);
+  const out = (value + steps * step).toFixed(decimals);
+  // toFixed goes exponential at >= 1e21 (review #533 M2) — a scrub must
+  // never replace a plain literal with something that isn't one, so past
+  // that point the gesture pins rather than corrupts.
+  return /^-?\d+(?:\.\d+)?$/.test(out) ? out : text;
+}
+
 /* PascalCase alert name from a metric name and a direction:
  * cpu_usage + ">" → CpuUsageHigh. */
 export function deriveAlertName(metricName, op) {
