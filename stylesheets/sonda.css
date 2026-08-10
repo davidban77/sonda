@@ -1027,3 +1027,64 @@
 [data-md-color-scheme="slate"] .md-typeset .sonda-livegen__error {
   color: #f87171;
 }
+
+/* ---------- Playground synthetic log stream ----------------------------- */
+
+.sonda-playground__logstream {
+  max-height: 16rem;
+  overflow-y: auto;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  background: var(--md-code-bg-color);
+}
+
+.sonda-playground__logline {
+  white-space: nowrap;
+}
+
+.sonda-playground__logat {
+  display: inline-block;
+  min-width: 3.6rem;
+  opacity: 0.55;
+}
+
+.sonda-playground__logsev {
+  display: inline-block;
+  min-width: 3.6rem;
+  font-weight: 700;
+}
+
+.sonda-playground__logline--trace .sonda-playground__logsev,
+.sonda-playground__logline--debug .sonda-playground__logsev {
+  color: var(--md-default-fg-color--light);
+}
+
+.sonda-playground__logline--info .sonda-playground__logsev {
+  color: #2563eb;
+}
+
+.sonda-playground__logline--warn .sonda-playground__logsev {
+  color: #a16207;
+}
+
+[data-md-color-scheme="slate"] .sonda-playground__logline--warn .sonda-playground__logsev {
+  color: #facc15;
+}
+
+.sonda-playground__logline--error .sonda-playground__logsev,
+.sonda-playground__logline--fatal .sonda-playground__logsev {
+  color: #dc2626;
+}
+
+[data-md-color-scheme="slate"] .sonda-playground__logline--error .sonda-playground__logsev,
+[data-md-color-scheme="slate"] .sonda-playground__logline--fatal .sonda-playground__logsev {
+  color: #f87171;
+}
+
+[data-md-color-scheme="slate"] .sonda-playground__logline--info .sonda-playground__logsev {
+  color: #60a5fa;
+}

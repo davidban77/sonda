@@ -194,6 +194,35 @@ scenarios:
 `,
   },
   {
+    name: "Synthetic log stream",
+    yaml: `version: 2
+kind: runnable
+defaults:
+  rate: 4
+  duration: 60s
+  encoder: { type: json_lines }
+  sink: { type: stdout }
+scenarios:
+  - id: app_logs
+    signal_type: logs
+    name: checkout_logs
+    log_generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint} took {latency}ms"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2", "10.0.0.7"]
+            endpoint: ["/api/cart", "/api/checkout", "/api/health"]
+            latency: ["12", "48", "230", "870"]
+        - message: "payment gateway timeout after {timeout}s"
+          field_pools:
+            timeout: ["5", "10"]
+      severity_weights: { info: 0.75, warn: 0.15, error: 0.1 }
+      seed: 42
+    labels: { service: checkout }
+`,
+  },
+  {
     name: "Correlated pair (CPU + errors)",
     yaml: `version: 2
 kind: runnable
@@ -388,14 +417,17 @@ function render(el, result) {
 
   const histograms = result.histograms || [];
   const summaries = result.summaries || [];
+  const logs = result.logs || [];
 
-  // A scenario with only histogram/summary entries doesn't need the empty
-  // line chart taking up space.
+  // A scenario with only histogram/summary/log entries doesn't need the
+  // empty line chart taking up space.
   const hasLines = result.entries.length > 0;
-  el.chart.style.display = hasLines || (!histograms.length && !summaries.length) ? "" : "none";
-  if (hasLines || (!histograms.length && !summaries.length)) drawChart(el.chart, result.entries);
+  const hasExtras = histograms.length || summaries.length || logs.length;
+  el.chart.style.display = hasLines || !hasExtras ? "" : "none";
+  if (hasLines || !hasExtras) drawChart(el.chart, result.entries);
 
   renderExtraCharts(el, histograms, summaries);
+  renderLogs(el, logs);
 
   el.legend.replaceChildren(
     ...result.entries.map((entry, index) => {
@@ -418,6 +450,7 @@ function render(el, result) {
 
   el.output.textContent = result.entries
     .map((entry) => entry.encoded_preview.trimEnd())
+    .concat(logs.map((log) => log.encoded_preview.trimEnd()))
     .join("\n")
     .trim();
 }
@@ -452,6 +485,44 @@ function renderExtraCharts(el, histograms, summaries) {
   summaries.forEach((summary) => {
     addBlock(`${summary.name} — quantile bands`, (canvas) => drawSummaryBands(canvas, summary));
   });
+}
+
+/* Synthetic log stream pane: one scrollable block per log entry, each line
+ * stamped with its offset on the scenario timeline and colored by severity.
+ * Rebuilt per render, same lifecycle as the extra charts. */
+function renderLogs(el, logs) {
+  let pane = document.getElementById("sp-logs");
+  if (!logs.length) {
+    if (pane) pane.remove();
+    return;
+  }
+  if (!pane) {
+    pane = document.createElement("div");
+    pane.id = "sp-logs";
+    el.chart.parentElement.appendChild(pane);
+  }
+  pane.replaceChildren();
+
+  for (const log of logs) {
+    const caption = document.createElement("p");
+    caption.textContent = `${log.name} — synthetic log stream (${log.lines.length} events)`;
+    caption.style.cssText = "font: 12px ui-monospace, monospace; opacity: .75; margin: 10px 0 2px;";
+    const stream = document.createElement("div");
+    stream.className = "sonda-playground__logstream";
+    for (const line of log.lines) {
+      const row = document.createElement("div");
+      row.className = `sonda-playground__logline sonda-playground__logline--${line.severity}`;
+      const at = document.createElement("span");
+      at.className = "sonda-playground__logat";
+      at.textContent = `+${line.secs.toFixed(line.secs % 1 ? 2 : 0)}s`;
+      const sev = document.createElement("span");
+      sev.className = "sonda-playground__logsev";
+      sev.textContent = line.severity.toUpperCase().padEnd(5);
+      row.append(at, sev, document.createTextNode(line.message));
+      stream.appendChild(row);
+    }
+    pane.append(caption, stream);
+  }
 }
 
 function drawHistogramHeatmap(canvas, histogram) {
