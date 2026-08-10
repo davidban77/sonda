@@ -284,6 +284,7 @@ async function boot() {
     preset: document.getElementById("sp-preset"),
     run: document.getElementById("sp-run"),
     share: document.getElementById("sp-share"),
+    testAlert: document.getElementById("sp-test-alert"),
     status: document.getElementById("sp-status"),
     editor: document.getElementById("sp-editor"),
     error: document.getElementById("sp-error"),
@@ -308,11 +309,15 @@ async function boot() {
     el.status.textContent = "compiling…";
     try {
       await ensureWasm();
-      const result = JSON.parse(sample_scenario(editor.getValue(), MAX_TICKS));
+      const yaml = editor.getValue();
+      const result = JSON.parse(sample_scenario(yaml, MAX_TICKS));
       lastResult = result;
       render(el, result);
       editor.setEngineError(result.ok ? null : result.error);
       el.status.textContent = result.ok ? "" : "compile error";
+      // Bridge to the alert lab: carry the current scenario across so a
+      // threshold + for: rule can be tuned against this exact signal.
+      if (el.testAlert) el.testAlert.href = "alert-lab/#yaml=" + toBase64Url(yaml);
     } catch (err) {
       el.status.textContent = "engine failed to load";
       showError(el, String(err));
