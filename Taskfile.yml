@@ -120,6 +120,12 @@ tasks:
     cmds:
       - node docs/site/tools/tests/pure.test.mjs
 
+  site:livegen-check:
+    desc: Compile every live-widget slider combination through the real engine
+    deps: [build:release]
+    cmds:
+      - SONDA_BIN=./target/release/sonda node docs/site/tools/tests/livegen-compile.mjs
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------

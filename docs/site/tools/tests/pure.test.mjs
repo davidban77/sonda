@@ -19,6 +19,7 @@ import {
   scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
+import { WIDGETS, cornerParams, defaultParams, sweepParams } from "../../docs/javascripts/livegen-presets.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -335,6 +336,81 @@ test("exports stay well-formed for every hostile label value (review #532 table)
   // No label value ever lands as a raw unquoted YAML scalar.
   assert.doesNotMatch(out, /^\s+numeric: 12345$/m);
   assert.doesNotMatch(out, /^\s+boolish: true$/m);
+});
+
+// --- live-widget presets (review #534 W1/M1) ----------------------------
+
+test("widget sliders are well-formed and defaults sit inside their range", () => {
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    assert.ok(widget.sliders.length >= 2 && widget.sliders.length <= 3, `${gen}: 2-3 sliders`);
+    for (const s of widget.sliders) {
+      assert.ok(s.step > 0, `${gen}.${s.key}: positive step`);
+      assert.ok(s.min < s.max, `${gen}.${s.key}: min < max`);
+      assert.ok(s.value >= s.min && s.value <= s.max, `${gen}.${s.key}: default in range`);
+    }
+  }
+});
+
+test("baseline and ceiling ranges are disjoint wherever both exist", () => {
+  // Disjoint ranges mean no slider combination can cross them — the
+  // compile gate then only has to confirm the engine agrees.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const baseline = widget.sliders.find((s) => s.key === "baseline");
+    const ceiling = widget.sliders.find((s) => s.key === "ceiling");
+    if (baseline && ceiling) {
+      assert.ok(baseline.max < ceiling.min, `${gen}: baseline range must sit below ceiling range`);
+    }
+  }
+});
+
+test("duration-coupled slider floors cover the scenario duration (review #534 M1)", () => {
+  // The engine rejects a leak that resets mid-run (time_to_ceiling must be
+  // >= duration). The floor is derived from durationSecs in the presets;
+  // this pins the derivation so retuning the template cannot silently
+  // strand the slider below its own scenario length.
+  const leak = WIDGETS.leak;
+  const ttc = leak.sliders.find((s) => s.key === "time_to_ceiling");
+  assert.ok(ttc.min >= leak.durationSecs, "leak: time_to_ceiling floor must cover the duration");
+  // And every widget's YAML really carries the duration it declares.
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const yaml = widget.yaml(defaultParams(widget));
+    assert.match(yaml, new RegExp(`duration: ${widget.durationSecs}s`), `${gen}: durationSecs drives the template`);
+    assert.match(yaml, new RegExp(`rate: ${widget.rate}`), `${gen}: rate drives the template`);
+  }
+});
+
+test("preset sampling stays within the playground tick budget", () => {
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    assert.ok(widget.rate * widget.durationSecs <= 240, `${gen}: rate*duration must fit MAX_TICKS`);
+  }
+});
+
+test("corner and sweep enumeration cover what the compile gate feeds the engine", () => {
+  for (const [gen, widget] of Object.entries(WIDGETS)) {
+    const corners = cornerParams(widget);
+    const expected = widget.sliders.reduce(
+      (n, s) => n * new Set([s.min, s.value, s.max]).size,
+      1
+    );
+    assert.equal(corners.length, expected, `${gen}: {min,default,max} grid`);
+    for (const corner of corners) {
+      for (const s of widget.sliders) {
+        assert.ok(
+          [s.min, s.value, s.max].includes(corner[s.key]),
+          `${gen}: corners use range edges or the default`
+        );
+      }
+      // Every corner must produce a single-scenario YAML mentioning the type.
+      assert.match(widget.yaml(corner), /signal_type: metrics/);
+    }
+  }
+  // Sweeps walk every step of the named slider under min/max neighbors.
+  const sweep = sweepParams(WIDGETS.leak, "time_to_ceiling");
+  const steps = (600 - WIDGETS.leak.durationSecs) / 10 + 1;
+  assert.equal(sweep.length, steps * 4); // 2 other sliders, min/max each
+  assert.equal(sweep[0].time_to_ceiling, WIDGETS.leak.durationSecs);
+  assert.equal(sweep[sweep.length - 1].time_to_ceiling, 600);
+  assert.equal(sweepParams(WIDGETS.leak, "nope").length, 0);
 });
 
 console.log(`${passed} pure-helper tests passed`);

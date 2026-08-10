@@ -11,132 +11,10 @@
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
 import { toBase64Url } from "./sonda-pure.js";
+import { WIDGETS, defaultParams } from "./livegen-presets.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 150;
-
-/* One preset per widget. `yaml(params)` must produce a single-entry runnable
- * scenario; slider ranges are chosen so every combination compiles (e.g. the
- * leak widget keeps time_to_ceiling >= duration, and baseline/ceiling ranges
- * never cross). */
-const WIDGETS = {
-  sine: {
-    sliders: [
-      { key: "amplitude", min: 0, max: 60, step: 1, value: 30 },
-      { key: "period_secs", min: 5, max: 60, step: 1, value: 20, unit: "s" },
-      { key: "offset", min: 0, max: 100, step: 1, value: 55 },
-    ],
-    yaml: (p) => `${HEAD(4, "60s")}
-  - id: live
-    signal_type: metrics
-    name: cpu_usage
-    generator: { type: sine, amplitude: ${p.amplitude}, offset: ${p.offset}, period_secs: ${p.period_secs} }
-`,
-  },
-  spike: {
-    sliders: [
-      { key: "baseline", min: 0, max: 100, step: 1, value: 10 },
-      { key: "magnitude", min: -80, max: 80, step: 1, value: 40 },
-      { key: "interval_secs", min: 5, max: 30, step: 1, value: 10, unit: "s" },
-    ],
-    yaml: (p) => `${HEAD(4, "60s")}
-  - id: live
-    signal_type: metrics
-    name: http_errors_total
-    generator: { type: spike, baseline: ${p.baseline}, magnitude: ${p.magnitude}, duration_secs: 3, interval_secs: ${p.interval_secs} }
-`,
-  },
-  steady: {
-    sliders: [
-      { key: "center", min: 0, max: 100, step: 1, value: 50 },
-      { key: "amplitude", min: 0, max: 30, step: 1, value: 8 },
-      { key: "noise", min: 0, max: 10, step: 0.5, value: 2.5 },
-    ],
-    yaml: (p) => `${HEAD(4, "60s")}
-  - id: live
-    signal_type: metrics
-    name: cpu_usage
-    generator: { type: steady, center: ${p.center}, amplitude: ${p.amplitude}, period: 30s, noise: ${p.noise}, noise_seed: 7 }
-`,
-  },
-  flap: {
-    sliders: [
-      { key: "up_duration", min: 5, max: 60, step: 1, value: 20, unit: "s" },
-      { key: "down_duration", min: 2, max: 30, step: 1, value: 8, unit: "s" },
-    ],
-    yaml: (p) => `${HEAD(2, "120s")}
-  - id: live
-    signal_type: metrics
-    name: interface_up
-    generator: { type: flap, up_duration: ${p.up_duration}s, down_duration: ${p.down_duration}s }
-`,
-  },
-  saturation: {
-    sliders: [
-      { key: "baseline", min: 0, max: 15, step: 1, value: 5 },
-      { key: "ceiling", min: 40, max: 100, step: 1, value: 95 },
-      { key: "time_to_saturate", min: 10, max: 120, step: 5, value: 40, unit: "s" },
-    ],
-    yaml: (p) => `${HEAD(2, "120s")}
-  - id: live
-    signal_type: metrics
-    name: queue_fill_percent
-    generator: { type: saturation, baseline: ${p.baseline}, ceiling: ${p.ceiling}, time_to_saturate: ${p.time_to_saturate}s }
-`,
-  },
-  leak: {
-    sliders: [
-      { key: "baseline", min: 0, max: 40, step: 1, value: 10 },
-      { key: "ceiling", min: 50, max: 100, step: 1, value: 95 },
-      // A leak must not reset mid-run: the engine requires
-      // time_to_ceiling >= duration, so the slider floor is the duration.
-      { key: "time_to_ceiling", min: 120, max: 600, step: 10, value: 120, unit: "s" },
-    ],
-    yaml: (p) => `${HEAD(2, "120s")}
-  - id: live
-    signal_type: metrics
-    name: process_memory_percent
-    generator: { type: leak, baseline: ${p.baseline}, ceiling: ${p.ceiling}, time_to_ceiling: ${p.time_to_ceiling}s }
-`,
-  },
-  degradation: {
-    sliders: [
-      { key: "ceiling", min: 10, max: 100, step: 1, value: 60 },
-      { key: "time_to_degrade", min: 20, max: 120, step: 5, value: 60, unit: "s" },
-      { key: "noise", min: 0, max: 10, step: 0.5, value: 3 },
-    ],
-    yaml: (p) => `${HEAD(4, "60s")}
-  - id: live
-    signal_type: metrics
-    name: request_latency_ms
-    generator: { type: degradation, baseline: 5, ceiling: ${p.ceiling}, time_to_degrade: ${p.time_to_degrade}s, noise: ${p.noise}, noise_seed: 42 }
-`,
-  },
-  spike_event: {
-    sliders: [
-      { key: "baseline", min: 0, max: 100, step: 1, value: 35 },
-      { key: "spike_height", min: 10, max: 100, step: 1, value: 60 },
-      { key: "spike_interval", min: 15, max: 60, step: 1, value: 30, unit: "s" },
-    ],
-    yaml: (p) => `${HEAD(2, "120s")}
-  - id: live
-    signal_type: metrics
-    name: cpu_usage
-    generator: { type: spike_event, baseline: ${p.baseline}, spike_height: ${p.spike_height}, spike_duration: 10s, spike_interval: ${p.spike_interval}s }
-`,
-  },
-};
-
-function HEAD(rate, duration) {
-  return `version: 2
-kind: runnable
-defaults:
-  rate: ${rate}
-  duration: ${duration}
-  encoder: { type: prometheus_text }
-  sink: { type: stdout }
-scenarios:`;
-}
 
 let wasmReady = null;
 function ensureWasm() {
@@ -172,7 +50,7 @@ async function mount(root) {
   const preset = WIDGETS[root.dataset.gen];
   if (!preset) return;
 
-  const params = {};
+  const params = defaultParams(preset);
   const canvas = document.createElement("canvas");
   canvas.className = "sonda-livegen__chart";
   canvas.setAttribute("aria-label", `Live chart of the ${root.dataset.gen} generator`);
@@ -189,7 +67,6 @@ async function mount(root) {
   link.textContent = "Open in playground →";
 
   for (const slider of preset.sliders) {
-    params[slider.key] = slider.value;
     const row = document.createElement("label");
     row.className = "sonda-livegen__row";
     const name = document.createElement("span");
