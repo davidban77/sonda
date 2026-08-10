@@ -64,6 +64,8 @@ extra_javascript:
     type: module
   - path: javascripts/alert-lab.js
     type: module
+  - path: javascripts/livegen.js
+    type: module
 
 markdown_extensions:
   - abbr

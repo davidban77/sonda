@@ -36,6 +36,11 @@ For [logs](#log-generators), choose `template` for synthesized messages with fie
 !!! tip "Aliases and core generators are interchangeable"
     Aliases are shortcuts. At parse time, each alias is translated into the core generators above. Use the alias when the operational meaning is clearer; use the core generator when you need a parameter the alias does not expose (for example, negative spike `magnitude` for dip testing).
 
+Charts with sliders below are **live**: they run the real engine in your browser — the same
+WebAssembly build behind the [playground](../playground/index.md) — so dragging a slider reshapes
+the actual signal Sonda would emit, and **Open in playground →** carries the tuned scenario over
+for full editing. Without JavaScript you get the static shape drawings instead.
+
 ## Metric generators
 
 ### constant
@@ -90,6 +95,8 @@ When no generator is configured, the default is `constant` with `value: 0.0`.
 ### sine
 
 ![The sine generator: a smooth wave oscillating around the offset](img/generators/sine.svg)
+
+<div class="sonda-livegen" data-gen="sine" markdown="0"></div>
 
 Produces a sine wave that oscillates between `offset - amplitude` and `offset + amplitude`.
 
@@ -323,6 +330,8 @@ request_count{instance="web-01",job="app"} 4 1775192672943
 
 ![The spike generator: a steady baseline with short periodic spikes](img/generators/spike.svg)
 
+<div class="sonda-livegen" data-gen="spike" markdown="0"></div>
+
 Outputs a constant baseline value with periodic spikes. During a spike window the value is `baseline + magnitude`; outside the window the value is `baseline`. Use it to test alert thresholds and anomaly detection rules that trigger on sudden value changes.
 
 | Parameter | Type | Required | Default | Description |
@@ -486,6 +495,8 @@ Aliases are shortcuts. At config load time, each alias is translated into a conc
 
 ![The steady generator: a healthy oscillation with realistic noise](img/generators/steady.svg)
 
+<div class="sonda-livegen" data-gen="steady" markdown="0"></div>
+
 Models a healthy "everything is fine" signal. Values oscillate gently around a center point with slight noise — the kind of metric you see on a server under normal load.
 
 | Parameter | Type | Default | Description |
@@ -514,6 +525,8 @@ Values oscillate between 63 and 87 (75 +/- 10, plus up to +/- 2 noise) on a 60-s
 ### flap
 
 ![The flap generator: a square wave alternating between up and down states](img/generators/flap.svg)
+
+<div class="sonda-livegen" data-gen="flap" markdown="0"></div>
 
 Models a binary signal toggling between two states — an interface going up and down, a service alternating between healthy and unhealthy.
 
@@ -572,6 +585,8 @@ generator:
 
 ![The saturation generator: a resource filling to its ceiling and resetting, repeatedly](img/generators/saturation.svg)
 
+<div class="sonda-livegen" data-gen="saturation" markdown="0"></div>
+
 Models a resource that fills up and resets on a repeating cycle — disk usage growing between log rotations, a buffer draining when a consumer catches up.
 
 | Parameter | Type | Default | Description |
@@ -593,6 +608,8 @@ Values ramp linearly from 20 to 95 over 5 minutes, then reset to 20 and repeat.
 ### leak
 
 ![The leak generator: a one-way climb from baseline to ceiling](img/generators/leak.svg)
+
+<div class="sonda-livegen" data-gen="leak" markdown="0"></div>
 
 Models a resource growing toward a ceiling without ever resetting — a memory leak, a connection pool that never releases, a queue that fills but never drains.
 
@@ -619,6 +636,8 @@ Values ramp linearly from 40 to 95 over 120 seconds with no reset.
 
 ![The degradation generator: a noisy upward drift from baseline toward the ceiling](img/generators/degradation.svg)
 
+<div class="sonda-livegen" data-gen="degradation" markdown="0"></div>
+
 Models gradual performance loss with realistic noise — latency increasing over time, error rates rising, throughput dropping.
 
 | Parameter | Type | Default | Description |
@@ -644,6 +663,8 @@ Values ramp from 50ms to 500ms over 60 seconds with +/- 20ms of noise on each ti
 ### spike_event
 
 ![The spike_event generator: a quiet baseline interrupted by brief high plateaus](img/generators/spike_event.svg)
+
+<div class="sonda-livegen" data-gen="spike_event" markdown="0"></div>
 
 Models periodic anomalous bursts above a baseline — CPU spikes, sudden request surges, momentary error floods.
 
