@@ -178,13 +178,15 @@ impl LogTemplateGenerator {
 }
 
 impl LogGenerator for LogTemplateGenerator {
-    /// Generate a `LogEvent` for the given tick.
+    /// Generate a `LogEvent` for the given tick, stamped with `timestamp`.
     ///
     /// Template selection is round-robin by tick index. Placeholder values and
     /// severity are selected via deterministic hash of `(seed, tick, name)`.
-    fn generate(&self, tick: u64) -> LogEvent {
+    /// Clock-free by contract — the caller owns the timestamp.
+    fn generate_at(&self, tick: u64, timestamp: std::time::SystemTime) -> LogEvent {
         if self.templates.is_empty() {
-            return LogEvent::new(
+            return LogEvent::with_timestamp(
+                timestamp,
                 Severity::Info,
                 String::new(),
                 Labels::default(),
@@ -198,7 +200,7 @@ impl LogGenerator for LogTemplateGenerator {
         let severity = self.select_severity(tick);
         let (message, fields) = self.resolve_template(template, tick);
 
-        LogEvent::new(severity, message, Labels::default(), fields)
+        LogEvent::with_timestamp(timestamp, severity, message, Labels::default(), fields)
     }
 }
 
@@ -713,6 +715,44 @@ mod tests {
             "ghost",
             "fields map includes pool entries even when not referenced in template"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Explicit-timestamp path (clock-free contract)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn generate_at_stamps_exactly_the_provided_timestamp() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let gen = make_simple_generator(42);
+        let ts = UNIX_EPOCH + Duration::from_millis(1_777_000_000_000);
+        let event = gen.generate_at(3, ts);
+        assert_eq!(
+            event.timestamp, ts,
+            "caller-provided timestamp must be used verbatim"
+        );
+    }
+
+    #[test]
+    fn generate_at_matches_generate_content_for_same_tick() {
+        use std::time::UNIX_EPOCH;
+        let gen = make_simple_generator(42);
+        let via_at = gen.generate_at(7, UNIX_EPOCH);
+        let via_now = gen.generate(7);
+        assert_eq!(
+            via_at.message, via_now.message,
+            "timestamp source must not change content"
+        );
+        assert_eq!(via_at.severity, via_now.severity);
+        assert_eq!(via_at.fields, via_now.fields);
+    }
+
+    #[test]
+    fn generate_at_on_empty_templates_uses_provided_timestamp() {
+        use std::time::UNIX_EPOCH;
+        let gen = LogTemplateGenerator::new(vec![], vec![], 0);
+        let event = gen.generate_at(0, UNIX_EPOCH);
+        assert_eq!(event.timestamp, UNIX_EPOCH);
     }
 
     // ---------------------------------------------------------------------------
