@@ -965,3 +965,65 @@
   z-index: 0;
   pointer-events: none;
 }
+
+/* ---------- Live generator widgets (generators.md) ---------------------- */
+
+.sonda-livegen {
+  margin: 0.9rem 0 1.4rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem 0.6rem;
+  background: var(--md-default-bg-color);
+}
+
+.sonda-livegen__chart {
+  width: 100%;
+  display: block;
+}
+
+.sonda-livegen__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1.4rem;
+  margin-top: 0.4rem;
+}
+
+.sonda-livegen__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+}
+
+.sonda-livegen__row input[type="range"] {
+  width: 8.5rem;
+  accent-color: var(--sonda-accent, #f97316);
+}
+
+.sonda-livegen__key {
+  color: var(--md-default-fg-color--light);
+}
+
+.sonda-livegen__value {
+  min-width: 3.2rem;
+  font-weight: 600;
+}
+
+.md-typeset .sonda-livegen__open {
+  margin-left: auto;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.md-typeset .sonda-livegen__error {
+  margin: 0.5rem 0 0;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #dc2626;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .sonda-livegen__error {
+  color: #f87171;
+}

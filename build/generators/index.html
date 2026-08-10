@@ -2807,6 +2807,10 @@
 <p class="admonition-title">Aliases and core generators are interchangeable</p>
 <p>Aliases are shortcuts. At parse time, each alias is translated into the core generators above. Use the alias when the operational meaning is clearer; use the core <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> when you need a parameter the alias does not expose (for example, negative spike <code>magnitude</code> for dip testing).</p>
 </div>
+<p>Charts with sliders below are <strong>live</strong>: they run the real engine in your browser — the same
+WebAssembly build behind the <a href="../../playground/">playground</a> — so dragging a slider reshapes
+the actual signal Sonda would emit, and <strong>Open in playground →</strong> carries the tuned <abbr title="Sonda's unit of work -- a YAML file describing what to generate, how, and where to send it.">scenario</abbr> over
+for full editing. Without JavaScript you get the static shape drawings instead.</p>
 <h2 id="metric-generators">Metric generators<a class="headerlink" href="#metric-generators" title="Permanent link">&para;</a></h2>
 <h3 id="constant">constant<a class="headerlink" href="#constant" title="Permanent link">&para;</a></h3>
 <p><img alt="The constant generator: a flat line at the configured value" src="../img/generators/constant.svg" /></p>
@@ -2862,6 +2866,8 @@
 <p>When no <abbr title="Sonda component that produces synthetic events (metrics, logs) according to a pattern.">generator</abbr> is configured, the default is <code>constant</code> with <code>value: 0.0</code>.</p>
 <h3 id="sine">sine<a class="headerlink" href="#sine" title="Permanent link">&para;</a></h3>
 <p><img alt="The sine generator: a smooth wave oscillating around the offset" src="../img/generators/sine.svg" /></p>
+<div class="sonda-livegen" data-gen="sine" markdown="0"></div>
+
 <p>Produces a sine wave that oscillates between <code>offset - amplitude</code> and <code>offset + amplitude</code>.</p>
 <table>
 <thead>
@@ -3174,6 +3180,8 @@
 </div>
 <h3 id="spike">spike<a class="headerlink" href="#spike" title="Permanent link">&para;</a></h3>
 <p><img alt="The spike generator: a steady baseline with short periodic spikes" src="../img/generators/spike.svg" /></p>
+<div class="sonda-livegen" data-gen="spike" markdown="0"></div>
+
 <p>Outputs a constant baseline value with periodic spikes. During a spike window the value is <code>baseline + magnitude</code>; outside the window the value is <code>baseline</code>. Use it to test alert thresholds and anomaly detection rules that trigger on sudden value changes.</p>
 <table>
 <thead>
@@ -3456,6 +3464,8 @@
 </table>
 <h3 id="steady">steady<a class="headerlink" href="#steady" title="Permanent link">&para;</a></h3>
 <p><img alt="The steady generator: a healthy oscillation with realistic noise" src="../img/generators/steady.svg" /></p>
+<div class="sonda-livegen" data-gen="steady" markdown="0"></div>
+
 <p>Models a healthy "everything is fine" signal. Values oscillate gently around a center point with slight noise — the kind of metric you see on a server under normal load.</p>
 <table>
 <thead>
@@ -3514,6 +3524,8 @@
 </div>
 <h3 id="flap">flap<a class="headerlink" href="#flap" title="Permanent link">&para;</a></h3>
 <p><img alt="The flap generator: a square wave alternating between up and down states" src="../img/generators/flap.svg" /></p>
+<div class="sonda-livegen" data-gen="flap" markdown="0"></div>
+
 <p>Models a binary signal toggling between two states — an interface going up and down, a service alternating between healthy and unhealthy.</p>
 <table>
 <thead>
@@ -3627,6 +3639,8 @@
 </details>
 <h3 id="saturation">saturation<a class="headerlink" href="#saturation" title="Permanent link">&para;</a></h3>
 <p><img alt="The saturation generator: a resource filling to its ceiling and resetting, repeatedly" src="../img/generators/saturation.svg" /></p>
+<div class="sonda-livegen" data-gen="saturation" markdown="0"></div>
+
 <p>Models a resource that fills up and resets on a repeating cycle — disk usage growing between log rotations, a buffer draining when a consumer catches up.</p>
 <table>
 <thead>
@@ -3667,6 +3681,8 @@
 <p>Values ramp linearly from 20 to 95 over 5 minutes, then reset to 20 and repeat.</p>
 <h3 id="leak">leak<a class="headerlink" href="#leak" title="Permanent link">&para;</a></h3>
 <p><img alt="The leak generator: a one-way climb from baseline to ceiling" src="../img/generators/leak.svg" /></p>
+<div class="sonda-livegen" data-gen="leak" markdown="0"></div>
+
 <p>Models a resource growing toward a ceiling without ever resetting — a memory leak, a connection pool that never releases, a queue that fills but never drains.</p>
 <table>
 <thead>
@@ -3711,6 +3727,8 @@
 </div>
 <h3 id="degradation">degradation<a class="headerlink" href="#degradation" title="Permanent link">&para;</a></h3>
 <p><img alt="The degradation generator: a noisy upward drift from baseline toward the ceiling" src="../img/generators/degradation.svg" /></p>
+<div class="sonda-livegen" data-gen="degradation" markdown="0"></div>
+
 <p>Models gradual performance loss with realistic noise — latency increasing over time, error rates rising, throughput dropping.</p>
 <table>
 <thead>
@@ -3765,6 +3783,8 @@
 <p>Values ramp from 50ms to 500ms over 60 seconds with &plusmn; 20ms of noise on each tick.</p>
 <h3 id="spike_event">spike_event<a class="headerlink" href="#spike_event" title="Permanent link">&para;</a></h3>
 <p><img alt="The spike_event generator: a quiet baseline interrupted by brief high plateaus" src="../img/generators/spike_event.svg" /></p>
+<div class="sonda-livegen" data-gen="spike_event" markdown="0"></div>
+
 <p>Models periodic anomalous bursts above a baseline — CPU spikes, sudden request surges, momentary error floods.</p>
 <table>
 <thead>
@@ -4393,7 +4413,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 8, 2026 17:59:15 UTC">August 8, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 10, 2026 18:12:40 UTC">August 10, 2026</span>
   </span>
 
     
@@ -4531,6 +4551,8 @@
         <script src="../../javascripts/playground.js" type="module"></script>
       
         <script src="../../javascripts/alert-lab.js" type="module"></script>
+      
+        <script src="../../javascripts/livegen.js" type="module"></script>
       
     
   </body>
