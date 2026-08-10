@@ -98,6 +98,24 @@ impl SummaryGenerator {
         }
     }
 
+    /// Build a generator straight from a scenario config, applying the same
+    /// defaults the runtime runner uses: the default quantile targets, 100
+    /// observations per tick, zero drift, seed 0. The config is assumed
+    /// validated (`validate_summary_config`).
+    pub fn from_config(config: &crate::config::SummaryScenarioConfig) -> Self {
+        Self::new(
+            config
+                .quantiles
+                .clone()
+                .unwrap_or_else(|| DEFAULT_SUMMARY_QUANTILES.to_vec()),
+            super::histogram::to_distribution(&config.distribution),
+            config.observations_per_tick.unwrap_or(100),
+            config.mean_shift_per_sec.unwrap_or(0.0),
+            config.seed.unwrap_or(0),
+            config.base.rate,
+        )
+    }
+
     /// Return a reference to the quantile targets.
     pub fn quantiles(&self) -> &[f64] {
         &self.quantiles

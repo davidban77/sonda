@@ -161,6 +161,24 @@ impl HistogramGenerator {
         }
     }
 
+    /// Build a generator straight from a scenario config, applying the same
+    /// defaults the runtime runner uses: the default Prometheus buckets, 100
+    /// observations per tick, zero drift, seed 0. The config is assumed
+    /// validated (`validate_histogram_config`).
+    pub fn from_config(config: &crate::config::HistogramScenarioConfig) -> Self {
+        Self::new(
+            config
+                .buckets
+                .clone()
+                .unwrap_or_else(|| DEFAULT_HISTOGRAM_BUCKETS.to_vec()),
+            to_distribution(&config.distribution),
+            config.observations_per_tick.unwrap_or(100),
+            config.mean_shift_per_sec.unwrap_or(0.0),
+            config.seed.unwrap_or(0),
+            config.base.rate,
+        )
+    }
+
     /// Return a reference to the bucket boundaries.
     pub fn buckets(&self) -> &[f64] {
         &self.buckets
