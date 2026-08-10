@@ -8,6 +8,7 @@
  * fetched only when the playground container exists.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
+import { toBase64Url, fromBase64Url } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
@@ -371,20 +372,6 @@ function fromLocationHash() {
   } catch {
     return null;
   }
-}
-
-function toBase64Url(text) {
-  const bytes = new TextEncoder().encode(text);
-  let binary = "";
-  bytes.forEach((b) => (binary += String.fromCharCode(b)));
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(encoded) {
-  const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-  const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
 }
 
 function showError(el, message) {

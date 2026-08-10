@@ -115,6 +115,11 @@ tasks:
       - npm install
       - npm run build
 
+  site:jstest:
+    desc: Run the playground pure-helper JS tests (node, zero dependencies)
+    cmds:
+      - node docs/site/tools/tests/pure.test.mjs
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------
