@@ -102,14 +102,28 @@ export function escapeQuoted(value) {
  *   - followed by end-of-value punctuation or a bare duration suffix
  *     (`60s`, `1.5h`, `250ms`) — rejects dotted quads (`10.0.0.2`) and
  *     scientific notation;
- *   - not inside a quoted string (the quote fails the boundary checks)
- *     and not in a comment;
+ *   - not inside a quoted string — a number in a `message:` template is
+ *     prose, not a parameter (review #533 W1: the boundary checks alone
+ *     accept `"Request took 250 ms"` because the digits have spaces on
+ *     both sides INSIDE the string; an odd count of unescaped quotes
+ *     before the span means the span is inside one) — and not in a
+ *     comment;
  *   - not the `version:` key, where +1 means a different config schema,
  *     not a bigger signal.
  */
 export function numberSpanAt(lineText, column) {
   if (/^\s*version:/.test(lineText)) return null;
   const hash = lineText.indexOf("#");
+  const insideQuotes = (upto) => {
+    let doubles = 0;
+    let singles = 0;
+    for (let i = 0; i < upto; i++) {
+      const c = lineText[i];
+      if (c === '"' && lineText[i - 1] !== "\\") doubles += 1;
+      else if (c === "'") singles += 1; // YAML escapes '' — pairs keep parity
+    }
+    return doubles % 2 === 1 || singles % 2 === 1;
+  };
   const pattern = /-?\d+(?:\.\d+)?/g;
   let match;
   while ((match = pattern.exec(lineText)) !== null) {
@@ -118,6 +132,7 @@ export function numberSpanAt(lineText, column) {
     if (column < start) return null; // matches advance left-to-right
     if (column > end) continue;
     if (hash !== -1 && start > hash) return null;
+    if (insideQuotes(start)) continue;
     const before = start === 0 ? "" : lineText[start - 1];
     if (!/^[ \t:,{[]?$/.test(before)) continue;
     const after = lineText.slice(end);
@@ -142,7 +157,11 @@ export function scrubNumber(text, steps) {
   const magnitude = Math.abs(value);
   const coarse = magnitude > 0 ? Math.pow(10, Math.floor(Math.log10(magnitude)) - 1) : fine;
   const step = Math.max(fine, coarse);
-  return (value + steps * step).toFixed(decimals);
+  const out = (value + steps * step).toFixed(decimals);
+  // toFixed goes exponential at >= 1e21 (review #533 M2) — a scrub must
+  // never replace a plain literal with something that isn't one, so past
+  // that point the gesture pins rather than corrupts.
+  return /^-?\d+(?:\.\d+)?$/.test(out) ? out : text;
 }
 
 /* PascalCase alert name from a metric name and a direction:

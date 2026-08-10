@@ -234,6 +234,26 @@ test("numberSpanAt rejects digits that are not standalone scalar values", () => 
   }
 });
 
+test("numbers inside quoted strings are prose, not parameters (review #533 W1)", () => {
+  // The reviewer's cases: boundary checks alone accept these because the
+  // digits have spaces around them INSIDE the string.
+  const rejected = [
+    ['  - message: "Request took 250 ms"', 28],
+    ['  - message: "Disk 85 percent full"', 20],
+    ['  labels: { rack: "row 4 rack 12" }', 23],
+    ["  - message: 'took 5 ms'", 19],
+    ['  msg: "say \\"hi\\" 5 times"', 19], // escaped quotes keep parity
+  ];
+  for (const [line, column] of rejected) {
+    const span = numberSpanAt(line, column);
+    assert.equal(span, null, `quoted prose offered as scrubbable: ${JSON.stringify(line)} -> ${span && span.text}`);
+  }
+  // …but a CLOSED quoted string before the number must not block it.
+  const span = numberSpanAt('    labels: { note: "warm", port: 8080 }', 35);
+  assert.ok(span, "scalar after a closed quoted string must stay scrubbable");
+  assert.equal(span.text, "8080");
+});
+
 test("scrubNumber preserves decimal format and scales the step to magnitude", () => {
   assert.equal(scrubNumber("55.0", 5), "60.0"); // step 1
   assert.equal(scrubNumber("30.0", -3), "27.0");
@@ -245,6 +265,14 @@ test("scrubNumber preserves decimal format and scales the step to magnitude", ()
   assert.equal(scrubNumber("42", 0), "42");
   assert.equal(scrubNumber("0", 3), "3"); // zero falls back to the fine step
   assert.equal(scrubNumber("0.0", -1), "-0.1");
+});
+
+test("scrubNumber never emits a non-literal — huge values pin (review #533 M2)", () => {
+  // toFixed goes exponential at >= 1e21; the scrub must return the
+  // original text rather than splice `1e+21` into the YAML.
+  const huge = "999999999999999999999";
+  assert.equal(scrubNumber(huge, 1), huge);
+  assert.match(scrubNumber("120", 1), /^\d+$/);
 });
 
 test("scrubNumber round-trips through numberSpanAt on a real preset line", () => {
