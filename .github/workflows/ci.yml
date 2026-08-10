@@ -225,6 +225,16 @@ jobs:
       - name: Playground pure-helper tests
         run: node docs/site/tools/tests/pure.test.mjs
 
+      # Every slider combination of the generators.md live widgets must
+      # compile — the widget presets are pure data (livegen-presets.js),
+      # and this feeds their corner/sweep grid through the binary built
+      # above. Converts the presets' "ranges are compile-safe" comment
+      # into a gate (review #534).
+      - name: Live-widget slider combinations compile
+        run: node docs/site/tools/tests/livegen-compile.mjs
+        env:
+          SONDA_BIN: ./target/release/sonda
+
   release-pin-check:
     name: release.yml rust-toolchain pin matches rust-toolchain.toml
     runs-on: ubuntu-latest
