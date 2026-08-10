@@ -220,6 +220,11 @@ jobs:
       - name: Validate documented sonda commands
         run: python3 scripts/validate_docs_commands.py
 
+      # Zero-dependency node harness over the playground's pure JS helpers
+      # (sonda-pure.js) — the only automated coverage the docs-site JS has.
+      - name: Playground pure-helper tests
+        run: node docs/site/tools/tests/pure.test.mjs
+
   release-pin-check:
     name: release.yml rust-toolchain pin matches rust-toolchain.toml
     runs-on: ubuntu-latest

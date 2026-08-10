@@ -42,6 +42,7 @@ shows the alert state the way Prometheus would walk it:
       <option value="30">30s</option>
     </select>
     <button id="al-play" type="button" class="md-button md-button--primary sonda-playground__run">Play</button>
+    <button id="al-export" type="button" class="md-button sonda-playground__share">Copy sonda test setup</button>
     <span id="al-state" class="sonda-lab-chip sonda-lab-chip--inactive" role="status" aria-live="polite">inactive</span>
   </div>
   <div id="al-error" class="sonda-playground__error" hidden></div>
@@ -49,6 +50,8 @@ shows the alert state the way Prometheus would walk it:
     aria-label="Signal chart with alert-state lane"></canvas>
   <p id="al-story" class="sonda-lab-story"></p>
   <p class="sonda-lab-open-link"><a id="al-open" href="index.md">Edit this scenario in the playground →</a></p>
+  <pre id="al-export-out" class="sonda-playground__output" hidden
+    aria-label="Generated sonda test scenario and alert rule"></pre>
   <noscript><p><strong>The alert lab needs JavaScript</strong> — it runs the Sonda engine
   in your browser via WebAssembly.</p></noscript>
 </div>
@@ -74,9 +77,13 @@ to prevent.
 
 ## Run it for real
 
-The lab simulates rule evaluation; the real thing is one config file away.
-[Alert testing](../test/alert-testing.md) walks the same patterns against a
-live Prometheus + Alertmanager stack (the repository ships a
+The lab simulates rule evaluation; the real thing is one button away.
+**Copy sonda test setup** exports the rule you just tuned as a ready-to-run
+package: the scenario YAML with a label-scoped `expect:` block appended
+(`firing_within` derived from when the rule actually fired in the preview),
+headed by the matching vmalert/Prometheus alert rule. Save it, add the rule
+to your rules file, and `sonda test` turns what you watched here into an
+exit code. [Alert testing](../test/alert-testing.md) walks the same patterns
+against a live Prometheus + Alertmanager stack (the repository ships a
 [Compose stack](../deploy/docker.md) with vmalert wired up), and
-[CI validation](../test/end-to-end-pipelines.md) turns them into exit codes
-for your pipeline.
+[CI validation](../test/end-to-end-pipelines.md) covers the pipeline side.
