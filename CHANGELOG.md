@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.19.0](https://github.com/davidban77/sonda/compare/v1.18.0...v1.19.0) (2026-08-10)
+
+
+### Features
+
+* **site:** drag-to-scrub numeric literals in the playground editor ([#533](https://github.com/davidban77/sonda/issues/533)) ([377c8d7](https://github.com/davidban77/sonda/commit/377c8d7f67f236936be0146ce0467db84708c9d2))
+* **site:** export the tuned alert-lab rule as a sonda test setup ([#532](https://github.com/davidban77/sonda/issues/532)) ([f57fdba](https://github.com/davidban77/sonda/commit/f57fdba333c209cd584709c620509fe4d1617552))
+* **site:** synthetic log stream in the playground (clock-free log generation) ([#535](https://github.com/davidban77/sonda/issues/535)) ([5858f68](https://github.com/davidban77/sonda/commit/5858f685c67441daf0e58cc016791dc46e29e1f1))
+* **wasm:** render histograms and summaries in the playground ([#529](https://github.com/davidban77/sonda/issues/529)) ([3716ac8](https://github.com/davidban77/sonda/commit/3716ac8b9d5a66d5e4242254ca8c3e1dcb388382))
+
+
+### Documentation
+
+* **site:** bridge the playground and the alert lab ([#531](https://github.com/davidban77/sonda/issues/531)) ([42c7710](https://github.com/davidban77/sonda/commit/42c771046cc683fed8a797114dd4c2da92009954))
+* **site:** live generator widgets on generators.md ([#534](https://github.com/davidban77/sonda/issues/534)) ([13b3ec5](https://github.com/davidban77/sonda/commit/13b3ec5df032b0fe6ff6f88b0aa9208c28324d93))
+
+
+### CI/CD
+
+* bump actions/checkout from 4 to 7 ([#492](https://github.com/davidban77/sonda/issues/492)) ([eb88f6e](https://github.com/davidban77/sonda/commit/eb88f6e6bf9f94a81789b7c37f9bf6aa99403db6))
+* bump grafana/loki from 3.7.2 to 3.7.6 in /examples ([#518](https://github.com/davidban77/sonda/issues/518)) ([88dc8ef](https://github.com/davidban77/sonda/commit/88dc8ef7eefba346146db29a9a9e5094f0c74193))
+* bump otel/opentelemetry-collector-contrib in /examples ([#520](https://github.com/davidban77/sonda/issues/520)) ([cbec228](https://github.com/davidban77/sonda/commit/cbec228e9783fd924883fd14ed53dacc49883b60))
+* bump prom/alertmanager from v0.33.0 to v0.33.1 in /examples ([#517](https://github.com/davidban77/sonda/issues/517)) ([0cf17f7](https://github.com/davidban77/sonda/commit/0cf17f719777221551042003aae25e9ce2138c92))
+* bump prom/prometheus from v3.12.0 to v3.13.2 in /examples ([#519](https://github.com/davidban77/sonda/issues/519)) ([017c934](https://github.com/davidban77/sonda/commit/017c9348f5d85e22bc6a5571d43c83e5fffbc128))
+* bump taiki-e/install-action from 2.85.5 to 2.85.9 ([#522](https://github.com/davidban77/sonda/issues/522)) ([8957da2](https://github.com/davidban77/sonda/commit/8957da22be3943ebfa02486f832bf558929fa5f5))
+
 ## [1.18.0](https://github.com/davidban77/sonda/compare/v1.17.1...v1.18.0) (2026-08-09)
 
 
