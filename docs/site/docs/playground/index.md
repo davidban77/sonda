@@ -14,7 +14,9 @@ hide:
 Edit scenario YAML on the left; the chart shows the exact values Sonda will emit.
 This is not a simulation — it is the real sonda-core engine compiled to WebAssembly,
 so compile errors, [operational aliases](../build/generators.md#operational-aliases),
-jitter, and defaults behave exactly like `sonda run`.
+jitter, and defaults behave exactly like `sonda run`. Underlined numbers are
+**draggable** — grab one and slide left or right to scrub the value and watch
+the signal reshape live.
 </div>
 
 <div id="sonda-playground" class="sonda-playground">

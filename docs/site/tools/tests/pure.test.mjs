@@ -15,6 +15,8 @@ import {
   evaluate,
   fromBase64Url,
   niceDeadlineSecs,
+  numberSpanAt,
+  scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
 
@@ -184,6 +186,77 @@ test("export comments the expect block when the scenario already has one", () =>
   assert.match(out, /merge the one below by hand/);
   assert.match(out, /^# expect:/m); // our block arrives commented
   assert.match(out, /^#\s+alerts:/m);
+});
+
+// --- param scrubbing (numberSpanAt / scrubNumber) -----------------------
+
+test("numberSpanAt finds standalone YAML numbers, with duration suffixes", () => {
+  const cases = [
+    // [line, column under the pointer, expected matched text]
+    ["    generator: { type: sine, amplitude: 30.0, offset: 55.0, period_secs: 20 }", 42, "30.0"],
+    ["    generator: { type: sine, amplitude: 30.0, offset: 55.0, period_secs: 20 }", 74, "20"],
+    ["  duration: 60s", 13, "60"],
+    ["      up_duration: 20s", 20, "20"],
+    ["    gaps: { every: 60s, for: 8s }", 29, "8"],
+    ["      time_to_ceiling: 1.5h", 24, "1.5"],
+    ["      latency_budget: 250ms", 23, "250"],
+    ["      offset: -12.5", 16, "-12.5"],
+    ["    seed: 42", 11, "42"],
+    ["  rate: 4", 8, "4"],
+  ];
+  for (const [line, column, expected] of cases) {
+    const span = numberSpanAt(line, column);
+    assert.ok(span, `no span in ${JSON.stringify(line)} at col ${column}`);
+    assert.equal(span.text, expected, `wrong span in ${JSON.stringify(line)}`);
+    assert.equal(line.slice(span.start, span.end), expected);
+  }
+});
+
+test("numberSpanAt rejects digits that are not standalone scalar values", () => {
+  const cases = [
+    // Digits embedded in words and identifiers.
+    ["    labels: { host: web-01, region: us-east }", 25],
+    ["    labels: { service: checkout, pod: checkout-7d4f9 }", 50],
+    // Dotted quads and quoted strings.
+    ['    labels: { device: pe-router-1, neighbor: "10.0.0.2" }', 47],
+    ['    neighbor: "10.0.0.2"', 16],
+    // Comments.
+    ["  rate: 4  # was 8 before the incident", 18],
+    // The version key is config schema, not signal shape.
+    ["version: 2", 9],
+    // Scientific notation stays hands-off.
+    ["    ceiling: 1e9", 14],
+    // Pointer nowhere near a number.
+    ["    signal_type: metrics", 8],
+  ];
+  for (const [line, column] of cases) {
+    assert.equal(numberSpanAt(line, column), null, `unexpected span in ${JSON.stringify(line)} at col ${column}`);
+  }
+});
+
+test("scrubNumber preserves decimal format and scales the step to magnitude", () => {
+  assert.equal(scrubNumber("55.0", 5), "60.0"); // step 1
+  assert.equal(scrubNumber("30.0", -3), "27.0");
+  assert.equal(scrubNumber("120", 1), "130"); // step 10
+  assert.equal(scrubNumber("4", -6), "-2"); // step 1, sign crossing allowed
+  assert.equal(scrubNumber("0.004", -2), "0.002"); // step 0.001, no float dust
+  assert.equal(scrubNumber("0.004", 2), "0.006");
+  assert.equal(scrubNumber("-12.5", 4), "-8.5");
+  assert.equal(scrubNumber("42", 0), "42");
+  assert.equal(scrubNumber("0", 3), "3"); // zero falls back to the fine step
+  assert.equal(scrubNumber("0.0", -1), "-0.1");
+});
+
+test("scrubNumber round-trips through numberSpanAt on a real preset line", () => {
+  // The drag gesture replaces the span with the scrubbed text and keeps
+  // scrubbing from the ORIGINAL literal — the replacement must stay a
+  // valid scrub target so a second gesture works too.
+  const line = "    generator: { type: sine, amplitude: 30.0, offset: 55.0, period_secs: 20 }";
+  const span = numberSpanAt(line, 42);
+  const next = scrubNumber(span.text, 7);
+  const patched = line.slice(0, span.start) + next + line.slice(span.end);
+  const again = numberSpanAt(patched, span.start + 1);
+  assert.equal(again.text, "37.0");
 });
 
 // --- label-value escaping (review #532 blocker) ------------------------

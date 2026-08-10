@@ -4,10 +4,20 @@
  * (rebuild with `task site:editor`). Exposes one factory the playground uses;
  * CodeMirror itself never leaks into the page scripts.
  */
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  drawSelection,
+  Decoration,
+  MatchDecorator,
+  ViewPlugin,
+} from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { yaml } from "@codemirror/lang-yaml";
+import { numberSpanAt, scrubNumber } from "../../../docs/javascripts/sonda-pure.js";
 import {
   syntaxHighlighting,
   defaultHighlightStyle,
@@ -33,7 +43,105 @@ const baseTheme = EditorView.theme({
   },
   ".cm-content": { padding: "0.75rem 0" },
   ".cm-gutters": { borderRadius: "8px 0 0 8px" },
+  ".cm-scrub-number": {
+    cursor: "ew-resize",
+    borderBottom: "1px dashed var(--sonda-accent, #f97316)",
+  },
 });
+
+/* --- param scrubbing ---------------------------------------------------
+ *
+ * Numbers that stand alone as YAML scalar values (numberSpanAt decides —
+ * `amplitude: 30.0` yes, `host: web-01` no) get a dashed underline and an
+ * ew-resize cursor; dragging one horizontally rewrites the literal in
+ * place, one scrub step per few pixels. Each rewrite is an ordinary
+ * document change, so the playground's updateListener → debounced run
+ * redraws the chart live as the value moves.
+ */
+
+const SCRUB_PIXELS_PER_STEP = 4;
+const SCRUB_DEAD_ZONE_PX = 3;
+
+const scrubMark = Decoration.mark({ class: "cm-scrub-number" });
+
+const scrubDecorator = new MatchDecorator({
+  regexp: /-?\d+(?:\.\d+)?/g,
+  decorate: (add, from, to, match, view) => {
+    const line = view.state.doc.lineAt(from);
+    const span = numberSpanAt(line.text, from - line.from);
+    if (span && line.from + span.start === from) add(from, to, scrubMark);
+  },
+});
+
+const scrubHighlighter = ViewPlugin.fromClass(
+  class {
+    constructor(view) {
+      this.decorations = scrubDecorator.createDeco(view);
+    }
+    update(update) {
+      this.decorations = scrubDecorator.updateDeco(update, this.decorations);
+    }
+  },
+  { decorations: (plugin) => plugin.decorations }
+);
+
+/* Mousedown over a scrubbable number claims the gesture: a horizontal drag
+ * scrubs, a plain click (no movement past the dead zone) still places the
+ * cursor. Selection by dragging must start OUTSIDE a number — double-click
+ * and keyboard selection are untouched (detail > 1 falls through), and so
+ * is any modifier-click. */
+const scrubGesture = EditorView.domEventHandlers({
+  mousedown: (event, view) => {
+    if (event.button !== 0 || event.detail !== 1) return false;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return false;
+    const line = view.state.doc.lineAt(pos);
+    const span = numberSpanAt(line.text, pos - line.from);
+    if (!span) return false;
+    beginScrub(view, event, line.from + span.start, span.text, pos);
+    return true;
+  },
+});
+
+function beginScrub(view, event, from, original, clickPos) {
+  event.preventDefault();
+  const startX = event.clientX;
+  let applied = original;
+  let active = false;
+  const previousCursor = document.body.style.cursor;
+
+  const move = (moveEvent) => {
+    const dx = moveEvent.clientX - startX;
+    if (!active && Math.abs(dx) < SCRUB_DEAD_ZONE_PX) return;
+    if (!active) {
+      active = true;
+      document.body.style.cursor = "ew-resize";
+    }
+    moveEvent.preventDefault();
+    // Steps always derive from the gesture's ORIGINAL literal, so the step
+    // size stays fixed and dragging back to the start restores the value.
+    const next = scrubNumber(original, Math.round(dx / SCRUB_PIXELS_PER_STEP));
+    if (next === applied) return;
+    view.dispatch({
+      changes: { from, to: from + applied.length, insert: next },
+      userEvent: "input.scrub",
+    });
+    applied = next;
+  };
+
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    document.body.style.cursor = previousCursor;
+    // The mousedown was consumed, so restore click-to-place-cursor by hand.
+    if (!active) view.dispatch({ selection: { anchor: clickPos } });
+    view.focus();
+  };
+
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
 
 const lightTheme = [syntaxHighlighting(defaultHighlightStyle)];
 const darkTheme = [oneDark];
@@ -61,6 +169,8 @@ export function createScenarioEditor(options) {
         indentUnit.of("  "),
         yaml(),
         lintGutter(),
+        scrubHighlighter,
+        scrubGesture,
         baseTheme,
         themeCompartment.of(options.dark ? darkTheme : lightTheme),
         keymap.of([
