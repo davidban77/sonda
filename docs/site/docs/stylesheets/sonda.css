@@ -814,6 +814,20 @@
   font-size: 0.72rem;
 }
 
+/* Chart PNG is disabled for scenarios with no line chart (logs-only). It
+   stays visible rather than disappearing, so the control row does not
+   reflow as the reader switches presets — the title attribute explains why
+   it is inert. */
+.md-typeset .sonda-playground__share:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.md-typeset .sonda-playground__share:disabled:hover {
+  background: transparent;
+  color: currentcolor;
+}
+
 .sonda-playground__status {
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 0.72rem;

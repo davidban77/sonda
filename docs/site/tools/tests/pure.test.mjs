@@ -15,6 +15,7 @@ import {
   deriveAlertName,
   escapeQuoted,
   evaluate,
+  exportFilename,
   fromBase64Url,
   hashPayloadTooLarge,
   niceDeadlineSecs,
@@ -477,6 +478,76 @@ test("the cap is measured in payload characters, not decoded bytes", () => {
   // The point of the guard is to refuse work BEFORE decoding, so the check
   // must be a pure length test on the raw hash payload.
   assert.equal(MAX_HASH_PAYLOAD, 32 * 1024);
+});
+
+// --- exportFilename ----------------------------------------------------
+
+// An entry name is validated by the engine, not by any filesystem. Every
+// shape here is a name the engine accepts; none of them may reach a Save
+// dialog intact.
+const FILENAME_CASES = [
+  { name: "cpu_usage", want: "cpu_usage.yaml" },
+  { name: "web-01", want: "web-01.yaml" },
+  { name: "CPU_Usage", want: "cpu_usage.yaml", why: "lowercased" },
+  { name: "cpu usage %", want: "cpu-usage.yaml", why: "spaces and punctuation collapse, trailing trimmed" },
+  { name: "a//b", want: "a-b.yaml", why: "a run of separators becomes ONE hyphen" },
+  { name: "a--b", want: "a-b.yaml", why: "pre-existing repeats collapse too" },
+  { name: "../x", want: "x.yaml", why: "path traversal cannot survive" },
+  { name: "../../etc/passwd", want: "etc-passwd.yaml", why: "deep traversal flattens to a bare name" },
+  { name: "/abs/path", want: "abs-path.yaml", why: "absolute path flattens" },
+  { name: ".bashrc", want: "bashrc.yaml", why: "never produce a dotfile" },
+  { name: "report.tar.gz", want: "report-tar-gz.yaml", why: "exactly one extension, always ours" },
+  { name: "東京", want: "scenario.yaml", why: "sanitizes to nothing -> fallback, not '.yaml'" },
+  { name: "!!!", want: "scenario.yaml", why: "punctuation-only -> fallback" },
+  { name: "", want: "scenario.yaml" },
+  { name: "   ", want: "scenario.yaml" },
+  { name: "-lead-and-trail-", want: "lead-and-trail.yaml" },
+  { name: "café", want: "caf.yaml", why: "accented char is not in the allowed set" },
+];
+
+for (const testCase of FILENAME_CASES) {
+  const label = `exportFilename: ${JSON.stringify(testCase.name)}${testCase.why ? ` (${testCase.why})` : ""}`;
+  test(label, () => {
+    assert.equal(exportFilename([{ name: testCase.name }], "yaml"), testCase.want);
+  });
+}
+
+test("exportFilename never returns a path separator or a leading dot", () => {
+  for (const testCase of FILENAME_CASES) {
+    const out = exportFilename([{ name: testCase.name }], "yaml");
+    assert.ok(!out.includes("/"), `${out} contains /`);
+    assert.ok(!out.includes("\\"), `${out} contains backslash`);
+    assert.ok(!out.startsWith("."), `${out} is a dotfile`);
+    assert.equal(out.split(".").length, 2, `${out} must have exactly one extension`);
+  }
+});
+
+test("exportFilename falls back when there is nothing to name it after", () => {
+  assert.equal(exportFilename([], "yaml"), "scenario.yaml");
+  assert.equal(exportFilename(null, "yaml"), "scenario.yaml");
+  assert.equal(exportFilename(undefined, "yaml"), "scenario.yaml");
+  assert.equal(exportFilename([{}], "yaml"), "scenario.yaml");
+  assert.equal(exportFilename([{ name: null }], "yaml"), "scenario.yaml");
+});
+
+test("exportFilename caps the stem at 40 chars without a trailing hyphen", () => {
+  const long = exportFilename([{ name: "x".repeat(80) }], "yaml");
+  assert.equal(long, `${"x".repeat(40)}.yaml`);
+  // The cut must land ON a hyphen to exercise the post-cap trim: 39 x's then
+  // a space puts the separator at index 39, so slice(0, 40) ends with it.
+  const boundary = exportFilename([{ name: `${"x".repeat(39)} tail` }], "png");
+  assert.equal(boundary, `${"x".repeat(39)}.png`);
+  assert.ok(!boundary.includes("-."), "a capped stem must not end in a hyphen");
+});
+
+test("exportFilename takes the extension as given, dotted or bare", () => {
+  assert.equal(exportFilename([{ name: "cpu" }], "png"), "cpu.png");
+  assert.equal(exportFilename([{ name: "cpu" }], ".png"), "cpu.png");
+  assert.equal(exportFilename([{ name: "cpu" }], ""), "cpu");
+});
+
+test("exportFilename names the file after the FIRST entry", () => {
+  assert.equal(exportFilename([{ name: "first" }, { name: "second" }], "yaml"), "first.yaml");
 });
 
 console.log(`${passed} pure-helper tests passed`);
