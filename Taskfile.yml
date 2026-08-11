@@ -142,20 +142,45 @@ tasks:
           echo "Install binaryen (>= 119) and re-run before committing." >&2
           exit 0
         fi
-        # Binaryen version is load-bearing, not cosmetic. Debian/Ubuntu ship
-        # 108, which optimizes this bundle without complaint, exits 0, and
-        # produces a module that dies in the browser with
-        # "WebAssembly.Table.grow(): failed to grow table by 4" — it is too old
-        # for what wasm-bindgen 0.2.117 emits. That failure is invisible until
-        # someone loads the page, so refuse it here instead. 119 is verified
-        # working; anything between 108 and 119 is untested.
+        # The committed bundle is compared BYTE-FOR-BYTE against a rebuild by
+        # the wasm-drift workflow, and that comparison is only meaningful if
+        # everyone rebuilds under the same conditions the gate uses. Two
+        # inputs turn out to change the output, both measured (review #540 W1):
+        #
+        #   binaryen version   119 -> 771,488   131 -> 770,922 bytes
+        #   host platform      linux x86_64 -> 771,488
+        #                      macOS arm64  -> 772,019   (differ at byte 532)
+        #
+        # So this is an exact version match, not a floor, and the platform is
+        # checked too. Getting either wrong produces a functionally correct
+        # bundle that CI then rejects as drift — a confusing failure a long
+        # way from its cause, which is exactly what this guard exists to
+        # prevent. Rebuild on the reference platform, or let CI tell you the
+        # bundle is stale and rebuild there.
+        #
+        # (Binaryen 108, the Debian/Ubuntu package, is a different and worse
+        # trap: it optimizes without complaint and emits a module that dies in
+        # the browser with "WebAssembly.Table.grow(): failed to grow table by
+        # 4". Too old for what wasm-bindgen 0.2.117 emits.)
+        want_binaryen=119
+        want_platform="Linux x86_64"
         version=$(wasm-opt --version | grep -oE '[0-9]+' | head -1)
-        if [ "${version:-0}" -lt 119 ]; then
-          echo "ERROR: wasm-opt $version is too old — needs >= 119." >&2
-          echo "Version 108 (the Debian/Ubuntu package) emits a bundle that" >&2
-          echo "loads and then fails at runtime with Table.grow()." >&2
-          echo "Get a release from https://github.com/WebAssembly/binaryen/releases" >&2
-          exit 1
+        platform="$(uname -s) $(uname -m)"
+        if [ "${version:-0}" != "$want_binaryen" ] || [ "$platform" != "$want_platform" ]; then
+          echo "ERROR: this host cannot produce the committed bundle." >&2
+          echo "  binaryen: have ${version:-none}, need exactly $want_binaryen" >&2
+          echo "  platform: have $platform, need $want_platform" >&2
+          echo >&2
+          echo "Both change the output bytes, and .github/workflows/wasm-drift.yml" >&2
+          echo "compares the committed bundle byte-for-byte against a rebuild." >&2
+          echo "A bundle built here would be functionally fine and still be" >&2
+          echo "rejected as drift." >&2
+          echo >&2
+          echo "Binaryen releases: https://github.com/WebAssembly/binaryen/releases" >&2
+          echo "To build anyway for local testing (do NOT commit the result):" >&2
+          echo "  SONDA_WASM_ALLOW_HOST=1 task site:wasm" >&2
+          [ "${SONDA_WASM_ALLOW_HOST:-}" = "1" ] || exit 1
+          echo "SONDA_WASM_ALLOW_HOST=1 set — continuing; do not commit this bundle." >&2
         fi
         before=$(wc -c < "$bundle")
         wasm-opt -Oz "$bundle" -o "$bundle.opt"

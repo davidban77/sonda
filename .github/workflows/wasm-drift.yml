@@ -112,28 +112,40 @@ jobs:
           wasm-opt -Oz /tmp/rebuilt/sonda_wasm_bg.wasm -o /tmp/rebuilt/opt.wasm
           mv /tmp/rebuilt/opt.wasm /tmp/rebuilt/sonda_wasm_bg.wasm
 
-      # Three comparisons, all hard gates.
+      # Three comparisons, all hard gates — with a precondition stated plainly,
+      # because getting it wrong once already produced a wrong claim.
       #
-      # The byte-exact wasm check shipped as report-only for exactly one run,
-      # because cross-host bit-for-bit reproducibility was asserted by nobody
-      # and tested by nobody. The first run answered it: this job rebuilt a
-      # bundle produced on a completely different machine and got
+      # THE BYTE-EXACT WASM CHECK IS PLATFORM-SPECIFIC. It compares against a
+      # bundle that must have been built on linux x86_64 with binaryen exactly
+      # 119. Both of those change the output (review #540 W1, measured):
       #
-      #     wasm size: committed 771488, rebuilt 771488 (delta 0 bytes, 0‰)
-      #     wasm bytes: byte-identical
+      #     linux x86_64, binaryen 119     771,488 bytes   <- the committed one
+      #     macOS arm64,  binaryen 119     772,019 bytes   (differ at byte 532)
+      #     linux x86_64, binaryen 131     770,922 bytes
       #
-      # on both the push and pull_request runs of 6087f0f. So it is enforced.
-      # That holds because every input is pinned — rustc via rust-toolchain.toml
-      # (which pins its LLVM too), wasm-bindgen via Cargo.lock, binaryen via
-      # BINARYEN_VERSION — and because the --remap-path-prefix flags removed
-      # the builder's absolute paths, which were the one genuinely host-shaped
-      # input.
+      # This check first shipped report-only, then was promoted on two green
+      # runs — but both ran on the same ubuntu-latest x86_64 image, so they
+      # demonstrated DETERMINISM (same inputs, same output) and were mistaken
+      # for REPRODUCIBILITY (same source, any host). A reviewer rebuilding on
+      # macOS arm64 with the identical pinned toolchain disproved it. The
+      # remap flags removed the builder's absolute paths, which was necessary
+      # but not sufficient: codegen still differs by host.
       #
-      # If this ever fails, it is not noise to route around: it means the
-      # committed bundle is no longer what the pinned toolchain produces. Run
-      # `task site:wasm` and commit the result. If it fails with delta 0 and
-      # the toolchain demonstrably unchanged, that is a real finding about
-      # reproducibility and worth investigating before weakening the check.
+      # It stays enforced anyway, deliberately. Softening to glue-plus-size
+      # would buy back the false negative the byte check exists to close — a
+      # small source edit landing within the 1% size tolerance would pass. The
+      # usability problem is fixed where it belongs instead: `task site:wasm`
+      # refuses to run off the reference platform or with the wrong binaryen,
+      # so a contributor learns at rebuild time rather than from a confusing
+      # CI rejection of a functionally correct bundle.
+      #
+      # What would invalidate this: a rebuild on the reference platform, with
+      # binaryen 119 and the pinned toolchain, that still differs. That is the
+      # discriminating test — not a rebuild anywhere convenient.
+      #
+      # If this fails, the committed bundle is no longer what the pinned
+      # toolchain produces on the reference platform. Run `task site:wasm`
+      # there and commit the result.
       - name: Compare against the committed bundle
         run: |
           committed=docs/site/docs/javascripts
