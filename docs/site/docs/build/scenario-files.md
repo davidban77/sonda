@@ -68,7 +68,7 @@ A scenario file can carry optional top-level metadata that drives the catalog vi
 version: 2
 kind: runnable
 
-name: steady-state
+scenario_name: steady-state
 tags: [infrastructure, baseline]
 description: "Normal oscillating baseline (sine + jitter)"
 
@@ -91,7 +91,7 @@ scenarios:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `kind` | yes | `runnable` for runnable scenarios; `composable` for packs. Required at the top level of every scenario file. |
-| `name` | no | Catalog identifier (kebab-case). Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by the `@name` shortcut and `sonda run @name`. When POSTed to a running `sonda-server`, this field also acts as a uniqueness key. POSTing two cascades that share an active `name` returns [`409 Conflict`](../deploy/http-api.md#duplicate-scenario_name-returns-409). |
+| `scenario_name` | no | Catalog identifier (kebab-case). Defaults to the filename (without `.yaml`, hyphens preserved) if omitted. Used by the `@name` shortcut and `sonda run @name`. When POSTed to a running `sonda-server`, this field also acts as a uniqueness key. POSTing two cascades that share an active `scenario_name` returns [`409 Conflict`](../deploy/http-api.md#duplicate-scenario_name-returns-409). |
 | `tags` | no | List of strings shown in the catalog table and filterable through `sonda list --tag <t>`. |
 | `description` | no | One-line summary shown in the catalog table and JSON output. Keep it under ~60 characters so it fits the table column. |
 
@@ -257,7 +257,7 @@ The built-in `link-failover` scenario is a worked example: a primary interface f
 version: 2
 kind: runnable
 
-name: link-failover
+scenario_name: link-failover
 tags: [network]
 description: "Edge router link failure with traffic shift to backup"
 
@@ -737,6 +737,7 @@ Re-resolution is event-driven, not polled. There is no periodic background sweep
 A baseline counter that you want running at full rate by default, but paused whenever an on-demand cascade declares a "link state" of 0. The baseline and the cascade emit **different series** (`requests_total` and `link_state`). The cascade only signals the baseline to stop emitting while it is firing.
 
 ```yaml title="baseline.yaml — POST first, runs immediately under if_unresolved: open"
+# sonda:static - cross-POST `while:` needs a running sonda-server; `sonda run` and the browser playground both reject it by design
 version: 2
 kind: runnable
 scenario_name: baseline_post
@@ -945,6 +946,7 @@ Some operational signals should freeze at their last value during an outage rath
 A single metric scenario with a `while:` clause and `delay.close.snap_to: <value>` does this without a separate baseline POST and without DELETE-and-replace orchestration. When the gate closes, the runner fires the one-shot recovery sample, the scenario transitions to the `held` lifecycle state, and `current_values` retains the frozen sample. Scrapers that pass `?include_state=running,unresolved,held` continue to see the frozen value on every scrape; scrapers that omit `held` from the allowlist see the series drop out for the duration of the outage.
 
 ```yaml title="held-counter.yaml — single scenario, frozen during outage"
+# sonda:static - cross-POST `while:` needs a running sonda-server; `sonda run` and the browser playground both reject it by design
 version: 2
 kind: runnable
 scenario_name: held_counter_post

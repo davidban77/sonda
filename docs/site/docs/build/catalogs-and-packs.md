@@ -98,7 +98,7 @@ sonda --catalog ~/sonda-catalog show @cpu-spike
 version: 2
 kind: runnable
 
-name: cpu-spike
+scenario_name: cpu-spike
 tags: [cpu, infrastructure]
 description: "Periodic CPU usage spikes above threshold"
 
@@ -139,7 +139,7 @@ A catalog entry is a scenario YAML with a top-level `kind:` field. For runnable 
 version: 2
 kind: runnable
 
-name: my-scenario
+scenario_name: my-scenario
 tags: [application, custom]
 description: "My custom scenario pattern"
 
@@ -164,7 +164,7 @@ scenarios:
 |-------|----------|-------------|
 | `version` | yes | Must be `2`. |
 | `kind` | yes | `runnable` for runnable scenarios; `composable` for packs (see [Packs](#packs)). |
-| `name` | no | Catalog identifier. Defaults to the filename (without `.yaml`) if omitted. Used with `@name`. |
+| `scenario_name` | no | Catalog identifier. Defaults to the filename (without `.yaml`) if omitted. Used with `@name`. Packs (`kind: composable`) use a plain `name:` instead — see [Packs](#packs). |
 | `tags` | no | Optional list of strings. `sonda list --tag <t>` filters on this. |
 | `description` | no | One-line summary shown in the `sonda list` table and JSON output. |
 

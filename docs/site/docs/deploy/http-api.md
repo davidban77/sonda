@@ -441,7 +441,6 @@ Each scenario gets its own ID and runs independently. You manage them individual
       - id: cpu_usage
         signal_type: metrics
         name: cpu_usage
-        phase_offset: "0s"
         clock_group: alert-test
         generator:
           type: sequence

@@ -463,7 +463,6 @@ scenarios:
   - id: cpu_usage
     signal_type: metrics
     name: cpu_usage
-    phase_offset: "0s"
     clock_group: alert-test
     generator:
       type: sequence
@@ -485,7 +484,7 @@ scenarios:
 sonda run multi-scenario.yaml
 ```
 
-The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU rises first and memory follows. Both entries share the `alert-test` clock group for synchronized timing. For declarative chains, use [`after:`](../build/scenario-files.md#temporal-chains-with-after) instead of hand-tuned offsets.
+The `phase_offset` on `memory_usage` delays it by 3 seconds, so CPU rises first and memory follows. `cpu_usage` omits the field entirely — that is how an entry says "start immediately"; a `phase_offset` must be greater than zero, so `"0s"` is a config error rather than a way to spell "no delay". Both entries share the `alert-test` clock group for synchronized timing. For declarative chains, use [`after:`](../build/scenario-files.md#temporal-chains-with-after) instead of hand-tuned offsets.
 
 ### Mixing all four signal types
 

@@ -392,6 +392,18 @@ scenarios:
     labels:
       job: sonda
       env: dev
+    log_generator:
+      type: template
+      templates:
+        - message: "Request from {ip} to {endpoint} returned {status}"
+          field_pools:
+            ip: ["10.0.0.1", "10.0.0.2"]
+            endpoint: ["/api", "/health"]
+            status: ["200", "404", "500"]
+      severity_weights:
+        info: 0.8
+        warn: 0.15
+        error: 0.05
 ```
 
 **CLI override** — `sonda run` accepts `--sink loki`, `--endpoint <url>`, and `--label k=v` (repeatable) for stream labels:
