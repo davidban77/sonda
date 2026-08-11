@@ -8,7 +8,7 @@
  * fetched only when the playground container exists.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
-import { toBase64Url, fromBase64Url, hashPayloadTooLarge } from "./sonda-pure.js";
+import { toBase64Url, fromBase64Url, hashPayloadTooLarge, exportFilename } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
@@ -314,6 +314,8 @@ async function boot() {
     preset: document.getElementById("sp-preset"),
     run: document.getElementById("sp-run"),
     share: document.getElementById("sp-share"),
+    download: document.getElementById("sp-download"),
+    png: document.getElementById("sp-png"),
     testAlert: document.getElementById("sp-test-alert"),
     status: document.getElementById("sp-status"),
     editor: document.getElementById("sp-editor"),
@@ -368,6 +370,43 @@ async function boot() {
     editor.setValue(PRESETS[Number(el.preset.value)].yaml);
     run();
   });
+  // Download YAML: one gesture leaves the reader with both halves of the
+  // next step — the file on disk and the command that runs it on the
+  // clipboard. The status line always shows the command, so a browser that
+  // refuses clipboard access costs the convenience, not the information
+  // (same degradation the alert lab's "Copy below ↓" already uses).
+  el.download.addEventListener("click", () => {
+    const yaml = editor.getValue();
+    const filename = exportFilename(exportSource(lastResult), "yaml");
+    saveBlob(new Blob([yaml], { type: "text/yaml;charset=utf-8" }), filename);
+    const command = `sonda run ${filename}`;
+    const flash = (prefix) => flashStatus(el, `${prefix} ${command}`);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(command).then(
+        () => flash("Saved — run:"),
+        () => flash("Saved — run (copy manually):")
+      );
+    } else {
+      flash("Saved — run (copy manually):");
+    }
+  });
+
+  // Chart PNG: whatever is on the canvas, at whatever DPR it was drawn for.
+  // toBlob can hand back null (a zero-size or otherwise untainted-but-empty
+  // canvas), so the null branch reports rather than silently doing nothing.
+  el.png.addEventListener("click", () => {
+    if (el.png.disabled) return;
+    const filename = exportFilename(exportSource(lastResult), "png");
+    el.chart.toBlob((blob) => {
+      if (!blob) {
+        flashStatus(el, "nothing to export — the chart is empty");
+        return;
+      }
+      saveBlob(blob, filename);
+      flashStatus(el, `Saved ${filename}`);
+    });
+  });
+
   el.share.addEventListener("click", () => {
     const url = new URL(window.location.href);
     url.hash = "yaml=" + toBase64Url(editor.getValue());
@@ -426,6 +465,58 @@ function showError(el, message) {
   el.error.textContent = message;
 }
 
+/* Which sampled entries should name the downloaded file.
+ *
+ * Metrics entries first, because they are what the chart shows. A logs-only
+ * scenario has an empty `entries` array but named log entries, and falling
+ * straight through to exportFilename's "scenario" default would hand every
+ * logs preset the same anonymous filename. */
+function exportSource(result) {
+  if (!result) return [];
+  if (result.entries && result.entries.length) return result.entries;
+  return result.logs || [];
+}
+
+/* Hand a Blob to the browser's download machinery.
+ *
+ * The object URL is revoked on the next frame rather than immediately: the
+ * click has to have been dispatched before the URL dies, and revoking in the
+ * same tick loses the download in some browsers. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/* Put a transient message on the status line without stomping on whatever a
+ * later run wants to say. The token guards against an earlier flash's timer
+ * clearing a newer message. */
+let statusToken = 0;
+function flashStatus(el, message, holdMs = 4000) {
+  el.status.textContent = message;
+  const token = ++statusToken;
+  window.setTimeout(() => {
+    if (statusToken === token) el.status.textContent = "";
+  }, holdMs);
+}
+
+/* The PNG button is only meaningful when the main chart is on screen — a
+ * logs-only scenario hides it (render() sets display:none), and exporting a
+ * blank canvas would be a worse answer than refusing. */
+function syncPngButton(el) {
+  if (!el.png) return;
+  const hidden = el.chart.style.display === "none";
+  el.png.disabled = hidden;
+  el.png.title = hidden
+    ? "This scenario has no line chart to export"
+    : "Download the chart as a PNG";
+}
+
 function render(el, result) {
   if (!result.ok) {
     showError(el, result.error || "unknown compile error");
@@ -443,6 +534,7 @@ function render(el, result) {
   const hasExtras = histograms.length || summaries.length || logs.length;
   el.chart.style.display = hasLines || !hasExtras ? "" : "none";
   if (hasLines || !hasExtras) drawChart(el.chart, result.entries);
+  syncPngButton(el);
 
   renderExtraCharts(el, histograms, summaries);
   renderLogs(el, logs);

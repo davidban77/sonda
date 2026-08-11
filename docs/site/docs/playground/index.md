@@ -25,6 +25,8 @@ the signal reshape live.
     <select id="sp-preset" class="sonda-playground__select" aria-label="Load a preset scenario"></select>
     <button id="sp-run" type="button" class="md-button md-button--primary sonda-playground__run">Run</button>
     <button id="sp-share" type="button" class="md-button sonda-playground__share">Copy link</button>
+    <button id="sp-download" type="button" class="md-button sonda-playground__share">Download YAML</button>
+    <button id="sp-png" type="button" class="md-button sonda-playground__share">Chart PNG</button>
     <a id="sp-test-alert" class="md-button sonda-playground__share" href="alert-lab/">Test an alert →</a>
     <span id="sp-status" class="sonda-playground__status" role="status" aria-live="polite"></span>
   </div>

@@ -109,6 +109,38 @@ export function runnableScenario(text) {
   return /^scenarios:/m.test(body) || /^kind:/m.test(body);
 }
 
+/* Build a download filename from a sampled scenario.
+ *
+ * The name comes from the first entry, so a downloaded file is recognisable
+ * as the thing that was on screen — but an entry name is engine-validated,
+ * not filesystem-validated, and the two agree on much less than you would
+ * hope. `cpu usage %`, `../etc/passwd`, `.bashrc` and `東京` are all names the
+ * engine accepts and none of them may reach a Save dialog intact.
+ *
+ * So the stem is rebuilt rather than escaped: lowercase, every character
+ * outside [a-z0-9_-] becomes a hyphen (runs collapsing to one), repeated
+ * hyphens collapse, leading and trailing hyphens go, and the result is capped
+ * at 40 characters. Path separators and dots cannot survive that — `../x`
+ * reduces to `x` — so the return value is always a single bare filename with
+ * exactly one extension, never a path and never a dotfile.
+ *
+ * A name that sanitizes to nothing (all-CJK, punctuation-only, empty, or no
+ * entries at all) falls back to "scenario" rather than producing a file
+ * called ".yaml".
+ */
+export function exportFilename(entries, ext) {
+  const first = Array.isArray(entries) && entries.length ? entries[0] : null;
+  let stem = String((first && first.name) || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (stem.length > 40) stem = stem.slice(0, 40).replace(/-+$/g, "");
+  if (!stem) stem = "scenario";
+  const suffix = String(ext || "").replace(/^\.+/, "");
+  return suffix ? `${stem}.${suffix}` : stem;
+}
+
 /* Round to two leading digits; guards float dust like 60.000000000000004. */
 export function tidyNumber(value) {
   const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(value))) - 1);
