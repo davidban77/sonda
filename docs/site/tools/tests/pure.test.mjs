@@ -7,15 +7,20 @@
 // playground JS has — keep every function under test free of DOM/wasm.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
+  MAX_HASH_PAYLOAD,
   buildTestExport,
   defaultThreshold,
   deriveAlertName,
   escapeQuoted,
   evaluate,
   fromBase64Url,
+  hashPayloadTooLarge,
   niceDeadlineSecs,
+  normalizeFence,
   numberSpanAt,
+  runnableScenario,
   scrubNumber,
   toBase64Url,
 } from "../../docs/javascripts/sonda-pure.js";
@@ -411,6 +416,67 @@ test("corner and sweep enumeration cover what the compile gate feeds the engine"
   assert.equal(sweep[0].time_to_ceiling, WIDGETS.leak.durationSecs);
   assert.equal(sweep[sweep.length - 1].time_to_ceiling, 600);
   assert.equal(sweepParams(WIDGETS.leak, "nope").length, 0);
+});
+
+// --- runnableScenario (shared case table) ------------------------------
+
+// The browser module and the CI extractor are two implementations of one
+// rule. They answer the SAME table, loaded from disk — a case added for one
+// side is automatically demanded of the other, so the two cannot drift.
+const casesPath = new URL("./runnable-cases.json", import.meta.url);
+const { cases } = JSON.parse(readFileSync(casesPath, "utf8"));
+
+test("shared case table is non-trivial and covers both verdicts", () => {
+  assert.ok(cases.length >= 20, "table should be a real hostile-case table");
+  assert.ok(cases.some((c) => c.expected === true), "needs positive cases");
+  assert.ok(cases.some((c) => c.expected === false), "needs negative cases");
+});
+
+for (const testCase of cases) {
+  test(`runnableScenario: ${testCase.name}`, () => {
+    assert.equal(
+      runnableScenario(testCase.text),
+      testCase.expected,
+      `expected ${testCase.expected} for: ${JSON.stringify(testCase.text.slice(0, 60))}`
+    );
+  });
+}
+
+test("normalizeFence dedents uniformly and leaves flush text alone", () => {
+  assert.equal(normalizeFence("version: 2\nkind: runnable\n"), "version: 2\nkind: runnable\n");
+  assert.equal(normalizeFence("    a\n    b\n"), "a\nb\n");
+  // A blank line carries no indentation signal — it must not pin the dedent at 0.
+  assert.equal(normalizeFence("    a\n\n    b\n"), "a\n\nb\n");
+  // Ragged indentation dedents by the common prefix only.
+  assert.equal(normalizeFence("  a\n    b\n"), "a\n  b\n");
+  assert.equal(normalizeFence("﻿version: 2"), "version: 2");
+  assert.equal(normalizeFence("a\r\nb\rc"), "a\nb\nc");
+});
+
+// A fence rendered by Material carries the scenario in `code.textContent`.
+// The detector must survive that lens as well as the raw-markdown one.
+test("runnableScenario accepts a fence as textContent yields it", () => {
+  const rendered = "version: 2\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n";
+  assert.equal(runnableScenario(rendered), true);
+});
+
+// --- hash size cap (§1b hardening) -------------------------------------
+
+test("hash payloads at and under the cap are accepted", () => {
+  assert.equal(hashPayloadTooLarge("a".repeat(MAX_HASH_PAYLOAD)), false);
+  assert.equal(hashPayloadTooLarge("a".repeat(MAX_HASH_PAYLOAD - 1)), false);
+  assert.equal(hashPayloadTooLarge(""), false);
+});
+
+test("one byte over the cap is rejected — before any decode happens", () => {
+  assert.equal(hashPayloadTooLarge("a".repeat(MAX_HASH_PAYLOAD + 1)), true);
+  assert.equal(hashPayloadTooLarge("a".repeat(MAX_HASH_PAYLOAD * 4)), true);
+});
+
+test("the cap is measured in payload characters, not decoded bytes", () => {
+  // The point of the guard is to refuse work BEFORE decoding, so the check
+  // must be a pure length test on the raw hash payload.
+  assert.equal(MAX_HASH_PAYLOAD, 32 * 1024);
 });
 
 console.log(`${passed} pure-helper tests passed`);

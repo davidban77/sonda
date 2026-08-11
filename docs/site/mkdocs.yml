@@ -66,6 +66,8 @@ extra_javascript:
     type: module
   - path: javascripts/livegen.js
     type: module
+  - path: javascripts/runnable-fences.js
+    type: module
 
 markdown_extensions:
   - abbr

@@ -220,6 +220,24 @@ jobs:
       - name: Validate documented sonda commands
         run: python3 scripts/validate_docs_commands.py
 
+      # Every YAML fence the docs site offers a "Run in playground" button for
+      # must actually compile, or the button is a promise the page cannot
+      # keep. Same binary as above, so every documented sink/encoder parses.
+      - name: Compile every runnable scenario fence in the docs
+        run: python3 scripts/validate_docs_scenarios.py
+
+      # The detector behind those buttons lives in JS (sonda-pure.js) and in
+      # Python (the validator above). Both answer runnable-cases.json; this
+      # proves the Python half agrees with the table the node harness pins.
+      - name: Runnable-fence detector self-tests
+        run: python3 scripts/validate_docs_scenarios.py --self-test
+
+      # No backend, no accounts — text-to-HTML injection is the one classic
+      # web risk left, and the codebase answer is a blanket rule. This is the
+      # gate that keeps it a rule rather than a convention.
+      - name: No raw-markup assignment in hand-written docs JS
+        run: bash scripts/check_no_raw_html.sh
+
       # Zero-dependency node harness over the playground's pure JS helpers
       # (sonda-pure.js) — the only automated coverage the docs-site JS has.
       - name: Playground pure-helper tests

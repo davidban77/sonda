@@ -9,6 +9,10 @@ This section takes you from no Sonda installed to a synthetic metric reaching a 
 
 <div class="grid cards" markdown>
 
+-   :material-play-circle: __[Try it in your browser](../playground/index.md)__
+
+    The real engine, compiled to WebAssembly. Edit YAML, watch the signal, nothing to install.
+
 -   :material-rocket-launch: __[Quickstart](quickstart.md)__
 
     Install Sonda, generate a starter YAML file with `sonda new --template`, and stream a metric to stdout. Five minutes.
@@ -24,7 +28,7 @@ This section takes you from no Sonda installed to a synthetic metric reaching a 
 </div>
 
 !!! tip "Where to next"
-    After you finish here, read [Build scenarios](../build/index.md) to write YAML you can check into git. To produce data that drives your alert rules, see [Test pipelines](../test/index.md).
+    After you finish here, read [Build scenarios](../build/index.md) to write YAML you can check into git. To produce data that drives your alert rules, see [Test pipelines](../test/index.md). To try a change without installing anything first, the [playground](../playground/index.md) runs the same engine in your browser.
 
 <div class="sonda-nav-footer">
   <p></p>
