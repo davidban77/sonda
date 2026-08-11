@@ -112,20 +112,28 @@ jobs:
           wasm-opt -Oz /tmp/rebuilt/sonda_wasm_bg.wasm -o /tmp/rebuilt/opt.wasm
           mv /tmp/rebuilt/opt.wasm /tmp/rebuilt/sonda_wasm_bg.wasm
 
-      # Three comparisons, and the PR that added this job was explicit about
-      # why they are not all hard failures.
+      # Three comparisons, all hard gates.
       #
-      # The JS glue and the size are hard gates: they catch the drift this job
-      # exists for — source changed, bundle did not — and neither depends on
-      # bit-for-bit reproducibility across machines.
+      # The byte-exact wasm check shipped as report-only for exactly one run,
+      # because cross-host bit-for-bit reproducibility was asserted by nobody
+      # and tested by nobody. The first run answered it: this job rebuilt a
+      # bundle produced on a completely different machine and got
       #
-      # The byte-exact wasm comparison is REPORTED, not enforced. A same-host
-      # rebuild is byte-identical (verified when this landed), but whether that
-      # survives a different runner, linker and LLVM build was untestable at
-      # the time of writing. Rather than ship a gate that might block every
-      # sonda-core PR on day one, or silently drop the check, it runs and says
-      # what it found. Promote it to a hard failure once real runs show it
-      # holding — the evidence will be in this job's history.
+      #     wasm size: committed 771488, rebuilt 771488 (delta 0 bytes, 0‰)
+      #     wasm bytes: byte-identical
+      #
+      # on both the push and pull_request runs of 6087f0f. So it is enforced.
+      # That holds because every input is pinned — rustc via rust-toolchain.toml
+      # (which pins its LLVM too), wasm-bindgen via Cargo.lock, binaryen via
+      # BINARYEN_VERSION — and because the --remap-path-prefix flags removed
+      # the builder's absolute paths, which were the one genuinely host-shaped
+      # input.
+      #
+      # If this ever fails, it is not noise to route around: it means the
+      # committed bundle is no longer what the pinned toolchain produces. Run
+      # `task site:wasm` and commit the result. If it fails with delta 0 and
+      # the toolchain demonstrably unchanged, that is a real finding about
+      # reproducibility and worth investigating before weakening the check.
       - name: Compare against the committed bundle
         run: |
           committed=docs/site/docs/javascripts
@@ -154,11 +162,14 @@ jobs:
           fi
 
           if cmp -s "$committed/sonda_wasm_bg.wasm" "$rebuilt/sonda_wasm_bg.wasm"; then
-            echo "wasm bytes: byte-identical — full reproducibility holds on this runner"
+            echo "wasm bytes: byte-identical"
           else
-            echo "::warning::the rebuilt wasm is the right size but not byte-identical." \
-              "Reported, not enforced: cross-host bit-for-bit reproducibility was never" \
-              "verified for this toolchain. See the comment above this step."
+            echo "::error::the rebuilt wasm is the right size but not byte-identical." \
+              "Every input to this build is pinned and the builder's paths are remapped," \
+              "so the committed bundle should be reproducible exactly — run 'task site:wasm'" \
+              "and commit the result. See the comment above this step before weakening this."
+            cmp "$committed/sonda_wasm_bg.wasm" "$rebuilt/sonda_wasm_bg.wasm" || true
+            status=1
           fi
 
           exit $status
