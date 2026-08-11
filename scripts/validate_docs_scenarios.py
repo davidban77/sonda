@@ -30,6 +30,18 @@ as a SKIP line:
   exports themselves. The scenario is well-formed but uncheckable here, so it
   is reported as SKIP with the offending path.
 
+One assumption is load-bearing enough to state. This gate compiles a fence with
+the NATIVE binary, built with ``http,kafka,remote-write,otlp`` — but the button
+it certifies opens that fence in the WASM build, which has none of those
+features, and ``SinkConfig`` gates its variants with ``#[cfg(feature = ...)]``
+at the enum level rather than only at construction. If a gated variant were
+unparseable under wasm, this gate would happily pass fences the browser then
+rejects, and 25 of the buttoned fences use gated sinks. Measured on the review
+of PR #536 by building a ``--target nodejs`` bundle and parsing one scenario per
+sink type: stdout, remote_write, http_push, loki, kafka, otlp_grpc, tcp and file
+all parse in the wasm build, so the divergence does not exist and the CLI's
+verdict transfers. Re-measure if sink parsing ever moves behind a feature gate.
+
 Stdlib-only. Run from the repo root::
 
     python3 scripts/validate_docs_scenarios.py
