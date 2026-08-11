@@ -253,6 +253,92 @@ jobs:
         env:
           SONDA_BIN: ./target/release/sonda
 
+  # The docs site's JS is exercised here and nowhere else. The pure-helper
+  # harness covers functions that are plain functions of their arguments; this
+  # job covers what only a browser can: the wasm engine actually loading, the
+  # canvas actually drawing, and the DOM wiring behaving under Material's
+  # instant navigation. Before it existed, every visual claim in a docs PR
+  # rested on the author having driven Chromium by hand — which a reviewer
+  # cannot reproduce.
+  docs-browser-smoke:
+    name: Docs site browser smoke suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/site/tools/browser/package-lock.json
+
+      - name: Install smoke-suite dependencies
+        working-directory: docs/site/tools/browser
+        run: npm ci
+
+      # Keyed on the resolved playwright version, so a lockfile bump fetches a
+      # matching browser instead of silently reusing an incompatible cached one.
+      - name: Resolve playwright version
+        id: pw
+        working-directory: docs/site/tools/browser
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache playwright browsers
+        id: pw-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium
+        working-directory: docs/site/tools/browser
+        run: npx playwright install --with-deps chromium
+
+      # Same major and pin as the deploy workflow, so the site this job smokes
+      # is built by the toolchain that actually publishes it.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/site/requirements.txt
+
+      - name: Install MkDocs
+        run: pip install -r docs/site/requirements.txt
+
+      - name: Build the site
+        run: mkdocs build --strict -f docs/site/mkdocs.yml
+
+      # Served as static files, exactly as GitHub Pages serves it — the wasm
+      # needs a real HTTP origin, so file:// is not an option.
+      # nohup + setsid so the server outlives this step's shell — each `run`
+      # is its own shell, and the next step needs the port still open. setsid
+      # is Linux-only and this runner is ubuntu; for local runs use
+      # `task site:smoke`, whose recipe is portable, rather than copying this.
+      - name: Serve the built site
+        run: |
+          setsid nohup python3 -m http.server 8777 --directory docs/site/site \
+            > /tmp/http-server.log 2>&1 < /dev/null &
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:8777/playground/; then
+              echo "site is up on :8777"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the site never came up on :8777"
+          cat /tmp/http-server.log
+          exit 1
+
+      - name: Browser smoke suite
+        working-directory: docs/site/tools/browser
+        run: node smoke.mjs
+        env:
+          SONDA_SITE_URL: http://localhost:8777
+
   release-pin-check:
     name: release.yml rust-toolchain pin matches rust-toolchain.toml
     runs-on: ubuntu-latest

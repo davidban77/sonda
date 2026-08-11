@@ -12,3 +12,12 @@ tests/e2e/.docker-volumes/
 # MkDocs site build output and Python venv
 docs/site/.venv/
 docs/site/site/
+
+# npm installs for the docs-site build tools (editor bundle, browser smoke
+# suite). Both are reproduced from their committed lockfiles with `npm ci`;
+# nothing under node_modules belongs in the repo.
+node_modules/
+
+# Playwright's browser downloads, when it manages them itself rather than
+# using a preinstalled Chromium via CHROMIUM_PATH.
+docs/site/tools/browser/.playwright/

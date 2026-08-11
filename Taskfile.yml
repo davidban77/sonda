@@ -137,6 +137,36 @@ tasks:
     cmds:
       - bash scripts/check_no_raw_html.sh
 
+  site:smoke:
+    desc: Drive the built docs site in Chromium (playground, alert lab, widgets, fences)
+    summary: |
+      Builds the site, serves it on :8777, and runs the browser smoke suite
+      against it. Needs the npm deps once: cd docs/site/tools/browser && npm ci
+
+      Set CHROMIUM_PATH to use a preinstalled browser instead of playwright's
+      own download (this devcontainer has one at /opt/pw-browsers/chromium).
+
+      Use this rather than copying the CI job's serve step: that one uses
+      setsid, which is Linux-only, because each GitHub Actions `run` is a
+      separate shell and the server has to outlive it. Here the server is a
+      child of this recipe and is killed on exit, so it stays portable.
+    cmds:
+      - mkdocs build --strict -f docs/site/mkdocs.yml
+      - |
+        python3 -m http.server 8777 --directory docs/site/site >/dev/null 2>&1 &
+        server=$!
+        trap "kill $server 2>/dev/null" EXIT
+        up=""
+        for _ in $(seq 1 30); do
+          if curl -sf -o /dev/null http://localhost:8777/playground/; then up=1; break; fi
+          sleep 1
+        done
+        if [ -z "$up" ]; then
+          echo "the site never came up on :8777 — is docs/site/site built?" >&2
+          exit 1
+        fi
+        node docs/site/tools/browser/smoke.mjs
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------

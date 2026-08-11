@@ -1,0 +1,12 @@
+{
+  "name": "sonda-browser-smoke",
+  "private": true,
+  "description": "Browser smoke suite for the docs site — the only automated coverage of the playground, alert lab and live widgets that exercises wasm, canvas and the DOM (task site:smoke)",
+  "type": "module",
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.58.1"
+  }
+}
