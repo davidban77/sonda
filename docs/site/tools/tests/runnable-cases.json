@@ -1,0 +1,130 @@
+{
+  "_comment": "Shared case table for the runnable-scenario detector. Consumed by BOTH docs/site/tools/tests/pure.test.mjs (runnableScenario in sonda-pure.js, the browser side) and scripts/validate_docs_scenarios.py (is_runnable_scenario, the CI side). One rule decides which docs fences get a 'Run in playground' button and which fences the compile gate must prove; two implementations of it can only stay honest if they answer the same table. Add hostile cases here, never to one suite alone.",
+  "cases": [
+    {
+      "name": "complete scenario with scenarios: list",
+      "expected": true,
+      "text": "version: 2\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n    generator:\n      type: sine\n      amplitude: 20\n"
+    },
+    {
+      "name": "v2 shorthand: kind: header without a scenarios: list",
+      "expected": true,
+      "text": "version: 2\nkind: runnable\nname: cpu_usage\ngenerator:\n  type: constant\n  value: 95.0\n"
+    },
+    {
+      "name": "generator-only fragment quoted to explain one field",
+      "expected": false,
+      "text": "generator:\n  type: sine\n  amplitude: 20\n  period: 60s\n"
+    },
+    {
+      "name": "scenarios: list without version: — the engine rejects it, so it is a fragment",
+      "expected": false,
+      "text": "scenarios:\n  - signal_type: metrics\n    name: cpu_usage\n    gaps:\n      every: 60s\n      for: 20s\n"
+    },
+    {
+      "name": "vmalert rules file",
+      "expected": false,
+      "text": "groups:\n  - name: sonda-lab\n    interval: 5s\n    rules:\n      - alert: CpuUsageHigh\n        expr: 'cpu_usage > 80'\n        for: 30s\n"
+    },
+    {
+      "name": "opted out with a first-line # sonda:static comment",
+      "expected": false,
+      "text": "# sonda:static\nversion: 2\nscenarios:\n  - signal_type: metrics\n    name: broken\n"
+    },
+    {
+      "name": "# sonda:static with a trailing explanation still opts out",
+      "expected": false,
+      "text": "# sonda:static - deliberately broken, the error message is the lesson\nversion: 2\nscenarios:\n  - signal_type: metrics\n    name: broken\n"
+    },
+    {
+      "name": "admonition-nested fence carries 4 spaces of indentation on every line",
+      "expected": true,
+      "text": "    version: 2\n    scenarios:\n      - signal_type: metrics\n        name: cpu_usage\n        generator:\n          type: constant\n          value: 95.0\n"
+    },
+    {
+      "name": "nested fence that is opted out — dedent must expose the marker",
+      "expected": false,
+      "text": "    # sonda:static\n    version: 2\n    scenarios:\n      - signal_type: metrics\n        name: broken\n"
+    },
+    {
+      "name": "UTF-8 BOM before the version line",
+      "expected": true,
+      "text": "﻿version: 2\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n"
+    },
+    {
+      "name": "CRLF line endings",
+      "expected": true,
+      "text": "version: 2\r\nscenarios:\r\n  - signal_type: metrics\r\n    name: cpu_usage\r\n"
+    },
+    {
+      "name": "version: 2 appearing only inside a comment",
+      "expected": false,
+      "text": "# upgrade note: version: 2 replaced the old flat format\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n"
+    },
+    {
+      "name": "version: 2 appearing only inside a log message template",
+      "expected": false,
+      "text": "generator:\n  type: log_template\n  message: \"config reloaded, version: 2 schema active\"\n"
+    },
+    {
+      "name": "version: 2 quoted as a YAML string value elsewhere in the doc",
+      "expected": false,
+      "text": "kind: runnable\nname: notes\nnote: \"version: 2\"\n"
+    },
+    {
+      "name": "Kubernetes manifest — kind: without a sonda version header",
+      "expected": false,
+      "text": "apiVersion: monitoring.coreos.com/v1\nkind: ServiceMonitor\nmetadata:\n  name: sonda\n"
+    },
+    {
+      "name": "docker-compose style version: 2 with no scenarios: or kind:",
+      "expected": false,
+      "text": "version: 2\nservices:\n  sonda:\n    image: ghcr.io/davidban77/sonda\n"
+    },
+    {
+      "name": "version: 1 is a different schema",
+      "expected": false,
+      "text": "version: 1\nscenarios:\n  - name: cpu_usage\n"
+    },
+    {
+      "name": "version: 20 must not prefix-match version: 2",
+      "expected": false,
+      "text": "version: 20\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n"
+    },
+    {
+      "name": "trailing whitespace after the version value is tolerated",
+      "expected": true,
+      "text": "version: 2   \nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n"
+    },
+    {
+      "name": "version: and 2 on separate lines is not a version declaration",
+      "expected": false,
+      "text": "version:\n2\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n"
+    },
+    {
+      "name": "kind: nested under a mapping is not the shorthand header",
+      "expected": false,
+      "text": "version: 2\nmetadata:\n  kind: Secret\n"
+    },
+    {
+      "name": "empty fence",
+      "expected": false,
+      "text": ""
+    },
+    {
+      "name": "pack-backed entry — no catalog exists in the browser or in a fence",
+      "expected": false,
+      "text": "version: 2\nkind: runnable\nscenarios:\n  - pack: telegraf_snmp_interface\n    signal_type: metrics\n"
+    },
+    {
+      "name": "pack: nested deeper in an entry still disqualifies",
+      "expected": false,
+      "text": "version: 2\nscenarios:\n  - signal_type: metrics\n    name: cpu_usage\n    generator:\n      type: sine\n  - signal_type: metrics\n    pack: node_exporter_cpu\n"
+    },
+    {
+      "name": "a metric named like a pack does not trip the pack rule",
+      "expected": true,
+      "text": "version: 2\nscenarios:\n  - signal_type: metrics\n    name: pack_queue_depth\n    generator:\n      type: constant\n      value: 3\n"
+    }
+  ]
+}

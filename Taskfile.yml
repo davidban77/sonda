@@ -126,6 +126,17 @@ tasks:
     cmds:
       - SONDA_BIN=./target/release/sonda node docs/site/tools/tests/livegen-compile.mjs
 
+  site:scenario-check:
+    desc: Compile every runnable scenario fence in the docs through the real engine
+    deps: [build:release]
+    cmds:
+      - python3 scripts/validate_docs_scenarios.py
+
+  site:no-raw-html:
+    desc: "Fail if any hand-written docs JS assigns raw markup (XSS floor)"
+    cmds:
+      - bash scripts/check_no_raw_html.sh
+
   # ---------------------------------------------------------------------------
   # E2E Stack
   # ---------------------------------------------------------------------------

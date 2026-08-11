@@ -24,6 +24,91 @@ export function fromBase64Url(encoded) {
   return new TextDecoder().decode(bytes);
 }
 
+/* Ceiling on a `#yaml=` hash payload, in characters of the encoded form.
+ *
+ * The playground and the alert lab will compile anything a link hands them.
+ * That is the point — but a link is attacker-supplied input, and an
+ * unbounded one buys a decode plus a compile of arbitrary size on page load.
+ * 32 KB of base64url is ~24 KB of YAML: far above any real scenario (the
+ * largest fence in the docs is under 2 KB) and far below a payload that can
+ * wedge the tab.
+ */
+export const MAX_HASH_PAYLOAD = 32 * 1024;
+
+/* True when a hash payload is too large to be worth decoding.
+ *
+ * A pure length test on the RAW payload, deliberately: the guard has to run
+ * before `fromBase64Url` allocates, so it cannot ask how big the decoded
+ * text would be. */
+export function hashPayloadTooLarge(payload) {
+  return String(payload).length > MAX_HASH_PAYLOAD;
+}
+
+/* Normalize a code fence's body before any structural test runs on it.
+ *
+ * The two callers see the same scenario through different lenses: the browser
+ * reads `code.textContent` out of the rendered DOM, while the CI extractor
+ * reads raw markdown where an admonition- or tab-nested fence carries four
+ * spaces of indentation on every line. Folding both to one shape here is what
+ * lets `runnableScenario` be a single rule with a single case table
+ * (docs/site/tools/tests/runnable-cases.json) rather than two implementations
+ * that drift.
+ *
+ * Strips a UTF-8 BOM, folds CRLF (a fence pasted from a Windows editor must
+ * not read as a different document), and removes the indentation common to
+ * every non-blank line.
+ */
+export function normalizeFence(text) {
+  const body = String(text).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  const lines = body.split("\n");
+  let common = Infinity;
+  for (const line of lines) {
+    if (!line.trim()) continue; // blank lines carry no indentation signal
+    const indent = line.length - line.replace(/^[ \t]+/, "").length;
+    if (indent < common) common = indent;
+  }
+  if (!Number.isFinite(common) || common === 0) return body;
+  return lines.map((line) => (line.trim() ? line.slice(common) : line)).join("\n");
+}
+
+/* True when a docs code fence is a complete, runnable Sonda scenario — the
+ * one rule behind both the "Run in playground →" buttons and the CI gate that
+ * compiles every buttoned fence.
+ *
+ * A fence qualifies when it declares `version: 2` (the engine rejects a
+ * scenario file without it — see ParseError::InvalidVersion, so this is the
+ * honest complete-vs-fragment line) AND carries a `scenarios:` list or the
+ * `kind:` shorthand header. Fragments — a bare `generator:` block quoted to
+ * explain one field — fail naturally and are never offered.
+ *
+ * A `pack:` reference disqualifies a fence no matter how complete it looks.
+ * Packs resolve against a catalog directory, and there is no catalog in the
+ * browser — sonda-wasm builds an empty InMemoryPackResolver, so a
+ * pack-backed scenario reaches the playground only to report "unknown pack".
+ * Offering a button that always lands on an error is worse than offering
+ * none, and the CI gate skips them for the same reason (`--catalog <dir>` is
+ * a runtime argument a fence cannot carry). The match is indentation-
+ * tolerant because `pack:` sits inside an entry; the cost is that a label
+ * literally keyed `pack` also opts a fence out, which only ever loses a
+ * button.
+ *
+ * The escape hatch is a `# sonda:static` comment line, visible in both the
+ * markdown source and the rendered page: it opts a fence out for cases where
+ * running it is not the point (a deliberately broken example whose error
+ * message IS the lesson, or a server-only shape the CLI cannot run).
+ *
+ * Anchors are line-local and use [ \t] rather than \s throughout: \s spans
+ * newlines, which would let `version:` on one line and `2` on the next read
+ * as a version declaration.
+ */
+export function runnableScenario(text) {
+  const body = normalizeFence(text);
+  if (/^#[ \t]*sonda:static\b/m.test(body)) return false;
+  if (!/^version:[ \t]*2[ \t]*$/m.test(body)) return false;
+  if (/^[ \t]*(?:-[ \t]+)?pack:/m.test(body)) return false;
+  return /^scenarios:/m.test(body) || /^kind:/m.test(body);
+}
+
 /* Round to two leading digits; guards float dust like 60.000000000000004. */
 export function tidyNumber(value) {
   const magnitude = Math.pow(10, Math.floor(Math.log10(Math.abs(value))) - 1);
