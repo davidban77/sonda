@@ -7,6 +7,26 @@ resolver = "2"
 [profile.release.package.sonda-wasm]
 opt-level = "z"
 
+# The profile the committed playground bundle is built with (`task site:wasm`).
+#
+# Kept separate from `release` rather than tightening `release` itself, because
+# every one of these settings trades compile time or debuggability for bytes —
+# a bargain worth taking for a file every docs visitor downloads, and a bad one
+# for the native binaries and the test suite.
+#
+# The package override above only reaches sonda-wasm's OWN code; setting
+# opt-level here reaches its dependencies too, which is where most of the
+# bundle actually comes from. `lto = "fat"` lets the linker drop across crate
+# boundaries, `codegen-units = 1` removes the parallelism that blocks those
+# cross-unit optimizations, and stripping debuginfo drops symbol tables no
+# browser reads. Artifacts land in target/wasm32-unknown-unknown/wasm-release/.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+
 [workspace.package]
 version = "1.19.0"
 edition = "2021"

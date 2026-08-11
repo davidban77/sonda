@@ -103,10 +103,66 @@ tasks:
 
   site:wasm:
     desc: Rebuild the playground WebAssembly bundle (needs wasm-bindgen-cli matching Cargo.lock)
+    summary: |
+      Rebuilds docs/site/docs/javascripts/sonda_wasm{.js,_bg.wasm} from the
+      sonda-wasm crate. Three things this recipe does that a plain cargo build
+      does not, each load-bearing:
+
+        * --profile wasm-release   size-tuned profile (see Cargo.toml). Worth
+                                   ~3% after wasm-bindgen; most of the win is
+                                   the wasm-opt step below.
+        * RUSTFLAGS remaps         without these the bundle embeds the builder's
+                                   absolute paths (/root/.cargo/..., the repo
+                                   checkout), so the same source produces a
+                                   different file on every machine and the drift
+                                   gate cannot mean anything.
+        * wasm-opt -Oz             binaryen's whole-module size pass. This is
+                                   where the real reduction comes from: ~1.20 MB
+                                   -> ~772 KB, about 35%. Optional — if binaryen
+                                   is not installed the recipe warns and keeps
+                                   the unoptimized bundle rather than failing,
+                                   but the committed bundle IS optimized, so a
+                                   rebuild without it will look ~55% larger and
+                                   trip the size gate. Install it first:
+                                   apt-get install binaryen (or `brew install binaryen`).
+
+      wasm-bindgen-cli must match the wasm-bindgen version in Cargo.lock
+      (0.2.117), or the generated JS glue and the wasm will disagree.
     cmds:
       - rustup target add wasm32-unknown-unknown
-      - cargo build -p sonda-wasm --release --target wasm32-unknown-unknown
-      - wasm-bindgen target/wasm32-unknown-unknown/release/sonda_wasm.wasm --target web --no-typescript --out-dir docs/site/docs/javascripts/
+      - |
+        RUSTFLAGS="--remap-path-prefix $HOME/.cargo=/cargo --remap-path-prefix $(pwd)=/sonda" \
+          cargo build -p sonda-wasm --profile wasm-release --target wasm32-unknown-unknown
+      - wasm-bindgen target/wasm32-unknown-unknown/wasm-release/sonda_wasm.wasm --target web --no-typescript --out-dir docs/site/docs/javascripts/
+      - |
+        bundle=docs/site/docs/javascripts/sonda_wasm_bg.wasm
+        if ! command -v wasm-opt >/dev/null 2>&1; then
+          echo "WARNING: wasm-opt not on PATH — the bundle is ~55% larger than the" >&2
+          echo "committed one and will fail scripts/check_wasm_size.py." >&2
+          echo "Install binaryen (>= 119) and re-run before committing." >&2
+          exit 0
+        fi
+        # Binaryen version is load-bearing, not cosmetic. Debian/Ubuntu ship
+        # 108, which optimizes this bundle without complaint, exits 0, and
+        # produces a module that dies in the browser with
+        # "WebAssembly.Table.grow(): failed to grow table by 4" — it is too old
+        # for what wasm-bindgen 0.2.117 emits. That failure is invisible until
+        # someone loads the page, so refuse it here instead. 119 is verified
+        # working; anything between 108 and 119 is untested.
+        version=$(wasm-opt --version | grep -oE '[0-9]+' | head -1)
+        if [ "${version:-0}" -lt 119 ]; then
+          echo "ERROR: wasm-opt $version is too old — needs >= 119." >&2
+          echo "Version 108 (the Debian/Ubuntu package) emits a bundle that" >&2
+          echo "loads and then fails at runtime with Table.grow()." >&2
+          echo "Get a release from https://github.com/WebAssembly/binaryen/releases" >&2
+          exit 1
+        fi
+        before=$(wc -c < "$bundle")
+        wasm-opt -Oz "$bundle" -o "$bundle.opt"
+        mv "$bundle.opt" "$bundle"
+        after=$(wc -c < "$bundle")
+        echo "wasm-opt -Oz (binaryen $version): $before -> $after bytes ($(( (before - after) * 100 / before ))% smaller)"
+      - python3 scripts/check_wasm_size.py
 
   site:editor:
     desc: Rebuild the vendored CodeMirror bundle for the playground editor
