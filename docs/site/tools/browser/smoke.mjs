@@ -76,21 +76,78 @@ function watch(page) {
 const chartSignature = () =>
   document.querySelector("#sp-chart")?.toDataURL().length ?? 0;
 
-/* The playground has rendered when the canvas holds a non-trivial image. An
- * empty canvas still produces a short data URL, so the threshold is the
- * assertion, not the presence of the element. */
-const CHART_DRAWN = 3000;
+/* Canvas thresholds, every number below MEASURED against this site rather
+ * than guessed — review #539 W1 caught the first version of this constant
+ * being 1,346 chars BELOW the floor it was supposed to exclude.
+ *
+ * Corrupting the committed wasm and reading each signal gives:
+ *
+ *                        healthy    engine dead
+ *   #sp-chart             47,754          4,346   <- axes and grid still draw
+ *   #sp-output (chars)       355              0   <- nothing without the engine
+ *   .sonda-livegen__chart 29,242          2,118
+ *
+ * The lesson is that the failed state is not a BLANK canvas, it is a
+ * chromed-but-empty one: the axes, gridlines and tick labels are drawn by
+ * plain canvas code that does not need the engine at all. A threshold picked
+ * against "blank" therefore cannot fail for the reason it exists.
+ *
+ * These sit roughly midway between the two measurements in log terms, so
+ * they survive ordinary chart-chrome drift in either direction.
+ */
+const CHART_WITH_DATA = 12000;
+const WIDGET_CHART_WITH_DATA = 8000;
 
+/* Readiness is gated on the ENGINE having produced output, not on the canvas
+ * having produced bytes.
+ *
+ * This predicate is the precondition for three of the nine sections, so it is
+ * the last place a check that cannot fail belongs. `#sp-output` holds the
+ * encoded events the wasm engine emitted: 355 chars healthy, exactly 0 with a
+ * dead engine. It tests the thing we actually care about and cannot be
+ * defeated by drawing more axes. The canvas conditions ride along so the
+ * chart is known-visible for the assertions that follow. */
 async function waitForPlayground(page) {
   await page.waitForSelector("#sonda-playground", { timeout: 30000 });
-  await page.waitForFunction(
-    (min) => {
-      const canvas = document.querySelector("#sp-chart");
-      return canvas && canvas.style.display !== "none" && canvas.toDataURL().length > min;
-    },
-    CHART_DRAWN,
-    { timeout: 60000 }
-  );
+  try {
+    await page.waitForFunction(
+      (min) => {
+        const canvas = document.querySelector("#sp-chart");
+        const output = document.querySelector("#sp-output");
+        return (
+          canvas &&
+          output &&
+          output.textContent.trim().length > 0 &&
+          canvas.style.display !== "none" &&
+          canvas.toDataURL().length > min
+        );
+      },
+      CHART_WITH_DATA,
+      { timeout: 60000 }
+    );
+  } catch (err) {
+    // A bare "waitForFunction: Timeout exceeded" says nothing about WHY the
+    // playground never became ready, and this gate now guards the whole run.
+    // Report what the page actually looked like — with a dead engine the
+    // status line and error banner both name the real cause.
+    const seen = await page
+      .evaluate((min) => {
+        const canvas = document.querySelector("#sp-chart");
+        const error = document.querySelector("#sp-error");
+        return {
+          chartChars: canvas ? canvas.toDataURL().length : null,
+          floor: min,
+          chartDisplay: canvas ? canvas.style.display || "(visible)" : null,
+          outputChars: (document.querySelector("#sp-output")?.textContent || "").trim().length,
+          status: (document.querySelector("#sp-status")?.textContent || "").trim() || null,
+          error: error && !error.hidden ? error.textContent.trim().slice(0, 200) : null,
+        };
+      }, CHART_WITH_DATA)
+      .catch(() => null);
+    throw new Error(
+      `playground never became ready — ${seen ? JSON.stringify(seen) : "page unreadable"}`
+    );
+  }
 }
 
 /* Two ways to find a browser, and they are mutually exclusive in Playwright:
@@ -118,8 +175,11 @@ try {
   await waitForPlayground(page);
 
   const firstSignature = await page.evaluate(chartSignature);
-  check("default preset renders a non-blank chart", firstSignature > CHART_DRAWN,
-    `dataURL ${firstSignature} chars`);
+  // "Non-blank" was the wrong bar: a dead engine still draws axes and grid.
+  // This threshold is above that measured floor, so it fails when the engine
+  // does (review #539 W1).
+  check("default preset renders a chart with data in it", firstSignature > CHART_WITH_DATA,
+    `dataURL ${firstSignature} chars, floor ${CHART_WITH_DATA}`);
   const output = await page.textContent("#sp-output");
   check("encoded output pane is populated", output.trim().length > 0,
     `${output.trim().length} chars`);
@@ -142,7 +202,7 @@ try {
   );
   const secondSignature = await page.evaluate(chartSignature);
   check("a different preset produces a different chart",
-    secondSignature !== firstSignature && secondSignature > CHART_DRAWN,
+    secondSignature !== firstSignature && secondSignature > CHART_WITH_DATA,
     `${firstSignature} -> ${secondSignature}`);
 
   // --- 3. Scrub decoration exists and dragging edits the document --------
@@ -304,10 +364,15 @@ try {
       const canvas = document.querySelector(".sonda-livegen__chart");
       return canvas && canvas.toDataURL().length > min;
     },
-    CHART_DRAWN,
+    WIDGET_CHART_WITH_DATA,
     { timeout: 60000 }
   );
-  check("the widget renders a live chart", true);
+  const widgetSignature = await widgets.evaluate(
+    () => document.querySelector(".sonda-livegen__chart").toDataURL().length
+  );
+  check("the widget renders a chart with data in it",
+    widgetSignature > WIDGET_CHART_WITH_DATA,
+    `dataURL ${widgetSignature} chars, floor ${WIDGET_CHART_WITH_DATA}`);
   const widgetError = await widgets.evaluate(() => {
     const err = document.querySelector(".sonda-livegen__error");
     return err && !err.hidden ? err.textContent : null;

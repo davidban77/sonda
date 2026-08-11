@@ -315,7 +315,9 @@ jobs:
       # Served as static files, exactly as GitHub Pages serves it — the wasm
       # needs a real HTTP origin, so file:// is not an option.
       # nohup + setsid so the server outlives this step's shell — each `run`
-      # is its own shell, and the next step needs the port still open.
+      # is its own shell, and the next step needs the port still open. setsid
+      # is Linux-only and this runner is ubuntu; for local runs use
+      # `task site:smoke`, whose recipe is portable, rather than copying this.
       - name: Serve the built site
         run: |
           setsid nohup python3 -m http.server 8777 --directory docs/site/site \
