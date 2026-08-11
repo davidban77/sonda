@@ -15,6 +15,9 @@ hide:
 
 </div>
 
+!!! tip "No install needed to explore"
+    The [playground](../playground/index.md) runs the same engine in your browser — edit scenario YAML and watch the signal it produces, with nothing on your machine. Come back here when you want it on your machine, emitting to a real backend.
+
 ## Installation
 
 Pick the option that matches your environment. Each tab shows a single command.

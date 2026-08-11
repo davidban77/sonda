@@ -9,6 +9,9 @@ By default, a Sonda scenario emits at a steady rate for its full duration. This 
 
 Use these when you want test data that resembles real production traffic. Examples: services that go quiet during deploys, surges at peak hours, fleets that share a single scenario entry, and cascades where one signal triggers another.
 
+!!! tip "Run these examples as you read"
+    Complete scenarios on this page — the ones that open with `version: 2` — carry a **Run in playground →** link that opens them in the [playground](../playground/index.md) with the chart already drawn. The shorter fences show a single block in isolation, so they have nothing to run on their own.
+
 ## Gaps and bursts
 
 Gaps and bursts are recurring time windows that modulate emission. A **gap** suppresses output for a window: the metric goes silent, Prometheus treats it as stale, downstream alerts resolve. A **burst** temporarily raises the per-second event rate above the configured `rate:`.
