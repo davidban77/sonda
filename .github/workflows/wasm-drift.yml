@@ -50,10 +50,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
+      # rust-toolchain.toml pins the compiler (1.95.0) and cargo honours that
+      # override inside the repo, so this action's own toolchain is only ever
+      # the bootstrap. Its `targets:` input would add wasm32 to *stable* — the
+      # toolchain cargo then does not use — which fails with a bare
+      # "can't find crate for `std`". The target is added in its own step below,
+      # from the repo directory, so it lands on the pinned toolchain.
+      #
+      # Pinning is not incidental for a drift gate: rebuilding with a moving
+      # `stable` would compare the committed bundle against a different
+      # compiler than produced it, and report drift that is really just a
+      # toolchain bump.
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+
+      - name: Add the wasm target to the pinned toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          echo "active toolchain: $(rustup show active-toolchain)"
+          rustup target list --installed
 
       - name: Cache cargo registry and target
         uses: actions/cache@v6
