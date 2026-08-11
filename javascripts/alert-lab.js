@@ -12,6 +12,7 @@ import {
   defaultThreshold,
   evaluate,
   fromBase64Url,
+  hashPayloadTooLarge,
   toBase64Url,
 } from "./sonda-pure.js";
 
@@ -140,7 +141,7 @@ function ensureWasm() {
   return wasmReady;
 }
 
-function boot() {
+async function boot() {
   const root = document.getElementById("sonda-alert-lab");
   if (!root || root.dataset.ready) return;
   root.dataset.ready = "1";
@@ -163,7 +164,8 @@ function boot() {
   // A scenario carried over from the playground (#yaml=…) becomes a
   // synthetic first preset, selected on load — the other half of the
   // playground's "Test an alert →" bridge.
-  const customYaml = fromLocationHash();
+  const shared = fromLocationHash();
+  const customYaml = shared.yaml;
   if (customYaml !== null) {
     const option = document.createElement("option");
     option.value = "custom";
@@ -325,7 +327,15 @@ function boot() {
     }
   }).observe(document.body, { attributes: true, attributeFilter: ["data-md-color-scheme"] });
 
-  loadPreset();
+  // Awaited so a refused hash explains itself after the first preset has
+  // drawn, rather than being overwritten by it. The notice goes on the story
+  // line rather than through showError: the lab itself is fine — a preset is
+  // loaded and evaluating — and blanking its chart to report an ignored link
+  // would break more than it explains.
+  await loadPreset();
+  if (shared.status) {
+    el.story.textContent = `${shared.status} ${el.story.textContent}`.trim();
+  }
 }
 
 function showError(el, message) {
@@ -351,13 +361,27 @@ function setStateChip(chip, state) {
   chip.className = `sonda-lab-chip sonda-lab-chip--${state}`;
 }
 
+/* Read a scenario carried over from the playground via `#yaml=`.
+ *
+ * Returns `{ yaml, status }` — see the twin in playground.js. The size check
+ * runs before the decode so an oversized link costs a length comparison
+ * rather than a decode plus a compile; a malformed one falls back to the
+ * built-in presets in silence, since that is a broken link rather than a
+ * hostile one.
+ */
 function fromLocationHash() {
   const match = window.location.hash.match(/^#yaml=(.+)$/);
-  if (!match) return null;
+  if (!match) return { yaml: null, status: null };
+  if (hashPayloadTooLarge(match[1])) {
+    return {
+      yaml: null,
+      status: "The shared scenario is too large to load — showing the built-in presets instead.",
+    };
+  }
   try {
-    return fromBase64Url(match[1]);
+    return { yaml: fromBase64Url(match[1]), status: null };
   } catch {
-    return null;
+    return { yaml: null, status: null };
   }
 }
 

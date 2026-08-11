@@ -8,7 +8,7 @@
  * fetched only when the playground container exists.
  */
 import init, { sample_scenario } from "./sonda_wasm.js";
-import { toBase64Url, fromBase64Url } from "./sonda-pure.js";
+import { toBase64Url, fromBase64Url, hashPayloadTooLarge } from "./sonda-pure.js";
 
 const MAX_TICKS = 240;
 const DEBOUNCE_MS = 500;
@@ -360,7 +360,7 @@ async function boot() {
   };
 
   const shared = fromLocationHash();
-  el.editor.value = shared !== null ? shared : PRESETS[0].yaml;
+  el.editor.value = shared.yaml !== null ? shared.yaml : PRESETS[0].yaml;
   editor = await mountEditor(el.editor, { onChange: scheduleRun, onRun: run });
 
   el.run.addEventListener("click", run);
@@ -390,16 +390,34 @@ async function boot() {
     attributeFilter: ["data-md-color-scheme"],
   });
 
-  run();
+  // Awaited so a refused hash reports AFTER the first run has settled the
+  // status line — otherwise the run's own "" would erase the explanation.
+  await run();
+  if (shared.status) el.status.textContent = shared.status;
 }
 
+/* Read a shared scenario out of the `#yaml=` hash.
+ *
+ * Returns `{ yaml, status }`: `yaml` is null when there is nothing usable to
+ * load, and `status` carries a message to show the reader when the hash was
+ * present but refused.
+ *
+ * The size check runs BEFORE the decode. A link is attacker-supplied input,
+ * and an unbounded one buys a base64 decode plus an engine compile of
+ * arbitrary size on page load; refusing by length is O(1) and cannot be
+ * talked out of. Malformed base64 still falls back to the default preset
+ * silently — that is a broken link, not a hostile one.
+ */
 function fromLocationHash() {
   const match = window.location.hash.match(/^#yaml=(.+)$/);
-  if (!match) return null;
+  if (!match) return { yaml: null, status: null };
+  if (hashPayloadTooLarge(match[1])) {
+    return { yaml: null, status: "shared scenario too large — showing the default preset" };
+  }
   try {
-    return fromBase64Url(match[1]);
+    return { yaml: fromBase64Url(match[1]), status: null };
   } catch {
-    return null;
+    return { yaml: null, status: null };
   }
 }
 

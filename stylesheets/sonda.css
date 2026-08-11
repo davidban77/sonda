@@ -1011,6 +1011,25 @@
   font-weight: 600;
 }
 
+/* "Run in playground →" link appended after a complete scenario fence.
+ * Sits tight under the code block it belongs to and stays quiet until
+ * hovered — it is an offer, not a call to action competing with the prose. */
+.md-typeset .sonda-runnable {
+  display: inline-block;
+  margin: -0.6rem 0 1rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--md-default-fg-color--light);
+  text-decoration: none;
+}
+
+.md-typeset .sonda-runnable:hover,
+.md-typeset .sonda-runnable:focus-visible {
+  color: var(--md-accent-fg-color);
+  text-decoration: underline;
+}
+
 .md-typeset .sonda-livegen__open {
   margin-left: auto;
   font-size: 0.78rem;
